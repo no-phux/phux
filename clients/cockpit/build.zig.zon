@@ -192,9 +192,12 @@
         // shell still compiles. Cell-background device-pixel partitioning,
         // the cell_grid composite gate, shot cadence, and the 32-slot
         // window-drag mirror land here on that rebase.
+        // Host-native glass now sits behind transparent canvas content while
+        // the canvas retains input/accessibility ownership. Modal dismissal
+        // owns the complete pointer gesture and cannot seed a double click.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/ddf82838a4f7c30293a9c53d80a6414107b66966.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQhSTtwJspBXgcDrG2hbmfBi9NEd3VFHViyGU1xe1",
+            .url = "https://github.com/phall1/native/archive/ee690e0a336227ec4eec5a9b9c8077d787a7e91a.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQrs0uAJ-i_HUKzwJM-S7Y0y6WG31LfIhXoXHQFoF",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream

@@ -76,6 +76,13 @@ rail; the terminal area is shared by the painter, pointer targets, and viewport
 sizing. The compiled markup owns those bands. Their token and spacing contract
 is documented in [Design System](docs/DESIGN_SYSTEM.md).
 
+The toolbar and side rail use host-native materials: Liquid Glass on macOS 26
+and later, with an AppKit visual-effect fallback on older supported macOS.
+Chrome follows system appearance; terminal colors remain independently
+configured. Terminal cells and gutters stay opaque above the material.
+The Commands toolbar button opens the command navigator; Escape returns to the
+terminal, and clicking outside dismisses without activating a control beneath it.
+
 **`cmd+shift+P` summons a switcher** that floats over the grid instead of taking
 room from it — type to filter by title, working directory, provider, window,
 or session, then press `enter` to go. Open panes, available durable terminals,
@@ -415,7 +422,7 @@ actually looking at.
   either environment. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@ddf82838`](https://github.com/phall1/native/commit/ddf82838a4f7c30293a9c53d80a6414107b66966),
+[`phall1/native@ee690e0a`](https://github.com/phall1/native/commit/ee690e0a336227ec4eec5a9b9c8077d787a7e91a),
 the fork's cockpit/v0.10.5 lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
@@ -428,7 +435,10 @@ the native macOS app-updater surface, the Metal Hybrid C signed cell
 (4x) and text (2x) paint ceilings, a 32-slot null-platform window-drag region
 mirror matching the runtime collector cap, a `cell_grid`-capable opt-in GPU
 composite path with configurable real-frame capture cadence, and ScriptC 0.1.1
-(balanced wide-model decode guards, nested recipe scope 32).
+(balanced wide-model decode guards, nested recipe scope 32). This pin adds
+host-native glass behind transparent canvas content, window composition lifetime
+handling, and complete modal-dismissal gesture ownership without click-through
+or contamination of the next click's count.
 The pin is a tarball SHA rather than a branch, so a push to the fork can never
 break a checkout of Cockpit — see [docs/SDK_PIN.md](docs/SDK_PIN.md) for how the
 fork and this repo stay in contract, and what to run before moving the pin.

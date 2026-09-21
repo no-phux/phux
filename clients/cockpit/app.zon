@@ -125,6 +125,7 @@
                     .gpu_pixel_format = "bgra8_unorm",
                     .gpu_present_mode = "timer",
                     .gpu_alpha_mode = "opaque",
+                    .gpu_material = "glass",
                     .gpu_color_space = "srgb",
                     .gpu_vsync = true,
                 }},

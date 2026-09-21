@@ -1727,11 +1727,9 @@ fn configureOptionsValue(options: *Adapter.Options) void {
     options.view = mainView;
     options.markup = null;
     options.window_view = windowView;
-    options.tokens_fn = struct {
-        fn tokens(_: *const core.Model) canvas.DesignTokens {
-            return cockpit.projection.baseTokens();
-        }
-    }.tokens;
+    // Chrome uses the manifest's Geist theme and follows system appearance,
+    // contrast and reduced motion, in step with its native material. Terminal
+    // colors and font metrics remain configured by terminalTokensFrom.
     // Register the complete terminal family before the first frame. The TS
     // runner has no Zig host phase that can add the weighted faces later.
     options.fonts = &cockpit.scene.cockpit_fonts;
@@ -2188,7 +2186,7 @@ test "shared workspace refresh timer starts with the shipping event-only adapter
 }
 
 const test_views = [_]native_sdk.ShellView{
-    .{ .label = canvas_label, .kind = .gpu_surface, .fill = true, .gpu_backend = .metal },
+    .{ .label = canvas_label, .kind = .gpu_surface, .fill = true, .gpu_backend = .metal, .gpu_material = .glass },
 };
 const test_windows = [_]native_sdk.ShellWindow{.{
     .label = "main",
@@ -2199,7 +2197,7 @@ const test_windows = [_]native_sdk.ShellWindow{.{
 }};
 const test_scene: native_sdk.ShellConfig = .{ .windows = &test_windows };
 
-test "shipping TypeScript graph registers the terminal family and Cockpit token ids" {
+test "shipping TypeScript graph registers terminal fonts without overriding native chrome appearance" {
     var options: Adapter.Options = .{
         .name = "phux-cockpit",
         .scene = test_scene,
@@ -2219,12 +2217,32 @@ test "shipping TypeScript graph registers the terminal family and Cockpit token 
         try std.testing.expect(registration.ttf.len > 4);
         try std.testing.expectEqualSlices(u8, &.{ 0, 1, 0, 0 }, registration.ttf[0..4]);
     }
-    var unused_model: core.Model = undefined;
-    const tokens = options.tokens_fn.?(&unused_model);
+    try std.testing.expect(options.tokens_fn == null);
+    var rig = try Rig.start();
+    defer rig.stop();
+    const tokens = cockpit.projection.terminalTokens(bridge.engine.?.model);
     try std.testing.expectEqual(cockpit.scene.terminal_font_id, tokens.typography.mono_font_id);
     try std.testing.expectEqual(cockpit.scene.terminal_bold_font_id, tokens.typography.mono_bold_font_id);
     try std.testing.expectEqual(cockpit.scene.terminal_italic_font_id, tokens.typography.mono_italic_font_id);
     try std.testing.expectEqual(cockpit.scene.terminal_bold_italic_font_id, tokens.typography.mono_bold_italic_font_id);
+}
+
+test "chrome follows native appearance without changing terminal defaults" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    const engine = bridge.engine.?;
+    engine.model.config.follow_system_theme = false;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .appearance_changed = .{ .color_scheme = .light } });
+    const light = rig.app_state.effectiveTokens();
+    const terminal_before = cockpit.projection.terminalTokensFrom(light, engine.model).colors;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .appearance_changed = .{ .color_scheme = .dark } });
+    const dark = rig.app_state.effectiveTokens();
+    try std.testing.expect(!std.meta.eql(light.colors.text, dark.colors.text));
+    try std.testing.expect(!std.meta.eql(light.colors.background, dark.colors.background));
+    const terminal_after = cockpit.projection.terminalTokensFrom(dark, engine.model).colors;
+    try std.testing.expectEqualDeep(terminal_before.background, terminal_after.background);
+    try std.testing.expectEqualDeep(terminal_before.text, terminal_after.text);
+    try std.testing.expectEqualDeep(terminal_before.accent, terminal_after.accent);
 }
 
 /// What the generated runner's src/windows registry does, for the rig: each
@@ -2351,6 +2369,8 @@ const Rig = struct {
             .name = "phux-cockpit",
             .scene = test_scene,
             .canvas_label = canvas_label,
+            .theme = .geist,
+            .theme_accent = canvas.Color.rgb8(190, 242, 100),
             .markup = .{ .source = @embedFile("app.native") },
             .window_view = testWindowView,
             // The generated runner wires the core's exported commandMsg; a
@@ -5104,10 +5124,14 @@ test "the markup chrome passes the layout audit at every declared size, density 
 }
 
 fn pressCanvasFrame(rig: *Rig, frame: native_sdk.geometry.RectF) !void {
+    return pressCanvasFrameOn(rig, frame, 1, canvas_label);
+}
+
+fn pressCanvasFrameOn(rig: *Rig, frame: native_sdk.geometry.RectF, window_id: u64, label: []const u8) !void {
     inline for (.{ .pointer_down, .pointer_up }) |kind| {
         try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
-            .window_id = 1,
-            .label = canvas_label,
+            .window_id = window_id,
+            .label = label,
             .kind = kind,
             .x = frame.x + frame.width / 2,
             .y = frame.y + frame.height / 2,
@@ -5460,6 +5484,34 @@ fn expectParentAttentionChrome(rig: *Rig, label: []const u8, shown: bool) !void 
     }
 }
 
+fn compiledFirstTabFrame(model: *const core.Model, size: native_sdk.geometry.SizeF) !native_sdk.geometry.RectF {
+    return compiledFirstTabFrameAtWidth(model, size, model);
+}
+
+/// Compare attention states against one measured tab slot. Snapshot refreshes
+/// may legitimately carry a new projection width; that is a different
+/// geometry decision from the local attention marker and must not be allowed
+/// to masquerade as tab-label reflow in this assertion.
+fn compiledFirstTabFrameAtWidth(model: *const core.Model, size: native_sdk.geometry.SizeF, width_source: *const core.Model) !native_sdk.geometry.RectF {
+    var scoped = model.*;
+    scoped.tabWidth = width_source.tabWidth;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tree = try ui.finalizeWithTokens(chromeViewAt(&ui, &scoped, 0), cockpit.projection.cockpitTokens(bridge.engine.?.model));
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const layout = try canvas.layoutWidgetTreeWithTokens(
+        tree.root,
+        native_sdk.geometry.RectF.init(0, 0, size.width, size.height),
+        cockpit.projection.cockpitTokens(bridge.engine.?.model),
+        nodes,
+    );
+    for (layout.nodes) |entry| {
+        if (entry.widget.semantics.role == .tab) return entry.frame;
+    }
+    return error.TestExpectedTab;
+}
+
 fn expectParentAttentionAt(model: core.Model, label: []const u8, shown: bool, size: native_sdk.geometry.SizeF) !void {
     var scoped = model;
     scoped.window1Tabs = model.visibleTabs;
@@ -5491,6 +5543,11 @@ test "shipping tab chrome exposes attention for a blocked nonfocused split" {
     try std.testing.expect(local.eql(engine.model.focusedTerminalRef().?));
     var bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
     try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
+    const tab_size = native_sdk.geometry.SizeF.init(1100, 640);
+    const tab_before_attention = try compiledFirstTabFrame(&rig.app_state.model, tab_size);
+    const tab_size_min = native_sdk.geometry.SizeF.init(900, 420);
+    const tab_before_attention_min = try compiledFirstTabFrame(&rig.app_state.model, tab_size_min);
+    const width_source = rig.app_state.model;
     var label_buffer: [128]u8 = undefined;
     const label = try std.fmt.bufPrint(&label_buffer, "Needs attention: {s}", .{rig.app_state.model.visibleTabs[0].title});
     try expectParentAttentionChrome(&rig, label, false);
@@ -5501,6 +5558,12 @@ test "shipping tab chrome exposes attention for a blocked nonfocused split" {
     });
     try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
     try std.testing.expect(rig.app_state.model.visibleTabs[0].attention);
+    const tab_with_attention = try compiledFirstTabFrameAtWidth(&rig.app_state.model, tab_size, &width_source);
+    try std.testing.expectApproxEqAbs(tab_before_attention.x, tab_with_attention.x, 0.01);
+    try std.testing.expectApproxEqAbs(tab_before_attention.width, tab_with_attention.width, 0.01);
+    const tab_with_attention_min = try compiledFirstTabFrameAtWidth(&rig.app_state.model, tab_size_min, &width_source);
+    try std.testing.expectApproxEqAbs(tab_before_attention_min.x, tab_with_attention_min.x, 0.01);
+    try std.testing.expectApproxEqAbs(tab_before_attention_min.width, tab_with_attention_min.width, 0.01);
     try expectParentAttentionChrome(&rig, label, true);
     try std.testing.expect(try fixture.feedAgentRecords(remote.host, 9100, .closed, ""));
     try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
@@ -5532,6 +5595,156 @@ test "crowded tab strip keeps every tab and overflow cue inside its allocated ch
         }
         try std.testing.expect(seen > 1);
     }
+}
+
+test "crowded tab strip holds its anchor when selecting a visible earlier tab" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "anchored crowded strip", .tabs = 16 });
+    try rig.resize(.init(1100, 640));
+    try rig.dispatch(.{ .select_tab = 15 });
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    const before = engine.currentRun();
+    try std.testing.expect(before.first > 0);
+    try std.testing.expect(before.count > 1);
+    try rig.dispatch(.{ .select_tab = 14 });
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try rig.settleCurrent();
+    try std.testing.expectEqual(@as(usize, 14), engine.model.wsConst().selected_tab);
+    const after = engine.currentRun();
+    try std.testing.expectEqual(before.first, after.first);
+    try std.testing.expectEqual(before.count, after.count);
+    try std.testing.expectEqual(before.extent, after.extent);
+    // Leaving the run should scroll only far enough to reveal the selection.
+    try rig.dispatch(.{ .select_tab = @intCast(before.first - 1) });
+    try rig.settleCurrent();
+    try std.testing.expectEqual(before.first - 1, engine.currentRun().first);
+}
+
+test "shipping chrome keeps command access and elided tab titles discoverable" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "discoverable crowded strip", .tabs = 16 });
+    try rig.resize(.init(900, 420));
+
+    // Commands is an explicit top-toolbar escape hatch, not only a side-rail
+    // action or an accidental consequence of opening the overflow palette.
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Commands"));
+    // Tab buttons expose the complete title as their semantic label even when
+    // the fixed-width visible title is elided by the toolkit.
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Terminal 1"));
+    // The cue keeps a stable semantic purpose while its visible text carries
+    // the current count (for example, +11).
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Tabs not shown"));
+
+    try rig.reach(.{ .label = "discoverable rail", .tabs = 16, .placement = .side });
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Commands"));
+}
+
+test "Commands toolbar action is pointer reachable in primary and secondary chrome" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    var widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var commands: ?native_sdk.geometry.RectF = null;
+    for (widgets.nodes) |node| {
+        if (std.mem.eql(u8, node.widget.semantics.label, "Commands")) commands = node.frame;
+    }
+    try pressCanvasFrame(&rig, commands orelse return error.TestExpectedCommandsControl);
+    try std.testing.expect(rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(@as(i64, 4), rig.app_state.model.navigatorView);
+
+    try rig.dispatch(.palette_close);
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const secondary = bridge.engine.?.model.wsAt(1) orelse return error.TestExpectedSecondaryWindow;
+    // A real primary-canvas press establishes the primary native window before
+    // the secondary control is inspected; otherwise this test could pass while
+    // the secondary was already active and never exercise window targeting.
+    try pressCanvasFrame(&rig, .init(396, 296, 8, 8));
+    try std.testing.expectEqual(@as(usize, 0), bridge.engine.?.model.active_window);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = secondary.window_id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(900, 420),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(secondary.window_id, "phux-cockpit-canvas-1");
+    commands = null;
+    for (widgets.nodes) |node| {
+        if (std.mem.eql(u8, node.widget.semantics.label, "Commands")) commands = node.frame;
+    }
+    try pressCanvasFrameOn(&rig, commands orelse return error.TestExpectedSecondaryCommandsControl, secondary.window_id, "phux-cockpit-canvas-1");
+    try std.testing.expect(rig.app_state.model.window1PaletteOpen);
+    try std.testing.expect(!rig.app_state.model.mainPaletteOpen);
+    try std.testing.expectEqual(@as(usize, 1), bridge.engine.?.model.active_window);
+    try std.testing.expectEqual(@as(i64, 4), rig.app_state.model.navigatorView);
+}
+
+test "terminal ground stays opaque inside measured content and leaves material chrome exposed" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    for ([_]bool{ false, true }) |side| {
+        if (side) try rig.dispatch(.toggle_tab_placement);
+        try rig.resize(.init(900, 420));
+        const engine = bridge.engine.?;
+        const space = engine.model.wsAtConst(0).?.shipping_terminal_space orelse return error.TestExpectedMeasuredContent;
+        try std.testing.expect(space.y > 0);
+        if (side) try std.testing.expect(space.x > 0);
+        builder.initAt(commands);
+        try engine.paint(builder, .init(900, 420), cockpit.projection.cockpitTokens(engine.model));
+        const ground = switch (builder.displayList().commands[0]) {
+            .fill_rect => |fill| fill,
+            else => return error.TestExpectedOpaqueContentGround,
+        };
+        try std.testing.expectEqualDeep(space, ground.rect);
+        try std.testing.expectEqual(@as(f32, 1), ground.fill.color.a);
+    }
+}
+
+test "navigator modal dismisses outside without activating the underlying toolbar" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.resize(.init(900, 420));
+    const tab_count = bridge.engine.?.model.wsAt(0).?.tab_count;
+    try rig.dispatch(.commands_open);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var dialog: ?native_sdk.geometry.RectF = null;
+    var toolbar: ?native_sdk.geometry.RectF = null;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .dialog) dialog = node.frame;
+        if (node.widget.kind == .button and std.mem.eql(u8, node.widget.semantics.label, "New Tab")) toolbar = node.frame;
+    }
+    const frame = dialog orelse return error.TestExpectedNavigatorDialog;
+    try std.testing.expect(frame.x >= 0 and frame.y >= 0);
+    try std.testing.expect(frame.x + frame.width <= 900);
+    try std.testing.expect(frame.y + frame.height <= 420);
+    const button = toolbar orelse return error.TestExpectedNewTabControl;
+    try std.testing.expect(button.x + button.width / 2 > frame.x + frame.width);
+    try pressCanvasFrame(&rig, button);
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(tab_count, bridge.engine.?.model.wsAt(0).?.tab_count);
+    // The dismissal owns only its gesture: the next deliberate click works.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try pressCanvasFrame(&rig, button);
+    try std.testing.expectEqual(tab_count + 1, bridge.engine.?.model.wsAt(0).?.tab_count);
 }
 
 test "secondary windows expose every tab in the shared workspace rail" {

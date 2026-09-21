@@ -15,8 +15,21 @@ to check what the terminal looks like.
 |---|---|---|---|
 | `native automate screenshot` | display list, layout, colour choices, which commands were emitted | everything the real macOS rasterizer does: CoreText outlines, hinting, font smoothing, CG blend arithmetic, device colour space | no |
 | `scripts/host-raster-check.sh` | the real host rasterizer's output for a fixed row | layout, what the app actually emitted, anything outside one command | no |
-| `scripts/capture-gpu-ink.sh` | the app's real composited frame: the host rasterizer AND the layout that fed it | anything the composite pass does differently from the shipping present path — it is a prototype flag, not the default | no |
+| `scripts/capture-gpu-ink.sh` | the canvas texture: the host rasterizer AND the layout that fed it | host-native materials behind the canvas; anything the composite pass does differently from the shipping present path | no |
 | eyes on glass / screen capture | everything | nothing | **yes** |
+
+Native window materials need a **whole-display capture**, cropped afterward.
+`screencapture -l <window>` can isolate the window without its desktop backdrop:
+the Liquid Glass composition proof showed a uniform gray material in that
+capture, while whole-display captures showed the glass adapting to blue and red
+windows behind it. A transparent canvas texture is expected in those regions;
+it cannot prove that AppKit composed the material correctly.
+
+The 2026-09-21 composition proof (`phux-3gpg.5`) used actual Metal drawables inside
+`NSGlassEffectView.contentView`. Changing only the window behind it changed a
+chrome pixel from RGB (77, 195, 255) to (255, 131, 135), while the opaque terminal
+rectangle remained pixel-identical. Both the NSView and `CAMetalLayer` must be
+nonopaque; overriding `NSView.isOpaque` alone leaves black chrome.
 
 The middle row was empty when this document was first written, and section 2
 is the survey that emptied it. Section 6 is how it got filled: an SDK-side
