@@ -126,13 +126,14 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_run",
-            "description": "Run a command in a pane and report its exit code, output, and duration. Assumes a POSIX shell.",
+            "description": "Run a command in a pane and report its exit code, output, and duration. Assumes a POSIX shell, and refuses when a shell is not in the pane's foreground — against vim, less, or another agent the command line would land as keystrokes, not as a command.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "target": { "type": "string", "description": TARGET_DESC },
                     "command": { "type": "string" },
                     "timeout_secs": { "type": "number", "minimum": 1, "maximum": 3600, "description": "Give up after this many seconds. Default 600; bounded to 1..=3600." },
+                    "force": { "type": "boolean", "description": "Skip the available-shell precondition and type the command line whatever is running in the pane. Default false." },
                     "socket": { "type": "string" }
                 },
                 "required": ["target", "command"]
@@ -457,7 +458,7 @@ async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
 async fn phux_run(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
-        &["target", "command", "timeout_secs", "socket"],
+        &["target", "command", "timeout_secs", "force", "socket"],
         &["target", "command"],
     )?;
     let target = crate::cli_adapter::bounded_string(args, "target", true)?.unwrap_or_default();
@@ -475,6 +476,11 @@ async fn phux_run(args: &Value) -> Result<Value, ToolError> {
         "--timeout".to_owned(),
         timeout_secs.to_string(),
     ];
+    // Opt-in only: without it `phux run` refuses a pane whose foreground is
+    // not a shell, which is the whole point of the precondition.
+    if bool_arg(args, "force").unwrap_or(false) {
+        argv.push("--force".to_owned());
+    }
     crate::cli_adapter::push_socket(&mut argv, args)?;
     argv.extend([target, command]);
     // `phux run` mirrors the command's exit code, so a failing command is a

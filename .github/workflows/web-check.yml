@@ -29,7 +29,7 @@ jobs:
       web_engine_needed: ${{ steps.changes.outputs.web_engine_needed }}
       validated: ${{ steps.receipt.outputs.validated }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -50,10 +50,10 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 2
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       # The engine's byte-for-byte contract is pinned to the official Zig
       # release binary in .config/zig-toolchain.json. nixpkgs'
       # zig_0_16 on x86_64 Linux links a different LLVM build and compiles one

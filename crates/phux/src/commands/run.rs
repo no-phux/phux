@@ -2,11 +2,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use phux_client::agent_meta::ShellAvailability;
 use phux_client::attach::AttachError;
 use phux_client::deadline::Deadline;
 use phux_client::run::{RunOutcome, Submission};
 use phux_server::runtime::default_socket_path;
 
+use crate::commands::json_err::codes;
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 
 /// Default `run` timeout when `--timeout` is unset. Bounds the poll so an
@@ -32,6 +34,7 @@ pub(crate) fn run_run(
     target: &str,
     command: &[String],
     timeout: Option<u64>,
+    force: bool,
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
@@ -73,9 +76,15 @@ pub(crate) fn run_run(
                 return ExitCode::from(RUN_TIMEOUT_EXIT_CODE);
             }
         };
-        let result =
-            phux_client::run::run_in_with_deadline(&socket_path, pane, &cmd, &nonce, deadline)
-                .await;
+        let result = phux_client::run::run_in_with_deadline(
+            &socket_path,
+            pane,
+            &cmd,
+            &nonce,
+            deadline,
+            force,
+        )
+        .await;
         report_outcome(result, target, json, &socket_path)
     })
 }
@@ -103,6 +112,14 @@ fn report_outcome(
             // process-exit range; negative/large codes saturate to 255).
             ExitCode::from(u8::try_from(result.exit_code).unwrap_or(255))
         }
+        Ok(RunOutcome::Refused {
+            availability,
+            command,
+        }) => json_err::emit(
+            json,
+            &not_available_error(target, &command, &availability),
+            crate::exit_codes::EXIT_USAGE,
+        ),
         Ok(RunOutcome::TimedOut {
             command,
             duration_ms,
@@ -125,6 +142,57 @@ fn report_outcome(
             eprintln!("phux: run failed: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The refusal for a pane that is not an available shell, naming what IS in
+/// the foreground.
+///
+/// `run` types a shell command line, so it is only a command at all when a
+/// shell is what reads it; against `vim` or `less` the same bytes are
+/// keystrokes into that application. Same code and same `--force` remedy as
+/// `phux agent start`'s precondition, which is the same check
+/// ([`phux_client::agent_meta::pane_shell_availability`]).
+fn not_available_error(
+    target: &str,
+    command: &str,
+    availability: &ShellAvailability,
+) -> json_err::CliError {
+    let remedy = "wait for the foreground job to finish, pick another pane, or pass `--force` \
+                  if you know the pane is free";
+    match availability {
+        // Unreachable: `Available` is not a refusal. Reported rather than
+        // panicking — this is the diagnostic path.
+        ShellAvailability::Available => json_err::CliError::new(
+            codes::AGENT_PANE_NOT_AVAILABLE,
+            format!("'{command}' was not sent to '{target}'"),
+            remedy,
+        ),
+        ShellAvailability::BusyProcess(foreground) => json_err::CliError::new(
+            codes::AGENT_PANE_NOT_AVAILABLE,
+            format!(
+                "'{target}' is running '{foreground}' in the foreground, not its pane shell; \
+                 '{command}' was not sent"
+            ),
+            remedy,
+        ),
+        ShellAvailability::BusyScreen => json_err::CliError::new(
+            codes::AGENT_PANE_NOT_AVAILABLE,
+            format!(
+                "'{target}' is not sitting at its shell prompt — the cursor is not on a marked \
+                 command line, so something else has the screen; '{command}' was not sent"
+            ),
+            remedy,
+        ),
+        ShellAvailability::Unanswerable => json_err::CliError::new(
+            codes::AGENT_PANE_NOT_AVAILABLE,
+            format!(
+                "cannot establish that '{target}' is at an idle shell prompt: the pane reports \
+                 no OSC-133 shell-integration marks; '{command}' was not sent"
+            ),
+            "phux refuses to type a command line into a pane it cannot see the state of. \
+             Enable your shell's OSC-133 integration, or pass `--force`",
+        ),
     }
 }
 
@@ -154,7 +222,7 @@ pub(crate) fn print_run_result(result: &phux_client::run::RunResult) {
         outln!("{}", result.output);
     }
     let trunc = if result.truncated {
-        " (output truncated; needs scrollback)"
+        " (output truncated; the command's start is no longer in the pane's history)"
     } else {
         ""
     };
@@ -185,13 +253,43 @@ pub(crate) fn run_nonce() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::run_nonce;
+    use phux_client::agent_meta::ShellAvailability;
+
+    use super::{codes, not_available_error, run_nonce};
 
     #[test]
     fn run_nonce_is_unique_across_invocations() {
         // The pid is stable within a process; the time component must still
         // make two nonces differ (defends the stale-sentinel fix).
         assert_ne!(run_nonce(), run_nonce());
+    }
+
+    /// A refusal names what IS in the foreground, says nothing was sent,
+    /// and carries the same stable code `agent start`'s precondition does.
+    #[test]
+    fn the_refusal_names_the_foreground_process_and_the_escape_hatch() {
+        let err = not_available_error(
+            "work:1.0",
+            "cargo build",
+            &ShellAvailability::BusyProcess("vim".to_owned()),
+        );
+        assert_eq!(err.code, codes::AGENT_PANE_NOT_AVAILABLE);
+        assert!(err.message.contains("'vim'"), "{}", err.message);
+        assert!(err.message.contains("was not sent"), "{}", err.message);
+        assert!(err.remedy.contains("--force"), "{}", err.remedy);
+    }
+
+    /// Each refusal reason reads differently: "something else has the
+    /// screen" and "phux cannot see the state at all" are not the same
+    /// finding, and collapsing them would hide which one a caller hit.
+    #[test]
+    fn each_refusal_reason_says_which_evidence_produced_it() {
+        let busy = not_available_error("@7", "ls", &ShellAvailability::BusyScreen);
+        let blind = not_available_error("@7", "ls", &ShellAvailability::Unanswerable);
+        assert!(busy.message.contains("shell prompt"), "{}", busy.message);
+        assert!(blind.message.contains("OSC-133"), "{}", blind.message);
+        assert_ne!(busy.message, blind.message);
+        assert!(blind.remedy.contains("--force"), "{}", blind.remedy);
     }
 }
 
@@ -217,6 +315,12 @@ mod deadline_tests {
                     PANE_SELECTOR,
                     &["true".to_owned()],
                     Some(BUDGET_SECS),
+                    // `--force`: these fixtures bound the submit/poll
+                    // budget, and a stalled peer cannot answer the
+                    // precondition's reads either — leaving it on would
+                    // make every case here a precondition timeout instead
+                    // of the one being exercised.
+                    true,
                     false,
                     Some(socket),
                 )

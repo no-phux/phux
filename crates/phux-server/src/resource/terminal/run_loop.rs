@@ -128,7 +128,7 @@ pub(super) struct OwedResync {
 /// subscriber; a gap is owed only to the pumps that asked. Both share the one
 /// deadline and the one synthesis, so N stale pumps still converge on a
 /// single snapshot, and a reflow owed in the same window subsumes them all.
-struct ResyncDebounce {
+pub(super) struct ResyncDebounce {
     /// A resync is owed once the debounce deadline lands. False until a
     /// resize arms it, which is why the idle far-future deadline the loop
     /// starts with is never observed.
@@ -145,7 +145,7 @@ struct ResyncDebounce {
 
 impl ResyncDebounce {
     /// Nothing owed.
-    const fn idle() -> Self {
+    pub(super) const fn idle() -> Self {
         Self {
             pending: false,
             reason: ResyncReason::Resize,
@@ -356,7 +356,8 @@ impl TerminalActor {
                 // so a paste the encoder expands cannot inflate one turn
                 // without limit. The PTY-output arm's structural bound is
                 // `MAX_PTY_COALESCE_BYTES`.
-                Some(input) = self.input_rx.recv() => self.service_input_batch(&input),
+                Some(input) = self.input_rx.recv(), if !bootstrap_pending =>
+                    self.service_input_batch(&input),
 
                 () = std::future::ready(()), if pump == BootstrapPump::StepDue =>
                     self.service_cooperative_native_step(&mut state.native_step_due),
@@ -476,7 +477,17 @@ impl TerminalActor {
     /// still has its request in `resize_rx` or on the debounce; waiting for
     /// the debounce after EOF lets the exit watcher reap the pane first
     /// (phux-fpgl.28).
-    fn flush_final_gap_resync(&mut self, resync: &mut ResyncDebounce) -> bool {
+    pub(super) fn flush_final_gap_resync(&mut self, resync: &mut ResyncDebounce) -> bool {
+        // Both callers run outside the `!bootstrap_pending` guards: the
+        // `token.cancelled()` arm is `biased` first, and
+        // `flush_exit_resync_if_needed` hangs off the ungated ingress arm.
+        // The drain below applies resizes and the fire below synthesizes a
+        // grid, and both dereference the canonical terminal — which an
+        // in-flight capture has moved out. Land the cut so the terminal is
+        // home before either touches it. (A pane whose child exits while a
+        // client attaches is the designed-for race, not an exotic one: see
+        // `handle_pty_eof`.)
+        self.land_native_cuts();
         while let Ok(req) = self.resize_rx.try_recv() {
             for owed in self.apply_resize_request(req) {
                 resync.include(owed);

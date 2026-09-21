@@ -125,6 +125,15 @@ mod consumer_filters;
 /// rationale (the hub link dials with backoff under full-parallel nextest).
 const STEP_DEADLINE: Duration = Duration::from_secs(15);
 
+/// Hang-guard for satellite WebSocket readiness (phux-9jm5 / phux-atxp).
+///
+/// Not a latency assertion: `listen_ws` is a `spawn_local` task, and under
+/// concurrent crate-check load it can sit behind the scheduler longer than
+/// [`STEP_DEADLINE`] before the port accepts. The happy path still connects
+/// in milliseconds. The satellite is in-process, so a hang reports the last
+/// TCP and handshake errors rather than child stderr.
+const WS_CONNECT_HANG_GUARD: Duration = Duration::from_secs(60);
+
 /// A satellite endpoint that is dead and *stays* dead for the whole test.
 ///
 /// [`free_port`] hands the port straight back to the ephemeral pool, so a
@@ -295,16 +304,22 @@ fn spawn_hub_with_session(
 async fn discover_satellite_pane(ws_port: u16) -> u32 {
     let addr = format!("127.0.0.1:{ws_port}");
     let url = format!("ws://{addr}/");
-    let deadline = Instant::now() + STEP_DEADLINE;
+    let started = Instant::now();
+    let mut last_tcp: Option<std::io::Error> = None;
+    let mut last_handshake: Option<String> = None;
     let mut ws = loop {
+        let elapsed = started.elapsed();
         assert!(
-            Instant::now() < deadline,
-            "satellite WebSocket never became connectable"
+            elapsed < WS_CONNECT_HANG_GUARD,
+            "satellite WebSocket never became connectable at {addr} after {elapsed:?}: \
+             last_tcp={last_tcp:?} last_handshake={last_handshake:?}"
         );
-        if let Ok(tcp) = TcpStream::connect(&addr).await
-            && let Ok((ws, _)) = tokio_tungstenite::client_async(&url, tcp).await
-        {
-            break ws;
+        match TcpStream::connect(&addr).await {
+            Ok(tcp) => match tokio_tungstenite::client_async(&url, tcp).await {
+                Ok((ws, _)) => break ws,
+                Err(err) => last_handshake = Some(err.to_string()),
+            },
+            Err(err) => last_tcp = Some(err),
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     };

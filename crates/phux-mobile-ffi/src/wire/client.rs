@@ -115,7 +115,7 @@ impl RemoteClient {
             connect: ConnectOptions::default(),
         };
         let client = Runtime::connect(target, options).map_err(|error| WireError::Runtime {
-            message: error.to_string(),
+            reason: error.to_string(),
         })?;
         if let Some(listener) = self.listener.lock().unwrap().clone() {
             client.set_listener(Arc::new(ListenerProjection(listener)));
@@ -297,7 +297,7 @@ impl RemoteClient {
         }
     }
 
-    pub fn close(&self) {
+    pub fn stop_connection(&self) {
         if let Some(client) = self.runtime_client() {
             client.close();
         }

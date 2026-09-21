@@ -159,7 +159,9 @@ pub(crate) const TOOLS: &[Row] = &[
         "run",
         "the sentinel bracketing, the child's mirrored exit code, and the run deadline are the \
          CLI command's, and a failing command must still return its RunResult",
-        Touches::Wire(&[RESOLVE, "ROUTE_INPUT", "GET_SCREEN"]),
+        // `GET_METADATA`: the available-shell precondition reads the
+        // server-owned `phux.pane-occupant/v1` record before typing.
+        Touches::Wire(&[RESOLVE, "GET_METADATA", "ROUTE_INPUT", "GET_SCREEN"]),
     ),
     cli("phux_wait", "wait", Touches::Wire(&[RESOLVE, "GET_SCREEN"])),
     residue(

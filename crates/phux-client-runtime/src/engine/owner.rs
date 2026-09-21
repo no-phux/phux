@@ -113,8 +113,8 @@ impl Owner {
     pub(super) fn run(mut self, commands: &mpsc::Receiver<Command>) {
         while let Ok(command) = commands.recv() {
             match command {
-                Command::Apply(event, reply) => {
-                    let _ = reply.send(self.apply(event));
+                Command::ApplyBatch(events, reply) => {
+                    let _ = reply.send(self.apply_batch(events));
                 }
                 Command::Lifecycle(lifecycle) => self.lifecycle(lifecycle),
                 Command::Query(query) => self.query(query),
@@ -319,9 +319,31 @@ impl Owner {
         )
     }
 
-    fn apply(&mut self, event: EngineEvent) -> EngineOutcome {
-        if let EngineEvent::Closed { terminal_id, .. } = &event
-            && self.is_closed(terminal_id)
+    fn apply_batch(&mut self, events: Vec<EngineEvent>) -> Vec<EngineOutcome> {
+        let mut damaged = Vec::new();
+        let mut outcomes = Vec::with_capacity(events.len());
+        for event in events {
+            let outcome = self.apply_one(event, &mut damaged);
+            let fatal = outcome.resync_required()
+                || matches!(outcome.error.as_ref(), Some(EngineApplyError::Protocol(_)));
+            outcomes.push(outcome);
+            if fatal {
+                break;
+            }
+        }
+        #[cfg(feature = "engine")]
+        self.publish_damaged(damaged);
+        #[cfg(not(feature = "engine"))]
+        drop(damaged);
+        outcomes
+    }
+
+    fn apply_one(&mut self, event: EngineEvent, damaged: &mut Vec<ResourceId>) -> EngineOutcome {
+        // A frame queued behind a terminal close is stale evidence, including
+        // when the close and stale frame share this batch.
+        if event
+            .terminal_id()
+            .is_some_and(|terminal_id| self.is_closed(terminal_id))
         {
             return EngineOutcome::default();
         }
@@ -342,28 +364,26 @@ impl Owner {
         if let Some(id) = closing {
             self.capture_closed(id);
         }
-        let damaged = self.note_damage(&effects);
-        #[cfg(feature = "engine")]
-        {
-            self.release_pending();
-            for id in damaged {
-                if let Err(error) = self.render_and_publish(&id) {
-                    tracing::warn!(terminal = %id, %error, "grid projection failed");
-                }
-            }
-        }
-        #[cfg(not(feature = "engine"))]
-        drop(damaged);
+        self.note_damage(&effects, damaged);
         EngineOutcome {
             effects,
             error: result.as_ref().err().map(EngineApplyError::from_kernel),
         }
     }
 
-    /// Record which terminals gained or lost a projection, and return the
-    /// ones to re-project, in effect order without duplicates.
-    fn note_damage(&mut self, effects: &[KernelEffect]) -> Vec<ResourceId> {
-        let mut damaged = Vec::new();
+    #[cfg(feature = "engine")]
+    fn publish_damaged(&mut self, damaged: Vec<ResourceId>) {
+        self.release_pending();
+        for id in damaged {
+            if let Err(error) = self.render_and_publish(&id) {
+                tracing::warn!(terminal = %id, %error, "grid projection failed");
+            }
+        }
+    }
+
+    /// Record which terminals gained or lost a projection in effect order,
+    /// deduplicating across the whole owner-thread batch.
+    fn note_damage(&mut self, effects: &[KernelEffect], damaged: &mut Vec<ResourceId>) {
         for effect in effects {
             let KernelEffect::Damage(damage) = effect else {
                 continue;
@@ -392,7 +412,6 @@ impl Owner {
                 }
             }
         }
-        damaged
     }
 
     fn prepare_attach(&mut self, terminals: &[ResourceId]) {

@@ -2610,26 +2610,28 @@ Global flags:
 Run a command in a pane and capture its exit code.
 
 Reports the command's exit code, output, and duration. Brackets the command with
-sentinels to capture `$?`, so it assumes a POSIX shell (sh/bash/zsh). The
-process exit code mirrors the command's — and is 125 when `phux` gives up on
-`--timeout` — so `phux run … && next` composes like a shell. The timeout is one
-budget for the whole run — connecting, target resolution, input submission, and
-every screen read — so a server that stops answering still ends the run on time.
-Input is never started after the timeout, and once started it gets up to 2 more
-seconds to finish, so the pane is not left holding a half-typed line; the
-diagnostic says whether nothing, all, or possibly part of the input was
-delivered. Giving up does not stop the command or retract input already
-delivered. TARGET is a selector (see the top-level help), resolved client-side
-to one pane; the command routes to it by id (no attach, no resize).
+sentinels to capture `$?`, so it assumes a POSIX shell (sh/bash/zsh) — and
+refuses (exit 2) when a shell is not what is reading the pane, since against
+`vim` or `less` the same bytes are keystrokes, not a command; `--force` skips
+that precondition. The process exit code mirrors the command's — and is 125 when
+`phux` gives up on `--timeout` — so `phux run … && next` composes like a shell.
+The timeout is one budget for the whole run — connecting, target resolution,
+input submission, and every screen read — so a server that stops answering still
+ends the run on time. Input is never started after the timeout, and once started
+it gets up to 2 more seconds to finish, so the pane is not left holding a
+half-typed line; the diagnostic says whether nothing, all, or possibly part of
+the input was delivered. Giving up does not stop the command or retract input
+already delivered. TARGET is a selector (see the top-level help), resolved
+client-side to one pane; the command routes to it by id (no attach, no resize).
 
-Flags (`--timeout`, `--json`, `--socket`) MUST precede TARGET, or they are
-swallowed into the trailing command.
+Flags (`--timeout`, `--force`, `--json`, `--socket`) MUST precede TARGET, or
+they are swallowed into the trailing command.
 
 Examples:
 phux run build "cargo test"
 phux run --timeout 30 work:1.0 "cargo test"
 
-Usage: phux run [--timeout <SECS>] [--json] <TARGET> <COMMAND>…
+Usage: phux run [FLAGS] <TARGET> <COMMAND>…
 
 Arguments:
   <TARGET>    Target selector: session, session:window, session:window.pane,
@@ -2642,6 +2644,8 @@ Flags:
                         submitting the command, and every screen read share the
                         one budget; input that has started gets up to 2s more to
                         finish. Default: 600s. Pass 0 to wait indefinitely.
+      --force           Skip the available-shell precondition. Types the command
+                        line into the pane whatever is running there.
       --json            Emit stable, versioned JSON on stdout instead of the
                         human view. On failure, stdout stays empty and stderr
                         carries one JSON error object.

@@ -292,7 +292,7 @@ impl<'a> Pump<'a> {
                 Err(ConnectionEnd::Dropped(Some("liveness probe timed out".to_owned())))
             }
             () = tokio::time::sleep(expiry) => self.expire_inputs().await,
-            inbound = self.io.read_frame(self.name) => self.accept_inbound(inbound).await,
+            inbound = self.io.read_frames(self.name) => self.accept_inbound(inbound).await,
         }
     }
 
@@ -331,30 +331,33 @@ impl<'a> Pump<'a> {
 
     async fn accept_inbound(
         &mut self,
-        inbound: Result<Option<Vec<u8>>, String>,
+        inbound: Result<Option<Vec<Vec<u8>>>, String>,
     ) -> Result<(), ConnectionEnd> {
         // Any inbound traffic, a pong included, proves liveness.
         self.probe_deadline = None;
-        let frame = inbound
+        let mut frames = inbound
             .map_err(|error| ConnectionEnd::Dropped(Some(error)))?
             .ok_or_else(|| {
                 ConnectionEnd::Dropped(Some(format!("{} closed the connection", self.name)))
             })?;
-        if frame.is_empty() {
+        frames.retain(|frame| !frame.is_empty());
+        if frames.is_empty() {
             return Ok(());
         }
-        let (fed, frames) = {
+        let (fed, outbound) = {
             let mut control = lock(self.shared);
             // A binding that keeps its own per-frame state on one owning
             // thread takes delivery itself; the socket is still ours.
             let fed = if control.options().deliver_inbound == InboundDelivery::Queued {
-                control.queue_inbound(frame)
+                frames
+                    .into_iter()
+                    .try_for_each(|frame| control.queue_inbound(frame))
             } else {
-                control.feed_bytes(&frame)
+                control.feed_bytes_batch(&frames)
             };
             (fed, control.take_outbound())
         };
-        self.write_all(frames).await?;
+        self.write_all(outbound).await?;
         // Edge-triggered: a frame flood costs one callback, not one per
         // frame, and the callback runs with no lock held.
         (self.wake)();

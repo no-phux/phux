@@ -201,6 +201,14 @@ struct HeadlessSession {
     /// phux-i0e8.2.2: headless composite dispatches no kill actions, so the
     /// expected-close set stays empty; threaded for the shared signature.
     expected_closes: HashSet<ResourceId>,
+    /// `request_id` -> the Terminal a command this client sent named, for the
+    /// commands whose refusal is authoritative about that Terminal's
+    /// existence (`KILL_RESOURCE` from kill-pane / kill-window,
+    /// `ATTACH_RESOURCE` for a layout leaf discovered at attach). A
+    /// `TERMINAL_NOT_FOUND` reply folds the leaf out: no `RESOURCE_CLOSED` is
+    /// ever broadcast for a resource the server does not have, so the refusal
+    /// is the only evidence a stale leaf is stale.
+    pending_resource_ops: HashMap<u32, ResourceId>,
     /// ADR-0040: one-shot `phux.agent/v1` reads so the composited window
     /// labels prefer structured agent records, matching a live attach.
     agent_meta: AgentMetaIndex,
@@ -239,6 +247,7 @@ impl HeadlessSession {
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
             expected_closes: HashSet::new(),
+            pending_resource_ops: HashMap::new(),
             agent_meta: AgentMetaIndex::default(),
             vcs: VcsIndex::default(),
         }
@@ -275,6 +284,7 @@ impl HeadlessSession {
             &mut self.pending_splits,
             &mut self.pending_windows,
             &mut self.expected_closes,
+            &mut self.pending_resource_ops,
             &mut self.agent_meta,
             false,
             true,

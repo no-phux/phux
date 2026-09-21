@@ -1,0 +1,125 @@
+# Build the Android UniFFI zip from this checkout.
+# Sibling of ffi-xcframework.yml, not a job on it: Apple publication must not
+# wait on NDK. phux-mobile fetches this zip at PHUX_REV.
+#
+# Fires on main when the shim or its runtime inputs change, so a merge is the
+# produce run — no manual dispatch. Release-please also calls it to attach the
+# zip to the root tag. workflow_dispatch remains for repair.
+
+name: ffi-android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/phux-mobile-ffi/**
+      - crates/phux-client-runtime/**
+      - crates/phux-client-core/**
+      - crates/phux-protocol/**
+      - crates/phux-dial/**
+      - scripts/build-mobile-ffi-android.sh
+      - scripts/ci/setup-android-ndk.sh
+      - .github/workflows/ffi-android.yml
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing root release tag (vX.Y.Z) to build from and attach to.
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing root release tag (vX.Y.Z). Empty builds this ref and only uploads the workflow artifact.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mini-v1-ffi-android-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build Android UniFFI zip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      ARTIFACTS: target/mobile-ffi-android/Artifacts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      # Same packages native-setup.yml uses: .cargo/config.toml passes
+      # -fuse-ld=mold on Linux, and the hosted image has no mold or ld by default.
+      - name: Platform packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config mold curl xz-utils unzip
+
+      - name: Contributor Zig setup
+        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+
+      - name: Contributor Rust setup
+        run: bash scripts/setup-rust.sh core
+
+      - name: Android NDK
+        run: bash scripts/ci/setup-android-ndk.sh >> "$GITHUB_ENV"
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: ffi-android
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build Android UniFFI artifact
+        run: bash scripts/build-mobile-ffi-android.sh
+
+      - name: Package zip and checksum
+        id: package
+        run: |
+          set -euo pipefail
+          stem="PhuxMobileFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}.android"
+          cd "$ARTIFACTS"
+          zip -qry "${stem}.zip" kotlin jniLibs provenance
+          shasum -a 256 "${stem}.zip" > "${stem}.zip.sha256"
+          cp provenance "${stem}.provenance"
+          echo "stem=${stem}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: PhuxMobileFFI-android
+          path: |
+            ${{ env.ARTIFACTS }}/provenance
+            ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.zip
+            ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach and verify release assets
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STEM: ${{ steps.package.outputs.stem }}
+        run: |
+          set -euo pipefail
+          cd "$ARTIFACTS"
+          gh release upload "$RELEASE_TAG" \
+            "${STEM}.zip" "${STEM}.zip.sha256" "${STEM}.provenance" --clobber
+          existing="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --dir "$existing" --pattern "${STEM}.*"
+          cmp "${STEM}.zip" "$existing/${STEM}.zip"
+          (cd "$existing" && shasum -a 256 -c "${STEM}.zip.sha256")

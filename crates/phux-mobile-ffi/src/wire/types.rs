@@ -19,8 +19,8 @@ pub enum WireStatus {
 pub enum WireError {
     #[error("already connected")]
     AlreadyConnected,
-    #[error("runtime error: {message}")]
-    Runtime { message: String },
+    #[error("runtime error: {reason}")]
+    Runtime { reason: String },
 }
 
 /// Product-facing outcome of one acknowledged input operation.
