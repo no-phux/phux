@@ -29,7 +29,7 @@ use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
 use super::args::{
     PaneMouseArg, amount_arg, direction_arg, focus_terminal, index_arg, mouse_arg, name_arg,
-    ordered_workspace_panes, resource_id_arg, session_id_arg, signal_arg, soft_kill_input_frames,
+    kill_resource_frame, ordered_workspace_panes, resource_id_arg, session_id_arg, signal_arg,
     split_dir_arg, str_arg, usize_arg,
 };
 use super::ctx::DispatchCtx;
@@ -95,7 +95,7 @@ pub(super) fn run_action(
     match resolved.action.as_str() {
         "split-pane" => split_pane(resolved, ctx, focused, panes, e),
         "move-pane" => move_pane(resolved, ctx, focused, e),
-        "kill-pane" => kill_focused_pane(focused, e),
+        "kill-pane" => kill_focused_pane(ctx, focused, e),
         "take-input" => take_input(ctx, focused, e),
         "give-input" => give_input(ctx, focused, e),
         "signal-terminal" => signal_terminal(resolved, ctx, focused, e),
@@ -301,26 +301,27 @@ fn split_host(focused: &ResourceId, support: DirectorySupport) -> SplitHost {
     }
 }
 
-/// phux-4li.12: soft-kill — write `exit\n` as a sequence of
-/// `INPUT_KEY` events to the focused Terminal. When the shell
-/// processes those keystrokes it exits, the PTY closes, and
-/// the server broadcasts `RESOURCE_CLOSED` which we then fold
-/// out of the layout in `handle_server_frame`.
+/// Close the focused pane: one correlated `KILL_RESOURCE` for its Terminal.
+/// The server tears the resource down and broadcasts `RESOURCE_CLOSED`, which
+/// `handle_server_frame` folds out of the layout; a `TerminalNotFound`
+/// refusal folds the leaf out just the same, so a pane whose resource died
+/// under us (a server restart, a reaped PTY) can still be dismissed.
 ///
-/// Caveat: this is softer than tmux's `kill-pane`, which
-/// sends SIGKILL to the entire process group. If the
-/// focused pane has an unresponsive foreground process
-/// (e.g. a stuck `cat` blocked on a non-existent FIFO) the
-/// keystrokes go nowhere. A future ticket may add an
-/// explicit `KILL_RESOURCE` wire frame; for v0.1 this gets
-/// the daily-drive flow working end-to-end.
-fn kill_focused_pane(focused: Option<&ResourceId>, effects: &mut ActionEffects) {
+/// This replaced the phux-4li.12 soft-kill, which typed `exit\n` at the pane
+/// and only closed panes whose foreground process was a cooperative shell.
+fn kill_focused_pane(
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    effects: &mut ActionEffects,
+) {
     let Some(focused_id) = focused.cloned() else {
         tracing::warn!("kill-pane: no focused pane to kill; dropping action");
         effects.bell = true;
         return;
     };
-    effects.kill_frames = soft_kill_input_frames(&focused_id);
+    let request_id = take_request_id(ctx);
+    effects.kill_frames = vec![kill_resource_frame(&focused_id, request_id)];
+    effects.kill_requests = vec![(request_id, focused_id.clone())];
     // phux-i0e8.2.2: mark the close as ours so the resulting
     // RESOURCE_CLOSED does not raise a pane-exit notice.
     effects.expected_closes = vec![focused_id];
@@ -580,12 +581,13 @@ fn placeholder_label(host: &ListingHost, path: &str) -> String {
         .map_or_else(|| shown.to_owned(), |host| format!("{shown} on {host}"))
 }
 
-/// phux-4li.15: soft-kill every pane in the active window, the
-/// same `exit\n` mechanism as `kill-pane`. As each
-/// `RESOURCE_CLOSED` lands, `handle_server_frame` folds the pane
-/// out; when the window's tree empties it is pruned and the
-/// new layout broadcast. No synchronous window removal here.
-fn kill_active_window(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
+/// phux-4li.15: close every pane in the active window, one correlated
+/// `KILL_RESOURCE` each (the same mechanism as `kill-pane`). As each
+/// `RESOURCE_CLOSED` — or each `TerminalNotFound` refusal for a leaf whose
+/// resource is already gone — lands, `handle_server_frame` folds the pane
+/// out; when the window's tree empties it is pruned and the new layout
+/// broadcast. No synchronous window removal here.
+fn kill_active_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let leaves = ctx
         .workspace
         .active_window()
@@ -596,7 +598,15 @@ fn kill_active_window(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
         effects.bell = true;
         return;
     }
-    effects.kill_frames = leaves.iter().flat_map(soft_kill_input_frames).collect();
+    effects.kill_requests = leaves
+        .iter()
+        .map(|leaf| (take_request_id(ctx), leaf.clone()))
+        .collect();
+    effects.kill_frames = effects
+        .kill_requests
+        .iter()
+        .map(|(request_id, leaf)| kill_resource_frame(leaf, *request_id))
+        .collect();
     // phux-i0e8.2.2: every pane in the window dies at our request;
     // none of those closes is news.
     effects.expected_closes = leaves;

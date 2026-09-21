@@ -618,6 +618,14 @@ pub(super) struct SessionLoop {
     /// the kill seam; the `ResourceClosed` arm drains them to suppress the
     /// pane-exit notice for a death the user themselves ordered.
     expected_closes: HashSet<ResourceId>,
+    /// `request_id` -> the Terminal a command this client sent named, for the
+    /// commands whose refusal is authoritative about that Terminal's
+    /// existence (`KILL_RESOURCE` from kill-pane / kill-window,
+    /// `ATTACH_RESOURCE` for a layout leaf discovered at attach). A
+    /// `TERMINAL_NOT_FOUND` reply folds the leaf out: no `RESOURCE_CLOSED` is
+    /// ever broadcast for a resource the server does not have, so the refusal
+    /// is the only evidence a stale leaf is stale.
+    pending_resource_ops: HashMap<u32, ResourceId>,
     /// ADR-0040 (phux-3ert): the structured agent-identity index. Each pane
     /// gets a one-shot `GET_METADATA` + a live `SUBSCRIBE_METADATA` on
     /// `phux.agent/v1` (see `sync_agent_meta_subscriptions`); decoded records
@@ -884,6 +892,7 @@ impl SessionLoop {
             conditional_kill_supported,
             pending_directory: None,
             expected_closes: HashSet::new(),
+            pending_resource_ops: HashMap::new(),
             agent_meta: AgentMetaIndex::default(),
             vcs: VcsIndex::default(),
             sidebar_painter: SidebarPainter::new(settings.theme),
@@ -1493,6 +1502,7 @@ impl SessionLoop {
             &mut self.pending_splits,
             &mut self.pending_windows,
             &mut self.expected_closes,
+            &mut self.pending_resource_ops,
             &mut self.agent_meta,
             self.overlays.is_active(),
             defer_paint,
@@ -2385,6 +2395,7 @@ impl SessionLoop {
             directory_support: self.directory_support,
             pending_directory: &mut self.pending_directory,
             expected_closes: &mut self.expected_closes,
+            pending_kills: &mut self.pending_resource_ops,
             overlays: &mut self.overlays,
             keybindings: self.settings.keybindings.as_ref(),
             theme: &self.settings.theme,
@@ -2634,6 +2645,9 @@ impl SessionLoop {
             // AttachResource commands from the retired generation must not
             // open streams into it.
             self.pending_stream_binds.clear();
+            // Replies to the retired generation's commands can no longer be
+            // attributed; a stale entry would fold a live leaf.
+            self.pending_resource_ops.clear();
         }
         if let FrameKind::Error {
             request_id: Some(request_id),
@@ -3025,6 +3039,12 @@ impl SessionLoop {
         for terminal_id in terminal_ids {
             let request_id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1);
+            // A leaf restored from persisted layout metadata can name a
+            // resource that died with a previous server. The refusal is the
+            // only way we ever learn that, so correlate it: otherwise the
+            // leaf paints a blank pane that no kill can remove.
+            self.pending_resource_ops
+                .insert(request_id, terminal_id.clone());
             if conn.multistream_enabled() {
                 self.track_pending_stream_bind(request_id, terminal_id.clone())?;
             }
