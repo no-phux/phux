@@ -81,9 +81,9 @@ pub struct RunResult {
     /// so `output` is best-effort trailing context rather than a clean
     /// capture.
     ///
-    /// The capture is scrollback-aware ([`CAPTURE_HISTORY`]), so this is no
-    /// longer "the command outscrolled the viewport" — it means the span
-    /// genuinely exceeded what the server still retains (or what the row
+    /// The capture reads retained scrollback, not just the viewport, so this
+    /// is no longer "the command outscrolled the viewport" — it means the
+    /// span genuinely exceeded what the server still retains (or what the row
     /// window would carry).
     pub truncated: bool,
 }
