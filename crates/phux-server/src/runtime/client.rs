@@ -1698,17 +1698,22 @@ fn reap_exited_pane(
     })
 }
 
-/// Close every resource bound to `pane` (ADR-0104 §2) in the parent's lock,
-/// before the parent is reaped, so no client observes a child whose parent
-/// has left. Each child's frame is emitted by the parent's watcher; its own
-/// watcher later finds it already claimed.
+/// Close every descendant bound to `pane` (ADR-0104 §2) in the parent's
+/// lock, before the parent is reaped, so no client observes a child whose
+/// parent has left. Each descendant's frame is emitted by the parent's
+/// watcher; its own watcher later finds it already claimed.
 fn cascade_children(
     s: &mut crate::state::ServerState,
     pane: phux_core::ids::ResourceId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
 ) -> Vec<CascadedClose> {
+    // Deepest first: reaping a child via `remove_resource` would otherwise
+    // drop its children out of the registry before they are journaled
+    // (phux-v4tv). Reverse BFS is generation-deepest and keeps the
+    // existing one-child order a reversal of one element.
+    let descendants = s.resource_descendants(pane);
     let mut cascaded = Vec::new();
-    for child in s.resource_children(pane) {
+    for child in descendants.into_iter().rev() {
         let Some(recorded) = s.begin_resource_close(child) else {
             continue;
         };
@@ -1747,6 +1752,68 @@ fn cascade_children(
         });
     }
     cascaded
+}
+
+#[cfg(test)]
+mod cascade_close_tests {
+    use phux_core::process::ExitOutcome;
+    use phux_core::resource::AgentFacet;
+    use phux_protocol::wire::frame::CloseReason;
+
+    use super::reap_exited_pane;
+    use crate::state::ServerState;
+
+    fn agent(provider: &str) -> AgentFacet {
+        AgentFacet {
+            provider: provider.to_owned(),
+            native_id: None,
+            state: None,
+        }
+    }
+
+    #[test]
+    fn reap_cascades_through_grandchildren() {
+        let mut state = ServerState::new();
+        let (_session, _window, grandparent) = state.seed_session("main");
+        let child = state
+            .registry_mut()
+            .new_agent_session(grandparent, agent("child"))
+            .expect("child");
+        let grandchild = state
+            .registry_mut()
+            .new_agent_session(grandparent, agent("grandchild"))
+            .expect("grandchild seed");
+        state
+            .registry_mut()
+            .resource_mut(grandchild)
+            .expect("live")
+            .parent = Some(child);
+
+        let wire_grandparent = state.intern_terminal_wire(grandparent);
+        let wire_grandchild = state.intern_terminal_wire(grandchild);
+        let reap = reap_exited_pane(&mut state, grandparent, ExitOutcome::exited(0), None)
+            .expect("grandparent was live");
+
+        assert_eq!(reap.wire_terminal_id, wire_grandparent);
+        assert!(
+            reap.cascaded.iter().any(|c| {
+                c.wire_terminal_id == wire_grandchild && c.reason == CloseReason::ParentClosed
+            }),
+            "grandchild must be in the cascade with ParentClosed, not silently \
+             dropped when the child is reaped; got {:?}",
+            reap.cascaded
+                .iter()
+                .map(|c| (&c.wire_terminal_id, c.reason))
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            state.registry().resource(grandchild).is_none(),
+            "grandchild must leave the registry with its ancestor"
+        );
+        // Immediate children still cascade; this is the one-level case the
+        // previous helper covered, plus the grandchild.
+        assert_eq!(reap.cascaded.len(), 2);
+    }
 }
 
 /// The off-lock half of a close: the `pane-exit` hook when the exit was not
