@@ -1,14 +1,25 @@
 # Build the Android UniFFI zip from this checkout.
 # Sibling of ffi-xcframework.yml, not a job on it: Apple publication must not
-# wait on NDK. phux-mobile fetches this zip at PHUX_REV the same way it fetches
-# the xcframework.
+# wait on NDK. phux-mobile fetches this zip at PHUX_REV.
 #
-# workflow_dispatch with an empty tag builds the dispatched ref and uploads
-# the workflow artifact only. A tag attaches the zip to that GitHub release.
+# Fires on main when the shim or its runtime inputs change, so a merge is the
+# produce run — no manual dispatch. Release-please also calls it to attach the
+# zip to the root tag. workflow_dispatch remains for repair.
 
 name: ffi-android
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - crates/phux-mobile-ffi/**
+      - crates/phux-client-runtime/**
+      - crates/phux-client-core/**
+      - crates/phux-protocol/**
+      - crates/phux-dial/**
+      - scripts/build-mobile-ffi-android.sh
+      - scripts/ci/setup-android-ndk.sh
+      - .github/workflows/ffi-android.yml
   workflow_call:
     inputs:
       tag:
