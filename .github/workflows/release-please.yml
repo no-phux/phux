@@ -338,6 +338,16 @@ jobs:
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
 
+  ffi-android-artifacts:
+    name: build + attach Android UniFFI zip
+    needs: [release-please, release-validation]
+    if: always() && needs.release-validation.result == 'success' && needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/ffi-android.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+
   cockpit-release-artifacts:
     name: build + attach Cockpit app
     needs: [release-please, cockpit-release-validation]

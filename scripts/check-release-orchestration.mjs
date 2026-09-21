@@ -47,6 +47,7 @@ assert.ok(
   "Linear continuous pipelines name the SHA unless name is the tag",
 );
 assert.match(linearWorkflow, /extract_changelog_section\.py/, "Linear notes come from the tagged changelog");
+assert.match(workflow, /ffi-android.yml/, "root releases attach the Android UniFFI zip");
 assert.match(workflow, /cockpit-linear-release-sync:/, "Cockpit tags must be reported to Linear");
 assert.match(workflow, /cockpit-linear-release-promote:/, "Cockpit Linear releases must be promoted after artifacts");
 assert.match(linearWorkflow, /LINEAR_COCKPIT_RELEASE_ACCESS_KEY/, "Cockpit uses its own Linear pipeline key");

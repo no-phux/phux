@@ -1,0 +1,5 @@
+# Kotlin-only UniFFI config for the Android artifact. Passed via --config so
+# the crate's Swift uniffi.toml stays the Apple producer.
+[bindings.kotlin]
+package_name = "dev.phux.mobile.ffi"
+android = true
