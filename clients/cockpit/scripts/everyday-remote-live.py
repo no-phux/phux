@@ -229,7 +229,8 @@ def exercise(phux, probe, provider_probe, directory, transport, connected=False,
             lane = {"PHUX_COCKPIT_CONNECTED": "1"} if connected else {}
             run([provider_probe], directory,
                 dict(env, EVERYDAY_REMOTE_CONFIG=str(config), **lane))
-            expected.extend(["provider-before-reconnect", "provider-after-reconnect"])
+            expected.extend(["provider-before-reconnect", "provider-after-reconnect",
+                             "local-before-reconnect", "local-after-reconnect"])
         if not provider_only:
             for target in ("stale-token", "stale-pin"):
                 run([probe, config, target, "refused"], directory, env)

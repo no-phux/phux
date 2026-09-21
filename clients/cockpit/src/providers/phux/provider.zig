@@ -133,6 +133,9 @@ pub const PhuxProvider = struct {
     /// outlive what it dereferences; `Host.connect`'s client is freed in
     /// `destroy` before this does.
     wake_context: WakeContext = .{},
+    /// Cancels a local coordinator ensure on the connected lane, where
+    /// there is no worker to carry the worker's own flag.
+    connected_stopping: std.atomic.Value(bool) = .init(false),
     endpoint: OwnedEndpoint,
     /// An explicit PHUX_SESSION selects by name. Null means attach the
     /// server's current session. Neither path has create authority.
@@ -302,14 +305,35 @@ pub const PhuxProvider = struct {
     fn openConnected(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
         if (self.host.lane == .connected) return error.InvalidState;
         self.applyPendingRetarget();
+        const target = try self.connectTarget();
+        // The runtime dials; it does not start anything. A local coordinator
+        // is still this machine's to supervise, exactly as the worker
+        // supervised it, or the ladder would spin against a socket nobody
+        // is listening on.
+        try self.ensureLocalCoordinator();
         self.wake_context.handle = handle;
         self.wake_context.stopped.store(false, .release);
-        try self.host.connect(
-            try self.connectTarget(),
-            self.client_name,
-            connectedWake,
-            &self.wake_context,
-        );
+        try self.host.connect(target, self.client_name, connectedWake, &self.wake_context);
+    }
+
+    /// `extension.Worker.ensureLocal`, for the lane that has no worker.
+    fn ensureLocalCoordinator(self: *PhuxProvider) !void {
+        const path = switch (self.endpoint.borrowed()) {
+            .unix => |path| path,
+            // A remote coordinator is the remote host's to supervise.
+            .tcp, .remote => return,
+        };
+        self.connected_stopping.store(false, .release);
+        var evidence: extension.startup.Evidence = .{};
+        const options: extension.startup.Options = .{
+            .evidence = &evidence,
+            .status = &self.local_status,
+        };
+        extension.startup.ensure(self.gpa, self.io, path, &self.connected_stopping, options) catch |err| {
+            self.local_status.record(evidence, path, err);
+            return err;
+        };
+        self.local_status.record(evidence, path, null);
     }
 
     /// The runtime dials a local socket or a registered host. A bare
@@ -330,6 +354,7 @@ pub const PhuxProvider = struct {
         self.worker = null;
         // Freeing the connected client joins the runtime's driver, so no
         // wake can reach `wake_context` after this returns.
+        self.connected_stopping.store(true, .release);
         self.wake_context.stopped.store(true, .release);
         self.host.stopConnected();
         self.host.disconnect();

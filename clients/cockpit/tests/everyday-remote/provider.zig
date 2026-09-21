@@ -71,3 +71,45 @@ test "enrolled remote provider preserves canvas and fences old input across reco
     try testing.expectError(error.InvalidState, remote.sendPaste(old, "must-not-run\n", true));
     try input(remote, restored, "provider-after-reconnect\n");
 }
+
+// The local Unix-domain path, which is Cockpit's ordinary case and the one
+// the remote test above does not cover. The fixture server already listens
+// on `s` beside this process's working directory, so `ensureLocalCoordinator`
+// finds a live coordinator rather than starting one.
+test "local provider attaches, takes input and keeps its canvas across reconnect" {
+    // Present only when the fixture set this process up; the remote test's
+    // guard is the same.
+    _ = std.c.getenv("EVERYDAY_REMOTE_CONFIG") orelse return error.FixtureRequired;
+    // `startup.ensure` refuses a relative socket, because a relative path
+    // would resolve against whatever working directory the app happens to
+    // have. The fixture's socket is `s` beside this process.
+    const socket = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, "s", testing.allocator);
+    defer testing.allocator.free(socket);
+    const local = try PhuxProvider.create(
+        testing.allocator,
+        testing.io,
+        .{ .unix = socket },
+        "everyday",
+        "everyday-local-provider",
+    );
+    defer local.destroy();
+    try local.open(.{});
+    const ref = try ready(local);
+    try input(local, ref, "local-before-reconnect\n");
+    for (0..100) |_| try tick(local);
+
+    const old = local.owner(ref).?;
+    const canvas = try testing.allocator.dupe(u8, local.host.terminals.items[0].canvas.screen_text.items);
+    defer testing.allocator.free(canvas);
+    try testing.expect(canvas.len > 0);
+
+    try local.reconnect(.{});
+    try testing.expectEqual(contract.Phase.reconnecting, local.phase(ref).?);
+    try testing.expectEqualStrings(canvas, local.host.terminals.items[0].canvas.screen_text.items);
+    try testing.expectError(error.InvalidState, local.sendPaste(old, "must-not-run\n", true));
+
+    const restored = try ready(local);
+    try testing.expect(ref.eql(restored));
+    try testing.expect(!local.ownerIsCurrent(old));
+    try input(local, restored, "local-after-reconnect\n");
+}
