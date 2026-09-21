@@ -43,6 +43,7 @@ missing_errors_doc = "allow"
 phux-protocol = { path = "crates/phux-protocol" }
 phux-record = { path = "crates/phux-record" }
 phux-core = { path = "crates/phux-core" }
+phux-agent-rules = { path = "crates/phux-agent-rules" }
 phux-server = { path = "crates/phux-server" }
 phux-client = { path = "crates/phux-client" }
 phux-tui = { path = "crates/phux-tui" }

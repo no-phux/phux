@@ -4,7 +4,7 @@
 //!
 //! Agent state has exactly one authority: the server's level-triggered
 //! per-terminal detector, which evaluates region-scoped TOML rules
-//! (`crates/phux-server/rules/*.toml`) and publishes the result as the pane's
+//! (`crates/phux-agent-rules/rules/*.toml`) and publishes the result as the pane's
 //! `phux.agent/v1` L3 record (ADR-0046, ADR-0040). `phux agent wait` reads
 //! that record. This module is the *projection* of the same record for the
 //! listing verbs, and its job is to report it — not to re-derive it.
@@ -45,8 +45,10 @@
 //! `phux agent wait`, which requires an observed transition. `agent list`
 //! showing `idle` is a listing, not a receipt.
 
+use phux_agent_rules::explain::{
+    self as agent_explain, Capture, EvaluatedRule, Explanation, PredicateEvidence,
+};
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
-use phux_server::agent_explain::{self, Capture, EvaluatedRule, Explanation, PredicateEvidence};
 
 use super::model::{
     AgentIdentity, AgentKind, AgentSource, AgentState, AgentStateReport, PaneEvidence, PluginAgent,
@@ -192,7 +194,7 @@ struct DetectorTrace {
 /// Replay the detection manifest for `slug` against the screen this
 /// projection already read, and report what it says.
 ///
-/// The rules engine is compiled into this binary — `phux_server::agent_explain`
+/// The rules engine is compiled into this binary — `phux_agent_rules::explain`
 /// is the same facade `agent explain --file` runs offline — so the manifest
 /// that produced the server's record can be evaluated here with no extra
 /// round trip and no second implementation of the matching.
@@ -483,9 +485,8 @@ mod tests {
     /// detector is pinned against. Using it here is what makes the rule-id
     /// provenance test a test of the shipped manifest rather than of a screen
     /// invented to match it (the exact failure ADR-0046 records).
-    const CLAUDE_BLOCKED: &str = include_str!(
-        "../../../../phux-server/src/agent_detect/fixtures/claude/blocked_permission.txt"
-    );
+    const CLAUDE_BLOCKED: &str =
+        include_str!("../../../../phux-agent-rules/src/fixtures/claude/blocked_permission.txt");
 
     fn claude_blocked_pane() -> PaneEvidence {
         let lines: Vec<&str> = CLAUDE_BLOCKED.lines().collect();

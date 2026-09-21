@@ -11,7 +11,6 @@
 
 pub(crate) mod agent_asked;
 pub(crate) mod agent_detect;
-pub mod agent_explain;
 pub(crate) mod agent_state;
 pub mod auth;
 pub mod connector;

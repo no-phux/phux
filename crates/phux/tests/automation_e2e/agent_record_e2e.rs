@@ -352,7 +352,7 @@ fn config_agents_projection_tracks_live_record() {
 ///   screen can be forged; a process name is what the kernel says.
 /// * **The screen.** It reproduces the shape Claude Code 2.1.207 actually
 ///   paints for a permission dialog, captured in
-///   `phux-server/src/agent_detect/fixtures/claude/blocked_permission.txt`: a
+///   `phux-agent-rules/src/fixtures/claude/blocked_permission.txt`: a
 ///   horizontal rule with the dialog below it (the dialog REPLACES the input
 ///   box), carrying BOTH halves `prompt-permission-dialog` requires — the
 ///   "do you want to " stem and a numbered option line. The transcript line

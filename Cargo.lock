@@ -2277,6 +2277,7 @@ dependencies = [
  "futures-util",
  "libc",
  "libghostty-vt",
+ "phux-agent-rules",
  "phux-client",
  "phux-client-runtime",
  "phux-config",
@@ -2305,6 +2306,17 @@ dependencies = [
  "tracing-subscriber",
  "usage-rs",
  "uuid",
+]
+
+[[package]]
+name = "phux-agent-rules"
+version = "0.41.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "toml 1.1.5+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -2580,6 +2592,7 @@ dependencies = [
  "libghostty-vt",
  "memchr",
  "nix 0.31.3",
+ "phux-agent-rules",
  "phux-client-core",
  "phux-client-ffi",
  "phux-config",
@@ -2594,7 +2607,6 @@ dependencies = [
  "portable-pty-adopt",
  "quinn",
  "rcgen",
- "regex",
  "rustix",
  "rustls",
  "serde",

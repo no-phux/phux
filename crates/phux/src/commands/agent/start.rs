@@ -76,6 +76,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use phux_agent_rules::explain::{self as agent_explain, Explanation};
 use phux_client::agent_meta::{
     AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, ShellAvailability, ShellCheck,
     pane_shell_availability, parse_agent_record,
@@ -88,7 +89,6 @@ use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{FrameKind, Scope};
-use phux_server::agent_explain::{self, Explanation};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::json_err::codes;

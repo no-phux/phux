@@ -39,6 +39,10 @@ base64.workspace = true
 # Defaults are controlled by this executable's feature forwarding below.
 # Other workspace consumers can retain the server's own defaults.
 phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
+# `phux agent explain` evaluates detection manifests with no daemon in the
+# loop (phux-w7z2.24). The rules crate is the same evaluator the server
+# ticks; depending on it here keeps that path off `phux-server`.
+phux-agent-rules.workspace = true
 phux-client.workspace = true
 # ADR-0133: the attach loop's reconnect cadence is the client runtime's
 # ladder (interactive for the remote lanes, the flat local-upgrade poll for

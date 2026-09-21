@@ -44,6 +44,9 @@ criterion = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
+# Agent manifests and the offline explainer (phux-w7z2.24). The detector
+# evaluates them; it does not own the TOML or the region matcher.
+phux-agent-rules.workspace = true
 # `GET_SCREEN --format vt`'s rendered capture is base64 (D9); already in
 # the dep graph via wtransport -> pem, see the workspace justification.
 base64.workspace = true
@@ -131,15 +134,6 @@ nix = { version = "0.31", default-features = false, features = [
     "user",
     "hostname",
 ] }
-# The agent-state detector's rules are user-editable TOML manifests
-# (ADR-0046 §C): its predicates are DATA compiled at load, not code, so that
-# agent-TUI churn is decoupled from our release cadence. A hand-rolled matcher
-# over operator-supplied patterns is exactly the homegrown-parser trap. `regex`
-# compiles the whole predicate tree once when a manifest loads and evaluates it
-# at <= 10 Hz per pane. This compiles NO new crate: `regex` 1.12 is already in
-# `Cargo.lock`, pulled in transitively by `tracing-subscriber`'s `env-filter`.
-# Promoting it to a direct dependency only names what we already build.
-regex = "1"
 bytes.workspace = true
 # In-process performance telemetry (`GET_PERF`, `phux perf`).
 phux-perf.workspace = true

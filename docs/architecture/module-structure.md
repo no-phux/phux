@@ -13,7 +13,7 @@ work.
 
 ---
 
-Twenty crates make up the workspace; the sections below cover them
+Twenty-one crates make up the workspace; the sections below cover them
 roughly in dependency order (wire, domain, daemon, clients, config,
 binary, then the smaller special-purpose crates). The render-layering
 split between `phux-tui` and `phux-client-core` is
@@ -99,6 +99,24 @@ because it projects the Terminal facet only.
 Selectors and config still live outside this crate — selector resolution is
 client-side (`phux-client::selector`, per ADR-0021), and config is its own
 crate (`phux-config`).
+
+## `phux-agent-rules`
+
+The agent-manifest evaluator (ADR-0046, phux-w7z2.24). Region extraction,
+TOML rule compilation, the built-in manifests under `rules/`, and the
+offline explanation behind `phux agent explain`. `phux-server`'s detector
+depends on it; the CLI does too, so `phux agent explain --file` evaluates a
+capture without going through the daemon crate.
+
+```
+src/
+  lib.rs              — DetectedState and the crate root
+  regions.rs          — structural sub-slices of a live viewport
+  rules.rs            — manifest load, compile, and evaluation
+  explain.rs          — owned, serializable explanation for the CLI
+  fixtures/           — captured screens the rule tests pin against
+rules/                — built-in *.toml manifests, compiled in via include_str!
+```
 
 ## `phux-server`
 
@@ -220,20 +238,20 @@ src/
     key.rs, mouse.rs, focus.rs, paste.rs, mod.rs
   agent_detect/       — level-triggered per-terminal agent-state detector
                         (ADR-0046): mod.rs is the state machine (adaptive
-                        tick, hysteresis, edge-filtered publish); regions.rs
-                        slices the live screen; rules.rs loads the TOML
-                        manifests; identify.rs names the agent from the
-                        PTY's foreground process; record.rs is the
-                        phux.agent/v1 JSON shape; live_session.rs is the
-                        live AgentSession-child probe so stream evidence
-                        outranks screen inference
+                        tick, hysteresis, edge-filtered publish);
+                        identify.rs names the agent from the PTY's
+                        foreground process; record.rs is the phux.agent/v1
+                        JSON shape; live_session.rs is the live
+                        AgentSession-child probe so stream evidence
+                        outranks screen inference. Region slicing and
+                        manifest evaluation live in `phux-agent-rules`;
+                        this module re-exports them.
   agent_state.rs      — arbitration between an explicit SET_METADATA and
                         the detector's writes (ADR-0046); evidence ladder
                         is Stream > Hook > Process > Screen
   agent_asked.rs      — the `phux ask` / `asked` event ingress (ADR-0036);
                         the AskedSource ladder is Scrape < Sentinel < Hook
                         < Stream
-  agent_explain.rs    — the `phux agent explain` evidence report
   hooks.rs            — server-side event-hook dispatcher (config
                         `[[hooks.<name>]]` plus plugin `[[events]]`),
                         argv-only execution, no in-process host
