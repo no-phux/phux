@@ -860,6 +860,49 @@ async fn fresh_inventory_discovers_peer_sessions_without_an_endless_sweep() {
     );
 }
 
+/// ADR-0135: a satellite terminal on an unchanged session list still
+/// schedules one discovery sweep, and a second identical inventory does not.
+#[tokio::test(flavor = "current_thread")]
+async fn satellite_terminal_on_an_unchanged_session_list_schedules_one_sweep() {
+    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::HostSessions])).await;
+    sidebar_frames_sent(&mut client, &mut server).await;
+    state.peers.sweep_pending = false;
+    let sat = ResourceId::satellite(SatelliteHost::new("edge"), 9);
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "test")])
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24),
+            ResourceInfo::new(sat.clone(), WindowId::new(1), 80, 24),
+        ]);
+    let result = CommandResult::OkWith(CommandValue::State(snapshot));
+    state.fold_host_inventory(&result, &mut RepaintAccumulator::default());
+    assert!(
+        state.peers.sweep_pending,
+        "a new satellite terminal requires discovery"
+    );
+    state.peers.sweep_pending = false;
+    state.sweep_peer_layouts(&mut client).await.unwrap();
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    assert!(
+        sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::GetMetadata { scope, key, .. }
+                if *scope == Scope::Resource(sat.clone())
+                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
+        )),
+        "satellite terminal is fetched: {sent:?}"
+    );
+    state.fold_host_inventory(&result, &mut RepaintAccumulator::default());
+    assert!(
+        !state.peers.sweep_pending,
+        "identical inventory must not loop"
+    );
+}
+
 /// Answer a host-inventory `GET_STATE` asked just now with `rows`.
 async fn answer_inventory(
     state: &mut SessionLoop,

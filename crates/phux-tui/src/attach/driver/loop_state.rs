@@ -1349,12 +1349,16 @@ impl SessionLoop {
                 phux_protocol::wire::frame::CommandValue::State(snapshot),
             ) => {
                 self.peers.hosts = snapshot.hosts().to_vec();
-                if self.peers.sessions != snapshot.sessions {
+                let sessions_changed = self.peers.sessions != snapshot.sessions;
+                if sessions_changed {
                     self.peers.sessions.clone_from(&snapshot.sessions);
                 }
                 // Satellite terminals arrive on this inventory even when the
-                // session list is unchanged. The sweep is what subscribes them.
-                self.peers.sweep_pending = true;
+                // session list is unchanged. Sweep only when the graph the
+                // sweep reads actually moved, so an identical reply stops.
+                if sessions_changed || self.snapshot_graph_changed(snapshot) {
+                    self.peers.sweep_pending = true;
+                }
                 self.adopt_snapshot_graph(snapshot);
                 self.peers.chrome_dirty = true;
                 self.session_picker_dirty = true;
@@ -1374,6 +1378,18 @@ impl SessionLoop {
         self.peers.hosts_pending = None;
         self.peers.hosts_pending_since = None;
         std::mem::take(&mut self.peers.held_unreachable)
+    }
+
+    /// True when a snapshot carries windows or resources the sweep has not
+    /// already adopted. Empty lists are not a change: host-inventory replies
+    /// often omit the graph, and [`Self::adopt_snapshot_graph`] leaves the
+    /// previous one in place.
+    fn snapshot_graph_changed(
+        &self,
+        snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    ) -> bool {
+        (!snapshot.windows.is_empty() && self.peers.windows != snapshot.windows)
+            || (!snapshot.resources.is_empty() && self.peers.resources != snapshot.resources)
     }
 
     /// Cache windows/resources from a snapshot when it actually carries them.
