@@ -13,8 +13,9 @@ turns decoded frames into outbound frames and owned events, and an async
 `Connection` driver that dials, frames, keeps alive, reconnects, and feeds
 it. The libghostty engine lives on its own owner thread and never crosses
 one; consumers read the grid through immutable published frames carrying a
-generation counter and dirty rows. A binding holds no state machine: it
-calls the synchronous `Client`, drains `take_events`, and acquires frames.
+generation counter and dirty rows. A binding holds no connected-client state
+machine: it calls the synchronous `Client`, drains `take_events`, and acquires
+frames.
 
 ---
 

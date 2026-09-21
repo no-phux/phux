@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-20
 ---
 
 # iOS client
@@ -14,11 +14,13 @@ Coming soon. An Android client is coming as well.
 
 ## Minimum `PHUX_REV`
 
-`phux-mobile` consumes `phux-client-core` through UniFFI directly, not
-Cockpit's stable C ABI (`phux-client-ffi`), which stays independent
-(`phux-mobile` `rust/phux-mobile-ffi/Cargo.toml`). Two phase-2 surfaces
-matter once a client adopts them, so `phux-mobile` re-pins `PHUX_REV`
-rev-for-rev ([ADR-0035](../adr/0035-agent-asked-event.md)) to at least:
+`phux-mobile` consumes `phux-client-runtime` through the sibling `UniFFI`
+projection in [`crates/phux-mobile-ffi`](../../crates/phux-mobile-ffi), not
+Cockpit's stable C ABI (`phux-client-ffi`). The phux release workflow builds
+that crate's native slices and generated Swift from one revision; the mobile
+consumer resolves the matching artifact for its `PHUX_REV` and installs both
+parts atomically (ADR-0133 and phux-mobile ADR-0031). Two phase-2 surfaces
+matter once a client adopts them, so the mobile pin must be at least:
 
 - `7093116a955103cbd1a606e1fcfa2694c6a1625f` — cwd, command, and exit
   status effects: `KernelStatus::Cwd`, `CommandStarted`, `CommandFinished`,

@@ -13,7 +13,7 @@ work.
 
 ---
 
-Nineteen crates make up the workspace; the sections below cover them
+Twenty crates make up the workspace; the sections below cover them
 roughly in dependency order (wire, domain, daemon, clients, config,
 binary, then the smaller special-purpose crates). The render-layering
 split between `phux-tui` and `phux-client-core` is
@@ -670,7 +670,7 @@ rather than a layer with its own internal architecture worth diagramming:
   keepalive, the ladder); `runtime.rs` the `Runtime::connect` entry point
   and the synchronous, thread-safe `Client`. It exposes a Rust API and no
   FFI; `phux-client-ffi` and phux-mobile's bridge are shims over it and
-  hold no state machine of their own.
+  hold no connected-client state machine of their own.
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): splices an
   inbound consumer connection onto an outbound connector tunnel. Never
   parses phux frames — only the connector's auth preamble.
@@ -742,6 +742,17 @@ rather than a layer with its own internal architecture worth diagramming:
   one from) and folds cwd/command-boundary/process-exit events into
   `PHUX_CLIENT_STATUS_CWD` / `_COMMAND_STARTED` / `_COMMAND_FINISHED` /
   `_EXITED` effects (PHA-406/PHA-284; `include/phux/client.h`).
+- **`phux-mobile-ffi`** — the native-mobile UniFFI projection over
+  `phux-client-runtime`. It maps runtime-owned topology, events, lossless
+  receipts, key/mouse input, prediction, and the shared 36-byte cell arenas to
+  Swift/Kotlin-facing values; its connected path owns no transport, reconnect,
+  frame pump, or remote engine state machine. Its separate `TerminalEngine`
+  owner serves only local playground and test terminals with no connection or
+  runtime session. `scripts/build-mobile-ffi-xcframework.sh` packages its
+  engine-bearing Apple slices and generated Swift from one revision, with
+  provenance and digests that consumers install atomically. It is a sibling of
+  `phux-client-ffi`, not a wrapper around the C ABI (ADR-0133 and phux-mobile
+  ADR-0031).
 - **`phux-crash`** — vendored fatal-signal handler (see its NOTICE; the one
   Apache-2.0-only crate in the workspace). SIGSEGV/SIGBUS/SIGABRT do not
   unwind, so neither `RawModeGuard::drop` nor the panic hook runs; this

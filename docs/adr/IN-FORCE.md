@@ -138,7 +138,7 @@ by a newer one, the newer line is the operative reading.
 
 ## TUI conventions
 
-- [0133](./0133-one-client-runtime-below-every-binding.md) `phux-client-runtime` is the one home for client orchestration below the sans-IO kernel; `phux-client-ffi` and the mobile bridge are shims with no state machine, one cell layout lives in core, and a bindings generator is a per-shim choice.
+- [0133](./0133-one-client-runtime-below-every-binding.md) `phux-client-runtime` is the one home for connected-client orchestration below the sans-IO kernel; `phux-client-ffi` and the mobile bridge are shims with no connected-client state machine, one cell layout lives in core, and a bindings generator is a per-shim choice.
 - [0129](./0129-projections-are-named-by-key.md) A named projection is a `--projection`-chosen metadata key, not a resource; durability is the workspace archive.
 - [0100](./0100-the-tui-is-its-own-crate.md) The TUI lives in `phux-tui`; `phux-client` is the headless library, dependency one-way.
 - [0089](./0089-three-zone-attention-sidebar.md) The sidebar projects peer metadata client-side; layout and ordering are amended by 0112.

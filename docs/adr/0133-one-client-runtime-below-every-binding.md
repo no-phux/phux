@@ -10,9 +10,9 @@ last-reviewed: 2026-09-19
 binding — target resolution, dial planning, reconnect policy, the frame
 pump, the engine owner thread, and the projected grid — lives once, in
 `phux-client-runtime`. `phux-client-ffi` (C) and phux-mobile's UniFFI
-bridge become projection shims over it that hold no state machine. The
-cell layout is defined once and lent or copied per language. A bindings
-generator is a shim detail, chosen per language on merits.
+bridge become projection shims over it that hold no connected-client state
+machine. The cell layout is defined once and lent or copied per language. A
+bindings generator is a shim detail, chosen per language on merits.
 
 Status: Accepted
 Date: 2026-09-19
@@ -51,24 +51,29 @@ the cell shape and the duplicated orchestration, not the generator.
    owner thread, and grid publication. It depends on `phux-dial`,
    `phux-config`, and `phux-protocol` now, and on `phux-client-core`
    once the pump moves. It exposes a Rust API and no FFI.
-2. **A binding crate holds no state machine.** `phux-client-ffi` and the
-   mobile bridge translate runtime-owned values into their language's
-   idiom and nothing else. A loop, a `select!`, or a backoff constant in
-   a binding is in the wrong crate.
+2. **A binding crate holds no connected-client state machine.**
+   `phux-client-ffi` and the mobile bridge translate runtime-owned connection
+   values into their language's idiom and nothing else. A connection loop, a
+   `select!`, or a backoff constant in a binding is in the wrong crate. A
+   standalone terminal projector used only for a consumer's local playground
+   or tests is outside that connection boundary; it still uses core's cell
+   layout rather than defining another one.
 3. **One cell layout.** The `PhuxTerminalCell` + UTF-8 arena shape moves
    under `phux-client-core` as the single definition. The C ABI lends a
    pointer to it; UniFFI copies it as two byte vectors. No binding
    defines a second cell.
-4. **The runtime owns the engine thread and double-buffers the view.**
-   Ghostty's `!Send` stays inside the runtime; a consumer acquires a
+4. **The runtime owns each connected resource's engine thread and
+   double-buffers the view.** Ghostty's `!Send` stays inside the runtime; a
+   consumer acquires a
    published front buffer carrying a generation counter and dirty rows,
    and is never told which thread to call from.
 5. **Bindings generators are a shim decision**, made once the shim is
-   thin and the grid is POD. The spike is boltffi against direct
-   `client.h` import, with UniFFI as the baseline: boltffi's zero-copy is
-   built for primitive-field records, which the shared cell layout is,
-   and it serves Swift and Kotlin from one surface. UniFFI stays until
-   that spike has run.
+   thin and the grid is POD. phux-mobile ADR-0031 records the completed
+   BoltFFI/direct-C/UniFFI comparison and keeps UniFFI: the cell storage
+   crosses as byte arenas, so BoltFFI cannot use its zero-copy record path,
+   while direct C would require another connected-runtime ABI and two
+   hand-written language adapters. The projection shim lives in this
+   repository so its generated source and native artifact share a revision.
 
 Rungs land in this order, each shippable on its own: transport into the
 runtime (the C tunnel consumes it; Cockpit unchanged); cell layout into
@@ -88,8 +93,8 @@ tests today, and moving the code moves the tests with it.
 
 ## Tradeoffs
 
-- One more crate (nineteen), carrying the tokio and quinn edges that
-  `phux-client-ffi` already had.
+- Two focused crates make the workspace twenty: the runtime carries the tokio
+  and quinn edges, and the mobile UniFFI crate projects it without state.
 - Until mobile re-pins, the reconnect policy has one in-repo owner and
   no in-repo caller. The pin is the serialization point, not a choice.
 - Cockpit keeps its Zig reconnect and its socket-pair tunnel model;
