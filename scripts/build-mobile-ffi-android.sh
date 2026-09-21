@@ -82,8 +82,7 @@ cargo run --locked -p "$CRATE" --features "$FEATURES" --bin uniffi-bindgen -- \
     --config "$ROOT/crates/phux-mobile-ffi/uniffi-android.toml"
 KT="$OUT/kotlin/$KT_REL"
 [[ -s "$KT" ]] || die "UniFFI did not emit $KT_REL"
-python3 "$ROOT/scripts/patch-kotlin-ffi-bindings.py" "$KT"
-grep -q 'fun `stopConnection`()' "$KT" || die "Kotlin patch did not rename close()"
+grep -q 'fun `stopConnection`()' "$KT" || die "generated Kotlin does not expose stopConnection"
 grep -q 'class TerminalEngine' "$KT" || die "generated Kotlin does not expose TerminalEngine"
 
 step "cross-compiling Android cdylibs"

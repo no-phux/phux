@@ -94,3 +94,10 @@ ffi-xcframework *ARGS:
 [doc('Build the canonical mobile UniFFI xcframework, bindings, and provenance.')]
 mobile-ffi-xcframework *ARGS:
     bash scripts/build-mobile-ffi-xcframework.sh {{ARGS}}
+
+# Android sibling of the mobile UniFFI artifact: Kotlin + arm64-v8a/x86_64 .so
+# + provenance. ffi-android.yml uploads the zip; phux-mobile fetches it.
+[group('release')]
+[doc('Build the canonical Android UniFFI zip (Kotlin, cdylibs, provenance).')]
+mobile-ffi-android:
+    bash scripts/build-mobile-ffi-android.sh
