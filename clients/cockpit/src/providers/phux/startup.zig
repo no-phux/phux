@@ -560,9 +560,11 @@ test "ensure bounds an unresponsive helper and reaps it" {
     defer fixture.deinit();
     try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "spawn-probe", .data = "" });
     var stopping = std.atomic.Value(bool).init(false);
-    // The fixture runs until released; allow Python startup, then enforce the
-    // outer budget. This is a timeout contract, not a performance assertion.
-    try std.testing.expectError(error.EnsureTimedOut, ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli, .timeout_ms = 1000 }));
+    // Helper-ready is a scheduling wait for Python under CI load. Bound the
+    // unresponsive helper by the production ensure budget so a 1s test clock
+    // cannot fire EnsureTimedOut before the pid file exists (phux-7v35). This
+    // is a timeout/reap contract, not a performance assertion.
+    try std.testing.expectError(error.EnsureTimedOut, ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli, .timeout_ms = (Options{}).timeout_ms }));
     try std.testing.expect(fixture.ready());
     try fixture.checkArguments();
     try fixture.expectReaped();
