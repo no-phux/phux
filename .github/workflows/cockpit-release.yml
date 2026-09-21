@@ -56,7 +56,7 @@ jobs:
       PHUX_ZIG_CACHE_MODE: shared
       PHUX_ZIG_BUILD_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -80,7 +80,7 @@ jobs:
         run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
       - name: Historical tag Zig setup
         if: hashFiles('scripts/install-zig.sh') == ''
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
           # Default setup-zig cache keys are single-use (phux-6khi).
@@ -91,7 +91,7 @@ jobs:
 
       # Dependency caches are best-effort. The separate artifact receipt below
       # retains the two final Rust outputs with exact input and byte hashes.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: mini-v1-cockpit-ffi
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -216,7 +216,7 @@ jobs:
 
       - name: Upload soak diagnostics
         if: failure() && hashFiles('clients/cockpit/zig-out/soak-release/**') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cockpit-release-soak-diagnostics
           path: clients/cockpit/zig-out/soak-release
@@ -340,7 +340,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: no-phux/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

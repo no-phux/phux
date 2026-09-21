@@ -60,7 +60,7 @@ runs:
         echo "CPU_KEY=${cpu_key}" >> "$GITHUB_ENV"
         echo "RUST_CACHE_KEY=${cpu_key}-${files_key}" >> "$GITHUB_ENV"
 
-    - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+    - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
     - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
       with:
@@ -93,10 +93,10 @@ runs:
           echo "CARGO_INCREMENTAL=0"
         } >> "$GITHUB_ENV"
 
-    - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+    - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       if: inputs.sccache == 'true'
 
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       id: rust-cache
       with:
         shared-key: mini-v1-${{ inputs.rust-cache-shared-key }}

@@ -27,7 +27,7 @@ jobs:
     outputs:
       cockpit_needed: ${{ steps.detect.outputs.cockpit_needed }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: detect
@@ -47,7 +47,7 @@ jobs:
       PHUX_ZIG_CACHE_MODE: shared
       PHUX_ZIG_BUILD_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -81,7 +81,7 @@ jobs:
       # hard 10 GB per repo with LRU eviction, and PR saves would thrash the
       # warm base (same policy as ci.yml's lanes). Workspace crates are not
       # in that archive; sccache is the same GHA wrapper Linux already uses.
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: enable sccache
         env:
           SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
@@ -92,7 +92,7 @@ jobs:
             echo "SCCACHE_GHA_RW_MODE=${SCCACHE_RW_MODE}"
             echo "CARGO_INCREMENTAL=0"
           } >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: mini-v1-cockpit-ffi
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -188,7 +188,7 @@ jobs:
       # and the process table; without it a red soak is one line of stderr.
       - name: Upload soak diagnostics
         if: failure() && hashFiles('clients/cockpit/zig-out/soak-ci/**') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cockpit-soak-diagnostics
           path: clients/cockpit/zig-out/soak-ci
