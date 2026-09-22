@@ -11,12 +11,17 @@
 //!
 //! - The default features expose the pure-Rust [`input`] and [`wire`] codec,
 //!   [`ids`], [`caps`], [`policy`], and [`Version`], including for browser clients.
-//! - **`server`** (off by default): adds conversions to `libghostty-vt` atoms
-//!   and engine-dependent SGR, Kitty replay, and render-pool helpers. Native
-//!   terminal consumers enable it; decoding wire messages does not require it.
+//! - **`render-pool`** (off by default): `render_pool`, the libghostty
+//!   render-trio pool. Enables `libghostty-vt` only — no png, no kitty
+//!   graphics, no input-atom conversions. See [ADR-0086].
+//! - **`server`** (off by default): enables `render-pool`, then adds
+//!   conversions to `libghostty-vt` atoms and engine-dependent SGR and Kitty
+//!   replay helpers. Native terminal consumers enable it; decoding wire
+//!   messages does not require it.
 //!
 //! [`docs/spec/`]: https://github.com/no-phux/phux/tree/main/docs/spec
 //! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
+//! [ADR-0086]: https://github.com/no-phux/phux/blob/main/docs/adr/0086-shared-render-pool.md
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -45,7 +50,7 @@ pub mod sgr;
 #[cfg(feature = "server")]
 pub mod kitty_replay;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "render-pool")]
 pub mod render_pool;
 
 pub use caps::{

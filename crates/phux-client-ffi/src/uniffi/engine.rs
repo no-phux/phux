@@ -288,9 +288,12 @@ impl EngineInner {
     }
 
     fn render(&mut self) -> Result<GridProjection, EngineError> {
+        // This engine owns one `Terminal` for its life, so the pool's
+        // identity token is constant. A resize still rebuilds the trio
+        // inside `project` (ADR-0086).
         let snapshot = self
             .projector
-            .project(&self.terminal)
+            .project(&self.terminal, 0)
             .map_err(|error| EngineError::Engine(error.to_string()))?;
         let cols = snapshot.cols;
         let rows = snapshot.rows;
@@ -416,6 +419,20 @@ mod tests {
         assert_eq!(text(&grid, 0), "h");
         assert_eq!(text(&grid, 1), "i");
         assert_eq!(grid.generation, 1);
+    }
+
+    #[test]
+    fn resize_projects_cells_past_the_old_width() {
+        let engine = TerminalEngine::new(4, 2, 0).expect("engine");
+        engine.write(b"ab".to_vec());
+        let before = engine.render_grid().expect("grid");
+        assert_eq!(text(&before, 0), "a");
+        engine.resize(8, 3).expect("resize");
+        engine.write(b"\x1b[1;5HX".to_vec());
+        let after = engine.render_grid().expect("grid");
+        assert_eq!((after.cols, after.rows), (8, 3));
+        assert_eq!(text(&after, 0), "a");
+        assert_eq!(text(&after, 4), "X");
     }
 
     #[test]

@@ -16,11 +16,9 @@
 use std::fmt;
 
 use libghostty_vt::Terminal;
-use libghostty_vt::render::{
-    CellIterator, Colors, CursorViewport, CursorVisualStyle, Dirty, RenderState, RowIterator,
-    Snapshot,
-};
+use libghostty_vt::render::{Colors, CursorViewport, CursorVisualStyle, Dirty, Snapshot};
 use libghostty_vt::screen::CellWide;
+use phux_protocol::render_pool::{RenderPool, RenderWalk, TerminalGeneration};
 use thiserror::Error;
 
 mod flatten;
@@ -302,16 +300,15 @@ pub enum GridError {
     },
 }
 
-/// Owns one libghostty render trio and the buffer it flattens into.
+/// Owns one pooled libghostty render trio and the buffer it flattens into.
 ///
-/// Construct one per terminal and keep it: the render state, both iterators,
-/// the buffer, and the per-cell scratch are all reused across projections, so
-/// a steady-state build allocates only when the viewport or a grapheme
-/// outgrows what earlier builds reserved.
+/// The trio is a [`RenderPool`]: a geometry change or a new `generation`
+/// passed to [`project`](Self::project) rebuilds it (`phux-5pyx`,
+/// `phux-994s`, ADR-0086). The buffer and the per-cell scratch are reused
+/// across projections, so a steady-state build allocates only when the
+/// viewport or a grapheme outgrows what earlier builds reserved.
 pub struct GridProjector {
-    state: RenderState<'static>,
-    rows: RowIterator<'static>,
-    cells: CellIterator<'static>,
+    pool: RenderPool<'static>,
     buffer: GridBuffer,
     scratch: flatten::CellScratch,
     /// Whether a projection has completed: the first one is always full.
@@ -327,12 +324,10 @@ impl fmt::Debug for GridProjector {
 }
 
 impl GridProjector {
-    /// Allocate the render state and iterators for one terminal.
+    /// Allocate the pooled render trio for one terminal.
     pub fn new() -> Result<Self, GridError> {
         Ok(Self {
-            state: RenderState::new()?,
-            rows: RowIterator::new()?,
-            cells: CellIterator::new()?,
+            pool: RenderPool::new()?,
             buffer: GridBuffer::default(),
             scratch: flatten::CellScratch::new(),
             projected: false,
@@ -361,11 +356,18 @@ impl GridProjector {
 
     /// Flatten the terminal's current viewport into the buffer and return the
     /// snapshot that borrows it.
+    ///
+    /// `generation` names which `Terminal` this projector is walking. Pass
+    /// [`crate::session::ReplicaKey::generation_token`] where a replica key
+    /// is in scope, and a constant when the terminal object is never
+    /// replaced. A change rebuilds the pool even at identical geometry; a
+    /// resize rebuilds it either way.
     pub fn project(
         &mut self,
         terminal: &Terminal<'static, '_>,
+        generation: TerminalGeneration,
     ) -> Result<GridSnapshot<'_>, GridError> {
-        let (cols, rows, cursor, colors, damage) = self.fill(terminal)?;
+        let (cols, rows, cursor, colors, damage) = self.fill(terminal, generation)?;
         Ok(GridSnapshot {
             cols,
             rows,
@@ -381,10 +383,15 @@ impl GridProjector {
     fn fill(
         &mut self,
         terminal: &Terminal<'static, '_>,
+        generation: TerminalGeneration,
     ) -> Result<(u16, u16, Cursor, Colors, GridDamage), GridError> {
-        let snapshot = self.state.update(terminal)?;
+        let RenderWalk {
+            snapshot,
+            rows,
+            cells,
+        } = self.pool.begin(terminal, generation)?;
         let cols = snapshot.cols()?;
-        let rows = snapshot.rows()?;
+        let row_count = snapshot.rows()?;
         let colors = snapshot.colors()?;
         let damage = if self.projected {
             GridDamage::from(snapshot.dirty()?)
@@ -393,13 +400,13 @@ impl GridProjector {
         };
         self.buffer.clear();
         let expected = usize::from(cols)
-            .checked_mul(usize::from(rows))
+            .checked_mul(usize::from(row_count))
             .ok_or(GridError::Overflow("viewport cell count exceeds usize"))?;
         self.buffer.cells.reserve(expected);
         self.buffer.metadata.reserve(expected);
         flatten::fill_grid_cells(
-            &mut self.rows,
-            &mut self.cells,
+            rows,
+            cells,
             &snapshot,
             &flatten::CellContext {
                 terminal,
@@ -420,7 +427,7 @@ impl GridProjector {
         snapshot.set_dirty(Dirty::Clean)?;
         let cursor = read_cursor(&snapshot, &self.buffer, cols)?;
         self.projected = true;
-        Ok((cols, rows, cursor, colors, damage))
+        Ok((cols, row_count, cursor, colors, damage))
     }
 }
 

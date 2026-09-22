@@ -1,8 +1,11 @@
 //! Offline session-recording codec and exporter for phux.
 //!
 //! This crate is the *export* half of built-in session recording (ADR-0060).
-//! It is deliberately pure, offline, and synchronous: no tokio, no
-//! `phux-protocol`, no `phux-client`. Every entry point takes an
+//! It is deliberately pure, offline, and synchronous: no tokio and no
+//! `phux-client`. The codec-only build (`default-features = false`) also
+//! has no `phux-protocol`. The `render` feature takes `phux-protocol`'s
+//! `render-pool` (the shared libghostty render trio, ADR-0086) and not the
+//! `server` surface. Every entry point takes an
 //! `impl std::io::Write` or an `impl std::io::BufRead`, so the same code
 //! serves the live `--rec` tee (which streams into a file as the session
 //! runs), the headless `phux rec` capture, and a pure `--from cast -o gif`
@@ -29,7 +32,8 @@
 //! # Features
 //!
 //! * `render` (default) — the whole export pipeline: [`replay`], [`raster`],
-//!   [`encode`], [`render`], [`font`]. Pulls `libghostty-vt`, `png`, `gif`.
+//!   [`encode`], [`render`], [`font`]. Pulls `libghostty-vt`, `png`, `gif`,
+//!   and `phux-protocol` with only the `render-pool` feature.
 //! * default off — only [`cast`], [`timeline`], and [`error`]. This is the
 //!   shape `phux-client` takes (`default-features = false`): the TUI needs to
 //!   *write* a cast while a session runs and must not compile image encoders

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-21
+last-reviewed: 2026-09-22
 ---
 
 # Module structure
@@ -692,8 +692,9 @@ rather than a layer with its own internal architecture worth diagramming:
   inbound consumer connection onto an outbound connector tunnel. Never
   parses phux frames — only the connector's auth preamble.
 - **`phux-record`** — the offline session-recording codec and exporter
-  (ADR-0060): pure and synchronous (no tokio, no `phux-protocol`), so the
-  same code serves the live recording tee, headless `phux rec`, and an
+  (ADR-0060): pure and synchronous (no tokio). The codec-only build has no
+  `phux-protocol`; the `render` feature takes only `render-pool` (ADR-0086).
+  The same code serves the live recording tee, headless `phux rec`, and an
   offline `--from cast -o gif` re-render.
 - **`phux-mcp`** — a minimal hand-rolled JSON-RPC/stdio MCP adapter
   (ADR-0022 §5) wrapping `phux-client`'s agent surface tool-for-tool; no
