@@ -386,10 +386,11 @@ src/
                         resolution and the whole-session-vs-per-pane
                         choice), shared by `phux kill` and MCP `phux_kill`
   session.rs          — session-identity L3 writes: `rename_checked` (`phux
-                        rename` and MCP `phux_rename`), whose request id is a
-                        caller parameter rather than hardcoded inside the
-                        write, and create-without-attach (`phux
-                        new`/`phux new --json`/`--empty`), including the
+                        rename` and MCP `phux_rename`) runs the shared
+                        `phux_client::rename` policy (pre-check, write,
+                        `GET_STATE` barrier) on a dedicated connection, and
+                        create-without-attach (`phux new`/`phux new
+                        --json`/`--empty`), including the
                         atomic-agent-session-restore capability preflight;
                         duplicate-name rejection for `phux new` stays in
                         `crates/phux/src/commands/new.rs`
@@ -519,6 +520,12 @@ src/
   handshake.rs        — shared HELLO_OK acceptance (exact protocol triple,
                         advertised profile, native feature intersection,
                         payload limits)
+  rename.rs           — the one session-rename policy (pre-check against
+                        the session list, `SET_METADATA` write, `GET_STATE`
+                        barrier). Tokio-free. `phux-client` re-exports it as
+                        `phux_client::rename` and `rename_checked` runs it;
+                        the TUI uses that re-export, and the FFI bridge
+                        calls this module directly.
   session.rs, session/  — the synchronous session kernel
                         (agent_stream.rs, kernel_rig.rs, property_tests.rs,
                         tests.rs)

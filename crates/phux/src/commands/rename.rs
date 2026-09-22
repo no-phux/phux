@@ -14,11 +14,13 @@ use crate::commands::server_target::ServerSpec;
 ///
 /// `SET_METADATA` is fire-and-forget (no reply frame), so existence and
 /// name-collision checks are done client-side against a fresh `GET_STATE`
-/// snapshot before the write. A second `GET_STATE` after it is an ordering
-/// barrier: frames are ordered on one connection, so once the server answers
-/// it has processed the write, and a QUIC connection is never closed with the
-/// write still in flight. Exit codes mirror `phux kill`: 0 on success, 1 on
-/// no server, 2 on a refusal (unknown session or a name already taken).
+/// snapshot before the write. A no-op (the session already has `new_name`)
+/// sends nothing. A second `GET_STATE` after a real write is the ordering
+/// barrier and the outcome: frames are ordered on one connection, so once
+/// the server answers it has processed the write, and the snapshot must
+/// show the new name. Exit codes mirror `phux kill`: 0 on success, 1 on
+/// no server, 2 on a refusal (unknown session, a name already taken, or a
+/// barrier that did not apply the rename).
 ///
 /// `server` is the local socket or a `--remote` host (see `server_target`).
 #[expect(

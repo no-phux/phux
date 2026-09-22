@@ -9,6 +9,8 @@
 //!   and the projector that flattens a libghostty viewport into it
 //!   (ADR-0133); every binding lends or copies this buffer.
 //! - [`handshake`] — `HELLO_OK` acceptance shared by every frontend.
+//! - [`rename`] — the session-rename decision, write, and `GET_STATE`
+//!   barrier shared by every frontend.
 //! - [`layout`] — the pane-geometry layout tree, split math, and the CBOR
 //!   metadata envelope that persists it server-side.
 //! - [`multi_pane`] — layout tree → per-pane rectangles + the divider
@@ -39,4 +41,5 @@ pub mod layout;
 pub mod multi_pane;
 pub mod perf;
 pub mod predict;
+pub mod rename;
 pub mod session;
