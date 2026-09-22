@@ -134,7 +134,7 @@ const SameCoordinator = struct {
     primary: *support.PhuxProvider,
     secondary: *support.PhuxProvider,
 
-    fn start(secondary_session: u32) !SameCoordinator {
+    fn start() !SameCoordinator {
         const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
         errdefer engine.destroy();
         const endpoint = "/captured-tab-same-coordinator";
@@ -143,15 +143,9 @@ const SameCoordinator = struct {
         try engine.model.ensurePeerSlots(1);
         const secondary = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = endpoint }, null, "secondary");
         engine.model.peers.items[0].provider = secondary;
-        try secondary.show(secondary_session);
+        try secondary.show(2);
         try fixture.attachHost(primary.host);
-        try fixture.attachHost(secondary.host);
-        // The fixture attaches session 1. Retarget only the sibling's test
-        // publication when this scenario needs another session; its attachment
-        // context is distinct either way.
-        secondary.session_id = secondary_session;
-        secondary.host.attached_session_id = secondary_session;
-        secondary.host.workspace_store.info.session_id = secondary_session;
+        try fixture.attachSiblingHost(secondary.host);
         try testing.expectEqual(primary.providerId(), secondary.providerId());
         try testing.expect(primary.context_id != secondary.context_id);
 
@@ -183,10 +177,15 @@ const SameCoordinator = struct {
         _ = try remote.drainReadiness();
         _ = remote.takeOperationResult();
         try testing.expectEqual(@as(?u32, 2), try remote.requestWorkspaceRefresh());
-        try stageMappedWorkspaceReply(remote, "workspace_add_metadata.bin", 14, 3);
-        try stageMappedWorkspaceReply(remote, "workspace_add_state.bin", 13, 2);
+        try stageMappedWorkspaceReply(remote, "workspace_session2_add_metadata.bin", 14, 3);
+        try stageMappedWorkspaceReply(remote, "workspace_session2_add_state.bin", 13, 2);
         _ = try remote.drainReadiness();
         const state = &self.engine.model.peers.items[0].workspace;
+        state.placement_hint = .{
+            .shared_id = remote.workspaceSnapshot().windows[1].id,
+            .window = 1,
+            .window_epoch = self.engine.model.window_epochs[1],
+        };
         _ = try state.apply(self.engine.model, remote.workspaceSnapshot(), remote.connectionEpoch());
         self.engine.model.active_window = 0;
         self.engine.model.primary.selected_tab = 0;
@@ -387,15 +386,15 @@ test "captured tab reorder refuses to cross a coordinator boundary" {
     try testing.expect(model.focusedTerminalRef().?.eql(mini));
     try testing.expectEqual(here_place.tab, model.locateTerminal(here).?.tab);
     try testing.expectEqual(mini_place.tab, model.locateTerminal(mini).?.tab);
-    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
-    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).command);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).command);
     try testing.expect(engine.model.shared_mutations.peekCompletion() == null);
     try testing.expect(engine.peer_edits.peekCompletion() == null);
 }
 
 test "captured background close routes to the exact same-coordinator attachment" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
-    var siblings = try SameCoordinator.start(2);
+    var siblings = try SameCoordinator.start();
     defer siblings.engine.destroy();
     const engine = siblings.engine;
     const model = engine.model;
@@ -419,13 +418,13 @@ test "captured background close routes to the exact same-coordinator attachment"
     try testing.expectEqual(.remove_window, pending.mutation.kind);
     try testing.expectEqualDeep(secondary_id, pending.mutation.window_id);
     try testing.expectEqual(@as(?u64, 41), pending.command_id);
-    try testing.expectEqual(@as(usize, 0), countFrames(siblings.primary).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(siblings.primary).command);
     try testing.expect(countFrames(siblings.secondary).command >= 1);
 }
 
 test "captured background reorder targets the exact same-coordinator attachment and authoritative neighbor" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
-    var siblings = try SameCoordinator.start(1);
+    var siblings = try SameCoordinator.start();
     defer siblings.engine.destroy();
     try siblings.publishTwoSecondaryWindows();
     const engine = siblings.engine;
@@ -452,29 +451,31 @@ test "captured background reorder targets the exact same-coordinator attachment 
     try testing.expectEqual(@as(usize, 1), pending.mutation.index);
     try testing.expectEqual(@as(?u64, 45), pending.command_id);
     try testing.expect(engine.model.shared_mutations.peekCompletion() == null);
-    try testing.expectEqual(@as(usize, 0), countFrames(siblings.primary).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(siblings.primary).command);
     try testing.expect(countFrames(siblings.secondary).command >= 1);
 }
 
 test "peer captured action confirms through its exact attachment and requires exact acknowledgement" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
-    var siblings = try SameCoordinator.start(1);
+    var siblings = try SameCoordinator.start();
     defer siblings.engine.destroy();
     const engine = siblings.engine;
     const packet = try tabActionPacket(engine.model, 1, 0, .close, 51);
     try testing.expectEqual(captured_tab_commands.Status.accepted_pending, engine.applyTabCommand(&packet).status);
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.states.items.len);
     const pending = engine.peer_edits.states.items[0].mutations.pending[0].?;
     try testing.expect(pending.mutation_request != 0);
 
     // A real two-reply provider publication confirms the correlated mutation.
     // This is the next workspace exchange after the fixture's initial 0/1 pair.
-    try fixture.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_refresh_state.bin");
+    try fixture.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_session2_close_metadata.bin");
     _ = try siblings.secondary.drainReadiness();
-    try fixture.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_refresh_metadata.bin");
+    try fixture.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_session2_close_state.bin");
     _ = try siblings.secondary.drainReadiness();
     _ = engine.peer_edits.pump(engine.model, 0);
     const result = engine.peer_edits.peekCompletion().?;
     try testing.expectEqual(@as(u64, 51), result.command_id);
+    try testing.expectEqual(.completed, result.reason);
     try testing.expectEqual(.success, result.operation);
     try testing.expectEqual(pending.mutation_request, result.request_id);
     try testing.expect(!engine.peer_edits.ackCompletion(999));
@@ -486,7 +487,7 @@ test "peer captured action confirms through its exact attachment and requires ex
 
 test "peer disconnect retains one unknown captured-action result until exact acknowledgement" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
-    var siblings = try SameCoordinator.start(2);
+    var siblings = try SameCoordinator.start();
     defer siblings.engine.destroy();
     const engine = siblings.engine;
     const packet = try tabActionPacket(engine.model, 1, 0, .close, 61);
