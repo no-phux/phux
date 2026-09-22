@@ -1511,7 +1511,7 @@ pub const Host = struct {
     }
 
     pub fn selectionText(host: *Host, owner_value: provider.ReplicaOwner, gpa: std.mem.Allocator) ![]u8 {
-        const id = try host.currentCId(owner_value);
+        const id = try host.selectionCId(owner_value);
         var text: c.PhuxBytes = undefined;
         try resultError(c.phux_client_selection_text(host.client, &id, &text));
         if (text.len != 0 and text.data == null) return error.Protocol;
@@ -2284,6 +2284,15 @@ pub const Host = struct {
         if (host.operation_ledger.detaching(owner_value.terminal_ref)) return error.InvalidState;
         const terminal = host.findTerminalConst(owner_value.terminal_ref) orelse return error.InvalidState;
         if (terminal.phase != .live or !terminal.owner().eql(owner_value)) return error.InvalidState;
+        return cId(&terminal.id);
+    }
+
+    /// Selection bytes are presentation state, so a retained ended snapshot is
+    /// readable even though it cannot accept input or mutate document anchors.
+    fn selectionCId(host: *const Host, owner_value: provider.ReplicaOwner) !c.PhuxResourceId {
+        if (host.operation_ledger.detaching(owner_value.terminal_ref)) return error.InvalidState;
+        const terminal = host.findTerminalConst(owner_value.terminal_ref) orelse return error.InvalidState;
+        if ((terminal.phase != .live and terminal.phase != .ended) or !terminal.owner().eql(owner_value)) return error.InvalidState;
         return cId(&terminal.id);
     }
 

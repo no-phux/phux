@@ -378,9 +378,10 @@ terminal under the pointer. Dragging a selection beyond the top or bottom edge
 autoscrolls through history. Copy and Paste are available from the Edit menu and
 with `cmd+C` / `cmd+V`. While a live TUI enables mouse reporting, it owns
 secondary click; Shift-drag selection remains copyable with `cmd+C`.
-In direct-PTY mode, right-click or control-click also opens Copy/Paste actions
-for that pane. Ended terminals allow copying a retained selection; Paste is
-disabled. Each menu action retains its terminal identity across focus changes.
+Right-click or control-click also opens Copy/Paste actions for that pane on
+both direct PTYs and Phux-backed terminals. Ended terminals allow copying a
+retained selection; Paste is disabled. Each menu action retains its exact
+provider replica and visible placement across focus changes.
 `cmd+click` opens a URL under the pointer, and works
 even while a TUI owns mouse reporting — a program that prints links should not
 have to give up mouse input for them to be clickable. It is deliberately a

@@ -32,7 +32,7 @@ const local_tool_launch = @import("local_tool_launch.zig");
 pub const new_session = @import("new_session.zig");
 pub const new_session_runtime = @import("new_session_runtime.zig");
 pub const machine_runtime = @import("machine_runtime.zig");
-pub const local_clipboard = @import("local_clipboard_target.zig");
+pub const clipboard = @import("clipboard_target.zig");
 
 test {
     _ = @import("machine_engine_tests.zig");
@@ -3239,25 +3239,20 @@ pub const Engine = struct {
 
     // -------------------------------------------------------- clipboard
 
-    pub fn localClipboardEnabled(self: *const Engine, ref: TerminalRef, action: local_clipboard.Action) bool {
-        const pane = self.model.provider.terminalConst(ref) orelse return false;
-        if (pointer_input.paneReportsMouse(pane)) return false;
-        return switch (action) {
-            .copy => pane.session.selectionActive(),
-            .paste => pane.acceptsInput(),
-        };
+    pub fn clipboardEnabled(self: *Engine, owner: support.ReplicaOwner, action: clipboard.Action) bool {
+        return interaction.clipboardEnabledForOwner(self.model, owner, action);
     }
 
-    /// The menu's captured terminal incarnation, never the current focus,
-    /// authorizes both the request and its existing clipboard completion owner.
-    pub fn applyLocalClipboard(self: *Engine, fx: anytype, bytes: []const u8) bool {
+    /// The menu's captured placement and provider replica, never current focus
+    /// or a ref-wide provider lookup, authorize the request and its completion.
+    pub fn applyClipboard(self: *Engine, fx: anytype, bytes: []const u8) bool {
         if (self.input_suspended) return false;
-        const target = local_clipboard.decode(bytes) orelse return false;
-        const ref = target.resolve(self.model) orelse return false;
-        if (!self.localClipboardEnabled(ref, target.action)) return false;
-        switch (target.action) {
-            .copy => interaction.copy(self.model, fx, ref),
-            .paste => interaction.requestPaste(self.model, fx, ref),
+        const target = clipboard.decode(bytes) orelse return false;
+        const resolved = target.resolve(self.model) orelse return false;
+        if (!self.clipboardEnabled(resolved.owner, resolved.action)) return false;
+        switch (resolved.action) {
+            .copy => interaction.copyForOwner(self.model, fx, resolved.owner),
+            .paste => interaction.requestPasteForOwner(self.model, fx, resolved.owner),
         }
         self.sequence +%= 1;
         return true;

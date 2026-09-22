@@ -15,10 +15,10 @@ const step = (model, message) => {
 test('terminal context action forwards its captured target without using focus', () => {
   const target = new Uint8Array([1, 2, 3, 4]);
   const original = initialModel()[0];
-  const [model, command] = step(original, { kind: 'local_clipboard_action', target });
+  const [model, command] = step(original, { kind: 'clipboard_action', target });
   assert.equal(model, original);
   assert.ok(command, 'captured clipboard action must reach the native host');
-  assert.equal(command.name, 'cockpit.local-clipboard');
+  assert.equal(command.name, 'cockpit.clipboard');
   assert.deepEqual(command.payload, target);
 });
 
