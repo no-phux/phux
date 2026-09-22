@@ -3685,11 +3685,14 @@ test "shipping Phux terminal declares Copy and Paste context actions" {
     try rig.settle(0, "READY");
     _ = try rig.attachFixture();
     const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
     var fx = Recorder{};
     try std.testing.expect(remotePresentationCommand(engine, .select_all, &fx));
+    const selection_reads_before_build = remote.host.selectionTextRequestCount();
     try rig.dispatch(.engine_wake);
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
     const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    try std.testing.expectEqual(selection_reads_before_build, remote.host.selectionTextRequestCount());
     for (widgets.nodes) |node| {
         if (node.widget.semantics.role != .textbox) continue;
         try std.testing.expectEqual(@as(usize, 2), node.widget.context_menu.len);
@@ -3723,8 +3726,9 @@ test "shipping Phux terminal declares Copy and Paste context actions" {
             try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
         }
         try std.testing.expect(std.mem.indexOf(u8, try rig.harness.runtime.readClipboard(&clipboard), "COCKPIT FIXTURE") != null);
+        try std.testing.expectEqual(selection_reads_before_build + 1, remote.host.selectionTextRequestCount());
 
-        engine.model.phux().?.bridge.outgoing.reset();
+        remote.bridge.outgoing.reset();
         try rig.harness.runtime.options.platform.services.writeClipboard("paste through captured Phux owner");
         var command: [128]u8 = undefined;
         try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-context-menu {s} {d} 1", .{ canvas_label, node.widget.id }));
@@ -3886,6 +3890,42 @@ test "shipping secondary Phux menu retains the captured attachment after focus m
         try std.testing.expect(engine.model.paste_owner.eql(second_owner));
         try std.testing.expect(!first.bridge.outgoing.hasPending());
         try expectOutgoingTag(second, 0x11);
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+test "shipping Phux menu recognizes an owner-qualified selection outside the viewport without reading it" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const owner = remote.owner(ref).?;
+    try stageRemoteOutput(remote, "\r\nrow" ** 40, 1);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try remote.scrollViewport(owner, .{ .kind = .top });
+    const start = try remote.createAnchor(owner, .{ .space = .history, .row = 0, .column = 0 });
+    const end = try remote.createAnchor(owner, .{ .space = .history, .row = 0, .column = 7 });
+    try remote.setSelection(owner, start, end, false);
+    const state = engine.model.remoteUi(ref).?;
+    try std.testing.expect(state.owner.eql(owner));
+    state.start_anchor = start.opaque_id;
+    state.end_anchor = end.opaque_id;
+    try remote.scrollViewport(owner, .{ .kind = .bottom });
+    try std.testing.expect(!remote.presentation(ref).?.grid.selection_active);
+
+    const selection_reads_before_build = remote.host.selectionTextRequestCount();
+    try std.testing.expect(engine.clipboardEnabled(owner, .copy));
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expectEqual(selection_reads_before_build, remote.host.selectionTextRequestCount());
         return;
     }
     return error.TestExpectedTerminal;
@@ -4093,7 +4133,7 @@ test "shipping terminal context menu respects live TUI and ended shell ownership
     try std.testing.expect(!menu[1].enabled);
 }
 
-test "shipping Phux context menu leaves TUI secondary click owned and ended snapshots copy only" {
+test "shipping Phux context menu leaves TUI secondary click owned and refuses actions after a C-FFI exit" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
     defer rig.stop();
@@ -4131,18 +4171,48 @@ test "shipping Phux context menu leaves TUI secondary click owned and ended snap
 
     try stageRemoteOutput(remote, "\x1b[?1000l", 2);
     _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
-    remote.host.terminals.items[0].phase = .ended;
+    const owner = remote.owner(engine.model.focusedTerminalRef().?).?;
+    const tree = engine.model.ws().selectedTreeConst().?;
+    const paste_target = cockpit.engine.clipboard.Target.capture(engine.model, tree, 0, owner.terminal_ref, .paste).?;
+    var paste_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const paste_packet = paste_target.encode(&paste_storage);
     try rig.dispatch(.engine_wake);
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
     widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var menu_frame: ?native_sdk.geometry.RectF = null;
     for (widgets.nodes) |node| {
-        if (node.widget.semantics.role != .textbox) continue;
-        try std.testing.expectEqual(@as(usize, 2), node.widget.context_menu.len);
-        try std.testing.expect(node.widget.context_menu[0].enabled);
-        try std.testing.expect(!node.widget.context_menu[1].enabled);
-        return;
+        if (node.widget.semantics.role == .textbox) menu_frame = node.frame;
     }
-    return error.TestExpectedTerminal;
+    const frame = menu_frame orelse return error.TestExpectedTerminal;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = frame.x + frame.width / 2,
+        .y = frame.y + frame.height / 2,
+    } });
+    const token = rig.harness.null_platform.context_menu_token;
+    try std.testing.expect(token != 0);
+    try rig.harness.runtime.options.platform.services.writeClipboard("leave the clipboard alone");
+    const reads = remote.host.selectionTextRequestCount();
+    try cockpit.PhuxProvider.test_support.stageFixture(remote.bridge, "remote-exited.bin");
+    _ = try remote.drainReadiness();
+    // Phux closes an exited replica; unlike an ephemeral local shell, it does
+    // not retain an ended presentation on which a menu could remain valid.
+    try std.testing.expect(remote.presentation(owner.terminal_ref) == null);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .token = token,
+        .item_id = 1,
+    } });
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, paste_packet));
+    try std.testing.expect(!engine.model.copy_inflight);
+    try std.testing.expect(!engine.model.paste_inflight);
+    try std.testing.expectEqual(reads, remote.host.selectionTextRequestCount());
+    var clipboard: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("leave the clipboard alone", try rig.harness.runtime.readClipboard(&clipboard));
 }
 
 test "shipping clipboard completion belongs to its requesting replica after focus moves" {

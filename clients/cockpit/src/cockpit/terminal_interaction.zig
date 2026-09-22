@@ -165,7 +165,7 @@ fn acceptsPasteForOwner(model: *Model, owner: contract.ReplicaOwner) bool {
 }
 
 /// Menu policy for one captured owner. A live mouse-reporting TUI keeps
-/// secondary click; an ended snapshot may only expose an existing selection.
+/// secondary click; a retained local snapshot may expose an existing selection.
 pub fn clipboardEnabledForOwner(model: *Model, owner: contract.ReplicaOwner, action: anytype) bool {
     const ref = owner.terminal_ref;
     if (contract.isLocal(ref)) return localClipboardEnabled(model, owner, action);
@@ -191,22 +191,24 @@ fn remoteClipboardEnabled(model: *Model, owner: contract.ReplicaOwner, action: a
     if (!presentation.owner.eql(owner)) return false;
     if (!remoteClipboardMenuAvailable(remote, owner, presentation.phase)) return false;
     return switch (action) {
-        .copy => hasSelection(model, owner),
+        .copy => hasSelection(model, owner, presentation),
         .paste => presentation.phase == .live,
     };
 }
 
 fn remoteClipboardMenuAvailable(remote: anytype, owner: contract.ReplicaOwner, phase: contract.Phase) bool {
-    if (phase == .ended) return true;
     if (phase != .live) return false;
     return !(remote.mouseTracking(owner) catch return false);
 }
 
-fn hasSelection(model: *Model, owner: contract.ReplicaOwner) bool {
-    const remote = model.phuxForOwner(owner) orelse return false;
-    const text = remote.selectionText(owner, std.heap.page_allocator) catch return false;
-    defer std.heap.page_allocator.free(text);
-    return text.len != 0;
+/// Menu projection must stay constant-time. The grid answers for an on-screen
+/// range; owner-qualified handles retain a range that has scrolled off-screen.
+/// Search owns borrowed result handles rather than storing them in this state.
+fn hasSelection(model: *const Model, owner: contract.ReplicaOwner, presentation: contract.Presentation) bool {
+    if (presentation.grid.selection_active) return true;
+    const state = stateForOwnerConst(model, owner) orelse return false;
+    if (state.start_anchor != 0 and state.end_anchor != 0 and state.start_anchor != state.end_anchor) return true;
+    return state.search.open and state.search.count != 0;
 }
 
 fn clipboardOwnerCurrent(model: *const Model, owner: contract.ReplicaOwner) bool {
@@ -215,7 +217,7 @@ fn clipboardOwnerCurrent(model: *const Model, owner: contract.ReplicaOwner) bool
     const current = remote.owner(owner.terminal_ref) orelse return false;
     if (!current.eql(owner)) return false;
     const presentation = remote.presentation(owner.terminal_ref) orelse return false;
-    return presentation.owner.eql(owner) and (presentation.phase == .live or presentation.phase == .ended);
+    return presentation.owner.eql(owner) and presentation.phase == .live;
 }
 
 pub fn pasted(model: *Model, fx: anytype, ok: bool, text: []const u8) void {
