@@ -4151,12 +4151,26 @@ pub(crate) fn apply_attach_viewport(
 mod tests {
     use super::*;
 
+    fn final_screen_frames(terminal_id: &phux_protocol::ids::ResourceId) -> Vec<FrameKind> {
+        synthesized_bootstrap_frames(
+            terminal_id.clone(),
+            phux_protocol::ids::StreamId::new(1).expect("stream id"),
+            phux_protocol::ids::BootstrapId::new(2).expect("bootstrap id"),
+            BootstrapStreamProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
+            80,
+            24,
+            9,
+            [bytes::Bytes::from_static(b"FINAL_SCREEN")],
+        )
+        .expect("bootstrap frames")
+    }
+
     /// phux-fpgl.28: a lagged mailbox is full. A gap resync must not park on
     /// it, and the exit snapshot's chunk — the final screen — must be queued
     /// ahead of `RESOURCE_CLOSED`, not split off after `BOOTSTRAP_BEGIN`.
     #[tokio::test(flavor = "current_thread")]
     async fn exit_resync_on_a_full_mailbox_precedes_close() {
-        use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
         use phux_protocol::wire::frame::CloseReason;
 
         let (tx, mut rx) =
@@ -4165,25 +4179,9 @@ mod tests {
             tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
                 .expect("fill the lagged mailbox");
         }
-        let terminal_id = ResourceId::local(1);
-        let stream_id = StreamId::new(1).expect("stream id");
-        let bootstrap_id = BootstrapId::new(2).expect("bootstrap id");
-        let frames = synthesized_bootstrap_frames(
-            terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            BootstrapStreamProfile::SynthesizedVtRaw,
-            BootstrapLimits::default(),
-            80,
-            24,
-            9,
-            [bytes::Bytes::from_static(b"FINAL_SCREEN")],
-        )
-        .expect("bootstrap frames");
-        assert!(
-            frames.len() > 1 && frames.len() <= tx.max_capacity(),
-            "this regression is a multi-frame bootstrap that still fits one mailbox",
-        );
+        let terminal_id = phux_protocol::ids::ResourceId::local(1);
+        let frames = final_screen_frames(&terminal_id);
+        assert!(frames.len() > 1 && frames.len() <= tx.max_capacity());
 
         let deferred = queue_resync_bootstrap(
             &tx,
@@ -4192,20 +4190,14 @@ mod tests {
             true,
         )
         .await;
-        assert_eq!(deferred, SnapshotQueue::Deferred);
-        assert_eq!(
-            tx.capacity(),
-            0,
-            "deferring a non-final resync must not take a slot"
-        );
+        assert_eq!((deferred, tx.capacity()), (SnapshotQueue::Deferred, 0));
 
         let tx_exit = tx.clone();
-        let exit_frames = frames;
         let queued = tokio::spawn(async move {
             queue_resync_bootstrap(
                 &tx_exit,
                 crate::terminal_actor::ResyncReason::Exit,
-                exit_frames,
+                frames,
                 true,
             )
             .await
@@ -4226,42 +4218,29 @@ mod tests {
                 .expect("queue RESOURCE_CLOSED");
         });
         tokio::task::yield_now().await;
-        assert!(
-            !queued.is_finished() && !closed.is_finished(),
-            "both sends must be waiting on the full mailbox"
-        );
-        assert_eq!(tx.capacity(), 0);
+        assert!(!queued.is_finished() && !closed.is_finished() && tx.capacity() == 0);
 
         let mut saw_chunk = false;
         let mut saw_ready = false;
         while let Some(message) = rx.recv().await {
             match message {
                 Outbound::Frame(FrameKind::BootstrapChunk { payload, .. }) => {
-                    assert!(
-                        payload.as_ref() == b"FINAL_SCREEN",
-                        "unexpected chunk before close"
-                    );
+                    assert_eq!(payload.as_ref(), b"FINAL_SCREEN");
                     saw_chunk = true;
                 }
                 Outbound::Frame(FrameKind::BootstrapReady { .. }) => {
                     assert!(saw_chunk, "READY arrived before the final chunk");
                     saw_ready = true;
                 }
-                Outbound::Frame(FrameKind::ResourceClosed { .. }) => {
-                    assert!(
-                        saw_chunk && saw_ready,
-                        "RESOURCE_CLOSED split the final screen off the bootstrap"
-                    );
-                    break;
-                }
+                Outbound::Frame(FrameKind::ResourceClosed { .. }) => break,
                 _ => {}
             }
         }
-        assert!(saw_chunk && saw_ready, "the final screen never arrived");
-        assert_eq!(
-            queued.await.expect("exit queue task"),
-            SnapshotQueue::Queued
+        assert!(
+            saw_chunk && saw_ready,
+            "RESOURCE_CLOSED split the final screen off the bootstrap"
         );
+        assert_eq!(queued.await.expect("exit queue"), SnapshotQueue::Queued);
         closed.await.expect("close task");
     }
 
