@@ -60,18 +60,44 @@ pub fn capture(model: *const Model, window: usize, index: usize) ?Target {
     };
 }
 
-pub const Request = struct { id: u64, target: union(enum) { tab: Target, catalog: catalog.Target, operation: protocol.Intent } };
+pub const Action = enum(u8) {
+    close = 4,
+    previous = 5,
+    next = 6,
+};
+
+pub const ActionTarget = struct {
+    action: Action,
+    target: Target,
+};
+
+pub const Request = struct { id: u64, target: union(enum) { tab: Target, catalog: catalog.Target, operation: protocol.Intent, action: ActionTarget } };
 
 pub fn decode(bytes: []const u8) ?Request {
     if (bytes.len < 10 or bytes[0] != 1) return null;
     const id = std.mem.readInt(u64, bytes[2..10], .little);
     if (id == 0) return null;
-    return switch (bytes[1]) {
+    return decodeTarget(bytes[1], id, bytes);
+}
+
+fn decodeTarget(kind: u8, id: u64, bytes: []const u8) ?Request {
+    return switch (kind) {
         1 => .{ .id = id, .target = .{ .tab = decodeTab(bytes) orelse return null } },
         2 => .{ .id = id, .target = .{ .catalog = catalog.decode(bytes[10..]) orelse return null } },
         3 => .{ .id = id, .target = .{ .operation = decodeOperation(bytes[10..]) orelse return null } },
-        else => null,
+        else => decodeAction(kind, id, bytes),
     };
+}
+
+fn decodeAction(kind: u8, id: u64, bytes: []const u8) ?Request {
+    const action: Action = switch (kind) {
+        4 => .close,
+        5 => .previous,
+        6 => .next,
+        else => return null,
+    };
+    const target = decodeTab(bytes) orelse return null;
+    return .{ .id = id, .target = .{ .action = .{ .action = action, .target = target } } };
 }
 
 fn decodeOperation(bytes: []const u8) ?protocol.Intent {

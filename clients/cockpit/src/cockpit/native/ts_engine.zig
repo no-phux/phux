@@ -26,6 +26,7 @@ const remote_commands = @import("remote_presentation_commands.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
 const shared_workspace = @import("../shared_workspace.zig");
+const shared_mutations = @import("../shared_mutations.zig");
 const peer_edits = @import("../peer_edits.zig");
 const session_attachments = @import("session_attachments.zig");
 const local_tool_launch = @import("local_tool_launch.zig");
@@ -216,6 +217,29 @@ test "native split resize callback rolls back a shared divider without a provide
     try std.testing.expect(engine.model.shared_workspace.refused);
 }
 
+test "captured reorder requires the physical neighbor to be the authoritative neighbor" {
+    var workspace: model_module.Workspace = .{};
+    workspace.tab_count = 2;
+    workspace.tabs[0].attachment_id = 71;
+    workspace.tabs[1].attachment_id = 71;
+    workspace.shared_ids[0] = @splat(1);
+    workspace.shared_ids[1] = @splat(3);
+    const with_hidden = [_]provider_contract.workspace.Window{
+        .{ .id = @splat(1), .root = 0 },
+        .{ .id = @splat(2), .root = 0 },
+        .{ .id = @splat(3), .root = 0 },
+    };
+    try std.testing.expect(Engine.sharedReorderTarget(&workspace, 0, 71, &with_hidden, true) == null);
+
+    const adjacent = [_]provider_contract.workspace.Window{
+        .{ .id = @splat(1), .root = 0 },
+        .{ .id = @splat(3), .root = 0 },
+    };
+    try std.testing.expectEqual(@as(?usize, 1), Engine.sharedReorderTarget(&workspace, 0, 71, &adjacent, true));
+    workspace.tabs[1].attachment_id = 72;
+    try std.testing.expect(Engine.sharedReorderTarget(&workspace, 0, 71, &adjacent, true) == null);
+}
+
 const SplitDrag = struct {
     window_id: platform.WindowId,
     pointer_id: u64,
@@ -254,6 +278,10 @@ pub const Engine = struct {
     sequence: u64 = 0,
     revision: u64 = 1,
     selection_epoch: u64 = 1,
+    /// Captured tab actions share the TypeScript FIFO's monotonic IDs. Once an
+    /// action is admitted or refused, the same (or an older) packet can never
+    /// mutate presentation after a delayed host-call replay.
+    last_tab_action_id: u64 = 0,
     intent_refused: bool = false,
     /// The pty key each registry slot was last spawned for, so `spawnShells`
     /// is idempotent across frames and a reused slot spawns again.
@@ -1043,7 +1071,100 @@ pub const Engine = struct {
             .tab => |target| self.applyTabTarget(request.id, target),
             .catalog => |target| self.applyCatalogTarget(request.id, target, fx),
             .operation => |operation| self.applyOperationTarget(request.id, operation, fx),
+            .action => |action| self.applyCapturedTabAction(request.id, action, fx),
         };
+    }
+
+    fn applyCapturedTabAction(self: *Engine, id: u64, action: tab_commands.ActionTarget, fx: anytype) tab_commands.Receipt {
+        if (id <= self.last_tab_action_id) return self.tabReceipt(id, .invalid_command);
+        self.last_tab_action_id = id;
+        const index = action.target.resolve(self.model) orelse return self.tabReceipt(id, .stale_target);
+        const status = if (self.model.phux() == null)
+            self.applyLocalTabAction(action.target.window, index, action.action, fx)
+        else
+            self.applySharedTabAction(id, action.target.window, index, action.action) orelse
+                return self.tabReceipt(id, .unavailable);
+        if (status == .rejected) return self.tabReceipt(id, .unavailable);
+        self.revision +%= 1;
+        var receipt = self.tabReceipt(id, .none);
+        receipt.status = status;
+        return receipt;
+    }
+
+    fn applyLocalTabAction(self: *Engine, window: usize, index: u8, action: tab_commands.Action, fx: anytype) tab_commands.Status {
+        const changed = switch (action) {
+            .close => lifecycle.closeTab(self.model, fx, window, index),
+            .previous, .next => self.moveLocalTab(window, index, action == .next),
+        };
+        return if (changed) .applied else .rejected;
+    }
+
+    fn moveLocalTab(self: *Engine, window: usize, index: u8, right: bool) bool {
+        const workspace = self.model.wsAt(window) orelse return false;
+        const terminal = workspace.tabTerminal(index) orelse return false;
+        return workspace.moveTerminal(terminal, if (right) 1 else -1);
+    }
+
+    fn applySharedTabAction(self: *Engine, id: u64, window: usize, index: u8, action: tab_commands.Action) ?tab_commands.Status {
+        const workspace = self.model.wsAt(window) orelse return null;
+        const tree = workspace.treeConst(index) orelse return null;
+        const attachment = tree.attachment_id orelse return null;
+        const remote = self.model.phuxForTree(tree) orelse return null;
+        if (remote.context_id != attachment) return null;
+        if (action == .close) return self.applySharedTabClose(id, workspace, index, remote, attachment);
+        return self.applySharedTabReorder(id, workspace, index, remote, attachment, action == .next);
+    }
+
+    fn applySharedTabClose(self: *Engine, id: u64, workspace: *model_module.Workspace, index: u8, remote: *support.PhuxProvider, attachment: u64) ?tab_commands.Status {
+        const shared_id = workspace.shared_ids[index] orelse return null;
+        trySharedClose(self, id, remote, attachment, shared_id) catch return null;
+        if (workspace.selected_tab == index) self.supersedeSelection();
+        return .accepted_pending;
+    }
+
+    fn applySharedTabReorder(self: *Engine, id: u64, workspace: *model_module.Workspace, index: u8, remote: *support.PhuxProvider, attachment: u64, right: bool) ?tab_commands.Status {
+        const shared_id = workspace.shared_ids[index] orelse return null;
+        const target = sharedReorderTarget(workspace, index, attachment, remote.workspaceSnapshot().windows, right) orelse return null;
+        trySharedReorder(self, id, remote, attachment, shared_id, target) catch return null;
+        return .accepted_pending;
+    }
+
+    fn trySharedClose(self: *Engine, id: u64, remote: *support.PhuxProvider, attachment: u64, shared_id: shared_mutations.WindowId) !void {
+        if (primaryOwnsAttachment(self.model, remote, attachment)) {
+            return self.model.shared_mutations.requestRemoveWindowCorrelated(self.model, shared_id, id);
+        }
+        return self.peer_edits.removeWindowCorrelatedForAttachment(self.model, attachment, shared_id, id);
+    }
+
+    fn trySharedReorder(self: *Engine, id: u64, remote: *support.PhuxProvider, attachment: u64, shared_id: shared_mutations.WindowId, target: usize) !void {
+        if (primaryOwnsAttachment(self.model, remote, attachment)) {
+            return self.model.shared_mutations.requestReorderCorrelated(self.model, shared_id, target, id);
+        }
+        return self.peer_edits.reorderCorrelatedForAttachment(self.model, attachment, shared_id, target, id);
+    }
+
+    fn primaryOwnsAttachment(model: *const model_module.Model, remote: *const support.PhuxProvider, attachment: u64) bool {
+        const primary = model.phuxConst() orelse return false;
+        return primary == remote and primary.context_id == attachment;
+    }
+
+    fn sharedReorderTarget(workspace: *const model_module.Workspace, index: usize, attachment: u64, windows: []const provider_contract.workspace.Window, right: bool) ?usize {
+        const neighbor = adjacentTabIndex(workspace.tab_count, index, right) orelse return null;
+        const neighbor_id = sharedTabIdForAttachment(workspace, neighbor, attachment) orelse return null;
+        const shared_id = workspace.shared_ids[index] orelse return null;
+        const target = peer_edits.neighborIndex(windows, shared_id, right) orelse return null;
+        return if (std.mem.eql(u8, &windows[target].id, &neighbor_id)) target else null;
+    }
+
+    fn adjacentTabIndex(tab_count: usize, index: usize, right: bool) ?usize {
+        if (right) return if (index + 1 < tab_count) index + 1 else null;
+        return if (index > 0) index - 1 else null;
+    }
+
+    fn sharedTabIdForAttachment(workspace: *const model_module.Workspace, index: usize, attachment: u64) ?shared_mutations.WindowId {
+        const tree = workspace.treeConst(index) orelse return null;
+        if (tree.attachment_id != attachment) return null;
+        return workspace.shared_ids[index];
     }
 
     fn applyTabTarget(self: *Engine, id: u64, target: tab_commands.Target) tab_commands.Receipt {
@@ -1746,7 +1867,7 @@ pub const Engine = struct {
         const peer = model.phuxPeerAt(slot).?;
         empty_session.forgetAttachment(model, peer.context_id, false);
         peer.stop();
-        self.peer_edits.forget(slot);
+        self.peer_edits.forget(model, slot);
         empty_session.forgetPeer(model, peer.providerId(), false);
         peer_restore.failed(model, slot);
         // That occupancy is gone; the next one opens under a fresh key.
@@ -1762,7 +1883,7 @@ pub const Engine = struct {
         const peer = self.model.phuxPeerAt(slot) orelse return false;
         empty_session.forgetAttachment(self.model, peer.context_id, false);
         peer.stop();
-        self.peer_edits.forget(slot);
+        self.peer_edits.forget(self.model, slot);
         empty_session.forgetPeer(self.model, peer.providerId(), false);
         peer_restore.failed(self.model, slot);
         self.model.peers.items[slot].failed = true;
@@ -2022,7 +2143,7 @@ pub const Engine = struct {
         if (peer.state() != .new) peer.stop();
         // The next connection is a new epoch: nothing queued for this one
         // may reach it.
-        self.peer_edits.forget(slot);
+        self.peer_edits.forget(self.model, slot);
         if (self.peer_wake_key != 0) {
             self.retirePeerChannel(fx, slot);
             self.openPeerChannel(fx, slot, on_event);
@@ -2168,7 +2289,7 @@ pub const Engine = struct {
         const model = self.model;
         const peer = model.phuxPeerAt(slot) orelse return;
         const state = &model.peers.items[slot].workspace;
-        self.peer_edits.forget(slot);
+        self.peer_edits.forget(model, slot);
         if (peer.showing()) {
             // Its own tabs, by the id they carry; never another's.
             state.authority = peer.providerId();

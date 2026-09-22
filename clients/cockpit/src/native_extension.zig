@@ -989,13 +989,19 @@ const Bridge = struct {
             self.result_len = result_wire.encodeResult(source, result, &self.result_buffer).len;
             return;
         }
+        if (engine.peer_edits.peekCompletion()) |result| {
+            self.result_len = result_wire.encodeResult(.shared, result, &self.result_buffer).len;
+            return;
+        }
         self.result_len = copyInto(&self.result_buffer, &result_wire.empty);
     }
 
     fn ackResult(_: *Bridge, engine: *Engine, ack: result_wire.Ack) void {
         switch (ack.source) {
             .creation => _ = engine.creation.ackCompletion(ack.command_id),
-            .shared => _ = engine.model.shared_mutations.ackCompletion(ack.command_id),
+            .shared => {
+                if (!engine.model.shared_mutations.ackCompletion(ack.command_id)) _ = engine.peer_edits.ackCompletion(ack.command_id);
+            },
             .native_shared => _ = engine.model.shared_mutations.ackNativeCompletion(ack.command_id),
         }
     }
@@ -3178,6 +3184,352 @@ test "held painted tab action follows identity after metadata and reorder" {
     try rig.settle(@intCast(engine.sequence), "READY");
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.outcome);
     try std.testing.expectEqual(expected_command, rig.app_state.model.tabCommands.lastId.lo);
+}
+
+const TabMenuHost = struct {
+    id: canvas.ObjectId,
+    frame: native_sdk.geometry.RectF,
+    window_id: native_sdk.platform.WindowId,
+    label: []const u8,
+};
+
+fn matchesTabMenu(menu: []const canvas.WidgetContextMenuItem, previous_disabled: bool, next_disabled: bool) bool {
+    if (menu.len != 4) return false;
+    if (!std.mem.eql(u8, menu[0].label, "Move Left")) return false;
+    if (previous_disabled != !menu[0].enabled) return false;
+    if (next_disabled != !menu[1].enabled) return false;
+    if (!std.mem.eql(u8, menu[1].label, "Move Right")) return false;
+    if (!menu[2].separator) return false;
+    return std.mem.eql(u8, menu[3].label, "Close Tab");
+}
+
+fn tabMenuHost(rig: *Rig, previous_disabled: bool, next_disabled: bool) !TabMenuHost {
+    return tabMenuHostIn(rig, 1, canvas_label, previous_disabled, next_disabled);
+}
+
+fn tabMenuHostIn(rig: *Rig, window_id: native_sdk.platform.WindowId, label: []const u8, previous_disabled: bool, next_disabled: bool) !TabMenuHost {
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(window_id, label);
+    for (layout.nodes) |node| {
+        if (!matchesTabMenu(node.widget.context_menu, previous_disabled, next_disabled)) continue;
+        return .{ .id = node.widget.id, .frame = node.frame, .window_id = window_id, .label = label };
+    }
+    return error.TestExpectedTabMenu;
+}
+
+fn openTabMenu(rig: *Rig, host: TabMenuHost) !u64 {
+    const before = rig.harness.null_platform.context_menu_request_count;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = host.window_id,
+        .label = host.label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = host.frame.x + host.frame.width / 2,
+        .y = host.frame.y + host.frame.height / 2,
+    } });
+    try std.testing.expectEqual(before + 1, rig.harness.null_platform.context_menu_request_count);
+    return rig.harness.null_platform.context_menu_token;
+}
+
+fn chooseTabMenuItem(rig: *Rig, host: TabMenuHost, token: u64, item: u32) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+        .window_id = host.window_id,
+        .view_label = host.label,
+        .token = token,
+        .item_id = item,
+    } });
+    for (0..8) |_| {
+        if (rig.app_state.model.tabCommands.queue.len == 0) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.tabCommands.queue.len);
+}
+
+const ShippingSameCoordinator = struct {
+    primary: *cockpit.PhuxProvider,
+    secondary: *cockpit.PhuxProvider,
+
+    fn project(engine: *Engine) !ShippingSameCoordinator {
+        const endpoint = "/shipping-captured-tab-same-coordinator";
+        if (engine.model.phux_provider) |previous| previous.destroy();
+        engine.model.phux_provider = null;
+        engine.model.shared_workspace.deinit();
+        engine.model.shared_workspace = .{};
+        engine.model.shared_mutations = .{};
+        const primary = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = endpoint }, null, "primary");
+        engine.model.phux_provider = primary;
+        try engine.model.ensurePeerSlots(1);
+        const secondary = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = endpoint }, null, "secondary");
+        engine.model.peers.items[0].provider = secondary;
+        try secondary.show(2);
+        try cockpit.PhuxProvider.test_support.attachHost(primary.host);
+        try cockpit.PhuxProvider.test_support.attachSiblingHost(secondary.host);
+        try std.testing.expectEqual(primary.providerId(), secondary.providerId());
+        try std.testing.expect(primary.context_id != secondary.context_id);
+
+        const model = engine.model;
+        _ = model.openWindow(1) orelse return error.NoWindow;
+        model.shared_workspace.authority = primary.providerId();
+        model.shared_workspace.attachment_id = primary.context_id;
+        model.shared_workspace.placement_hint = .{
+            .shared_id = primary.workspaceSnapshot().windows[0].id,
+            .window = 0,
+            .window_epoch = model.window_epochs[0],
+        };
+        _ = try model.shared_workspace.apply(model, primary.workspaceSnapshot(), primary.connectionEpoch());
+        const state = &model.peers.items[0].workspace;
+        state.authority = secondary.providerId();
+        state.attachment_id = secondary.context_id;
+        state.placement_hint = .{
+            .shared_id = secondary.workspaceSnapshot().windows[0].id,
+            .window = 1,
+            .window_epoch = model.window_epochs[1],
+        };
+        _ = try state.apply(model, secondary.workspaceSnapshot(), secondary.connectionEpoch());
+        try std.testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+        try std.testing.expectEqual(@as(usize, 1), model.wsAt(1).?.tab_count);
+        try std.testing.expectEqual(primary.context_id, model.primary.tabs[0].attachment_id.?);
+        try std.testing.expectEqual(secondary.context_id, model.wsAt(1).?.tabs[0].attachment_id.?);
+        model.active_window = 0;
+        model.primary.selected_tab = 0;
+        primary.bridge.outgoing.reset();
+        secondary.bridge.outgoing.reset();
+        return .{ .primary = primary, .secondary = secondary };
+    }
+};
+
+test "shipping background peer tab action keeps primary selected and completes through exact acknowledgement" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const siblings = try ShippingSameCoordinator.project(engine);
+    const selected = engine.model.focusedTerminalRef().?;
+    const selected_attachment = engine.model.primary.tabs[0].attachment_id.?;
+    const primary_id = engine.model.primary.shared_ids[0].?;
+    const secondary_id = engine.model.wsAt(1).?.shared_ids[0].?;
+    engine.sequence +%= 1;
+    engine.revision +%= 1;
+    bridge.announce(engine);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const secondary_window_id: native_sdk.platform.WindowId = 2;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = secondary_window_id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    const peer_menu = try tabMenuHostIn(&rig, secondary_window_id, "phux-cockpit-canvas-1", true, true);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    const token = try openTabMenu(&rig, peer_menu);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try chooseTabMenuItem(&rig, peer_menu, token, 4);
+    try std.testing.expectEqual(@as(u8, 0), bridge.command_buffer[2]);
+    try std.testing.expectEqual(@as(u8, 3), bridge.command_buffer[1]);
+    try std.testing.expectEqual(@as(i64, 7), rig.app_state.model.tabCommands.outcome);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.primary.selected_tab);
+    try std.testing.expect(selected.eql(engine.model.wsAt(0).?.focusedTerminalRef().?));
+    try std.testing.expectEqual(selected_attachment, engine.model.primary.tabs[0].attachment_id.?);
+    try std.testing.expectEqualDeep(primary_id, engine.model.primary.shared_ids[0].?);
+    try std.testing.expectEqualDeep(secondary_id, engine.model.wsAt(1).?.shared_ids[0].?);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.primary.tab_count);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsAt(1).?.tab_count);
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), engine.peer_edits.states.items.len);
+    const pending = engine.peer_edits.states.items[0].mutations.pending[0].?;
+    try std.testing.expectEqual(.remove_window, pending.mutation.kind);
+    try std.testing.expectEqualDeep(secondary_id, pending.mutation.window_id);
+    try std.testing.expect(pending.command_id != null);
+    try std.testing.expectEqual(@as(usize, 0), countOutgoingCommands(siblings.primary));
+    try std.testing.expect(countOutgoingCommands(siblings.secondary) >= 1);
+
+    try cockpit.PhuxProvider.test_support.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_session2_close_metadata.bin");
+    _ = try siblings.secondary.drainReadiness();
+    try cockpit.PhuxProvider.test_support.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_session2_close_state.bin");
+    _ = try siblings.secondary.drainReadiness();
+    _ = engine.peer_edits.pump(engine.model, 0);
+    try std.testing.expectEqual(pending.command_id.?, engine.peer_edits.peekCompletion().?.command_id);
+
+    if (bridge.result_pending) Bridge.cancel(&bridge, bridge.result_key);
+    Bridge.request(&bridge, result_wire.request_name, 871, &result_wire.empty);
+    const completion = Bridge.poll(&bridge).?;
+    try std.testing.expectEqual(@as(u64, 871), completion.key);
+    var owned: [result_wire.max_bytes]u8 = undefined;
+    @memcpy(owned[0..completion.bytes.len], completion.bytes);
+    try rig.dispatch(.{ .command_result_loaded = owned[0..completion.bytes.len] });
+    try std.testing.expect(engine.peer_edits.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.commandResults.recent.len);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.commandResults.recent[0].operation);
+}
+
+test "shipping peer disconnect result survives slot reuse and only its exact bridge acknowledgement" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const siblings = try ShippingSameCoordinator.project(engine);
+    const command_id: u64 = 0xfedcba9876543210;
+    const target = cockpit.engine.tab_commands.capture(engine.model, 1, 0).?;
+    var request: [cockpit.engine.tab_commands.request_len]u8 = undefined;
+    request[0] = 1;
+    request[1] = @intFromEnum(cockpit.engine.tab_commands.Action.close);
+    std.mem.writeInt(u64, request[2..10], command_id, .little);
+    @memcpy(request[10..], &target.encode());
+    try std.testing.expectEqual(cockpit.engine.tab_commands.Status.accepted_pending, engine.applyTabCommand(&request).status);
+
+    engine.peer_edits.forget(engine.model, 0);
+    const unknown = engine.peer_edits.peekCompletion().?;
+    try std.testing.expectEqual(command_id, unknown.command_id);
+    try std.testing.expectEqual(.unknown, unknown.operation);
+    try std.testing.expectEqual(.disconnected, unknown.reason);
+
+    const old_context = siblings.secondary.context_id;
+    engine.model.peers.items[0].provider = null;
+    siblings.secondary.destroy();
+    const replacement = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/shipping-captured-tab-same-coordinator" }, null, "replacement");
+    engine.model.peers.items[0].provider = replacement;
+    try std.testing.expect(replacement.context_id != old_context);
+    engine.model.peers.items[0].workspace.attachment_id = replacement.context_id;
+    engine.peer_edits.forget(engine.model, 0);
+    try std.testing.expectEqualDeep(unknown, engine.peer_edits.peekCompletion().?);
+
+    if (bridge.result_pending) Bridge.cancel(&bridge, bridge.result_key);
+    Bridge.request(&bridge, result_wire.request_name, 881, &result_wire.empty);
+    const first = Bridge.poll(&bridge).?;
+    try std.testing.expectEqual(@as(u64, 881), first.key);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(result_wire.Source.shared)), first.bytes[1]);
+    try std.testing.expectEqual(@as(u8, 3), first.bytes[2]);
+    try std.testing.expectEqual(command_id, std.mem.readInt(u64, first.bytes[6..14], .little));
+
+    var stale_ack = [_]u8{0} ** 10;
+    stale_ack[0] = 1;
+    stale_ack[1] = @intFromEnum(result_wire.Source.shared);
+    std.mem.writeInt(u64, stale_ack[2..10], command_id - 1, .little);
+    Bridge.request(&bridge, result_wire.request_name, 882, &stale_ack);
+    const repeated = Bridge.poll(&bridge).?;
+    try std.testing.expectEqual(command_id, std.mem.readInt(u64, repeated.bytes[6..14], .little));
+    try std.testing.expectEqualDeep(unknown, engine.peer_edits.peekCompletion().?);
+
+    var exact_ack = stale_ack;
+    std.mem.writeInt(u64, exact_ack[2..10], command_id, .little);
+    Bridge.request(&bridge, result_wire.request_name, 883, &exact_ack);
+    const consumed = Bridge.poll(&bridge).?;
+    try std.testing.expectEqualSlices(u8, &result_wire.empty, consumed.bytes);
+    try std.testing.expect(engine.peer_edits.peekCompletion() == null);
+    try std.testing.expect(!engine.peer_edits.ackCompletion(command_id));
+}
+
+fn countOutgoingCommands(remote: *cockpit.PhuxProvider) usize {
+    var count: usize = 0;
+    while (remote.bridge.outgoing.take()) |frame| {
+        if (frame[4] == 0x31) count += 1;
+        remote.bridge.outgoing.release(frame);
+    }
+    return count;
+}
+
+test "shipping tab context menu retains a background target across rebuild move and close" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const first = engine.model.focusedTerminalRef().?;
+    try rig.dispatch(.new_terminal);
+    try rig.settleCurrent();
+    try rig.dispatch(.new_terminal);
+    try rig.settleCurrent();
+    const selected = engine.model.focusedTerminalRef().?;
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().selected_tab);
+
+    const first_menu = try tabMenuHost(&rig, true, false);
+    const move_token = try openTabMenu(&rig, first_menu);
+    // The host owns the menu's static dispatch bytes after both build arenas
+    // have been replaced; a later frame cannot retarget this action.
+    for (0..2) |_| {
+        try rig.dispatch(.engine_wake);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    }
+    try chooseTabMenuItem(&rig, first_menu, move_token, 2);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tabOfTerminal(first).?);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().selected_tab);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+
+    const middle_menu = try tabMenuHost(&rig, false, false);
+    const close_token = try openTabMenu(&rig, middle_menu);
+    try chooseTabMenuItem(&rig, middle_menu, close_token, 4);
+    try std.testing.expect(engine.model.locateTerminal(first) == null);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    _ = try tabMenuHost(&rig, true, false);
+}
+
+test "captured tab actions reject malformed expired and nonexistent targets without changing focus" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const commands = cockpit.engine.tab_commands;
+    const focused = engine.model.focusedTerminalRef().?;
+    const target = commands.capture(engine.model, 0, 0).?;
+    var packet: [commands.request_len]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = @intFromEnum(commands.Action.close);
+
+    try std.testing.expect(commands.decode(packet[0 .. packet.len - 1]) == null);
+    var bad_kind = packet;
+    bad_kind[1] = 7;
+    std.mem.writeInt(u64, bad_kind[2..10], 1, .little);
+    @memcpy(bad_kind[10..], &target.encode());
+    try std.testing.expect(commands.decode(&bad_kind) == null);
+
+    var stale = target;
+    stale.window_epoch +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 1, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    stale = target;
+    stale.tab_generation +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 2, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    stale = target;
+    stale.tab_id +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 3, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    try std.testing.expect(focused.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+}
+
+test "captured shared tab close queues pending without changing presentation" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const engine = try cockpit.durable_tests.start();
+    defer engine.destroy();
+    const commands = cockpit.engine.tab_commands;
+    const target = commands.capture(engine.model, 0, 0).?;
+    var packet: [commands.request_len]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = @intFromEnum(commands.Action.close);
+    std.mem.writeInt(u64, packet[2..10], 41, .little);
+    @memcpy(packet[10..], &target.encode());
+    const receipt = engine.applyTabCommand(&packet);
+    try std.testing.expectEqual(commands.Status.accepted_pending, receipt.status);
+    try std.testing.expectEqual(commands.Reason.none, receipt.reason);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    var pending: usize = 0;
+    for (engine.model.shared_mutations.pending) |entry| if (entry != null) {
+        pending += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), pending);
+    try std.testing.expectEqual(commands.Reason.invalid_command, engine.applyTabCommand(&packet).reason);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
 }
 
 test "tab command receipt survives snapshot and navigation requests and rejects reused windows" {

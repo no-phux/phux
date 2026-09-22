@@ -378,6 +378,12 @@ terminal under the pointer. Dragging a selection beyond the top or bottom edge
 autoscrolls through history. Copy and Paste are available from the Edit menu and
 with `cmd+C` / `cmd+V`. While a live TUI enables mouse reporting, it owns
 secondary click; Shift-drag selection remains copyable with `cmd+C`.
+
+Secondary-clicking a top or rail tab offers one-step axis movement and
+Close Tab. The action stays bound to the tab that opened the menu, including a
+background tab owned by another attached Phux session; it never selects that tab
+just to operate on it. Tab dragging and Close Others do not ship yet.
+
 Right-click or control-click also opens Copy/Paste actions for that pane on
 both direct PTYs and Phux-backed terminals. An ended direct PTY allows copying
 a retained selection; Paste is disabled. A Phux terminal's exit closes its pane

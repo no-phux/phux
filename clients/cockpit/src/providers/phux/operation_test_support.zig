@@ -75,6 +75,24 @@ pub fn attachHost(host: anytype) !void {
     return attachHostWith(host, "hello.bin");
 }
 
+/// Attach the canonical independent session used by same-coordinator tests.
+pub fn attachSiblingHost(host: anytype) !void {
+    try host.start("operations-test-sibling");
+    try stageFixture(host.bridge, "hello.bin");
+    _ = try host.drainReadiness();
+    try host.attachSessionId(2, .{ .cols = 80, .rows = 24 });
+    try stageFixture(host.bridge, "attached_session_b.bin");
+    const delta = try host.drainReadiness();
+    try std.testing.expect(delta.ready_published);
+    try std.testing.expectEqual(.unavailable, host.workspaceSnapshot().state);
+    try stageWorkspaceFixture(host.bridge, "workspace_session2_initial_metadata.bin");
+    try stageWorkspaceFixture(host.bridge, "workspace_session2_initial_state.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expectEqual(.confirmed, host.workspaceSnapshot().status);
+    try std.testing.expectEqual(@as(?u32, 2), host.selectedSessionId());
+    host.bridge.outgoing.reset();
+}
+
 /// `hello_directory.bin` also advertises LIST_DIRECTORY; `hello.bin` does not.
 pub fn attachHostWith(host: anytype, hello: []const u8) !void {
     try host.start("operations-test");
