@@ -27,12 +27,18 @@
                 <row gap="4" cross="center">
                   <!-- Full titles stay available to accessibility. The marker
                        owns a fixed slot so attention cannot shorten the button. -->
-                  <toggle-button size="sm" role="tab" label="{tab.title}" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}" grow="1">{tab.title}</toggle-button>
+                  <toggle-button size="sm" variant="ghost" role="tab" label="{tab.title}" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}" grow="1">{tab.title}</toggle-button>
                   <if test="{tab.attention}"><text width="16" foreground="warning" label="{tab.attentionLabel}">●</text></if>
                   <else><spacer width="16" /></else>
                 </row>
-                <if test="{tab.selected}"><spacer height="2" background="accent" /></if>
-                <else><spacer height="2" /></else>
+                <!-- Inset the indicator within the button, excluding its 16pt
+                     attention slot and 4pt gap. Attention never changes width. -->
+                <row height="2">
+                  <spacer width="8" />
+                  <if test="{tab.selected}"><spacer grow="1" height="2" background="accent" /></if>
+                  <else><spacer grow="1" height="2" /></else>
+                  <spacer width="28" />
+                </row>
               </column>
             </for>
             <if test="{more}"><stack width="32"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button><tooltip anchor="below">Show hidden tabs</tooltip></stack></if>
@@ -128,13 +134,15 @@
               <button size="sm" variant="ghost" icon="x" label="Close navigator" on-press="palette_close" />
 
             </row>
-            <row gap="4" cross="center" label="Navigator views">
+            <if test="{navigatorView == 4}"><text foreground="text_muted" overflow="ellipsis">{title}</text></if>
+            <tabs gap="4" label="Navigator views">
+              <button size="sm" variant="ghost" selected="{navigatorView == 0}" on-press="palette_open">All work</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 1}" on-press="sessions_open">Sessions</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 2}" on-press="machines_open">Machines</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 3}" on-press="windows_open">Windows</button>
               <spacer grow="1" />
               <button size="sm" variant="ghost" selected="{navigatorView == 4}" on-press="commands_open">Commands</button>
-            </row>
+            </tabs>
             <if test="{navigatorView == 4}"><input text="{palettequery}" placeholder="Type a command" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search commands" /></if>
             <else><input text="{palettequery}" placeholder="Search by name, machine or directory" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search navigator" /></else>
             <if test="{navigatorView == 2}">
@@ -145,13 +153,13 @@
             <if test="{navigatorView == 4}">
               <list gap="4" label="Commands">
                 <for each="actionRows" key="index" as="action">
-                  <list-item height="48" label="{action.label}" selected="{action.highlighted}" disabled="{action.disabled}" accent="surface_pressed" accent-foreground="text" on-press="commands_pick:{action.index}">
-                    <row gap="8" cross="center">
+                  <list-item height="40" label="{action.label}" selected="{action.highlighted}" disabled="{action.disabled}" accent="surface_pressed" accent-foreground="text" on-press="commands_pick:{action.index}">
+                    <row grow="1" gap="8" cross="center">
                       <if test="{action.highlighted}"><spacer width="2" height="24" background="accent" /></if>
                       <else><spacer width="2" height="24" /></else>
                       <column grow="1" gap="0">
                         <text overflow="ellipsis">{action.label}</text>
-                        <text foreground="text_muted" overflow="ellipsis">{action.detail}</text>
+                        <if test="{action.detail}"><text foreground="text_muted" overflow="ellipsis">{action.detail}</text></if>
                       </column>
                       <text foreground="text_muted">{action.shortcut}</text>
                     </row>
@@ -165,20 +173,24 @@
                 <list gap="4" label="Saved machines">
                   <for each="machineRows" key="target" as="machine">
                     <list-item height="{machine.height}" label="{machine.name}" selected="{machine.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="machine_pick:{machine.target}">
-                      <column gap="4">
-                        <row gap="8" cross="center">
-                          <text grow="1" overflow="ellipsis">{machine.name}</text>
-                          <text foreground="text_muted">{machine.status}</text>
-                        </row>
-                        <text foreground="text_muted" overflow="ellipsis">{machine.endpoint}</text>
-                        <if test="{machine.message}"><text wrap="true" foreground="warning">{machine.message}</text></if>
-                        <row gap="8" cross="center">
-                          <text foreground="text_muted">{machine.action}</text>
-                          <spacer grow="1" />
-                          <if test="{machine.canDisconnect}"><button size="sm" variant="ghost" on-press="machine_disconnect:{machine.target}">Disconnect</button></if>
-                          <if test="{machine.canForget}"><button size="sm" variant="ghost" on-press="machine_forget:{machine.target}">Forget…</button></if>
-                        </row>
-                      </column>
+                      <row grow="1" gap="8" cross="center">
+                        <if test="{machine.highlighted}"><spacer width="2" height="24" background="accent" /></if>
+                        <else><spacer width="2" height="24" /></else>
+                        <column grow="1" gap="4">
+                          <row gap="8" cross="center">
+                            <text grow="1" overflow="ellipsis">{machine.name}</text>
+                            <text foreground="text_muted">{machine.status}</text>
+                          </row>
+                          <text foreground="text_muted" overflow="ellipsis">{machine.endpoint}</text>
+                          <if test="{machine.message}"><text wrap="true" foreground="warning">{machine.message}</text></if>
+                          <row gap="8" cross="center">
+                            <text foreground="text_muted">{machine.action}</text>
+                            <spacer grow="1" />
+                            <if test="{machine.canDisconnect}"><button size="sm" variant="ghost" on-press="machine_disconnect:{machine.target}">Disconnect</button></if>
+                            <if test="{machine.canForget}"><button size="sm" variant="ghost" on-press="machine_forget:{machine.target}">Forget…</button></if>
+                          </row>
+                        </column>
+                      </row>
                     </list-item>
                   </for>
                 </list>
@@ -189,12 +201,12 @@
             <list gap="0" label="Terminals and sessions">
               <for each="paletterows" key="target" as="row">
                 <list-item height="40" label="{row.label}" selected="{row.highlighted}" disabled="{row.disabled}" accent="surface_pressed" accent-foreground="text" on-press="palette_pick:{row.target}">
-                  <row gap="8" cross="center">
+                  <row grow="1" gap="8" cross="center">
                     <if test="{row.highlighted}"><spacer width="2" height="24" background="accent" /></if>
                     <else><spacer width="2" height="24" /></else>
                     <column grow="1" gap="0">
                       <text overflow="ellipsis">{row.label}</text>
-                      <text foreground="text_muted" overflow="ellipsis">{row.detail}</text>
+                      <if test="{row.detail}"><text foreground="text_muted" overflow="ellipsis">{row.detail}</text></if>
                     </column>
                     <if test="{row.current}"><text foreground="accent">Current</text></if>
                   </row>
@@ -303,12 +315,12 @@
         <panel width="520" padding="12">
           <column gap="8">
             <row cross="center" gap="8">
-              <text>Agents</text>
-              <text grow="1" wrap="true" foreground="text_muted">{notice}</text>
+              <text grow="1" size="heading">Agents</text>
               <button size="sm" variant="ghost" icon="x" label="Close agent inspector" on-press="palette_close" />
             </row>
             <scroll height="160" label="Agent inspection details">
               <column gap="8">
+                <text wrap="true" foreground="text_muted">{notice}</text>
                 <text wrap="true" foreground="text_muted">{status}</text>
                 <for each="rows" key="id" as="agent">
                   <column gap="4">
@@ -419,7 +431,11 @@
             <list gap="0" label="Directories">
               <for each="dirRows" key="id" as="row">
                 <list-item height="40" label="{row.label}" selected="{row.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="dir_pick:{row.index}">
-                  <text overflow="ellipsis">{row.label}</text>
+                  <row grow="1" gap="8" cross="center">
+                    <if test="{row.highlighted}"><spacer width="2" height="24" background="accent" /></if>
+                    <else><spacer width="2" height="24" /></else>
+                    <text grow="1" overflow="ellipsis">{row.label}</text>
+                  </row>
                 </list-item>
               </for>
             </list>

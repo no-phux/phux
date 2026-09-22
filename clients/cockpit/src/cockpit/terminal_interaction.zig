@@ -29,14 +29,22 @@ pub fn stateForOwnerConst(model: *const Model, owner: contract.ReplicaOwner) ?*c
 
 pub fn presentationForOwner(model: *const Model, owner: contract.ReplicaOwner) ?contract.Presentation {
     const remote = model.phuxForOwnerConst(owner) orelse return null;
-    if (!remote.ownerIsCurrent(owner)) return null;
-    return remote.presentation(owner.terminal_ref);
+    const current = remote.owner(owner.terminal_ref) orelse return null;
+    if (!current.eql(owner)) return null;
+    const presentation = remote.presentation(owner.terminal_ref) orelse return null;
+    return if (presentation.owner.eql(owner)) presentation else null;
 }
 
 pub fn copy(model: *Model, fx: anytype, ref: TerminalRef) void {
-    if (model.copy_inflight) return;
     const owner = model.terminalOwner(ref) orelse return;
-    const text = selectionText(model, ref) catch {
+    copyForOwner(model, fx, owner);
+}
+
+/// Start a clipboard write for the replica captured by a native menu. No
+/// ref-wide lookup is allowed here: equal refs may belong to sibling clients.
+pub fn copyForOwner(model: *Model, fx: anytype, owner: contract.ReplicaOwner) void {
+    if (model.copy_inflight) return;
+    const text = selectionTextForOwner(model, owner) catch {
         copyFailed(model, owner);
         return;
     };
@@ -47,17 +55,29 @@ pub fn copy(model: *Model, fx: anytype, ref: TerminalRef) void {
     fx.writeClipboard(.{ .key = local.clipboard_key, .text = text });
 }
 
-fn selectionText(model: *Model, ref: TerminalRef) ![]u8 {
-    if (model.provider.terminal(ref)) |pane| {
-        pane.copy_failed = false;
-        const text = try pane.session.selectionText(std.heap.page_allocator);
-        const result = text orelse return error.NoSelection;
-        defer std.heap.page_allocator.free(result);
-        pane.copied_bytes = result.len;
-        return std.heap.page_allocator.dupe(u8, result);
-    }
-    const state = model.remoteUi(ref) orelse return error.NoSelection;
-    const remote = model.phuxForOwner(state.owner) orelse return error.NoProvider;
+fn selectionTextForOwner(model: *Model, owner: contract.ReplicaOwner) ![]u8 {
+    const ref = owner.terminal_ref;
+    if (contract.isLocal(ref)) return localSelectionText(model, owner);
+    return remoteSelectionTextForOwner(model, owner);
+}
+
+fn localSelectionText(model: *Model, owner: contract.ReplicaOwner) ![]u8 {
+    if (!model.provider.ownerIsCurrent(owner)) return error.StaleOwner;
+    const pane = model.provider.terminal(owner.terminal_ref) orelse return error.NoSelection;
+    pane.copy_failed = false;
+    const text = try pane.session.selectionText(std.heap.page_allocator);
+    const result = text orelse return error.NoSelection;
+    defer std.heap.page_allocator.free(result);
+    pane.copied_bytes = result.len;
+    return std.heap.page_allocator.dupe(u8, result);
+}
+
+fn remoteSelectionTextForOwner(model: *Model, owner: contract.ReplicaOwner) ![]u8 {
+    const ref = owner.terminal_ref;
+    const remote = model.phuxForOwner(owner) orelse return error.NoProvider;
+    const current = remote.owner(ref) orelse return error.StaleOwner;
+    if (!current.eql(owner)) return error.StaleOwner;
+    const state = stateForOwner(model, owner) orelse return error.NoSelection;
     state.copy_failed = false;
     const text = try remoteSelectionText(model, remote, state);
     state.copied_bytes = text.len;
@@ -92,7 +112,7 @@ fn copyFailed(model: *Model, owner: contract.ReplicaOwner) void {
 pub fn copied(model: *Model, ok: bool) void {
     if (!model.copy_inflight) return;
     model.copy_inflight = false;
-    if (!model.ownerIsCurrent(model.copy_owner)) return;
+    if (!clipboardOwnerCurrent(model, model.copy_owner)) return;
     const ref = model.copy_owner.terminal_ref;
     if (!ok) return copyFailed(model, model.copy_owner);
     if (model.provider.terminal(ref)) |pane| {
@@ -104,9 +124,15 @@ pub fn copied(model: *Model, ok: bool) void {
 }
 
 pub fn requestPaste(model: *Model, fx: anytype, ref: TerminalRef) void {
-    if (model.paste_inflight) return;
     const owner = model.terminalOwner(ref) orelse return;
-    if (!acceptsPaste(model, ref)) {
+    requestPasteForOwner(model, fx, owner);
+}
+
+/// Start a clipboard read for the exact captured replica. The completion is
+/// already owner-qualified by `paste_owner` and follows this same route.
+pub fn requestPasteForOwner(model: *Model, fx: anytype, owner: contract.ReplicaOwner) void {
+    if (model.paste_inflight) return;
+    if (!acceptsPasteForOwner(model, owner)) {
         model.paste_failed = true;
         return;
     }
@@ -116,23 +142,82 @@ pub fn requestPaste(model: *Model, fx: anytype, ref: TerminalRef) void {
     fx.readClipboard(.{ .key = local.paste_clipboard_key });
 }
 
-fn acceptsPaste(model: *Model, ref: TerminalRef) bool {
+fn acceptsPasteForOwner(model: *Model, owner: contract.ReplicaOwner) bool {
+    const ref = owner.terminal_ref;
     model.paste_target = .terminal;
-    if (model.provider.terminal(ref)) |pane| {
+    if (contract.isLocal(ref)) {
+        if (!model.provider.ownerIsCurrent(owner)) return false;
+        const pane = model.provider.terminal(ref) orelse return false;
         if (pane.session.search.open) {
             model.paste_target = .search_needle;
             return true;
         }
         return pane.acceptsInput();
     }
-    const presentation = model.remotePresentation(ref) orelse return false;
-    const state = model.remoteUi(ref) orelse return false;
+    const presentation = presentationForOwner(model, owner) orelse return false;
+    const state = stateForOwner(model, owner) orelse return false;
     if (state.search.open) {
         model.paste_target = .search_needle;
         state.search.paste_pending = true;
         return true;
     }
     return presentation.phase == .live;
+}
+
+/// Menu policy for one captured owner. A live mouse-reporting TUI keeps
+/// secondary click; a retained local snapshot may expose an existing selection.
+pub fn clipboardEnabledForOwner(model: *Model, owner: contract.ReplicaOwner, action: anytype) bool {
+    const ref = owner.terminal_ref;
+    if (contract.isLocal(ref)) return localClipboardEnabled(model, owner, action);
+    return remoteClipboardEnabled(model, owner, action);
+}
+
+fn localClipboardEnabled(model: *Model, owner: contract.ReplicaOwner, action: anytype) bool {
+    if (!model.provider.ownerIsCurrent(owner)) return false;
+    const pane = model.provider.terminal(owner.terminal_ref) orelse return false;
+    if (@import("pointer_input.zig").paneReportsMouse(pane)) return false;
+    return switch (action) {
+        .copy => pane.session.selectionActive(),
+        .paste => pane.acceptsInput(),
+    };
+}
+
+fn remoteClipboardEnabled(model: *Model, owner: contract.ReplicaOwner, action: anytype) bool {
+    const ref = owner.terminal_ref;
+    const remote = model.phuxForOwner(owner) orelse return false;
+    const current = remote.owner(ref) orelse return false;
+    if (!current.eql(owner)) return false;
+    const presentation = remote.presentation(ref) orelse return false;
+    if (!presentation.owner.eql(owner)) return false;
+    if (!remoteClipboardMenuAvailable(remote, owner, presentation.phase)) return false;
+    return switch (action) {
+        .copy => hasSelection(model, owner, presentation),
+        .paste => presentation.phase == .live,
+    };
+}
+
+fn remoteClipboardMenuAvailable(remote: anytype, owner: contract.ReplicaOwner, phase: contract.Phase) bool {
+    if (phase != .live) return false;
+    return !(remote.mouseTracking(owner) catch return false);
+}
+
+/// Menu projection must stay constant-time. The grid answers for an on-screen
+/// range; owner-qualified handles retain a range that has scrolled off-screen.
+/// Search owns borrowed result handles rather than storing them in this state.
+fn hasSelection(model: *const Model, owner: contract.ReplicaOwner, presentation: contract.Presentation) bool {
+    if (presentation.grid.selection_active) return true;
+    const state = stateForOwnerConst(model, owner) orelse return false;
+    if (state.start_anchor != 0 and state.end_anchor != 0 and state.start_anchor != state.end_anchor) return true;
+    return state.search.open and state.search.count != 0;
+}
+
+fn clipboardOwnerCurrent(model: *const Model, owner: contract.ReplicaOwner) bool {
+    if (contract.isLocal(owner.terminal_ref)) return model.provider.ownerIsCurrent(owner);
+    const remote = model.phuxForOwnerConst(owner) orelse return false;
+    const current = remote.owner(owner.terminal_ref) orelse return false;
+    if (!current.eql(owner)) return false;
+    const presentation = remote.presentation(owner.terminal_ref) orelse return false;
+    return presentation.owner.eql(owner) and presentation.phase == .live;
 }
 
 pub fn pasted(model: *Model, fx: anytype, ok: bool, text: []const u8) void {

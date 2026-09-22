@@ -12,6 +12,16 @@ const step = (model, message) => {
   return Array.isArray(result) ? result : [result, null];
 };
 
+test('terminal context action forwards its captured target without using focus', () => {
+  const target = new Uint8Array([1, 2, 3, 4]);
+  const original = initialModel()[0];
+  const [model, command] = step(original, { kind: 'clipboard_action', target });
+  assert.equal(model, original);
+  assert.ok(command, 'captured clipboard action must reach the native host');
+  assert.equal(command.name, 'cockpit.clipboard');
+  assert.deepEqual(command.payload, target);
+});
+
 test('command catalog derives exactly from shipping menu labels and shortcuts', () => {
   const manifest = readFileSync(new URL('../../app.zon', import.meta.url), 'utf8');
   const generated = readFileSync(new URL('../command-catalog.ts', import.meta.url), 'utf8');
@@ -77,4 +87,30 @@ test('Commands captures an off-strip secondary tab and refuses retargeting', () 
   assert.equal(effect, null);
   assert.equal(refused.paletteOpen, true);
   assert.match(text(refused.paletteNotice), /captured context/);
+});
+
+test('All work returns from every navigator view and clears the previous scope', () => {
+  for (const kind of ['sessions_open', 'machines_open', 'windows_open', 'commands_open']) {
+    const [opened] = step(initialModel()[0], { kind });
+    assert.notEqual(opened.navigatorView, 0);
+    const [model, request] = step(opened, { kind: 'palette_open' });
+    assert.equal(model.paletteOpen, true);
+    assert.equal(model.navigatorView, 0, kind);
+    assert.equal(model.paletteScope, 0, kind);
+    assert.equal(text(model.paletteQuery), '');
+    assert.equal(request.cmds[1].name, 'cockpit.navigation');
+  }
+});
+
+test('late command shortcuts preserve the destination navigator presentation', () => {
+  for (const kind of ['palette_open', 'sessions_open', 'machines_open', 'windows_open', 'palette_close']) {
+    const [commands] = step(initialModel()[0], { kind: 'commands_open' });
+    const [destination] = step(commands, { kind });
+    const [loaded] = step(destination, { kind: 'keybindings_loaded', body: new Uint8Array([1, 0, 0, 0]) });
+    assert.equal(loaded.navigatorView, destination.navigatorView, kind);
+    assert.equal(loaded.paletteOpen, destination.paletteOpen, kind);
+    assert.deepEqual(loaded.paletteNotice, destination.paletteNotice, kind);
+    assert.equal(loaded.paletteCursor, destination.paletteCursor, kind);
+    assert.equal(loaded.paletteLoading, destination.paletteLoading, kind);
+  }
 });

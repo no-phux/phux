@@ -195,9 +195,11 @@
         // Host-native glass now sits behind transparent canvas content while
         // the canvas retains input/accessibility ownership. Modal dismissal
         // owns the complete pointer gesture and cannot seed a double click.
+        // Cold GPU-composite startup initializes the final drawable presenter,
+        // so a correct retained texture also reaches the visible window.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/ee690e0a336227ec4eec5a9b9c8077d787a7e91a.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQrs0uAJ-i_HUKzwJM-S7Y0y6WG31LfIhXoXHQFoF",
+            .url = "https://github.com/phall1/native/archive/d6e85cd943c5746f03a57ddd1297620010f1a79b.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQiw_uAJ0vW8AzKHwhMz4Qr09bqIbJuflPytMilV2",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream

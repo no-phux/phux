@@ -32,6 +32,7 @@ const local_tool_launch = @import("local_tool_launch.zig");
 pub const new_session = @import("new_session.zig");
 pub const new_session_runtime = @import("new_session_runtime.zig");
 pub const machine_runtime = @import("machine_runtime.zig");
+pub const clipboard = @import("clipboard_target.zig");
 
 test {
     _ = @import("machine_engine_tests.zig");
@@ -181,6 +182,40 @@ test "shared divider preview rolls back when an overlay suspends input" {
     try std.testing.expectEqual(@as(u64, 0), engine.model.shared_mutations.next_ticket);
 }
 
+test "native split resize callback cannot retarget a rebuilt local divider" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    engine.model.focused = true;
+    try std.testing.expect(engine.splitFocusedPane(.horizontal));
+    const original = engine.model.ws().selectedTree().?.root;
+    engine.captureNativeSplitResize(0, original);
+
+    try std.testing.expect(engine.newTerminal());
+    try std.testing.expect(engine.splitFocusedPane(.horizontal));
+    const replacement = engine.model.ws().selectedTree().?;
+    const before = replacement.node(replacement.root).fraction;
+    try std.testing.expect(!engine.applyNativeSplitResize(0, original, 0.8));
+    try std.testing.expectEqual(before, replacement.node(replacement.root).fraction);
+}
+
+test "native split resize callback rolls back a shared divider without a provider" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    engine.model.focused = true;
+    try std.testing.expect(engine.splitFocusedPane(.horizontal));
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTree().?;
+    const root = tree.root;
+    const original = tree.node(root).fraction;
+    workspace.shared_ids[workspace.selected_tab] = @splat(1);
+    engine.model.shared_workspace.revision = 10;
+    engine.captureNativeSplitResize(0, root);
+
+    try std.testing.expect(engine.applyNativeSplitResize(0, root, 0.7));
+    try std.testing.expectEqual(original, tree.node(root).fraction);
+    try std.testing.expect(engine.model.shared_workspace.refused);
+}
+
 const SplitDrag = struct {
     window_id: platform.WindowId,
     pointer_id: u64,
@@ -237,6 +272,10 @@ pub const Engine = struct {
     last_down_point: geometry.PointF = .{},
     last_click_count: u8 = 0,
     split_drag: ?SplitDrag = null,
+    /// Each shipping split callback is bound to the exact tree that produced
+    /// it. A node index is only meaningful inside that tree, so a rebuilt tab
+    /// or recycled window slot cannot resize a different divider.
+    split_resize_captures: [model_module.max_windows][layout.max_nodes]?SplitDrag = @splat(@splat(null)),
     remote_focus_owner: ?support.ReplicaOwner = null,
     remote_natural_keys_held: u8 = 0,
     input_suspended: bool = false,
@@ -3200,6 +3239,25 @@ pub const Engine = struct {
 
     // -------------------------------------------------------- clipboard
 
+    pub fn clipboardEnabled(self: *Engine, owner: support.ReplicaOwner, action: clipboard.Action) bool {
+        return interaction.clipboardEnabledForOwner(self.model, owner, action);
+    }
+
+    /// The menu's captured placement and provider replica, never current focus
+    /// or a ref-wide provider lookup, authorize the request and its completion.
+    pub fn applyClipboard(self: *Engine, fx: anytype, bytes: []const u8) bool {
+        if (self.input_suspended) return false;
+        const target = clipboard.decode(bytes) orelse return false;
+        const resolved = target.resolve(self.model) orelse return false;
+        if (!self.clipboardEnabled(resolved.owner, resolved.action)) return false;
+        switch (resolved.action) {
+            .copy => interaction.copyForOwner(self.model, fx, resolved.owner),
+            .paste => interaction.requestPasteForOwner(self.model, fx, resolved.owner),
+        }
+        self.sequence +%= 1;
+        return true;
+    }
+
     /// update.zig's copySelection for a local pane. The effects wrapper the
     /// graph hands in supplies the result constructor; the answer lands in
     /// `onClipboardWritten`.
@@ -3391,6 +3449,79 @@ pub const Engine = struct {
             self.model.shared_workspace.refused = true;
         };
         return true;
+    }
+
+    /// Bind a retained split's callback to this render's window epoch and
+    /// tree identity. The SDK callback supplies only a fraction, so the native
+    /// projection retains the rest of the target rather than trusting a node
+    /// index after a rebuild.
+    pub fn captureNativeSplitResize(self: *Engine, window_index: usize, node: layout.NodeId) void {
+        if (window_index >= self.split_resize_captures.len) return;
+        const workspace = self.model.wsAt(window_index) orelse {
+            self.split_resize_captures[window_index][node] = null;
+            return;
+        };
+        const tree = workspace.selectedTree() orelse {
+            self.split_resize_captures[window_index][node] = null;
+            return;
+        };
+        const entry = tree.node(node);
+        if (entry.kind != .branch) {
+            self.split_resize_captures[window_index][node] = null;
+            return;
+        }
+        const authority = shared_workspace.tabAuthority(tree);
+        self.split_resize_captures[window_index][node] = .{
+            .window_id = workspace.window_id,
+            .pointer_id = 0,
+            .window_index = window_index,
+            .node = node,
+            .orientation = entry.orientation,
+            .bounds = .{},
+            .shared_id = workspace.shared_ids[workspace.selected_tab],
+            .shared_revision = self.projectionRevision(authority),
+            .window_epoch = self.model.window_epochs[window_index],
+            .local_fingerprint = localSplitFingerprint(tree),
+            .original_fraction = entry.fraction,
+            .authority = authority,
+        };
+    }
+
+    pub fn clearNativeSplitResizeCaptures(self: *Engine, window_index: usize) void {
+        if (window_index < self.split_resize_captures.len) self.split_resize_captures[window_index] = @splat(null);
+    }
+
+    /// Persist keyboard and accessibility divider changes through the same
+    /// identity and shared-mutation seam as native pointer dragging. Local
+    /// trees own their fraction directly; shared trees keep the drag commit's
+    /// optimistic-then-authoritative contract.
+    pub fn applyNativeSplitResize(self: *Engine, window_index: usize, node: layout.NodeId, value: f32) bool {
+        if (!std.math.isFinite(value)) return false;
+        if (!self.model.focused) return false;
+        // Raw surface drags own terminal mouse arbitration and already mutate
+        // this branch through routeSplitDrag. The SDK emits the same resize
+        // echo for its overlapping semantic divider; accepting it would turn
+        // one pointer move into a second, uncaptured commit.
+        if (self.split_drag != null) return false;
+        const target = self.nativeSplitResizeTarget(window_index, node) orelse return false;
+        const before = target.tree.node(node).fraction;
+        target.tree.setFraction(node, value);
+        if (target.tree.node(node).fraction == before) return false;
+        if (target.drag.shared_id) |_| return self.finishSplitDrag(target.drag, true);
+        self.sequence +%= 1;
+        self.revision +%= 1;
+        self.intent_refused = false;
+        return true;
+    }
+
+    fn nativeSplitResizeTarget(self: *Engine, window_index: usize, node: layout.NodeId) ?struct { drag: SplitDrag, tree: *layout.Tree } {
+        if (window_index >= self.split_resize_captures.len) return null;
+        const drag = self.split_resize_captures[window_index][node] orelse return null;
+        if (drag.node != node) return null;
+        const tree = self.splitDragTree(drag) orelse return null;
+        const entry = tree.node(node);
+        if (entry.kind != .branch or entry.orientation != drag.orientation) return null;
+        return .{ .drag = drag, .tree = tree };
     }
 
     fn cancelSplitDrag(self: *Engine) void {

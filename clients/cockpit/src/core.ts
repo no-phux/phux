@@ -602,6 +602,7 @@ export type Msg =
   | { readonly kind: "update_loaded"; readonly body: Uint8Array }
   | { readonly kind: "update_failed"; readonly error: Uint8Array }
   | { readonly kind: "native_command"; readonly command: number }
+  | { readonly kind: "clipboard_action"; readonly target: Uint8Array }
   // Posted by the native engine for every shell event it consumed: no bytes
   // ride along, the core only learns that the grids beneath it moved.
   | { readonly kind: "engine_wake" }
@@ -698,6 +699,7 @@ export const viewUnbound = [
   "snapshot_loaded",
   "snapshot_failed",
   "native_command",
+  "clipboard_action",
   "hostOpen",
   "hostAnchor",
   "hostFocus",
@@ -1052,7 +1054,7 @@ function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
 
 function navigationNotice(agents: boolean, scope: number, total: number, offset: number): Uint8Array {
   if (agents) {
-    if (total === 0) return asciiBytes("No agent resources in the attached catalog");
+    if (total === 0) return asciiBytes("No agents found. Refresh to check again.");
     return joinBytes(asciiBytes("Agent "), decimalBytes(offset + 1), joinBytes(asciiBytes(" of "), decimalBytes(total), asciiBytes(" / Last reported state")));
   }
   if (scope === 4) return total === 0 ? asciiBytes("No matching windows") : asciiBytes("Choose a window or tab to bring existing work forward");
@@ -1133,7 +1135,7 @@ function changeNavigation(model: Model, msg: Msg): Model {
   switch (msg.kind) {
     case "palette_open":
     case "agents_open":
-      if (model.paletteOpen && model.agentsMode === (msg.kind === "agents_open")) return model;
+      if (model.paletteOpen && model.navigatorView === 0 && model.agentsMode === (msg.kind === "agents_open")) return model;
       return requestNavigation(scopeOverlays({ ...model, agentsMode: msg.kind === "agents_open", paletteOpen: true, settingsOpen: false, hostOpen: false, hostAwaiting: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
         navigatorView: 0, navigatorTitle: asciiBytes(msg.kind === "agents_open" ? "Inspect agents" : "Go to Terminal"),
         paletteScope: 0, paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES }), 0);
@@ -1970,7 +1972,7 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
       const row = rows[j];
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
       const label = row.resource.length === 0 ? row.provider : joinBytes(row.provider, asciiBytes(" / "), joinBytes(row.resource, asciiBytes(" under "), row.parent));
-      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: NO_BYTES });
+      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: attentionLabel(label, row.attention) });
       ordinal += 1;
     }
   }
@@ -2809,7 +2811,7 @@ function commandContextCurrent(model: Model): boolean {
 }
 
 function refreshActions(model: Model, cursor: number): Model {
-  const rows = commandRows(model.paletteQuery, cursor, model.engineConnected && activeTabs(model).length > 0, model.workspaceLabel, model.bindings);
+  const rows = commandRows(model.paletteQuery, cursor, model.engineConnected && activeTabs(model).length > 0, model.bindings);
   const available: ActionRow[] = [];
   for (const row of rows) {
     const command = commandDefinition(row.index);
@@ -3011,6 +3013,7 @@ function loadedKeybindings(model: Model, body: Uint8Array): NavigatorDecision {
     bindingRows: filteredBindings(bindings, model.settingsQuery), settingsNotice: bindings.notice }, 0, NO_BYTES);
   const next = { ...model, bindings, bindingRows: filteredBindings(bindings, model.settingsQuery), appearanceBusy: false, settingsNotice: bindings.notice };
   if (model.settingsOpen) return navigatorDecision({ ...next, appearanceBusy: true }, 7, appearanceRequest(0, 0));
+  if (!model.paletteOpen || model.navigatorView !== 4) return navigatorDecision(next, 0, NO_BYTES);
   return navigatorDecision(refreshActions(next, model.paletteCursor), 0, NO_BYTES);
 }
 
@@ -4012,6 +4015,8 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "native_command":
       if (fromCommands) return [model, Cmd.batch([Cmd.host("cockpit.committed", NO_BYTES), Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))])];
       return [model, Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))];
+    case "clipboard_action":
+      return [model, Cmd.host("cockpit.clipboard", msg.target)];
     case "engine_wake":
       return { ...model };
     case "snapshot_loaded": {

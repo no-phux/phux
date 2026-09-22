@@ -6,6 +6,7 @@
 //! `canvas.TerminalGrid` buffers; there is no second emulator or projection.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const transport = @import("phux_transport");
 const provider = @import("provider_contract");
 const presentation_module = @import("presentation.zig");
@@ -327,6 +328,9 @@ pub const Host = struct {
     search_results: std.ArrayListUnmanaged(SearchResult) = .empty,
     search_owner: ?provider.ReplicaOwner = null,
     notices: std.ArrayListUnmanaged(Notice) = .empty,
+    /// Test-only proof that paint/menu projection never materializes selection
+    /// bytes. Production pays no storage cost; Copy is the sole caller.
+    selection_text_requests: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
     /// Terminals whose shell ENDED (EXITED with an ending reason), in arrival
     /// order, until the engine takes them. Deliberately not the bounded
     /// notice ring: no burst of other statuses may evict an ended shell.
@@ -1511,11 +1515,17 @@ pub const Host = struct {
     }
 
     pub fn selectionText(host: *Host, owner_value: provider.ReplicaOwner, gpa: std.mem.Allocator) ![]u8 {
+        if (comptime builtin.is_test) host.selection_text_requests += 1;
         const id = try host.currentCId(owner_value);
         var text: c.PhuxBytes = undefined;
         try resultError(c.phux_client_selection_text(host.client, &id, &text));
         if (text.len != 0 and text.data == null) return error.Protocol;
         return gpa.dupe(u8, if (text.len == 0) &.{} else text.data[0..text.len]);
+    }
+
+    pub fn selectionTextRequestCount(host: *const Host) usize {
+        if (comptime builtin.is_test) return host.selection_text_requests;
+        return 0;
     }
 
     pub fn takeNotice(host: *Host) ?Notice {

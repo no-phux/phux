@@ -10,8 +10,9 @@ repository.workspace = true
 authors.workspace = true
 
 [lib]
-# This crate only exports integration-test helpers; it has no unit-test harness.
-test = false
+# Most coverage lives in phux-server's integration tests. Keep one unit-test
+# harness for stateful wire/oracle behavior that is cheapest to prove here.
+test = true
 
 [lints]
 workspace = true

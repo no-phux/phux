@@ -375,11 +375,15 @@ Clicking a tab switches surfaces without stopping hidden execution. Clicking a
 split pane moves input ownership to it. The divider supports pointer dragging,
 arrow-key adjustment, Home, and End. Trackpad and wheel input route only to the
 terminal under the pointer. Dragging a selection beyond the top or bottom edge
-autoscrolls through history. Right-click or control-click opens native Copy and
-Paste actions while Cockpit owns pointer selection or the process has ended.
-While a live TUI enables mouse reporting, it exclusively owns secondary click,
-so the native menu is intentionally unavailable; Shift-drag selection remains
-copyable with `cmd+C`. `cmd+click` opens a URL under the pointer, and works
+autoscrolls through history. Copy and Paste are available from the Edit menu and
+with `cmd+C` / `cmd+V`. While a live TUI enables mouse reporting, it owns
+secondary click; Shift-drag selection remains copyable with `cmd+C`.
+Right-click or control-click also opens Copy/Paste actions for that pane on
+both direct PTYs and Phux-backed terminals. An ended direct PTY allows copying
+a retained selection; Paste is disabled. A Phux terminal's exit closes its pane
+and invalidates any open menu. Each menu action retains its exact provider
+replica and visible placement across focus changes.
+`cmd+click` opens a URL under the pointer, and works
 even while a TUI owns mouse reporting — a program that prints links should not
 have to give up mouse input for them to be clickable. It is deliberately a
 heuristic that fails toward "not a link": only `http`, `https` and `mailto` are
@@ -387,17 +391,9 @@ recognised, so a printed `file:` or `javascript:` path is never something the
 OS can be asked to open. A `cmd+click` on ordinary text is an ordinary click. A copied range remains highlighted until typing or
 another selection clears it.
 
-**Tabs drag.** Pick one up and carry it along the strip: the reorder happens as
-the pointer moves, so the tab under the cursor is the tab that will be there
-when you let go — there is no landing animation to disagree with. Escape puts it
-back where you picked it up. A click still selects; only a gesture past the
-runtime's own drag slop reorders. The menu command and `cmd+shift+arrow` are
-unchanged.
-
-**Right-clicking a tab** opens its own menu — New Terminal, Move Left, Move
-Right, Close, Close Others. Every verb acts on the tab under the pointer rather
-than on the selected one, which is the whole reason the menu exists; the ends of
-the strip disable Move rather than hiding it, so the menu never changes shape.
+**Reorder the selected tab** with Move Tab Left / Move Tab Right in the Window
+menu or `cmd+shift+arrow-left` / `cmd+shift+arrow-right`. Reordering preserves
+the terminal's identity and running work.
 
 **Dropping files** from Finder onto a pane types their paths into that pane's
 shell — quoted, space-separated, and delivered through the same bracketed-paste
@@ -408,12 +404,6 @@ than as a command. The pointer decides the pane, and focus follows the drop.
 naming the terminal. In the foreground it stays a dot in the tab strip: a banner
 for the pane you are typing in is how notifications get turned off wholesale.
 
-**The menu-bar extra** (`PX`) carries the open terminal count, turns its title
-warning-toned when one of them wants something, and lists every terminal in the
-active window with a row that goes straight to it — raising the window on the
-way, since a menu-bar pick happens while Cockpit is behind whatever you were
-actually looking at.
-
 ## Requirements
 
 - Apple silicon Mac running macOS 11 or later
@@ -422,7 +412,7 @@ actually looking at.
   either environment. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@ee690e0a`](https://github.com/phall1/native/commit/ee690e0a336227ec4eec5a9b9c8077d787a7e91a),
+[`phall1/native@d6e85cd9`](https://github.com/phall1/native/commit/d6e85cd943c5746f03a57ddd1297620010f1a79b),
 the fork's cockpit/v0.10.5 lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
@@ -435,7 +425,8 @@ the native macOS app-updater surface, the Metal Hybrid C signed cell
 (4x) and text (2x) paint ceilings, a 32-slot null-platform window-drag region
 mirror matching the runtime collector cap, a `cell_grid`-capable opt-in GPU
 composite path with configurable real-frame capture cadence, and ScriptC 0.1.1
-(balanced wide-model decode guards, nested recipe scope 32). This pin adds
+(balanced wide-model decode guards, nested recipe scope 32). Cold composite
+startup also initializes the final drawable presenter. This pin includes
 host-native glass behind transparent canvas content, window composition lifetime
 handling, and complete modal-dismissal gesture ownership without click-through
 or contamination of the next click's count.

@@ -404,6 +404,10 @@ const Bridge = struct {
             self.commitInteraction(Adapter.Host.model());
             return;
         }
+        if (std.mem.eql(u8, name, cockpit.engine.clipboard.command_name)) {
+            self.sendClipboard(payload);
+            return;
+        }
         if (!std.mem.eql(u8, name, protocol.intent_command)) return;
         const engine = self.engine orelse return;
         if (engineFx()) |fx| {
@@ -414,6 +418,13 @@ const Bridge = struct {
             _ = engine.applyIntent(payload, &cockpit.NoShells{});
         }
         self.announce(engine);
+    }
+
+    fn sendClipboard(self: *Bridge, payload: []const u8) void {
+        if (self.replayInteraction()) return;
+        const engine = self.engine orelse return;
+        const fx = engineFx() orelse return;
+        if (engine.applyClipboard(fx, payload)) self.announce(engine);
     }
 
     /// The SDK commits Host.model before walking the returned command batch.
@@ -1491,10 +1502,54 @@ fn emptyInteraction(ui: *Adapter.Ui) Adapter.Ui.Node {
     return ui.el(.stack, .{ .grow = 1, .semantics = .{ .hidden = true } }, .{});
 }
 
+fn shippingSplitResizeHandler(comptime window_index: usize, comptime node: cockpit.layout.NodeId) Adapter.Ui.ValueMsgFn {
+    return struct {
+        fn make(value: f32) core.Msg {
+            if (bridge.replayInteraction()) return .engine_wake;
+            if (bridge.engine) |engine| {
+                if (engine.applyNativeSplitResize(window_index, node, value)) bridge.announce(engine);
+            }
+            return .engine_wake;
+        }
+    }.make;
+}
+
+const shipping_split_resize_handlers: [1 + cockpit.scene.max_secondary_windows][cockpit.layout.max_nodes]Adapter.Ui.ValueMsgFn = blk: {
+    var table: [1 + cockpit.scene.max_secondary_windows][cockpit.layout.max_nodes]Adapter.Ui.ValueMsgFn = undefined;
+    for (0..table.len) |window_index| {
+        for (0..cockpit.layout.max_nodes) |node_index| {
+            table[window_index][node_index] = shippingSplitResizeHandler(window_index, @intCast(node_index));
+        }
+    }
+    break :blk table;
+};
+
+fn clipboardMenu(ui: *Adapter.Ui, engine: *Engine, tree: *const cockpit.layout.Tree, window_index: usize, ref: cockpit.TerminalRef) []const Adapter.Ui.ContextMenuItem {
+    const target = cockpit.engine.clipboard.Target.capture(engine.model, tree, window_index, ref, .copy) orelse return &.{};
+    const copy_enabled = engine.clipboardEnabled(target.owner, .copy);
+    const paste_enabled = engine.clipboardEnabled(target.owner, .paste);
+    // Mouse-reporting applications own secondary click. An empty selection in
+    // an ended terminal likewise has no clipboard action to offer.
+    if (!copy_enabled and !paste_enabled) return &.{};
+    const items = ui.arena.alloc(Adapter.Ui.ContextMenuItem, 2) catch @panic("out of memory");
+    items[0] = .{ .label = "Copy", .msg = clipboardMenuMessage(ui, target, .copy), .enabled = copy_enabled };
+    items[1] = .{ .label = "Paste", .msg = clipboardMenuMessage(ui, target, .paste), .enabled = paste_enabled };
+    return items;
+}
+
+fn clipboardMenuMessage(ui: *Adapter.Ui, captured: cockpit.engine.clipboard.Target, action: cockpit.engine.clipboard.Action) core.Msg {
+    var target = captured;
+    target.action = action;
+    var packet: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const bytes = ui.arena.dupe(u8, target.encode(&packet)) catch @panic("out of memory");
+    return .{ .clipboard_action = bytes };
+}
+
 fn paneInteraction(
     ui: *Adapter.Ui,
-    engine: *const Engine,
+    engine: *Engine,
     workspace: anytype,
+    window_index: usize,
     node: cockpit.layout.NodeId,
 ) Adapter.Ui.Node {
     const current = workspace.selectedTreeConst() orelse return emptyInteraction(ui);
@@ -1507,10 +1562,11 @@ fn paneInteraction(
             const title = cockpit.projection.terminalTitleInto(engine.model, terminal, &title_room);
             const screen = if (engine.model.provider.terminalConst(terminal)) |pane|
                 pane.session.screenText()
-            else if (engine.model.remotePresentation(terminal)) |presentation|
+            else if (engine.model.remotePaintPresentationIn(current, terminal)) |presentation|
                 presentation.grid.screen_text
             else
                 "";
+            const menu = clipboardMenu(ui, engine, current, window_index, terminal);
             return ui.el(.stack, .{
                 // Focus belongs to the selected terminal, not the toolbar
                 // control that created it. A provider-qualified key gives a
@@ -1523,6 +1579,12 @@ fn paneInteraction(
                 .min_height = cockpit.projection.split_pane_min_height,
                 .opacity = 0,
                 .text = screen,
+                // A semantic stack is focusable but not hit-testable until it
+                // claims presses. Native routing already owns pane focus;
+                // this opts the same leaf into SDK context-menu hit testing.
+                .on_press = .engine_wake,
+                .context_menu = menu,
+                .context_menu_policy = if (menu.len == 0) .disabled else .automatic,
                 .semantics = .{
                     .role = .textbox,
                     .label = ui.fmt("{s}", .{title}),
@@ -1531,8 +1593,9 @@ fn paneInteraction(
             }, .{});
         },
         .branch => {
-            const first = paneInteraction(ui, engine, workspace, entry.first);
-            const second = paneInteraction(ui, engine, workspace, entry.second);
+            engine.captureNativeSplitResize(window_index, node);
+            const first = paneInteraction(ui, engine, workspace, window_index, entry.first);
+            const second = paneInteraction(ui, engine, workspace, window_index, entry.second);
             return ui.split(.{
                 .grow = 1,
                 .min_width = cockpit.projection.split_pane_min_width,
@@ -1543,6 +1606,7 @@ fn paneInteraction(
                     .vertical => .vertical,
                 },
                 .value = entry.fraction,
+                .on_resize = shipping_split_resize_handlers[window_index][node],
                 .opacity = 0,
                 .semantics = .{ .label = "Terminal split" },
             }, .{ first, second });
@@ -1554,11 +1618,12 @@ fn paneInteraction(
 /// authoritative projection gives the grid painter. Compiled `.native`
 /// markup owns all visible chrome; this layer contributes pane semantics and
 /// split topology over the app-owned libghostty surfaces beneath it.
-fn terminalInteraction(ui: *Adapter.Ui, engine: *const Engine, window_index: usize) Adapter.Ui.Node {
+fn terminalInteraction(ui: *Adapter.Ui, engine: *Engine, window_index: usize) Adapter.Ui.Node {
     const workspace = engine.model.wsAtConst(window_index) orelse return emptyInteraction(ui);
     const chrome = cockpit.projection.workspaceChromeIn(engine.model, workspace, workspace.surface_size);
+    engine.clearNativeSplitResizeCaptures(window_index);
     const panes = if (workspace.selectedTreeConst()) |tree|
-        paneInteraction(ui, engine, workspace, tree.root)
+        paneInteraction(ui, engine, workspace, window_index, tree.root)
     else
         emptyInteraction(ui);
     const content = ui.row(.{ .height = chrome.content.height }, .{
@@ -2291,6 +2356,22 @@ const Rig = struct {
 
     fn attachFixture(self: *Rig) !cockpit.TerminalRef {
         return self.attachFixtureWithHello(@embedFile("tests/fixtures/hello.bin"));
+    }
+
+    fn attachSharedSplitFixture(self: *Rig) !void {
+        _ = try self.attachFixture();
+        const engine = bridge.engine.?;
+        const remote = engine.model.phux().?;
+        const before = engine.model.shared_workspace.revision;
+        _ = (try remote.requestWorkspaceRefresh()).?;
+        // FFI operation IDs and internal wire request IDs are distinct.
+        // Initial attach used wire 0/1; this refresh uses 2/3.
+        try stageWorkspaceReply(remote, "workspace_split_metadata.bin", 8, 3);
+        try stageWorkspaceReply(remote, "workspace_split_state.bin", 7, 2);
+        _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+        try std.testing.expect(engine.model.shared_workspace.revision > before);
+        try std.testing.expectEqual(@as(usize, 2), engine.model.ws().selectedTree().?.paneCount());
+        remote.bridge.outgoing.reset();
     }
 
     fn attachFixtureWithHello(self: *Rig, hello: []const u8) !cockpit.TerminalRef {
@@ -3573,6 +3654,567 @@ test "shipping final pane close retires main while a secondary keeps running" {
     try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
 }
 
+test "shipping local terminal declares Copy and Paste context actions" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.phase = .live;
+    pane.session.feed("context selection");
+    try std.testing.expect(pane.session.selectAllHistory());
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expectEqual(@as(usize, 2), node.widget.context_menu.len);
+        try std.testing.expectEqualStrings("Copy", node.widget.context_menu[0].label);
+        try std.testing.expectEqualStrings("Paste", node.widget.context_menu[1].label);
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expect(node.widget.context_menu[1].enabled);
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+test "shipping Phux terminal declares Copy and Paste context actions" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .select_all, &fx));
+    const selection_reads_before_build = remote.host.selectionTextRequestCount();
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    try std.testing.expectEqual(selection_reads_before_build, remote.host.selectionTextRequestCount());
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expectEqual(@as(usize, 2), node.widget.context_menu.len);
+        try std.testing.expectEqualStrings("Copy", node.widget.context_menu[0].label);
+        try std.testing.expectEqualStrings("Paste", node.widget.context_menu[1].label);
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expect(node.widget.context_menu[1].enabled);
+        const owner = engine.model.phux().?.owner(engine.model.focusedTerminalRef().?).?;
+        const frame = node.frame;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = .pointer_down,
+            .button = 1,
+            .x = frame.x + frame.width / 2,
+            .y = frame.y + frame.height / 2,
+        } });
+        const token = rig.harness.null_platform.context_menu_token;
+        try std.testing.expect(token != 0);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+            .window_id = 1,
+            .view_label = canvas_label,
+            .token = token,
+            .item_id = 1,
+        } });
+        try std.testing.expect(engine.model.copy_owner.eql(owner));
+        var clipboard: [256]u8 = undefined;
+        for (0..8) |_| {
+            const text = try rig.harness.runtime.readClipboard(&clipboard);
+            if (std.mem.indexOf(u8, text, "COCKPIT FIXTURE") != null) break;
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        }
+        try std.testing.expect(std.mem.indexOf(u8, try rig.harness.runtime.readClipboard(&clipboard), "COCKPIT FIXTURE") != null);
+        try std.testing.expectEqual(selection_reads_before_build + 1, remote.host.selectionTextRequestCount());
+
+        remote.bridge.outgoing.reset();
+        try rig.harness.runtime.options.platform.services.writeClipboard("paste through captured Phux owner");
+        var command: [128]u8 = undefined;
+        try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-context-menu {s} {d} 1", .{ canvas_label, node.widget.id }));
+        for (0..8) |_| {
+            if (engine.model.phux().?.bridge.outgoing.hasPending()) break;
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        }
+        try std.testing.expect(engine.model.paste_owner.eql(owner));
+        try expectOutgoingTag(engine.model.phux().?, 0x11);
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+const MenuAttachmentFx = struct {
+    restarted: ?usize = null,
+
+    pub fn restartPeer(self: *@This(), _: anytype, slot: usize) bool {
+        self.restarted = slot;
+        return true;
+    }
+    pub fn restartPhux(_: *@This(), _: anytype) bool {
+        return false;
+    }
+    pub fn openChannel(_: *@This(), _: anytype) native_sdk.ChannelHandle {
+        return .{};
+    }
+    pub fn closeChannel(_: *@This(), _: u64) void {}
+    pub fn showNotification(_: *@This(), _: anytype) void {}
+};
+
+test "shipping secondary Phux menu retains the captured attachment after focus moves" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const model = engine.model;
+    const fixture = cockpit.PhuxProvider.test_support;
+    const first = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused-provider-menu.sock" }, null, "menus");
+    model.phux_provider = first;
+    model.primary = .{};
+    first.standBy();
+    try first.host.start("menus");
+    try fixture.stageFixture(first.bridge, "hello.bin");
+    _ = try first.drainReadiness();
+    try fixture.stageFixture(first.bridge, "standby_state.bin");
+    _ = try first.drainReadiness();
+    try first.show(1);
+    _ = try first.drainReadiness();
+    try fixture.stageFixture(first.bridge, "attached.bin");
+    _ = try first.drainReadiness();
+    try fixture.stageWorkspaceFixture(first.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageFixture(first.bridge, "workspace_sessions_a_state.bin");
+    _ = try first.drainReadiness();
+    model.shared_workspace.attachment_id = first.context_id;
+    model.shared_workspace.showInWindow(0, model.window_epochs[0]);
+    _ = try model.shared_workspace.apply(model, first.workspaceSnapshot(), first.connectionEpoch());
+    model.bindWindowAttachment(0, first.context_id);
+    _ = model.openWindow(1) orelse return error.TestExpectedSecondaryWindow;
+    const ref = model.primary.focusedTerminalRef().?;
+    const first_owner = first.owner(ref).?;
+    var setup_fx: MenuAttachmentFx = .{};
+    try engine.showSessionFromInWindow(first, 2, 1, model.window_epochs[1], &setup_fx);
+    const slot = setup_fx.restarted.?;
+    const second = model.phuxPeerAt(slot).?;
+    try second.host.start("independent-menu-attachment");
+    try fixture.stageFixture(second.bridge, "hello.bin");
+    _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
+    try fixture.stageFixture(second.bridge, "attached_session_b.bin");
+    _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
+    try fixture.stageWorkspaceFixture(second.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageFixture(second.bridge, "workspace_session_b_state.bin");
+    _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
+    const second_owner = second.owner(ref).?;
+    try std.testing.expect(!first_owner.eql(second_owner));
+    try stageRemoteOutput(second, "SECOND ATTACHMENT", 1);
+    _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
+
+    model.active_window = 0;
+    const first_state = model.remoteUi(ref).?;
+    first_state.selecting = true;
+    model.active_window = 1;
+    const second_state = model.remoteUi(ref).?;
+    const presentation = second.presentation(ref).?;
+    const start_anchor = try second.createAnchor(second_owner, .{ .space = .history, .row = 0, .column = 0 });
+    const end_anchor = try second.createAnchor(second_owner, .{
+        .space = .history,
+        .row = @intCast(presentation.history_total_rows - 1),
+        .column = presentation.cols - 1,
+    });
+    try second.setSelection(second_owner, start_anchor, end_anchor, false);
+    second_state.start_anchor = start_anchor.opaque_id;
+    second_state.end_anchor = end_anchor.opaque_id;
+    second_state.selecting = true;
+    model.active_window = 0;
+    const second_tree = model.wsAtConst(1).?.selectedTreeConst().?;
+    const direct_target = cockpit.engine.clipboard.Target.capture(model, second_tree, 1, ref, .copy).?;
+    try std.testing.expect(direct_target.resolve(model).?.owner.eql(second_owner));
+    try std.testing.expect(engine.clipboardEnabled(second_owner, .copy));
+    engine.revision += 1;
+    engine.sequence += 1;
+    bridge.announce(engine);
+    try rig.settle(@intCast(engine.sequence), "READY");
+
+    const secondary = model.wsAt(1).?;
+    const window_id = secondary.window_id;
+    const label = "phux-cockpit-canvas-1";
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = window_id,
+        .label = label,
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(window_id, label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expectEqual(@as(usize, 2), node.widget.context_menu.len);
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expect(node.widget.context_menu[1].enabled);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = window_id,
+            .label = label,
+            .kind = .pointer_down,
+            .button = 1,
+            .x = node.frame.x + node.frame.width / 2,
+            .y = node.frame.y + node.frame.height / 2,
+        } });
+        const token = rig.harness.null_platform.context_menu_token;
+        try std.testing.expect(token != 0);
+        model.active_window = 0;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+            .window_id = window_id,
+            .view_label = label,
+            .token = token,
+            .item_id = 1,
+        } });
+        try std.testing.expect(engine.model.copy_owner.eql(second_owner));
+        for (0..8) |_| {
+            if (!engine.model.copy_inflight) break;
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        }
+        try std.testing.expect(!engine.model.copy_inflight);
+        try std.testing.expect(!second_state.selecting);
+        try std.testing.expect(first_state.selecting);
+
+        first.bridge.outgoing.reset();
+        second.bridge.outgoing.reset();
+        try rig.harness.runtime.options.platform.services.writeClipboard("second attachment paste");
+        var command: [128]u8 = undefined;
+        try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-context-menu {s} {d} 1", .{ label, node.widget.id }));
+        for (0..8) |_| {
+            if (second.bridge.outgoing.hasPending()) break;
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        }
+        try std.testing.expect(engine.model.paste_owner.eql(second_owner));
+        try std.testing.expect(!first.bridge.outgoing.hasPending());
+        try expectOutgoingTag(second, 0x11);
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+test "shipping Phux menu recognizes an owner-qualified selection outside the viewport without reading it" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const owner = remote.owner(ref).?;
+    try stageRemoteOutput(remote, "\r\nrow" ** 40, 1);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try remote.scrollViewport(owner, .{ .kind = .top });
+    const start = try remote.createAnchor(owner, .{ .space = .history, .row = 0, .column = 0 });
+    const end = try remote.createAnchor(owner, .{ .space = .history, .row = 0, .column = 7 });
+    try remote.setSelection(owner, start, end, false);
+    const state = engine.model.remoteUi(ref).?;
+    try std.testing.expect(state.owner.eql(owner));
+    state.start_anchor = start.opaque_id;
+    state.end_anchor = end.opaque_id;
+    try remote.scrollViewport(owner, .{ .kind = .bottom });
+    try std.testing.expect(!remote.presentation(ref).?.grid.selection_active);
+
+    const selection_reads_before_build = remote.host.selectionTextRequestCount();
+    try std.testing.expect(engine.clipboardEnabled(owner, .copy));
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expectEqual(selection_reads_before_build, remote.host.selectionTextRequestCount());
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+fn clipboardSourceWidget(rig: *Rig) !u64 {
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        if (std.mem.indexOf(u8, node.widget.text, "clipboard source") != null) return node.widget.id;
+    }
+    return error.TestExpectedClipboardSource;
+}
+
+test "shipping context clipboard actions retain the clicked split pane after focus moves" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const source_ref = engine.model.focusedTerminalRef().?;
+    const source = engine.model.provider.terminal(source_ref).?;
+    source.phase = .live;
+    source.session.feed("clipboard source");
+    try std.testing.expect(source.session.selectAllHistory());
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const other_ref = engine.model.focusedTerminalRef().?;
+    try std.testing.expect(!source_ref.eql(other_ref));
+    const other = engine.model.provider.terminal(other_ref).?;
+    const widget = try clipboardSourceWidget(&rig);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const frame = layout.findById(widget).?.frame;
+    try std.testing.expectEqual(widget, layout.hitTest(.init(frame.x + frame.width / 2, frame.y + frame.height / 2)).?.id);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = frame.x + frame.width / 2,
+        .y = frame.y + frame.height / 2,
+    } });
+    try std.testing.expectEqual(@as(usize, 1), rig.harness.null_platform.context_menu_request_count);
+    const token = rig.harness.null_platform.context_menu_token;
+    try std.testing.expect(token != 0);
+    _ = engine.model.ws().selectedTree().?.focusTerminal(other_ref);
+    // Force both build arenas to turn over while the native presenter retains
+    // the original menu. Its static bytes must still name the source pane.
+    for (0..2) |_| {
+        try rig.dispatch(.engine_wake);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    }
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .token = token,
+        .item_id = 1,
+    } });
+    var command: [128]u8 = undefined;
+    try std.testing.expect(engine.model.copy_owner.terminal_ref.eql(source_ref));
+    var clipboard: [256]u8 = undefined;
+    for (0..8) |_| {
+        const text = try rig.harness.runtime.readClipboard(&clipboard);
+        if (std.mem.indexOf(u8, text, "clipboard source") != null) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, try rig.harness.runtime.readClipboard(&clipboard), "clipboard source") != null);
+
+    try rig.harness.runtime.options.platform.services.writeClipboard("paste to source");
+    const current_widget = try clipboardSourceWidget(&rig);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-context-menu {s} {d} 1", .{ canvas_label, current_widget }));
+    try std.testing.expect(engine.model.paste_owner.terminal_ref.eql(source_ref));
+    for (0..8) |_| {
+        if (source.outbound_len > 0) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expect(source.outbound_len > 0);
+    try std.testing.expectEqual(@as(usize, 0), other.outbound_len);
+}
+
+test "captured local clipboard targets refuse stale generations mouse reporting and replay" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const ref = engine.model.focusedTerminalRef().?;
+    const pane = engine.model.provider.terminal(ref).?;
+    pane.phase = .live;
+    const tree = engine.model.ws().selectedTreeConst().?;
+    const target = cockpit.engine.clipboard.Target.capture(engine.model, tree, 0, ref, .paste).?;
+    var packet_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const packet = target.encode(&packet_storage);
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet[0 .. packet.len - 1]));
+    var invalid = packet_storage;
+    invalid[1] = 255;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, invalid[0..packet.len]));
+    invalid = packet_storage;
+    invalid[0] = 255;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, invalid[0..packet.len]));
+    var stale = target;
+    stale.owner.generation.bootstrap_id +%= 1;
+    var stale_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, stale.encode(&stale_storage)));
+    stale = target;
+    stale.provider_context +%= 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, stale.encode(&stale_storage)));
+    const create = protocol.encodeIntent(.{ .kind = .new_terminal, .expected_revision = engine.revision, .argument = 0 });
+    try std.testing.expect(engine.applyIntent(&create, &cockpit.NoShells{}));
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    engine.model.ws().selected_tab = 0;
+    pane.session.feed("\x1b[?1000h");
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    pane.session.feed("\x1b[?1000l");
+    try std.testing.expect(!engine.model.paste_inflight);
+    try rig.decorated.replayControl(.arm);
+    bridge.sendClipboard(packet);
+    try std.testing.expect(!engine.model.paste_inflight);
+}
+
+test "captured Phux clipboard targets refuse malformed stale hidden and replayed actions" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTreeConst().?;
+    const target = cockpit.engine.clipboard.Target.capture(engine.model, tree, 0, ref, .paste).?;
+    var storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const packet = target.encode(&storage);
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet[0 .. packet.len - 1]));
+    var malformed = storage;
+    malformed[0] = 255;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, malformed[0..packet.len]));
+    malformed = storage;
+    malformed[1] = 255;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, malformed[0..packet.len]));
+    malformed = storage;
+    malformed[3] = 0;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, malformed[0..packet.len]));
+
+    var stale = target;
+    var stale_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    stale.owner.generation.bootstrap_id +%= 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, stale.encode(&stale_storage)));
+    stale = target;
+    stale.provider_context +%= 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, stale.encode(&stale_storage)));
+
+    const remote = engine.model.phux().?;
+    remote.host.terminals.items[0].generation.bootstrap_id +%= 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    remote.host.terminals.items[0].generation.bootstrap_id -%= 1;
+    workspace.tab_generation += 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    workspace.tab_generation -= 1;
+    engine.model.window_epochs[0] += 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    engine.model.window_epochs[0] -= 1;
+    var local_refs: [2]cockpit.TerminalRef = undefined;
+    try std.testing.expect(engine.model.provider.terminalRefs(&local_refs) != 0);
+    try std.testing.expect(workspace.admitTab(local_refs[0]));
+    workspace.selected_tab = 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    workspace.dropTab(1);
+    workspace.selected_tab = 0;
+
+    try rig.decorated.replayControl(.arm);
+    bridge.sendClipboard(packet);
+    try std.testing.expect(!engine.model.paste_inflight);
+}
+
+test "shipping terminal context menu respects live TUI and ended shell ownership" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.phase = .live;
+    pane.session.feed("clipboard source\x1b[?1000h");
+    try std.testing.expect(pane.session.selectAllHistory());
+    var widget = try clipboardSourceWidget(&rig);
+    var layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    try std.testing.expectEqual(@as(usize, 0), layout.findById(widget).?.widget.context_menu.len);
+    try std.testing.expectEqual(.disabled, layout.contextMenuPolicyById(widget));
+    const frame = layout.findById(widget).?.frame;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = frame.x + frame.width / 2,
+        .y = frame.y + frame.height / 2,
+    } });
+    try std.testing.expect(pane.outbound_len > 0);
+    try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.context_menu_request_count);
+    pane.phase = .ended;
+    widget = try clipboardSourceWidget(&rig);
+    layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const menu = layout.findById(widget).?.widget.context_menu;
+    try std.testing.expectEqual(@as(usize, 2), menu.len);
+    try std.testing.expect(menu[0].enabled);
+    try std.testing.expect(!menu[1].enabled);
+}
+
+test "shipping Phux context menu leaves TUI secondary click owned and refuses actions after a C-FFI exit" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .select_all, &fx));
+    try stageRemoteOutput(remote, "\x1b[?1000h", 1);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    var widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var found_live = false;
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        found_live = true;
+        try std.testing.expectEqual(@as(usize, 0), node.widget.context_menu.len);
+        try std.testing.expectEqual(.disabled, widgets.contextMenuPolicyById(node.widget.id));
+        remote.bridge.outgoing.reset();
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = .pointer_down,
+            .button = 1,
+            .x = node.frame.x + node.frame.width / 2,
+            .y = node.frame.y + node.frame.height / 2,
+        } });
+        try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.context_menu_request_count);
+        try expectOutgoingTag(remote, 0x12);
+        break;
+    }
+    try std.testing.expect(found_live);
+
+    try stageRemoteOutput(remote, "\x1b[?1000l", 2);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    const owner = remote.owner(engine.model.focusedTerminalRef().?).?;
+    const tree = engine.model.ws().selectedTreeConst().?;
+    const paste_target = cockpit.engine.clipboard.Target.capture(engine.model, tree, 0, owner.terminal_ref, .paste).?;
+    var paste_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const paste_packet = paste_target.encode(&paste_storage);
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var menu_frame: ?native_sdk.geometry.RectF = null;
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role == .textbox) menu_frame = node.frame;
+    }
+    const frame = menu_frame orelse return error.TestExpectedTerminal;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = frame.x + frame.width / 2,
+        .y = frame.y + frame.height / 2,
+    } });
+    const token = rig.harness.null_platform.context_menu_token;
+    try std.testing.expect(token != 0);
+    try rig.harness.runtime.options.platform.services.writeClipboard("leave the clipboard alone");
+    const reads = remote.host.selectionTextRequestCount();
+    try cockpit.PhuxProvider.test_support.stageFixture(remote.bridge, "remote-exited.bin");
+    _ = try remote.drainReadiness();
+    // Phux closes an exited replica; unlike an ephemeral local shell, it does
+    // not retain an ended presentation on which a menu could remain valid.
+    try std.testing.expect(remote.presentation(owner.terminal_ref) == null);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .token = token,
+        .item_id = 1,
+    } });
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, paste_packet));
+    try std.testing.expect(!engine.model.copy_inflight);
+    try std.testing.expect(!engine.model.paste_inflight);
+    try std.testing.expectEqual(reads, remote.host.selectionTextRequestCount());
+    var clipboard: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("leave the clipboard alone", try rig.harness.runtime.readClipboard(&clipboard));
+}
+
 test "shipping clipboard completion belongs to its requesting replica after focus moves" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -3631,6 +4273,25 @@ fn expectOutgoingTag(remote: anytype, tag: u8) !void {
     try std.testing.expect(frame.len > 4);
     try std.testing.expectEqual(tag, frame[4]);
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+fn stageRemoteOutput(remote: anytype, text: []const u8, seq: u64) !void {
+    var storage: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&storage);
+    try writer.writeAll(&.{ 0, 0, 0, 0, 0x90, 1, 4, 5, 0, 0, 0, 0, 7, 2, 4, 8 });
+    try writer.writeInt(u64, seq, .big);
+    try writer.writeAll(&.{ 3, 4 });
+    var remaining = text.len;
+    while (remaining >= 128) : (remaining >>= 7) try writer.writeByte(@as(u8, @intCast(remaining & 0x7f)) | 0x80);
+    try writer.writeByte(@intCast(remaining));
+    try writer.writeAll(text);
+    try writer.writeAll(&.{ 4, 4, 8 });
+    try writer.writeInt(u64, 7, .big);
+    try writer.writeAll(&.{ 5, 4, 8 });
+    try writer.writeInt(u64, 1, .big);
+    const bytes = writer.buffered();
+    std.mem.writeInt(u32, bytes[0..4], @intCast(bytes.len - 4), .big);
+    try std.testing.expect(remote.bridge.incoming.stage(bytes));
 }
 
 /// Decode the small KEY fixture's positional event inside its two TLV fields.
@@ -4194,6 +4855,211 @@ test "native divider drag updates engine geometry without crossing the TypeScrip
         .x = divider.rect.x,
         .y = y,
     } });
+}
+
+test "shipping divider keyboard and accessibility resizes survive a rebuild" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const branch = engine.model.ws().selectedTree().?.root;
+    const initial = engine.model.ws().selectedTree().?.node(branch).fraction;
+    var divider = try shippingSplitDivider(&rig);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    const after_arrow = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_arrow > initial);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    divider = try shippingSplitDivider(&rig);
+
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas end");
+    const after_end = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_end > after_arrow);
+
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas home");
+    const after_home = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_home < after_arrow);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .increment },
+    );
+    const after_increment = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_increment > after_home);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .decrement },
+    );
+    const after_decrement = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_decrement < after_increment);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(after_decrement, engine.model.ws().selectedTree().?.node(branch).fraction);
+}
+
+fn stageWorkspaceReply(remote: anytype, comptime name: []const u8, expected: u32, request: u32) !void {
+    // Canonical Rust-generated replies, changing only request correlation.
+    var bytes = @embedFile("providers/phux/fixtures/" ++ name).*;
+    try std.testing.expectEqualSlices(u8, &.{ 1, 4, 4 }, bytes[5..8]);
+    try std.testing.expectEqual(0x8000_0000 + expected, std.mem.readInt(u32, bytes[8..12], .big));
+    std.mem.writeInt(u32, bytes[8..12], 0x8000_0000 + request, .big);
+    try std.testing.expect(remote.bridge.incoming.stage(&bytes));
+}
+
+fn stageResizeStepReply(remote: anytype, fraction: f32) !void {
+    var bytes = @embedFile("providers/phux/fixtures/workspace_resize_metadata.bin").*;
+    // Keep the Rust-generated topology, confirming the SDK's actual step
+    // rather than the generator's 0.7 example. CBOR encodes this as float32.
+    const sample = [_]u8{ 0xfa, 0x3f, 0x33, 0x33, 0x33 };
+    const offset = std.mem.indexOf(u8, &bytes, &sample) orelse return error.TestExpectedResizeRatio;
+    try std.testing.expectEqual(offset, std.mem.lastIndexOf(u8, &bytes, &sample).?);
+    std.mem.writeInt(u32, bytes[offset + 1 ..][0..4], @bitCast(fraction), .big);
+    try std.testing.expectEqual(@as(u32, 0x8000_000b), std.mem.readInt(u32, bytes[8..12], .big));
+    std.mem.writeInt(u32, bytes[8..12], 0x8000_0005, .big);
+    try std.testing.expect(remote.bridge.incoming.stage(&bytes));
+}
+
+test "shipping shared divider accessibility resize requests and confirms through Phux" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedSplitFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const tree = engine.model.ws().selectedTree().?;
+    const branch = tree.root;
+    const initial = tree.node(branch).fraction;
+    const initial_revision = engine.model.shared_workspace.revision;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), initial, 0.001);
+    try rig.dispatch(.engine_wake);
+    const divider = try shippingSplitDivider(&rig);
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    const ticket = engine.model.shared_mutations.next_ticket + 1;
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .increment },
+    );
+
+    // The published shared layout stays authoritative until confirmation.
+    try std.testing.expectEqual(initial, tree.node(branch).fraction);
+    try std.testing.expect(remote.bridge.outgoing.hasPending());
+    try std.testing.expectEqual(.pending, remote.workspaceSnapshot().status);
+    const pending = engine.model.shared_mutations.pending[0].?;
+    try std.testing.expectEqual(.native, pending.origin);
+    try std.testing.expectEqual(ticket, pending.ticket);
+    try std.testing.expectEqual(.resize, pending.mutation.kind);
+    try std.testing.expectEqualDeep(engine.model.ws().shared_ids[engine.model.ws().selected_tab].?, pending.mutation.window_id);
+    try std.testing.expectEqual(@as(u64, 0), pending.mutation.path_bits);
+    try std.testing.expectEqual(@as(u32, 0), pending.mutation.path_len);
+    try std.testing.expect(pending.mutation.ratio > initial);
+    try std.testing.expect(pending.mutation_request != 0);
+    const request = remote.workspaceSnapshot().request_id;
+    try std.testing.expectEqual(pending.mutation_request, request);
+    try stageResizeStepReply(remote, pending.mutation.ratio);
+    try stageWorkspaceReply(remote, "workspace_resize_state.bin", 10, 4);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+
+    const confirmed = engine.model.shared_mutations.peekCompletion().?;
+    try std.testing.expectEqual(.native, confirmed.origin);
+    try std.testing.expectEqual(ticket, confirmed.command_id);
+    try std.testing.expectEqual(ticket, confirmed.mutation_ticket);
+    try std.testing.expectEqual(.success, confirmed.operation);
+    try std.testing.expectEqual(request, confirmed.request_id);
+    try std.testing.expect(engine.model.shared_workspace.revision > initial_revision);
+    try std.testing.expectEqual(pending.mutation.ratio, engine.model.ws().selectedTree().?.node(branch).fraction);
+    bridge.ackResult(engine, .{ .source = .native_shared, .command_id = ticket });
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+}
+
+test "shipping vertical divider uses up and down but ignores cross-axis keys" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try rig.dispatch(core.commandMsg("pane.split-down").?);
+    try rig.settle(1, "READY");
+    const branch = engine.model.ws().selectedTree().?.root;
+    const divider = try shippingSplitDivider(&rig);
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    const initial = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    try std.testing.expectEqual(initial, engine.model.ws().selectedTree().?.node(branch).fraction);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
+    try std.testing.expect(engine.model.ws().selectedTree().?.node(branch).fraction > initial);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowup");
+    try std.testing.expectEqual(initial, engine.model.ws().selectedTree().?.node(branch).fraction);
+}
+
+test "shipping replay ignores keyboard and accessibility split resizes" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTree().?;
+    workspace.shared_ids[workspace.selected_tab] = @splat(1);
+    engine.model.shared_workspace.revision = 10;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const divider = try shippingSplitDivider(&rig);
+    const root = tree.root;
+    const fraction = tree.node(root).fraction;
+    const sequence = engine.sequence;
+    const ticket = engine.model.shared_mutations.next_ticket;
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    try rig.decorated.replayControl(.arm);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .increment },
+    );
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    try std.testing.expectEqual(fraction, tree.node(root).fraction);
+    try std.testing.expectEqual(sequence, engine.sequence);
+    try std.testing.expectEqual(ticket, engine.model.shared_mutations.next_ticket);
+}
+
+fn shippingSplitDivider(rig: *Rig) !canvas.ObjectId {
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .split_divider) return node.widget.id;
+    }
+    return error.TestExpectedSplitDivider;
 }
 
 fn beginShippingDividerDrag(rig: *Rig) !cockpit.layout.Divider {
@@ -5714,6 +6580,50 @@ test "terminal ground stays opaque inside measured content and leaves material c
         };
         try std.testing.expectEqualDeep(space, ground.rect);
         try std.testing.expectEqual(@as(f32, 1), ground.fill.color.a);
+    }
+}
+
+test "selected tab underline stays inside its button rather than the attention slot" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var tab: ?native_sdk.geometry.RectF = null;
+        var underline: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (node.widget.semantics.role == .tab and node.widget.state.selected) tab = node.frame;
+            if (node.widget.style.background == null) continue;
+            if (node.frame.y < 50 and node.frame.height == 2) underline = node.frame;
+        }
+        const button = tab orelse return error.TestExpectedSelectedTab;
+        const bar = underline orelse return error.TestExpectedTabUnderline;
+        try std.testing.expect(bar.x > button.x);
+        try std.testing.expect(bar.x + bar.width < button.x + button.width);
+    }
+}
+
+test "navigator command shortcuts align to the row trailing edge" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.commands_open);
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var row: ?native_sdk.geometry.RectF = null;
+        var shortcut: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (node.widget.kind == .list_item and std.mem.eql(u8, node.widget.semantics.label, "New Window")) row = node.frame;
+            if (node.widget.kind == .text and std.mem.eql(u8, node.widget.text, "Cmd+n")) shortcut = node.frame;
+        }
+        const row_frame = row orelse return error.TestExpectedCommandRow;
+        const shortcut_frame = shortcut orelse return error.TestExpectedCommandShortcut;
+        // A variable title must not determine where the shortcut column sits.
+        try std.testing.expectApproxEqAbs(row_frame.x + row_frame.width, shortcut_frame.x + shortcut_frame.width, 1);
     }
 }
 

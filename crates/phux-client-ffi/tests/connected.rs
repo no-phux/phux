@@ -65,6 +65,38 @@ unsafe extern "C" fn on_wake(context: *mut c_void) {
     WAKES.fetch_add(1, Ordering::Release);
 }
 
+#[derive(Default)]
+struct WakeCounter(AtomicUsize);
+
+struct ConnectedClientGuard(*mut PhuxClient);
+
+impl Drop for ConnectedClientGuard {
+    fn drop(&mut self) {
+        // SAFETY: this guard uniquely owns the pointer returned by connect;
+        // the C export accepts null when setup did not complete.
+        unsafe { phux_client_free(self.0) };
+    }
+}
+
+unsafe extern "C" fn count_wake(context: *mut c_void) {
+    // SAFETY: `connected_poll_rearms_wake_for_later_attach_activity` retains
+    // this counter until `phux_client_free` has joined the driver.
+    let counter = unsafe { &*context.cast::<WakeCounter>() };
+    counter.0.fetch_add(1, Ordering::Release);
+}
+
+async fn wait_for_wakes(counter: &WakeCounter, expected: usize, what: &str) {
+    let start = Instant::now();
+    while counter.0.load(Ordering::Acquire) < expected {
+        assert!(
+            start.elapsed() < DEADLINE,
+            "timed out waiting for {what} (wakes: {})",
+            counter.0.load(Ordering::Acquire)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 /// Poll until `ready`, or fail. Polling on a timer rather than only on the
 /// wake keeps the test honest about progress without racing the callback.
 /// The client never leaves this thread, so its owning-thread contract holds
@@ -87,6 +119,97 @@ async fn poll_until(client: *mut PhuxClient, what: &str, mut ready: impl FnMut()
 #[test]
 fn connects_attaches_and_decodes_without_owning_a_socket() {
     run_local(async { connected_lane().await });
+}
+
+#[test]
+fn connected_poll_rearms_wake_for_later_attach_activity() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let socket_text = socket.to_str().unwrap().to_owned();
+        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let counter = Box::new(WakeCounter::default());
+        // Declare the client after its callback context so unwinding joins the
+        // driver before the counter can be dropped.
+        let mut client = ConnectedClientGuard(std::ptr::null_mut());
+
+        let options = PhuxConnectOptions {
+            size: std::mem::size_of::<PhuxConnectOptions>(),
+            version: ABI_VERSION,
+            base: base_options(),
+            target: PhuxBytes::default(),
+            socket_path: span(&socket_text),
+            config_path: PhuxBytes::default(),
+            client_name: span("phux-client-ffi-connected-rearm"),
+            wake: Some(count_wake),
+            wake_context: (&raw const *counter).cast_mut().cast(),
+        };
+        // SAFETY: readable options whose spans outlive the call, writable out.
+        assert_eq!(
+            unsafe { phux_client_connect(&raw const options, &raw mut client.0) },
+            PhuxClientResult::Ok,
+            "connect"
+        );
+
+        wait_for_wakes(&counter, 1, "the runtime's initial wake").await;
+        // Polling the listener-registration wake has no socket activity to
+        // consume. It must nevertheless re-arm the runtime for HELLO_OK.
+        // SAFETY: a live client, on its owning thread.
+        assert_eq!(unsafe { phux_client_poll(client.0) }, PhuxClientResult::Ok);
+        let mut expected_wakes = 1;
+        while !matches!(
+            // SAFETY: a live client.
+            unsafe { phux_client_state(client.0) },
+            PhuxClientState::Negotiated
+        ) {
+            expected_wakes += 1;
+            wait_for_wakes(&counter, expected_wakes, "a lifecycle wake after a poll").await;
+            // SAFETY: a live client, on its owning thread.
+            assert_eq!(unsafe { phux_client_poll(client.0) }, PhuxClientResult::Ok);
+        }
+        // SAFETY: a live client.
+        assert_eq!(
+            unsafe { phux_client_state(client.0) },
+            PhuxClientState::Negotiated
+        );
+
+        let attach = PhuxAttachOptions {
+            size: std::mem::size_of::<PhuxAttachOptions>(),
+            version: ABI_VERSION,
+            attach_id: 1,
+            target_kind: 1, // PHUX_ATTACH_BY_NAME
+            session_id: 0,
+            name: span("main"),
+            cols: 40,
+            rows: 8,
+            has_pixel_size: false,
+            pixel_width: 0,
+            pixel_height: 0,
+            request_scrollback: false,
+            scrollback_limit_lines: 0,
+        };
+        // SAFETY: a live client and readable options.
+        assert_eq!(
+            unsafe { phux_client_queue_attach(client.0, &raw const attach) },
+            PhuxClientResult::Ok,
+            "queue_attach"
+        );
+
+        while !matches!(
+            // SAFETY: a live client.
+            unsafe { phux_client_state(client.0) },
+            PhuxClientState::Attached
+        ) {
+            expected_wakes += 1;
+            wait_for_wakes(&counter, expected_wakes, "the attach response wake").await;
+            // SAFETY: a live client, on its owning thread.
+            assert_eq!(unsafe { phux_client_poll(client.0) }, PhuxClientResult::Ok);
+        }
+
+        drop(client);
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+    });
 }
 
 async fn connected_lane() {

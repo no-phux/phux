@@ -49,7 +49,7 @@ export function contextualCommand(name: string): boolean {
   return name === "terminal.new" || name === "window.new" || name === "session.new" || name === "session.rename";
 }
 
-export function commandRows(query: Uint8Array, cursor: number, hasTerminal: boolean, context: Uint8Array, bindings: KeybindingPage): readonly ActionRow[] {
+export function commandRows(query: Uint8Array, cursor: number, hasTerminal: boolean, bindings: KeybindingPage): readonly ActionRow[] {
   const rows: ActionRow[] = [];
   for (const command of COMMAND_CATALOG) {
     if (!containsQuery(command.label, query)) continue;
@@ -57,7 +57,7 @@ export function commandRows(query: Uint8Array, cursor: number, hasTerminal: bool
     const rawIndex = command.index;
     const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
     rows.push({ index, label: command.label, shortcut: keybindingHint(bindings, asciiBytes(command.name)),
-      detail: disabled ? asciiBytes("Requires a focused terminal") : context,
+      detail: disabled ? asciiBytes("Requires a focused terminal") : new Uint8Array(0),
       disabled, highlighted: rows.length === cursor });
   }
   return rows;

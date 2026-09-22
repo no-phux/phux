@@ -31,6 +31,21 @@ chrome pixel from RGB (77, 195, 255) to (255, 131, 135), while the opaque termin
 rectangle remained pixel-identical. Both the NSView and `CAMetalLayer` must be
 nonopaque; overriding `NSView.isOpaque` alone leaves black chrome.
 
+The 2026-09-22 integrated check (`phux-3gpg.12`) exposed a different gap:
+with `NATIVE_SDK_GPU_COMPOSITE=1`, the retained texture contained the complete
+UI while the visible window showed only glass. Composite-first startup skipped
+initializing the final texture-to-drawable presenter. The SDK regression now
+samples an actual `CAMetalDrawable` after a cold composite present, for both
+ordinary and material surfaces. That catches this missing presentation pass;
+whole-display capture is still required to verify AppKit composition.
+
+After that repair, the integrated Cockpit window at 1100×640 passed the same
+backdrop check: a chrome sample changed from RGB (87, 210, 255) to
+(255, 142, 146), while a 1080×530 terminal-interior region remained
+pixel-identical. Whole-display captures also confirmed live light/dark changes
+on the terminal chrome and Commands navigator. These checks establish that
+composition slice, not the remaining accessibility or performance acceptance.
+
 The middle row was empty when this document was first written, and section 2
 is the survey that emptied it. Section 6 is how it got filled: an SDK-side
 change now carried by the pin, plus the measurements proving the capture sees
