@@ -107,21 +107,27 @@ jobs:
     with:
       tag: ${{ needs.plan.outputs.phux_tag }}
 
+  # Dispatch, do not workflow_call. npm trusted publishing checks the
+  # entry workflow filename. A reusable call publishes as publish.yml, npm
+  # does not trust that name, and the registry answers 404.
   integration:
     name: publish integration
     needs: plan
     if: needs.plan.result == 'success' && needs.plan.outputs.integration_tags != '[]'
-    strategy:
-      fail-fast: false
-      matrix:
-        tag: ${{ fromJSON(needs.plan.outputs.integration_tags) }}
-    uses: ./.github/workflows/agent-integration-release.yml
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     permissions:
-      contents: write
-      id-token: write
-    with:
-      tag: ${{ matrix.tag }}
-      dry_run: false
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dispatch agent-integration-release and wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ needs.plan.outputs.integration_tags }}
+        run: python3 scripts/ci/dispatch_integration_publishes.py
 
   linear-phux:
     name: report phux to Linear
