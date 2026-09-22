@@ -410,7 +410,7 @@ for the pane you are typing in is how notifications get turned off wholesale.
   either environment. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@ee690e0a`](https://github.com/phall1/native/commit/ee690e0a336227ec4eec5a9b9c8077d787a7e91a),
+[`phall1/native@d6e85cd9`](https://github.com/phall1/native/commit/d6e85cd943c5746f03a57ddd1297620010f1a79b),
 the fork's cockpit/v0.10.5 lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
@@ -423,7 +423,8 @@ the native macOS app-updater surface, the Metal Hybrid C signed cell
 (4x) and text (2x) paint ceilings, a 32-slot null-platform window-drag region
 mirror matching the runtime collector cap, a `cell_grid`-capable opt-in GPU
 composite path with configurable real-frame capture cadence, and ScriptC 0.1.1
-(balanced wide-model decode guards, nested recipe scope 32). This pin adds
+(balanced wide-model decode guards, nested recipe scope 32). Cold composite
+startup also initializes the final drawable presenter. This pin includes
 host-native glass behind transparent canvas content, window composition lifetime
 handling, and complete modal-dismissal gesture ownership without click-through
 or contamination of the next click's count.

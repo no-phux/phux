@@ -54,7 +54,7 @@ a fixed 16pt slot so a newly blocked agent does not shorten its tab button.
 
 The navigator uses the pinned SDK's modal scrim: token-driven backdrop blur
 (`blur.scrim`, 4pt) followed by a dim wash, with an opaque foreground panel.
-The [pinned modal renderer](https://github.com/phall1/native/blob/ee690e0a336227ec4eec5a9b9c8077d787a7e91a/src/primitives/canvas/widget_render.zig#L1066-L1108)
+The [pinned modal renderer](https://github.com/phall1/native/blob/d6e85cd943c5746f03a57ddd1297620010f1a79b/src/primitives/canvas/widget_render.zig#L1066-L1108)
 owns that treatment. This is in-window frosting, **not Apple Liquid Glass**.
 Reserve canvas backdrop blur for transient overlays: it samples the rendered
 backdrop and promotes intersecting damage to a full ordered replay; the opt-in
