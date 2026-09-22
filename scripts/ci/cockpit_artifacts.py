@@ -12,9 +12,14 @@ import subprocess
 import sys
 import tempfile
 
-FILES = ("libphux_client_ffi.a", "phux")
+KIND_FILES = {
+    "ffi": ("libphux_client_ffi.a",),
+    "cli": ("phux",),
+}
+FILES = KIND_FILES["ffi"] + KIND_FILES["cli"]
 CACHE = Path("target/ci-cockpit-artifacts")
 OUTPUT = Path("target/ffi-release")
+SHARED_INPUTS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
 BUILD_ENV = {"RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
              "CARGO_ENCODED_RUSTFLAGS", "CARGO_ENCODED_RUSTDOCFLAGS", "CARGO_BUILD_TARGET",
              "CARGO_BUILD_RUSTFLAGS", "MACOSX_DEPLOYMENT_TARGET", "SDKROOT", "DEVELOPER_DIR",
@@ -26,14 +31,58 @@ def command(*args):
     return subprocess.check_output(args, text=True).strip()
 
 
-def build_identity():
+def non_library(path):
+    parts = path.split("/")
+    return len(parts) >= 4 and parts[0] == "crates" and parts[2] in {"tests", "benches", "examples"}
+
+
+def select_input_lines(lines, directories):
+    """Index lines whose blobs enter one binary. Tests, benches and examples do not."""
+    selected = []
+    for line in lines:
+        if "\t" not in line:
+            continue
+        path = line.split("\t", 1)[1]
+        if non_library(path):
+            continue
+        if path in SHARED_INPUTS or path.startswith(".cargo/"):
+            selected.append(line)
+            continue
+        parts = path.split("/")
+        if len(parts) >= 2 and parts[0] == "crates" and parts[1] in directories:
+            selected.append(line)
+    return selected
+
+
+def input_digest(kind):
+    classifier = load_classifier()
+    root = "phux-client-ffi" if kind == "ffi" else "phux"
+    directories = classifier.closure_directories(root)
+    listed = command("git", "ls-files", "-s", "--", *SHARED_INPUTS, ".cargo", "crates")
+    lines = select_input_lines(listed.splitlines(), directories)
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
+def load_classifier():
+    import importlib.util
+    path = Path(__file__).with_name("classify-changes.py")
+    spec = importlib.util.spec_from_file_location("phux_classify_changes", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_identity(kind="cli"):
+    if kind not in KIND_FILES:
+        raise ValueError(f"unknown artifact kind {kind}")
     if command("git", "status", "--porcelain", "--untracked-files=normal"):
         raise ValueError("exact-input artifacts require a clean checkout")
     if any(key in os.environ for key in ("GHOSTTY_SOURCE_DIR", "GHOSTTY_ZIG_SYSTEM_DIR")):
         raise ValueError("external Ghostty source/system overrides cannot use exact-tree artifacts")
     return {
-        "schema": 1,
-        "tree": command("git", "rev-parse", "HEAD^{tree}"),
+        "schema": 2,
+        "kind": kind,
+        "inputs": input_digest(kind),
         "rust": command("rustc", "-vV"),
         "zig": command("zig", "version"),
         # Official and nixpkgs Zig can report the same version while using
@@ -59,13 +108,13 @@ def digest(path):
 
 def cache_key(identity):
     encoded = json.dumps(identity, sort_keys=True).encode()
-    return "cockpit-rust-artifacts-v1-" + hashlib.sha256(encoded).hexdigest()
+    return "cockpit-rust-artifacts-v2-" + hashlib.sha256(encoded).hexdigest()
 
 
-def save(identity, source=OUTPUT, destination=CACHE):
+def save(identity, source=OUTPUT, destination=CACHE, names=FILES):
     destination.mkdir(parents=True, exist_ok=True)
     hashes = {}
-    for name in FILES:
+    for name in names:
         shutil.copy2(source / name, destination / name)
         hashes[name] = digest(destination / name)
     (destination / "manifest.json").write_text(
@@ -80,8 +129,9 @@ def read_manifest(identity, source):
     return manifest["files"]
 
 
-def outputs_match(hashes, directory):
-    return all(digest(directory / name) == hashes[name] for name in FILES)
+def outputs_match(hashes, directory, names=None):
+    names = tuple(hashes) if names is None else names
+    return all(digest(directory / name) == hashes[name] for name in names)
 
 
 def atomic_copy(source, destination):
@@ -91,20 +141,22 @@ def atomic_copy(source, destination):
         os.replace(staged, destination)
 
 
-def restore(identity, source=CACHE, destination=OUTPUT):
+def restore(identity, source=CACHE, destination=OUTPUT, names=None):
     hashes = read_manifest(identity, source)
-    if not outputs_match(hashes, source):
+    names = tuple(hashes) if names is None else names
+    if not outputs_match(hashes, source, names):
         return False
     destination.mkdir(parents=True, exist_ok=True)
-    for name in FILES:
+    for name in names:
         atomic_copy(source / name, destination / name)
     return True
 
 
-def verify(identity, source=CACHE, destination=OUTPUT):
+def verify(identity, source=CACHE, destination=OUTPUT, names=None):
     # Zig can link while its coordinator staging step runs. Verification must
     # never truncate or replace an output under those concurrent readers.
-    return outputs_match(read_manifest(identity, source), destination)
+    hashes = read_manifest(identity, source)
+    return outputs_match(hashes, destination, tuple(hashes) if names is None else names)
 
 
 def attempt(operation, identity):
@@ -115,18 +167,43 @@ def attempt(operation, identity):
         return False
 
 
+def kind_cache(kind):
+    return CACHE / kind
+
+
+def save_present(kind):
+    names = KIND_FILES[kind]
+    if not all((OUTPUT / name).is_file() for name in names):
+        print(f"skip save {kind}: output missing")
+        return False
+    save(build_identity(kind), OUTPUT, kind_cache(kind), names)
+    return True
+
+
+def restore_kind(kind):
+    identity = build_identity(kind)
+    return restore(identity, kind_cache(kind), OUTPUT, KIND_FILES[kind])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["key", "restore", "save", "verify"])
     mode = parser.parse_args().mode
-    identity = build_identity()
     if mode == "verify":
-        sys.exit(0 if attempt(verify, identity) else 1)
-    result = {"key": cache_key(identity)}
-    if mode == "restore":
-        result["restored"] = str(attempt(restore, identity)).lower()
+        # The CLI stager calls this. It must not rebuild, and it must not
+        # rewrite the archive a concurrent Zig link is reading.
+        sys.exit(0 if attempt(lambda _identity: verify(
+            build_identity("cli"), kind_cache("cli"), OUTPUT, KIND_FILES["cli"]
+        ), None) else 1)
+    result = {}
+    if mode == "key":
+        result = {f"{kind}_key": cache_key(build_identity(kind)) for kind in KIND_FILES}
+    elif mode == "restore":
+        result = {f"{kind}_restored": str(attempt(lambda _identity, kind=kind: restore_kind(kind), None)).lower()
+                  for kind in KIND_FILES}
     elif mode == "save":
-        save(identity)
+        for kind in KIND_FILES:
+            save_present(kind)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf8") as stream:
         for key, value in result.items():
             stream.write(f"{key}={value}\n")

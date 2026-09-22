@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """One CI routing contract. Patterns use fnmatch (stars include slashes).
 
-Root crate changes conservatively cover the complete bundled Cockpit coordinator
-and FFI closure. Browser workspaces are separate; only their shared Rust inputs
-route both. Native means the *clean setup assurance* lane, not all native Rust.
-Workflow orchestration is compile-free; Zig pins live in .config independently.
+Library inputs in the bundled coordinator or FFI closure still route to
+Cockpit. `tests/`, `benches/` and `examples/` do not: they are not binary
+inputs, so they do not rebuild Cockpit, the browser, or native setup. Crates
+outside both closures (the MCP binary, the server testkit) do not either.
+Browser workspaces stay separate. Native means the *clean setup assurance*
+lane, not all native Rust. Workflow orchestration is compile-free.
 
-`test_filterset` is the PR unit-test execution set (phux-14r7): rdeps of each
-changed workspace crate after a `--workspace` build. Empty means run
-everything — empty diffs, docs-only leftovers, or any path that is not a
-workspace crate (Cargo.toml, skills, scripts, just modules).
+`test_filterset` is still the PR rdeps expression for a library change
+(phux-14r7). Empty means the full pool. `unit_mode=narrow` is a different
+path: one integration-test binary, not a workspace link followed by a filter.
+Pushes to main ignore `unit_mode` and keep the full pool.
 """
 
 from fnmatch import fnmatchcase
@@ -144,6 +146,186 @@ def crate_for(path, packages):
     return None
 
 
+NON_LIBRARY = frozenset({"tests", "benches", "examples"})
+DROP_FOR_NON_LIBRARY = frozenset({"cockpit", "web", "web_engine", "native"})
+SHARED_BINARY_INPUTS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/*")
+ZIG_APP = (
+    "clients/cockpit/build.zig",
+    "clients/cockpit/build.zig.zon",
+    "clients/cockpit/src/*",
+    "clients/cockpit/*.zig",
+    "clients/cockpit/scripts/build-shipping-app.sh",
+    "clients/cockpit/scripts/zig-build.sh",
+    "clients/cockpit/scripts/build-phux-cli.sh",
+    "clients/cockpit/scripts/build-phux-artifacts.sh",
+    "clients/cockpit/scripts/native-cargo-target.sh",
+    ".config/zig-toolchain.json",
+    "scripts/install-zig.sh",
+)
+FFI_ROOT = "phux-client-ffi"
+CLI_ROOT = "phux"
+
+
+def package_manifests(root=ROOT):
+    found = {}
+    for manifest in (root / "crates").glob("*/Cargo.toml"):
+        data = tomllib.loads(manifest.read_text())
+        found[data["package"]["name"]] = data
+    return found
+
+
+def normal_deps(manifest):
+    deps = set()
+    for table in (manifest, *manifest.get("target", {}).values()):
+        deps.update(table.get("dependencies", {}))
+    return deps
+
+
+def normal_closure(roots, manifests):
+    pending = list(roots)
+    seen = set()
+    while pending:
+        name = pending.pop()
+        if name in seen or name not in manifests:
+            continue
+        seen.add(name)
+        pending.extend(normal_deps(manifests[name]) & manifests.keys())
+    return seen
+
+
+def closure_directories(root_package, packages=None, manifests=None):
+    """Crate directories whose normal-dependency closure includes root_package."""
+    packages = workspace_packages() if packages is None else packages
+    manifests = package_manifests() if manifests is None else manifests
+    names = normal_closure((root_package,), manifests)
+    return {prefix.split("/", 1)[1] for name, prefix in packages if name in names}
+
+
+def non_library_kind(path):
+    parts = path.split("/")
+    if len(parts) < 4 or parts[0] != "crates" or parts[2] not in NON_LIBRARY:
+        return None
+    return parts[2]
+
+
+def crate_directory(path):
+    parts = path.split("/")
+    if len(parts) < 2 or parts[0] != "crates":
+        return None
+    return parts[1]
+
+
+def part_is_e2e(part):
+    stem = part[:-3] if part.endswith(".rs") else part
+    return stem == "e2e" or stem.endswith("_e2e") or stem.startswith("e2e_")
+
+
+def is_e2e_path(path):
+    return any(part_is_e2e(part) for part in path.split("/"))
+
+
+def integration_target(path, root=ROOT):
+    """`(directory, binary)` for a tests/ path. `*` means every integration test."""
+    parts = path.split("/")
+    if non_library_kind(path) != "tests":
+        return None
+    rest = parts[3:]
+    if len(rest) == 1 and rest[0].endswith(".rs"):
+        return parts[1], rest[0][:-3]
+    binary = rest[0][:-3] if rest[0].endswith(".rs") else rest[0]
+    if (root / "crates" / parts[1] / "tests" / binary / "main.rs").is_file():
+        return parts[1], binary
+    return parts[1], "*"
+
+
+def package_named(directory, packages):
+    prefix = f"crates/{directory}"
+    for name, path in packages:
+        if path == prefix:
+            return name
+    return None
+
+
+def plan(mode, targets, e2e):
+    return {"unit_mode": mode, "unit_targets": targets, "e2e_needed": e2e}
+
+
+def narrow_targets(paths, packages, root=ROOT):
+    targets = []
+    for path in paths:
+        if non_library_kind(path) != "tests":
+            return None
+        parsed = integration_target(path, root)
+        name = package_named(parsed[0], packages) if parsed else None
+        if name is None:
+            return None
+        targets.append(f"{name}:{parsed[1]}")
+    return targets
+
+
+def library_unit_plan(files, packages):
+    mode = "workspace" if test_filterset(files, packages) == "" else "rdeps"
+    return plan(mode, "", True)
+
+
+def narrow_unit_plan(productive, packages, root):
+    if all(non_library_kind(path) != "tests" for path in productive):
+        return plan("skip", "", False)
+    targets = narrow_targets(productive, packages, root)
+    if targets is None:
+        return plan("workspace", "", True)
+    e2e = any(is_e2e_path(path) for path in productive)
+    return plan("narrow", ",".join(sorted(set(targets))), e2e)
+
+
+def unit_plan(files, packages, root=ROOT):
+    """workspace/rdeps keep today's pool. narrow builds one integration test."""
+    if not files:
+        return plan("workspace", "", True)
+    productive = [path for path in files if not is_doc(path)]
+    if not productive:
+        return plan("skip", "", False)
+    if any(non_library_kind(path) is None for path in productive):
+        return library_unit_plan(files, packages)
+    return narrow_unit_plan(productive, packages, root)
+
+
+def touches_closure(path, packages, directories):
+    if matches(path, SHARED_BINARY_INPUTS):
+        return True
+    directory = crate_directory(path)
+    return directory in directories and non_library_kind(path) is None
+
+
+def artifact_flags(files, packages, manifests):
+    if not files:
+        return {"ffi_needed": True, "cli_needed": True, "zig_needed": True, "shipping_needed": True}
+    ffi_dirs = closure_directories(FFI_ROOT, packages, manifests)
+    cli_dirs = closure_directories(CLI_ROOT, packages, manifests)
+    flags = {"ffi_needed": False, "cli_needed": False, "zig_needed": False}
+    for path in files:
+        if not path or is_doc(path):
+            continue
+        if matches(path, ZIG_APP):
+            flags["zig_needed"] = True
+        if touches_closure(path, packages, ffi_dirs):
+            flags["ffi_needed"] = True
+        if touches_closure(path, packages, cli_dirs):
+            flags["cli_needed"] = True
+    flags["shipping_needed"] = flags["zig_needed"] or flags["ffi_needed"]
+    return flags
+
+
+def route_path(path, packages, cli_dirs, ffi_dirs):
+    selected = surfaces_for(path)
+    if non_library_kind(path):
+        return (selected - DROP_FOR_NON_LIBRARY) | {"phux"}
+    directory = crate_directory(path)
+    if directory and directory not in cli_dirs and directory not in ffi_dirs:
+        selected.discard("cockpit")
+    return selected
+
+
 def test_filterset(files, packages=None):
     """nextest `-E` expression, or empty to run the full unit pool."""
     if packages is None:
@@ -163,15 +345,21 @@ def test_filterset(files, packages=None):
 
 def classify(files):
     files = [path for path in files if path]
+    packages = workspace_packages()
+    manifests = package_manifests()
+    cli_dirs = closure_directories(CLI_ROOT, packages, manifests)
+    ffi_dirs = closure_directories(FFI_ROOT, packages, manifests)
     selected = set()
     for path in files:
-        selected.update(surfaces_for(path))
+        selected.update(route_path(path, packages, cli_dirs, ffi_dirs))
     if not files:
         selected = ALL.copy()
     outputs = {surface + "_needed": surface in selected for surface in SURFACES}
     outputs["docs_only"] = bool(files) and all(is_doc(path) for path in files)
     outputs["workflow_only"] = bool(files) and all(matches(path, WORKFLOWS) for path in files)
-    outputs["test_filterset"] = test_filterset(files)
+    outputs["test_filterset"] = test_filterset(files, packages)
+    outputs.update(unit_plan(files, packages))
+    outputs.update(artifact_flags(files, packages, manifests))
     return outputs
 
 

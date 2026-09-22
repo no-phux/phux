@@ -86,6 +86,20 @@ class ArtifactTests(unittest.TestCase):
             os.environ["LIBGHOSTTY_VT_SYS_OPTIMIZE"] = "Debug"
             self.assertNotEqual(default_key, artifacts.cache_key(artifacts.build_identity()))
 
+    def test_test_files_are_not_binary_inputs(self):
+        lines = [
+            "100644 abc 0\tcrates/phux-server/src/lib.rs",
+            "100644 def 0\tcrates/phux-server/tests/hub_relay_federation.rs",
+            "100644 ghi 0\tcrates/phux-server/benches/flood.rs",
+            "100644 jkl 0\tcrates/phux-mcp/src/lib.rs",
+            "100644 mno 0\tCargo.lock",
+        ]
+        selected = artifacts.select_input_lines(lines, {"phux-server"})
+        self.assertEqual(selected, [
+            "100644 abc 0\tcrates/phux-server/src/lib.rs",
+            "100644 mno 0\tCargo.lock",
+        ])
+
     def test_external_engine_directories_cannot_claim_tree_identity(self):
         for key in ("GHOSTTY_SOURCE_DIR", "GHOSTTY_ZIG_SYSTEM_DIR"):
             with self.subTest(key=key), patch.object(artifacts, "command", return_value=""):

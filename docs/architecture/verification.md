@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-16
+last-reviewed: 2026-09-22
 ---
 
 # Quality bar: testing and performance
@@ -21,7 +21,7 @@ Tests are organized in three layers. All three run today.
    integration tests under `crates/*/tests/`. The workspace pool is
    `just test` (`cargo nextest run --workspace`). CI pull requests may set
    `PHUX_NEXTEST_FILTERSET` to the classifier's `rdeps()` expression so only
-   affected crates run; the build selection stays `--workspace`. `just ci`
+   affected crates run. Library changes keep `--workspace`; a tests-only diff builds that integration test. `just ci`
    includes that pool plus compile-free contract gates (fmt, lint, rustdoc,
    deny, `just docs-check`, and others listed in CONTRIBUTING.md). It does
    not spawn real PTY-backed servers.

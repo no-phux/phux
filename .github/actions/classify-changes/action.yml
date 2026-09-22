@@ -26,8 +26,29 @@ outputs:
     description: Clean native setup assurance (setup/toolchain/Cargo/build/link inputs).
     value: ${{ steps.detect.outputs.native_needed }}
   test_filterset:
-    description: nextest rdeps expression for PR unit tests; empty runs the full pool.
+    description: nextest rdeps expression for PR library changes; empty runs the full pool.
     value: ${{ steps.detect.outputs.test_filterset }}
+  unit_mode:
+    description: workspace, rdeps, narrow, or skip. Pushes ignore this and keep the full pool.
+    value: ${{ steps.detect.outputs.unit_mode }}
+  unit_targets:
+    description: Comma-separated package:binary pairs for unit_mode=narrow. Star means every integration test of that package.
+    value: ${{ steps.detect.outputs.unit_targets }}
+  e2e_needed:
+    description: Run the ignored e2e set. False for a non-e2e integration-test-only diff.
+    value: ${{ steps.detect.outputs.e2e_needed }}
+  ffi_needed:
+    description: FFI staticlib inputs changed.
+    value: ${{ steps.detect.outputs.ffi_needed }}
+  cli_needed:
+    description: Bundled coordinator CLI inputs changed.
+    value: ${{ steps.detect.outputs.cli_needed }}
+  zig_needed:
+    description: Cockpit Zig/app sources or shipping flags changed.
+    value: ${{ steps.detect.outputs.zig_needed }}
+  shipping_needed:
+    description: ReleaseSafe app compile. Zig inputs or a new FFI archive.
+    value: ${{ steps.detect.outputs.shipping_needed }}
 runs:
   using: composite
   steps:

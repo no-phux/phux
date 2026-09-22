@@ -33,6 +33,10 @@ inputs:
   rust-cache-shared-key:
     description: rust-cache shared key segment; keep one per cargo profile (check, test) so lanes never clobber each other.
     required: true
+  cache-workspace-crates:
+    description: "Also cache workspace crate artifacts. Test lane only; check stays dependency-only so two full target trees do not share the 10 GB cap."
+    required: false
+    default: "false"
 
 outputs:
   rust-cache-hit:
@@ -102,3 +106,4 @@ runs:
         shared-key: mini-v1-${{ inputs.rust-cache-shared-key }}
         key: ${{ env.RUST_CACHE_KEY }}
         save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-workspace-crates: ${{ inputs.cache-workspace-crates }}

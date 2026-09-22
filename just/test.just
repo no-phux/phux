@@ -15,9 +15,27 @@ AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Build selection stays --workspace (see the e2e note). CI PRs may set
-    # PHUX_NEXTEST_FILTERSET to an rdeps() expression (phux-14r7); unset/empty
-    # keeps the full pool, matching pushes to main.
+    # Build selection stays --workspace for main and for library changes (see
+    # the e2e note). A tests/-only PR sets PHUX_UNIT_MODE=narrow and builds
+    # that integration test, not the other binaries. rdeps still only filters
+    # execution after the workspace build.
+    if [[ "${PHUX_UNIT_MODE:-workspace}" == "narrow" ]]; then
+      IFS=',' read -ra specs <<< "${PHUX_UNIT_TARGETS:?PHUX_UNIT_TARGETS is required}"
+      for spec in "${specs[@]}"; do
+        pkg="${spec%%:*}"
+        bin="${spec##*:}"
+        if [[ "$bin" == "*" ]]; then
+          {{AUTO_SPAWN_BACKSTOP}} cargo nextest run -p "$pkg" --tests
+        else
+          {{AUTO_SPAWN_BACKSTOP}} cargo nextest run -p "$pkg" --test "$bin"
+        fi
+      done
+      exit 0
+    fi
+    if [[ "${PHUX_UNIT_MODE:-workspace}" == "skip" ]]; then
+      echo "unit pool skipped: no library or integration-test inputs changed"
+      exit 0
+    fi
     extra=()
     if [[ -n "${PHUX_NEXTEST_FILTERSET:-}" ]]; then
       extra+=(-E "${PHUX_NEXTEST_FILTERSET}")

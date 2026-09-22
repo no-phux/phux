@@ -155,9 +155,10 @@ new execution environments proven.
 events. All four consumers use `.github/actions/classify-changes` without
 duplicated outer path filters. Unknown paths, unavailable history and empty
 diffs request every surface. On pull requests the same classifier also emits
-`test_filterset` (`rdeps(=crate)` union, or empty) so the unit lane can skip
-unrelated crates after the `--workspace` build; pushes to `main` keep the
-full pool. The required `ci` aggregate rejects failed or cancelled lanes and
+`test_filterset` (`rdeps(=crate)` union, or empty) so a library change can
+skip unrelated crates after the `--workspace` build. A `tests/`-only diff
+sets `unit_mode=narrow` and builds that integration test instead. Pushes to
+`main` keep the full pool. The required `ci` aggregate rejects failed or cancelled lanes and
 retains the visible `check`/`test` job names.
 
 | Change | Product validation |
