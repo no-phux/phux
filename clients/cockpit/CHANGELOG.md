@@ -3,6 +3,21 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0](https://github.com/no-phux/phux/compare/cockpit-v0.27.1...cockpit-v0.28.0) (2026-09-22)
+
+
+### Features
+
+* **cockpit:** add native glass and polish terminal chrome ([#815](https://github.com/no-phux/phux/issues/815)) ([8e323fb](https://github.com/no-phux/phux/commit/8e323fbdc4accd554438b2df23f973e33fedc7e2))
+* **cockpit:** make settings controls direct and authoritative ([2d2f20e](https://github.com/no-phux/phux/commit/2d2f20e2740b8ed5de4379ed1aaa6d3e24df5725))
+* **ffi:** cockpit on the runtime's connected client (ADR-0133 rung 10) ([#809](https://github.com/no-phux/phux/issues/809)) ([f67f2ee](https://github.com/no-phux/phux/commit/f67f2ee3b798d6f8c97c6a4454721d0055f7cb86))
+
+
+### Bug Fixes
+
+* **client-ffi:** close the mobile-artifact and CI gaps review found in [#822](https://github.com/no-phux/phux/issues/822) (phux-ase2.1) ([84d5fd9](https://github.com/no-phux/phux/commit/84d5fd96145514892a725cbd7fb55c710797e189))
+* **cockpit:** skip Hybrid C last-N crop when measured splits fit (phux-gto8) ([#814](https://github.com/no-phux/phux/issues/814)) ([40b7b53](https://github.com/no-phux/phux/commit/40b7b53b4d8d32e1ff1811420a491634a38a107e))
+
 ## [0.27.1](https://github.com/no-phux/phux/compare/cockpit-v0.27.0...cockpit-v0.27.1) (2026-09-21)
 
 

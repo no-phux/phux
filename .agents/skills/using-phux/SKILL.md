@@ -3,7 +3,7 @@ name: using-phux
 description: Drives persistent terminals and supervises terminal-hosted agents with the phux CLI. Use for REPLs, debuggers, dev servers, interactive programs, durable shell state, or multi-agent terminal workflows; prefer a one-shot shell for independent commands.
 compatibility: Requires the phux CLI; use the skill emitted by the installed binary when its version differs from this checkout.
 metadata:
-  version: "0.41.0" # x-release-please-version
+  version: "0.42.0" # x-release-please-version
 ---
 
 # Using phux
