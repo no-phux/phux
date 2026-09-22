@@ -4,8 +4,8 @@
 //!
 //! State changes reach the binding two ways: an edge-triggered
 //! [`Listener`] wake (one outstanding wake no matter how many frames land;
-//! [`Client::take_events`] re-arms it), and the owned batch that
-//! `take_events` drains. Grid frames are acquired from the
+//! [`Client::take_events`] and [`Client::take_inbound`] re-arm it), and the
+//! owned batch that `take_events` drains. Grid frames are acquired from the
 //! `Publication` table without touching the control plane.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -340,9 +340,12 @@ impl Client {
 
     /// Drain the frames a connected driver retained under
     /// [`InboundDelivery::Queued`](crate::control::InboundDelivery::Queued),
-    /// for the consumer to feed on its own thread.
+    /// for the consumer to feed on its own thread. This acknowledges the
+    /// queued activity and re-arms the listener before the snapshot, so a
+    /// frame queued concurrently cannot be stranded behind its wake.
     #[must_use]
     pub fn take_inbound(&self) -> Vec<Vec<u8>> {
+        self.inner.wake_pending.store(false, Ordering::Release);
         lock(&self.inner.control).take_inbound()
     }
 

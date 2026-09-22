@@ -129,6 +129,34 @@ impl Listener for Wakes {
 }
 
 #[test]
+fn taking_inbound_rearms_a_coalesced_wake() {
+    let client = Runtime::embedded(ControlOptions::default());
+    let wakes = Arc::new(Wakes {
+        count: AtomicUsize::new(0),
+    });
+    client.set_listener(wakes.clone());
+    assert_eq!(wakes.count.load(Ordering::SeqCst), 1, "registration wakes");
+    let _ = client.take_events();
+
+    client.with_control(|control| {
+        control.queue_inbound(vec![1]).expect("queue first frame");
+    });
+    client.wake();
+    assert_eq!(wakes.count.load(Ordering::SeqCst), 2, "first frame wakes");
+
+    assert_eq!(client.take_inbound(), vec![vec![1]], "drain first frame");
+    client.with_control(|control| {
+        control.queue_inbound(vec![2]).expect("queue later frame");
+    });
+    client.wake();
+    assert_eq!(
+        wakes.count.load(Ordering::SeqCst),
+        3,
+        "taking inbound re-armed the coalesced wake"
+    );
+}
+
+#[test]
 fn attaches_spawns_types_and_observes_the_published_frame() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
