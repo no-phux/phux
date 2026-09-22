@@ -223,6 +223,8 @@ because the thing they check does not exist on a runner.
   changes no additive shape can express, and the PR says so out loud. The
   rule is normative in [`docs/spec/proto.md`](./docs/spec/proto.md) §6.3 and
   argued in [`docs/adr/0061`](./docs/adr/0061-capabilities-add-versions-break.md).
+  The `ServerFeature` u32 is closed; the next bit is the trailing word in
+  [`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md).
 - **Do not document what you did not build.** In `docs/spec/` and
   `docs/consumers/`, a surface the reference implementation does not provide
   carries an `impl-status` marker naming a code symbol, and `just docs-check`
@@ -364,8 +366,12 @@ mechanically enforced, both by `check_registry_rows` in
 Each enforces unique keys and strict ordering, so a second claim on the same
 identifier fails the gate whether or not git noticed. When you add a third
 such registry, instantiate the helper for it rather than hand-rolling a gate.
-For any registry not yet covered, rebase onto the integration branch and
-re-run the relevant gate before declaring a branch done.
+`ServerFeature` bits and command or event tags are the same kind of claim
+and are not in the table. They are first-come on main:
+[`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md) is the
+rule, and a branch plan is not a reservation. For any registry not yet
+covered, rebase onto the integration branch and re-run the relevant gate
+before declaring a branch done.
 
 ## Observability: CI itself
 

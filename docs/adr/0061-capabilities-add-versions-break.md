@@ -15,6 +15,8 @@ and a version bump is reserved for changes no additive shape can express.
 Status: Accepted
 Date: 2026-07-27
 
+See [ADR-0137](./0137-server-feature-word-extends.md) for the Tradeoffs claim that feature bits are 32-wide and cheap: word 0 is closed.
+
 ## Context
 
 The HELLO handshake ([`../docs/spec/proto.md`](../spec/proto.md) §6.1)
