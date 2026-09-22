@@ -375,11 +375,10 @@ Clicking a tab switches surfaces without stopping hidden execution. Clicking a
 split pane moves input ownership to it. The divider supports pointer dragging,
 arrow-key adjustment, Home, and End. Trackpad and wheel input route only to the
 terminal under the pointer. Dragging a selection beyond the top or bottom edge
-autoscrolls through history. Right-click or control-click opens native Copy and
-Paste actions while Cockpit owns pointer selection or the process has ended.
-While a live TUI enables mouse reporting, it exclusively owns secondary click,
-so the native menu is intentionally unavailable; Shift-drag selection remains
-copyable with `cmd+C`. `cmd+click` opens a URL under the pointer, and works
+autoscrolls through history. Copy and Paste are available from the Edit menu and
+with `cmd+C` / `cmd+V`. While a live TUI enables mouse reporting, it owns
+secondary click; Shift-drag selection remains copyable with `cmd+C`.
+`cmd+click` opens a URL under the pointer, and works
 even while a TUI owns mouse reporting — a program that prints links should not
 have to give up mouse input for them to be clickable. It is deliberately a
 heuristic that fails toward "not a link": only `http`, `https` and `mailto` are
@@ -387,17 +386,9 @@ recognised, so a printed `file:` or `javascript:` path is never something the
 OS can be asked to open. A `cmd+click` on ordinary text is an ordinary click. A copied range remains highlighted until typing or
 another selection clears it.
 
-**Tabs drag.** Pick one up and carry it along the strip: the reorder happens as
-the pointer moves, so the tab under the cursor is the tab that will be there
-when you let go — there is no landing animation to disagree with. Escape puts it
-back where you picked it up. A click still selects; only a gesture past the
-runtime's own drag slop reorders. The menu command and `cmd+shift+arrow` are
-unchanged.
-
-**Right-clicking a tab** opens its own menu — New Terminal, Move Left, Move
-Right, Close, Close Others. Every verb acts on the tab under the pointer rather
-than on the selected one, which is the whole reason the menu exists; the ends of
-the strip disable Move rather than hiding it, so the menu never changes shape.
+**Reorder the selected tab** with Move Tab Left / Move Tab Right in the Window
+menu or `cmd+shift+arrow-left` / `cmd+shift+arrow-right`. Reordering preserves
+the terminal's identity and running work.
 
 **Dropping files** from Finder onto a pane types their paths into that pane's
 shell — quoted, space-separated, and delivered through the same bracketed-paste
