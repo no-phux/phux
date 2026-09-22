@@ -760,7 +760,7 @@ impl Client {
 
     pub(crate) fn process_runtime_events(&mut self) -> Result<bool, BridgeError> {
         let mut attached = false;
-        let events = self.control().take_events();
+        let events = self.runtime.take_events();
         for event in events {
             attached |= self.process_runtime_event(event)?;
         }

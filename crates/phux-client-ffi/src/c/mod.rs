@@ -561,6 +561,12 @@ pub(crate) fn poll_connected(client: &mut Client) -> Result<bool, BridgeError> {
         attached |= apply_server_frame(client, decoded)?;
     }
     attached |= client.process_runtime_events()?;
+    // An inbound frame can land after the snapshot above but before the event
+    // drain re-arms the runtime's edge-triggered wake. Re-deliver the wake
+    // when work remains; an arrival after this check wakes normally.
+    if client.runtime.poll_pending() {
+        client.runtime.wake();
+    }
     Ok(attached)
 }
 
