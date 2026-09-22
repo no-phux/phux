@@ -19,10 +19,10 @@
 //!      generous ceiling. A real regression (the per-consumer diff going
 //!      quadratic on SGR runs, the broadcast pump stalling, the client's
 //!      VT apply or per-cell render regressing) blows past it.
-//!   2. Per-frame cost: settle / observed-repaints stays under a
+//!   2. Per-emitted-repaint cost: settle / producer repaints stays under a
 //!      per-frame ceiling. This catches a regression that keeps the total
 //!      under the wall-clock ceiling only because the burst happened to be
-//!      short — it normalizes by the number of repaints actually drained.
+//!      short — it normalizes by the deterministic producer workload.
 //!
 //! The burst is precomputed in-process and `cat`'d after attach (phux-iuxr):
 //! a nested `/bin/sh` concat loop was what flaked under CPU contention, not
@@ -68,11 +68,11 @@ const GENS: u16 = 24;
 /// aborted first with "never completed" under load.
 const SETTLE_CEILING: Duration = Duration::from_secs(30);
 
-/// Per-frame cost ceiling: settle-time divided by the repaints actually
-/// drained must stay under this. Normalizes the wall-clock gate by burst
-/// length so a regression can't hide behind a short burst. Generous: at
-/// ~24 repaints under a few seconds the observed per-frame cost is well
-/// under 200ms; 1s/frame is ~5x+ headroom.
+/// Per-emitted-repaint cost ceiling: settle-time divided by the deterministic
+/// producer repaints must stay under this. Normalizes the wall-clock gate by
+/// burst length so a regression can't hide behind a short burst. Generous: at
+/// ~24 repaints under a few seconds the observed per-emitted-repaint cost is
+/// well under 200ms; 1s/repaint is ~5x+ headroom.
 const PER_FRAME_CEILING: Duration = Duration::from_secs(1);
 
 /// Single-client heavy-colored-output latency gate. Drives the worst-case
@@ -110,21 +110,20 @@ fn colored_burst_settles_under_ceiling() {
                 let screen = client.screenshot().await.snapshot_text();
                 cap.attach_screen(screen.clone());
 
-                // The burst completed: the settle marker landed. This is
-                // the "client applied the whole colored stream" proof —
-                // the oracle parsed every RESOURCE_OUTPUT through a real
-                // libghostty Terminal, so a dropped/corrupt frame would
-                // leave the marker missing.
+                // The burst completed: the settle marker landed. This proves
+                // the client converged on the authoritative final screen.
+                // Under designed backpressure recovery, stale deltas may be
+                // replaced by a synthesized bootstrap snapshot rather than
+                // every original RESOURCE_OUTPUT being applied individually.
                 assert!(
                     client.screenshot().await.contains("COLORDONE"),
                     "colored burst never completed; screen=\n{screen}",
                 );
 
-                // Normalize by the repaints we actually drained. We can't
-                // count frames directly from `converge`, so use the
-                // emitted repaint count as a conservative proxy: GENS
-                // repaints is the lower bound on the work the client
-                // applied (the server may coalesce, never inflate).
+                // Normalize by the deterministic emitted workload. The
+                // server may coalesce deltas or replace stale ones with an
+                // authoritative snapshot, so GENS is deliberately not
+                // described as a count of client-applied wire frames.
                 let per_frame = settle / u32::from(GENS.max(1));
 
                 eprintln!(
