@@ -420,14 +420,16 @@ pub(crate) async fn send_synthesized_bootstrap(
 
 /// Queue a resync bootstrap.
 ///
-/// A fenced pump defers a non-final snapshot when the mailbox is full.
-/// Parking there holds the pump off the broadcast, so the exit snapshot
-/// published later is still unread when `RESOURCE_CLOSED` takes the next
-/// free slot and the writer drops the chunk that carries the grid
-/// (phux-fpgl.28). An unfenced pump still waits: that snapshot is a resize
-/// the client has to adopt. The exit snapshot always waits, and it reserves
-/// every frame before the first one is visible, so close cannot land between
-/// `BOOTSTRAP_BEGIN` and that chunk.
+/// A fenced pump defers a non-final snapshot that fits in the mailbox but
+/// cannot be queued yet. Parking there holds the pump off the broadcast, so
+/// the exit snapshot published later is still unread when `RESOURCE_CLOSED`
+/// takes the next free slot and the writer drops the chunk that carries the
+/// grid (phux-fpgl.28). A snapshot larger than the mailbox cannot be reserved
+/// as one unit, so it is sent frame by frame, the way a one-slot consumer
+/// already drains a bootstrap. An unfenced pump still waits: that snapshot
+/// is a resize the client has to adopt. The exit snapshot always waits, and
+/// when it fits it reserves every frame before the first one is visible, so
+/// close cannot land between `BOOTSTRAP_BEGIN` and that chunk.
 pub(crate) async fn queue_resync_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     reason: crate::terminal_actor::ResyncReason,
@@ -437,8 +439,9 @@ pub(crate) async fn queue_resync_bootstrap(
     if frames.is_empty() {
         return SnapshotQueue::Queued;
     }
+    let fits = frames.len() <= out_tx.max_capacity();
     let must_deliver =
-        matches!(reason, crate::terminal_actor::ResyncReason::Exit) || !defer_if_full;
+        !fits || matches!(reason, crate::terminal_actor::ResyncReason::Exit) || !defer_if_full;
     if !must_deliver {
         return match try_queue_frames(out_tx, &frames) {
             Ok(()) => SnapshotQueue::Queued,
