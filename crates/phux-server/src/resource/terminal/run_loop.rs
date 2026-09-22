@@ -519,7 +519,11 @@ impl TerminalActor {
             return;
         }
         let _ = self.flush_final_gap_resync(resync);
-        self.broadcast_resync(ResyncReason::OutboundGap, ResyncAudience::Everyone);
+        // `Exit`, not another gap: a pump whose mailbox is already full must
+        // park on this snapshot and not on an earlier one. `RESOURCE_CLOSED`
+        // is queued only after the yield below, so it lines up behind it
+        // (phux-fpgl.28).
+        self.broadcast_resync(ResyncReason::Exit, ResyncAudience::Everyone);
         tokio::task::yield_now().await;
         if let Some(exit) = self.exit.as_ref() {
             self.core.notify_exit(phux_core::process::ExitOutcome {

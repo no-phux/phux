@@ -2583,16 +2583,12 @@ impl AttachResourcePumpCtx {
         resync: &PumpResync,
     ) -> PumpStep {
         // Resync is control, so an unchanged cut still tombstones and
-        // replaces the published generation.
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let prior_bootstrap_id = stream.generation.bootstrap_id();
-        stream
-            .generation
-            .set_bootstrap_id(crate::runtime::attach::next_bootstrap_id(
-                stream.generation.bootstrap_id(),
-            ));
+        // replaces the published generation. The id advances only once the
+        // replacement frames are queued, so a deferred snapshot does not
+        // relabel live output the client has not opened.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if native_checkpoint_profile(self.stream_profile) {
+            let prior_bootstrap_id = stream.generation.bootstrap_id();
             return self
                 .republish_native_generation(stream, prior_bootstrap_id, resync)
                 .await;
@@ -2607,22 +2603,34 @@ impl AttachResourcePumpCtx {
         resync: &PumpResync,
     ) -> PumpStep {
         let payload = crate::runtime::attach::downsample_for_caps(&resync.bytes, self.client_caps);
-        if crate::runtime::attach::send_synthesized_bootstrap(
-            &self.out_tx,
+        let bootstrap_id =
+            crate::runtime::attach::next_bootstrap_id(stream.generation.bootstrap_id());
+        let Ok(frames) = crate::runtime::attach::synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
             self.stream_id,
-            stream.generation.bootstrap_id(),
+            bootstrap_id,
             self.stream_profile,
             self.bootstrap_limits,
             resync.cols,
             resync.rows,
             resync.base_seq,
             [payload],
+        ) else {
+            return PumpStep::Stop;
+        };
+        match crate::runtime::attach::queue_resync_bootstrap(
+            &self.out_tx,
+            resync.reason,
+            frames,
+            stream.generation.is_fenced(),
         )
         .await
-        .is_err()
         {
-            return PumpStep::Stop;
+            crate::runtime::attach::SnapshotQueue::Deferred => return PumpStep::Continue,
+            crate::runtime::attach::SnapshotQueue::Closed => return PumpStep::Stop,
+            crate::runtime::attach::SnapshotQueue::Queued => {
+                stream.generation.set_bootstrap_id(bootstrap_id);
+            }
         }
         stream.generation.republished_at(resync.base_seq);
         self.generation_last_seq
@@ -2654,6 +2662,7 @@ impl AttachResourcePumpCtx {
         {
             return self.abandon_connection();
         }
+        let bootstrap_id = crate::runtime::attach::next_bootstrap_id(prior_bootstrap_id);
         let (reply, reply_rx) = oneshot::channel();
         if self
             .native_bootstrap
@@ -2661,7 +2670,7 @@ impl AttachResourcePumpCtx {
                 owner: self.client_id.0,
                 terminal_id: self.wire_terminal_id.clone(),
                 stream_id: self.stream_id,
-                bootstrap_id: stream.generation.bootstrap_id(),
+                bootstrap_id,
                 limits: self.bootstrap_limits,
                 max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
                 max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
@@ -2688,12 +2697,13 @@ impl AttachResourcePumpCtx {
         else {
             return self.abandon_connection();
         };
+        stream.generation.set_bootstrap_id(bootstrap_id);
         let Ok(publication) = crate::runtime::attach::activate_native_publication(
             &self.terminal,
             self.client_id.0,
             self.wire_terminal_id.clone(),
             self.stream_id,
-            stream.generation.bootstrap_id(),
+            bootstrap_id,
             cursor,
         )
         .await
@@ -2760,7 +2770,8 @@ const fn tombstone_reason(
         crate::terminal_actor::ResyncReason::Resize => {
             phux_protocol::wire::frame::TombstoneReason::Resize
         }
-        crate::terminal_actor::ResyncReason::OutboundGap => {
+        crate::terminal_actor::ResyncReason::OutboundGap
+        | crate::terminal_actor::ResyncReason::Exit => {
             phux_protocol::wire::frame::TombstoneReason::OutboundGap
         }
     }
