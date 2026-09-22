@@ -681,10 +681,24 @@ impl NativeTerminalManager {
         })
     }
 
-    pub(crate) fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
-        self.terminal
-            .as_ref()
-            .unwrap_or_else(|| unreachable!("terminal unavailable only during prefix capture"))
+    /// The canonical terminal, or `None` while a snapshot capture holds it.
+    ///
+    /// A native bootstrap capture MOVES the terminal out of this manager for
+    /// the length of the cut (up to `NATIVE_CAPTURE_LIFETIME`), so there is a
+    /// real window in which no reader can have it. This used to be an
+    /// `unreachable!`, which made that window a SIGABRT: release builds are
+    /// `panic = "abort"` with one current-thread runtime and no
+    /// `catch_unwind` on any task boundary, and the process holds every
+    /// session the user has with nothing persisted. Two callers reached it in
+    /// production before the routes were closed one at a time.
+    ///
+    /// Returning `Option` is the durable answer: a reader that cannot have
+    /// the terminal now degrades — skips a paint, refuses a read — instead of
+    /// destroying the workspace, and the type makes that unavoidable for
+    /// future callers rather than depending on every `select!` guard staying
+    /// correct.
+    pub(crate) const fn try_terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
+        self.terminal.as_ref()
     }
 
     /// Apply VT bytes to the canonical screen.
