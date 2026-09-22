@@ -235,6 +235,7 @@ class BuildContracts(unittest.TestCase):
     def test_main_has_one_shipping_compile_owner_and_debug_tests(self):
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
         app = re.search(r"(?ms)^      - name: Build the production macOS app\n(.*?)(?=^      - name:)", workflow).group(1)
+        self.assertIn("github.event_name != 'pull_request'", app)
         self.assertNotIn("if: github.event_name == 'pull_request'", app)
         self.assertNotIn("package-macos.sh", workflow)
         self.assertNotIn("soak-macos-app.sh", workflow)
