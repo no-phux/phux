@@ -159,41 +159,15 @@ jobs:
         working-directory: clients/cockpit
         run: ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all
 
-      # The null-platform tests do not compile the AppKit executable. Keep one
-      # real production build on PRs while reserving archive/DMG work for main.
-      # package-macos.sh owns the main-path shipping compile; skipping this
-      # step on push is required (one compile owner), not a missing artifact.
+      # One shipping compile. Archive, DMG, and the lifecycle soak belong to
+      # publish, which runs them once per Cockpit tag — not on every main push.
       - name: Build the production macOS app
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: clients/cockpit
         run: bash ./scripts/build-shipping-app.sh --summary all
 
       - name: Check ring P-256 helpers survived dead_strip
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: clients/cockpit
         run: python3 ./scripts/check-ring-p256-helpers.py zig-out/bin/phux-cockpit
-
-      - name: Package and verify the arm64 macOS app
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
-        run: |
-          set -euo pipefail
-          VERSION="$(< clients/cockpit/version.txt)"
-          VERSION="$VERSION" clients/cockpit/scripts/package-macos.sh
-          clients/cockpit/scripts/soak-macos-app.sh \
-            --app "clients/cockpit/zig-out/release/Phux Cockpit.app" \
-            --cycles 3 \
-            --artifacts clients/cockpit/zig-out/soak-ci
-
-      # The soak's failure directory carries the app log, the coordinator log,
-      # and the process table; without it a red soak is one line of stderr.
-      - name: Upload soak diagnostics
-        if: failure() && hashFiles('clients/cockpit/zig-out/soak-ci/**') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: cockpit-soak-diagnostics
-          path: clients/cockpit/zig-out/soak-ci
-          if-no-files-found: ignore
-          retention-days: 7
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: github.ref == 'refs/heads/main' && steps.zig-cache.outputs.cache-hit != 'true'

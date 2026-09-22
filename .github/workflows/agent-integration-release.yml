@@ -1,14 +1,10 @@
 # Release agent integration — the publish lane for public host adapters.
 #
-# Flow: release-please merges a release PR, creates `<component>-vX.Y.Z`, and
-# leaves a DRAFT GitHub release (release-please-config.json sets "draft": true
-# globally). That tag push lands here. This workflow re-tests the exact tagged
-# tree, packs the immutable artifact, publishes it to npm where applicable,
-# attaches the artifact to the draft, and only then flips the draft public.
-#
-# The tag is created by the release App, not GITHUB_TOKEN, so the push DOES
-# raise a workflow run — see the header of release-please.yml for why that
-# distinction is load-bearing.
+# Flow: publish.yml calls this once ci.yml is green for the component tag.
+# This workflow re-tests that exact tree, packs one artifact, publishes it to
+# npm where applicable, attaches it to the draft, and only then flips the
+# draft public. It does not trigger on the tag push itself; that would race
+# publish.yml and ship the same version twice.
 #
 # THIS LANE WAS DEAD ON ARRIVAL. Its first four invocations all failed, leaving
 # four permanent 0-asset drafts (opencode-plugin-v0.2.0, pi-extension-v0.2.0,
@@ -55,11 +51,16 @@
 name: Release agent integration
 
 on:
-  push:
-    tags:
-      - "opencode-plugin-v*.*.*"
-      - "pi-extension-v*.*.*"
-      - "claude-plugin-v*.*.*"
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing component-vX.Y.Z tag to validate and publish
+        required: true
+        type: string
+      dry_run:
+        description: Validate without publishing or changing the GitHub release
+        required: true
+        type: boolean
   workflow_dispatch:
     inputs:
       tag:
@@ -76,7 +77,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mini-v1-agent-integration-release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  group: mini-v1-agent-integration-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -95,25 +96,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          ref: ${{ inputs.tag }}
 
       - name: Validate tag, commit, and component version
         id: release
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSH_TAG: ${{ github.ref_name }}
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == push ]]; then
-            tag="$PUSH_TAG"
-            dry_run=false
-          else
-            tag="$DISPATCH_TAG"
-            dry_run="$DISPATCH_DRY_RUN"
-          fi
+          tag="$DISPATCH_TAG"
+          dry_run="$DISPATCH_DRY_RUN"
           if [[ ! "$tag" =~ ^(opencode-plugin|pi-extension|claude-plugin)-v([0-9]+[.][0-9]+[.][0-9]+)$ ]]; then
             echo "::error::tag must be opencode-plugin-vX.Y.Z, pi-extension-vX.Y.Z, or claude-plugin-vX.Y.Z"
             exit 1

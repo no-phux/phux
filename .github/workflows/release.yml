@@ -1,9 +1,8 @@
 # phux release artifacts — build distributable binaries, attach them to an
 # existing draft, publish the complete release, then refresh Homebrew.
 #
-# Trigger: called by release-please.yml once release-please has pushed the tag
-# and created the GitHub release. Also dispatchable by hand against an existing
-# tag to re-build or re-attach assets.
+# Trigger: publish.yml, once the tag exists and ci.yml is green for it.
+# Re-running publish against the same tag rebuilds and re-attaches.
 #
 # This workflow does NOT create tags or release notes. release-please owns the
 # tag and creates the release body as a draft. This workflow attaches assets
@@ -47,12 +46,6 @@ on:
     inputs:
       tag:
         description: "Existing tag to build and attach assets for (e.g. v0.1.0)."
-        required: true
-        type: string
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to build and attach assets for (e.g. v0.1.0). Must already exist."
         required: true
         type: string
 

@@ -15,10 +15,9 @@
 # and a failed view used to upload an empty notes file.
 #
 # Two stages, because a release is not one moment:
-#   building  — the tag exists and the release is being built. Linear shows it
-#               in Building. Called by release-please.yml at tag time.
+#   building  — the tag exists and the release is being built. Dispatch-only.
 #   released  — binaries, tap, and the public GitHub release are all complete.
-#               Called by release-please.yml after the artifact workflow succeeds.
+#               publish.yml calls this after the artifact workflow succeeds.
 #
 # A failed artifact build therefore leaves the Linear release in Building next
 # to a private draft on GitHub, which is the honest state.
@@ -109,16 +108,18 @@ jobs:
           esac
 
       - name: Require the Linear pipeline access key
+        id: keys
         env:
           COMPONENT: ${{ steps.meta.outputs.component }}
           PHUX_KEY: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
           COCKPIT_KEY: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
         run: |
           set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
           if [ "$COMPONENT" = cockpit ]; then
             if [ -z "$COCKPIT_KEY" ]; then
-              echo "::error::LINEAR_COCKPIT_RELEASE_ACCESS_KEY is unset. Create an access key on the Linear phux-cockpit pipeline and add it as a repository secret."
-              exit 1
+              echo "::warning::LINEAR_COCKPIT_RELEASE_ACCESS_KEY is unset; the GitHub release still publishes. Add the phux-cockpit pipeline key to report it to Linear."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
             fi
           elif [ -z "$PHUX_KEY" ]; then
             echo "::error::LINEAR_RELEASE_ACCESS_KEY is unset."
@@ -133,11 +134,13 @@ jobs:
       # created, and the `released` update then had nothing to update. The tag
       # is fetched below, straight from github.com and past the mirror.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: success() && steps.keys.outputs.skip != 'true'
         with:
           # The CLI scans the whole commit range, so shallow will not do.
           fetch-depth: 0
 
       - name: Fetch the release tag from GitHub, bypassing the runner git mirror
+        if: success() && steps.keys.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
@@ -163,7 +166,7 @@ jobs:
           echo "checked out ${TAG} at $(git rev-parse HEAD)"
 
       - name: Write Linear release notes from the tagged changelog
-        if: inputs.stage == 'building'
+        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'building'
         env:
           TAG: ${{ inputs.tag }}
           CHANGELOG: ${{ steps.meta.outputs.changelog }}
@@ -173,7 +176,7 @@ jobs:
             --tag "$TAG" --changelog "$CHANGELOG" --output release-notes.md
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: inputs.stage == 'building' && steps.meta.outputs.component == 'phux'
+        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'building' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
           command: sync
@@ -184,7 +187,7 @@ jobs:
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: inputs.stage == 'building' && steps.meta.outputs.component == 'cockpit'
+        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'building' && steps.meta.outputs.component == 'cockpit'
         with:
           access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
           command: sync
@@ -196,7 +199,7 @@ jobs:
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: inputs.stage == 'released' && steps.meta.outputs.component == 'phux'
+        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'released' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
           command: update
@@ -204,7 +207,7 @@ jobs:
           version: ${{ inputs.tag }}
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: inputs.stage == 'released' && steps.meta.outputs.component == 'cockpit'
+        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'released' && steps.meta.outputs.component == 'cockpit'
         with:
           access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
           command: update
