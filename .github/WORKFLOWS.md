@@ -27,6 +27,17 @@ while the product lanes may succeed *or* skip. That is why `cockpit-ci`,
 why adding a new lane means adding it to that aggregate rather than to the
 ruleset.
 
+Browser wasm coverage lives in `web-check.yml`. On browser changes that
+workflow runs `wasm-pack test --node` for `clients/phux-web` and
+`clients/phux-vt-web`, `wasm-pack build --target web --release` for the
+shipping phux-web package, and `scripts/build-vt-wasm.sh --check` when the
+vendored engine changes. The lane is a Nix develop plus wasm-pack plus
+headless Chrome job with a 30-minute budget, so it stays off the required
+`ci` aggregate. A wasm break fails the `web-check` run and can still reach
+`main`, because merge protection is `ci` plus `commitlint`. That gap is the
+accepted rot risk: the check is real, and it is too expensive to duplicate
+inside `ci.yml`.
+
 A ruleset matches a job's **display name**, not its id. Several jobs here
 differ between the two (`changes` shows as "classify changes",
 `cockpit-ci`'s `test` shows as "Zig 0.16 macOS"), so never assume an id is

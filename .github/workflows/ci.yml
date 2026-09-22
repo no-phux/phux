@@ -91,15 +91,7 @@ jobs:
           cache: npm
           cache-dependency-path: integrations/*/package-lock.json
       - name: agent integration gates
-        run: |
-          set -euo pipefail
-          bash scripts/doctor.sh integrations
-          node scripts/check-agent-integration-versions.mjs
-          export npm_config_audit=false npm_config_fund=false
-          for package in opencode pi claude; do
-            npm --prefix "integrations/$package" ci
-            npm --prefix "integrations/$package" run gates
-          done
+        run: bash scripts/ci/agent-integrations.sh
 
   # Clippy/rustdoc exercise all features; tests deliberately use default
   # features so dhat's allocator does not distort the performance e2e gates.

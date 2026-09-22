@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-22
 ---
 
 # Contributing to phux
@@ -128,8 +128,8 @@ root `justfile` so CI can route by which module changed.
 | Homebrew formula | `just formula-check` | same recipe |
 | toolchain pins | `just toolchain-check` | same recipe; `just toolchain-parity` additionally compares the resolved Nix and Mise environments |
 | unit tests | `NEXTEST_PROFILE=ci just test` (default features; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test`; `just test-cargo` if nextest is unavailable |
-| workflow/setup contracts | `just workflow-check` | same (includes `just setup-check`'s helper tests) |
-| agent integration packages | `just agent-integrations-check` | same; `just integration-check <package>` for a scoped loop |
+| workflow/setup contracts | `just workflow-check` (includes `just shellcheck`) | same (includes `just setup-check`'s helper tests) |
+| agent integration packages | `bash scripts/ci/agent-integrations.sh` | `just agent-integrations-check` (same script); `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
 | install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
 | embedded skill contract | `just skill-contract` | same |

@@ -35,7 +35,8 @@ ROUTES = (
     (("clients/phux-vt-web/vendor/*", "scripts/build-vt-wasm.sh",
       "scripts/test-vt-wasm.mjs"), {"web", "web_engine"}),
     (("integrations/*", ".claude-plugin/*",
-      "scripts/check-agent-integration-versions.mjs", ".release-please-manifest.json"), {"integrations"}),
+      "scripts/check-agent-integration-versions.mjs",
+      "scripts/ci/agent-integrations.sh", ".release-please-manifest.json"), {"integrations"}),
     (("crates/*",), RUST),
     # Browser Rust consumers plus the live demo-server example's dependency
     # closure (including its Cargo dev dependencies). The fixture checks this

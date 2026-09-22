@@ -38,6 +38,7 @@ class RoutingTests(unittest.TestCase):
             (["clients/phux-vt-web/vendor/ghostty-vt.wasm"], {"web", "web_engine"}),
             (["scripts/build-vt-wasm.sh"], {"web", "web_engine"}),
             (["integrations/pi/src/index.ts"], {"integrations"}),
+            (["scripts/ci/agent-integrations.sh"], {"integrations"}),
             (["integrations/claude/skills/phux/SKILL.md"], {"integrations"}),
             ([".claude-plugin/marketplace.json"], {"integrations"}),
             (["crates/phux-server/src/lib.rs"], {"phux", "cockpit", "web"}),
