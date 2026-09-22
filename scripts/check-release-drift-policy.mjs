@@ -8,15 +8,9 @@ import {
 } from "./release-drift-policy.mjs";
 
 assert.deepEqual(recoveryFor("next"), { workflow: "next-release.yml", extraArgs: "" });
-assert.deepEqual(recoveryFor("v0.27.0"), { workflow: "release.yml", extraArgs: "" });
-assert.deepEqual(recoveryFor("cockpit-v0.16.2"), {
-  workflow: "cockpit-release.yml",
-  extraArgs: "",
-});
-assert.deepEqual(recoveryFor("opencode-plugin-v0.3.0"), {
-  workflow: "agent-integration-release.yml",
-  extraArgs: " -f dry_run=false",
-});
+assert.deepEqual(recoveryFor("v0.27.0"), { workflow: "publish.yml", extraArgs: "" });
+assert.deepEqual(recoveryFor("cockpit-v0.16.2"), { workflow: "publish.yml", extraArgs: "" });
+assert.deepEqual(recoveryFor("opencode-plugin-v0.3.0"), { workflow: "publish.yml", extraArgs: "" });
 
 const historyTip = "filtered-cockpit-tip";
 const baseline = {

@@ -360,7 +360,7 @@ require_fixed .github/workflows/release.yml 'gh release edit "$TAG" --draft=fals
 require_fixed release-please-config.json '"draft": true'
 forbid_fixed .github/workflows/release.yml 'softprops/action-gh-release'
 forbid_fixed .github/workflows/release.yml 'generate_release_notes'
-# release.yml is called by release-please and must stay dispatch/call-only. It
+# publish.yml calls release.yml. release.yml stays call-only. It
 # must never create a tag, and must never publish to crates.io: an irreversible
 # publish has no human in an automated path. publish-crate.yml is that path.
 forbid_fixed .github/workflows/release.yml 'publish_protocol'
@@ -368,7 +368,9 @@ forbid_fixed .github/workflows/release.yml 'crates_io_confirm'
 forbid_fixed .github/workflows/release.yml 'cargo publish'
 
 require_fixed .github/workflows/release-please.yml 'googleapis/release-please-action'
-require_fixed .github/workflows/release-please.yml 'uses: ./.github/workflows/release.yml'
+require_fixed .github/workflows/publish.yml 'uses: ./.github/workflows/release.yml'
+forbid_fixed .github/workflows/release-please.yml 'wait_validation.py'
+forbid_fixed .github/workflows/release-please.yml 'uses: ./.github/workflows/release.yml'
 # release-please cannot update Cargo.lock; cargo re-resolves it on the PR
 # branch, against the toolchain rust-toolchain.toml pins — never a hardcoded
 # channel (see the release.yml guard above for why).

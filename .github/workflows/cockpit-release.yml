@@ -26,12 +26,6 @@ on:
         required: false
       APPLE_NOTARY_ISSUER_ID:
         required: false
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing release tag to build and publish
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -208,6 +202,7 @@ jobs:
           clients/cockpit/scripts/package-macos.sh
 
       - name: Soak packaged application lifecycle
+        timeout-minutes: 15
         run: |
           clients/cockpit/scripts/soak-macos-app.sh \
             --app "clients/cockpit/zig-out/release/Phux Cockpit.app" \

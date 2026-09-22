@@ -804,13 +804,13 @@ The packaging script validates the bundle identifier, display name, version,
 executable, arm64 architecture, and code signature before producing archives.
 The root Release Please workflow maintains Cockpit as an independent component
 inside the shared draft version PR. Merging that PR creates a
-`cockpit-vX.Y.Z` tag and draft GitHub release; the **Release Cockpit** workflow
-builds, verifies, and attaches the macOS artifacts before publishing the release and
-regenerating `Casks/phux-cockpit.rb` in
-[`no-phux/homebrew-tap`](https://github.com/no-phux/homebrew-tap). The tap's
+`cockpit-vX.Y.Z` tag and draft GitHub release. The **publish** workflow, once
+`ci` is green for that commit, builds, verifies, and attaches the macOS
+artifacts before publishing the release and regenerating `Casks/phux-cockpit.rb`
+in [`no-phux/homebrew-tap`](https://github.com/no-phux/homebrew-tap). The tap's
 scheduled updater independently repairs a missed release update.
-A failed artifact pass can be resumed by manually dispatching the **Release
-Cockpit** workflow against the existing draft tag.
+A failed artifact pass can be resumed by dispatching **publish** against the
+existing draft tag.
 
 ## Limitations
 

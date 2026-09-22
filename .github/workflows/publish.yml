@@ -1,0 +1,144 @@
+# publish — the only workflow that turns a draft release into a public one.
+#
+# Release Please cuts the tag and the draft notes. ci.yml is the proof the
+# commit is good. Those two finish in either order, so this workflow runs
+# when either of them completes and does nothing until both are true. A
+# daily reconcile catches an event that never arrived, and dispatch is the
+# manual door. Leaf workflows (release.yml, cockpit-release.yml, the FFI
+# builds, agent-integration-release.yml) are called from here. They are not
+# separate buttons.
+#
+# A draft older than an already published version of the same component is
+# deleted. The tag stays, so release-please will not cut that version again.
+
+name: publish
+
+on:
+  workflow_run:
+    workflows: ["ci", "release-please"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Draft tag to publish. Leave empty to reconcile every ready draft."
+        required: false
+        type: string
+        default: ""
+  schedule:
+    # 15:05 UTC, ahead of the 15:20 drift alarm, off the top of the hour.
+    - cron: "5 15 * * *"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: mini-v1-publish
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: choose drafts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      phux_tag: ${{ steps.plan.outputs.phux_tag }}
+      cockpit_tag: ${{ steps.plan.outputs.cockpit_tag }}
+      integration_tags: ${{ steps.plan.outputs.integration_tags }}
+      blocked: ${{ steps.plan.outputs.blocked }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - id: plan
+        name: Decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
+        run: python3 scripts/ci/publish_plan.py
+
+  phux:
+    name: publish phux
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.phux_tag != ''
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+    secrets: inherit
+    with:
+      tag: ${{ needs.plan.outputs.phux_tag }}
+
+  cockpit:
+    name: publish cockpit
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.cockpit_tag != ''
+    uses: ./.github/workflows/cockpit-release.yml
+    permissions:
+      contents: write
+    secrets: inherit
+    with:
+      tag: ${{ needs.plan.outputs.cockpit_tag }}
+
+  # Mobile artifacts ride on the root release. They do not gate it: release.yml
+  # publishes the CLI tarballs, and a failed framework build is repaired by
+  # re-running publish against the same tag.
+  ffi-xcframework:
+    name: attach xcframework
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.phux_tag != ''
+    uses: ./.github/workflows/ffi-xcframework.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.plan.outputs.phux_tag }}
+
+  ffi-android:
+    name: attach android zip
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.phux_tag != ''
+    uses: ./.github/workflows/ffi-android.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.plan.outputs.phux_tag }}
+
+  integration:
+    name: publish integration
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.integration_tags != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: ${{ fromJSON(needs.plan.outputs.integration_tags) }}
+    uses: ./.github/workflows/agent-integration-release.yml
+    permissions:
+      contents: write
+      id-token: write
+    with:
+      tag: ${{ matrix.tag }}
+      dry_run: false
+
+  linear-phux:
+    name: report phux to Linear
+    needs: [plan, phux]
+    if: needs.phux.result == 'success'
+    uses: ./.github/workflows/linear-release.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.plan.outputs.phux_tag }}
+      stage: released
+
+  linear-cockpit:
+    name: report cockpit to Linear
+    needs: [plan, cockpit]
+    if: needs.cockpit.result == 'success'
+    uses: ./.github/workflows/linear-release.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.plan.outputs.cockpit_tag }}
+      stage: released

@@ -8,7 +8,7 @@
 #
 # Release Please owns tags, draft releases and notes. This workflow only adds
 # verified assets to an existing release, the same contract release.yml and
-# cockpit-release.yml follow, and release-please.yml calls it for every root
+# cockpit-release.yml follow, and publish.yml calls it for every root
 # release. It never gates the draft's publication: the CLI tarballs are the
 # release contract; the xcframework is the mobile pin's input.
 #

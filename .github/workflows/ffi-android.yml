@@ -3,8 +3,8 @@
 # wait on NDK. phux-mobile fetches this zip at PHUX_REV.
 #
 # Fires on main when the shim or its runtime inputs change, so a merge is the
-# produce run — no manual dispatch. Release-please also calls it to attach the
-# zip to the root tag. workflow_dispatch remains for repair.
+# produce run. publish.yml also calls it to attach the zip to a root tag.
+# workflow_dispatch remains for a tagless repair build.
 
 name: ffi-android
 

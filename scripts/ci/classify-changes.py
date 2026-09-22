@@ -84,7 +84,7 @@ WORKFLOWS = (
     "scripts/ci/classify-changes*", "scripts/ci/check-classify-changes.sh",
     "scripts/ci/detect-changes.py",
     "scripts/ci/validation_receipt.py", "scripts/ci/test_validation_receipt.py",
-    "scripts/ci/wait_validation.py", "scripts/ci/test_wait_validation.py",
+    "scripts/ci/publish_plan.py", "scripts/ci/test_publish_plan.py",
     "scripts/ci/extract_changelog_section.py", "scripts/ci/test_extract_changelog_section.py",
     "scripts/ci/setup-linux-release-userspace.sh", "scripts/ci/test_runner_policy.py",
     "scripts/check-release-orchestration.mjs",

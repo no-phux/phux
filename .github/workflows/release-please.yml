@@ -1,117 +1,25 @@
-# release-please — the single entry point for cutting a phux release.
+# release-please — versions, tags, and draft release notes. Nothing else.
 #
-# Flow:
-#   1. Every push to main, release-please reads the conventional-commit log
-#      since the last release and maintains an open "release PR" that bumps
-#      [workspace.package] version in the root Cargo.toml and regenerates
-#      CHANGELOG.md.
-#   2. `sync-lockfile` re-resolves Cargo.lock on that PR branch. release-please
-#      CANNOT do this itself — see the comment on that job.
-#   3. When a human merges the release PR, release-please pushes the `vX.Y.Z`
-#      tag and creates a DRAFT GitHub Release, with the changelog as its body.
-#   4. `release-artifacts` calls release.yml (a reusable workflow) to build all
-#      binaries, attach them, refresh Homebrew, and only then publish the draft.
+# Every push to main, release-please maintains the release PR. Merging that
+# PR creates the component tags and private draft GitHub releases. publish.yml
+# ships them after ci.yml is green for that exact commit. This file does not
+# build, wait, or publish.
 #
-# Ownership boundary (do not blur this):
-#   * release-please owns the TAG and creates the RELEASE + body/notes as draft.
-#   * release.yml owns ASSETS and the one-way draft -> published transition. It
-#     never rewrites the body, so the two cannot fight over the release notes.
+# App token, not GITHUB_TOKEN. main requires the ci check. Events raised by
+# GITHUB_TOKEN do not trigger workflows, so a release PR opened with
+# GITHUB_TOKEN never gets ci and cannot merge. The same applies to the
+# lockfile commit pushed onto that PR. Both authenticate as the release App.
 #
-# Why release-artifacts is a workflow_call and not a `push: tags` /
-# `release: published` trigger on release.yml: GitHub does not fire
-# workflow-triggering events for refs/releases created by GITHUB_TOKEN, so a
-# `push: tags: v*` or `release: published` trigger could never fire. Calling
-# release.yml as a reusable workflow in this same run sidesteps that.
+# Do not set last-release-sha. It is a bootstrap pin release-please never
+# ignores, so the changelog grows from that commit forever.
 #
-# WHY AN APP TOKEN AND NOT GITHUB_TOKEN (this is load-bearing — do not "simplify"
-# it back):
-#   `main` carries an active ruleset requiring ci.yml's aggregate `ci` status
-#   contexts for the ordinary merge path. Those contexts are produced only by
-#   ci.yml's `pull_request` trigger. GitHub suppresses workflow runs for events
-#   raised by GITHUB_TOKEN — so a release PR opened with GITHUB_TOKEN would get
-#   no CI run and require an administrator bypass. The same applies to the
-#   sync-lockfile push: it moves the PR head to a SHA with no check runs. Both
-#   jobs therefore authenticate as a GitHub App, whose events trigger workflows
-#   normally instead of making every release depend on bypass.
+# Do not set package-name on the root package. include-component-in-tag is
+# false, but package-name still feeds the branch component. A root-only
+# release PR then aborts with no tag (v0.19.0). The manifest and tags are
+# the record of what shipped.
 #
-# ONE-TIME SETUP (without it, this workflow fails closed at the token step):
-#   1. Create a GitHub App with repo permissions `contents: write` +
-#      `pull requests: write`, and INSTALL IT ON THE ORG THAT OWNS THIS REPO
-#      (`no-phux`), granting it access to `no-phux/phux`.
-#   2. Repo secret  RELEASE_APP_PRIVATE_KEY = the App's generated .pem
-#      Repo variable RELEASE_APP_ID          = the App's numeric App ID
-#
-# AN APP INSTALLATION DOES NOT SURVIVE A REPO TRANSFER. This repo moved from
-# the phall1 user account to the no-phux org, and the App stayed installed on
-# the account it was installed on, which no longer owns anything here. Every
-# push to main then failed at the token step with:
-#
-#     Failed to create token for "no-phux/phux": Not Found
-#     https://api.github.com/repos/no-phux/phux/installation
-#
-# That error means the App credentials are FINE — create-github-app-token
-# authenticates with the private key first and only then looks up the
-# installation, so reaching a 404 there proves the key and App ID are valid
-# and only the installation is missing. Do not regenerate the key; install the
-# App on the owning org. `gh api /orgs/<org>/installations` lists what is
-# actually installed, which is the fastest way to confirm.
-#
-# While this is broken there is no release PR at all, and a release has to be
-# cut by hand (bump + changelog + tag + draft release + dispatch release.yml),
-# which is how v0.23.3 shipped.
-#
-# DO NOT REINTRODUCE `last-release-sha` (this is the bug that produced #419):
-#   It is a BOOTSTRAP-ONLY setting. Upstream is explicit that it "is never
-#   ignored — you must remove/change it once a good release PR is merged", so a
-#   pinned value does not decay into a floor: release-please keeps starting its
-#   commit search there forever, in preference to the tags. Ours was pinned to
-#   040fea1a (v0.1.0) and stayed there for 242 commits, so the release PR
-#   eventually proposed a 0.15.0 whose changelog re-listed the entire project
-#   history — every feature already shipped in 0.9.0 through 0.14.1, plus
-#   BREAKING CHANGES that shipped months earlier. Merging that would have
-#   duplicated most of CHANGELOG.md and bumped the minor on the strength of
-#   long-released commits.
-#
-#   The manifest (.release-please-manifest.json) plus component tags are the
-#   real source of truth for "where the last release was". Cockpit's temporary
-#   top-level `bootstrap-sha` was removed after the first canonical
-#   `cockpit-v0.16.2` release; do not reintroduce it. If a later release PR
-#   proposes commits that are already in a changelog, look here first.
-#
-# DO NOT REINTRODUCE `package-name` ON THE ROOT PACKAGE (this is the bug that
-# silently skipped v0.19.0):
-#   `release-please-config.json` sets `"include-component-in-tag": false` for
-#   `"."`, so the root's component is empty everywhere the TAG and the PR BODY
-#   are concerned. But `package-name` is a second, independent source for the
-#   component: BaseStrategy computes `component = options.component ||
-#   normalizeComponent(packageName)`, and `getBranchComponent()` — unlike
-#   `getComponent()` — does NOT honour `include-component-in-tag`. With
-#   `"package-name": "phux"` the branch component was therefore "phux" while the
-#   PR branch is plainly `release-please--branches--main`, component undefined.
-#
-#   That mismatch only bites on the single-section path. `buildRelease()` treats
-#   a merged release PR whose body has exactly ONE component-less release
-#   section as a "standalone release PR" and requires branch component ==
-#   configured component; it bails with "PR component: undefined does not match
-#   configured component: phux" and creates NO release. When two or more
-#   sections are present it takes the multi-component path instead, which
-#   matches on `getComponent()` (empty) and works fine.
-#
-#   So the release only ever worked by accident: every cycle up to v0.18.0
-#   happened to carry an integrations/* bump alongside the root one. v0.19.0 was
-#   the first root-only cycle, and it vanished — no tag, no release, no
-#   artifacts, and PR #445 left labelled `autorelease: pending`, which then
-#   aborts every subsequent run with "There are untagged, merged release PRs
-#   outstanding". Dropping `package-name` makes the branch component empty on
-#   both sides. It cannot change the tag or the release name: both are gated on
-#   `include-component-in-tag`, which stays false.
-#
-#   Symptom to look for: a release-please run that is GREEN but reports
-#   `releases_created: false` right after a release PR merged.
-#
-# crates.io is deliberately NOT wired in here. Publishing is irreversible and
-# there is no human in a tag-triggered path, so phux-protocol is published only
-# via the manual publish-crate.yml dispatch. See CONTRIBUTING.md.
+# crates.io is not wired here. phux-protocol publishes only through
+# publish-crate.yml.
 
 name: release-please
 
@@ -133,10 +41,6 @@ jobs:
     name: release PR / github release
     runs-on: ubuntu-24.04
     outputs:
-      release_created: ${{ steps.rp.outputs.release_created }}
-      tag_name: ${{ steps.rp.outputs.tag_name }}
-      cockpit_release_created: ${{ steps.rp.outputs['clients/cockpit--release_created'] }}
-      cockpit_tag_name: ${{ steps.rp.outputs['clients/cockpit--tag_name'] }}
       prs_created: ${{ steps.rp.outputs.prs_created }}
       # `pr` is a JSON string of release-please's PullRequest object, and is
       # unset when no PR was touched — short-circuit so fromJSON never sees ''.
@@ -151,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${APP_ID}" ] || [ -z "${APP_KEY}" ]; then
-            echo "::error::RELEASE_APP_ID (variable) and RELEASE_APP_PRIVATE_KEY (secret) must be set. See this workflow's header comment. GITHUB_TOKEN cannot be used: main's ruleset requires check+test, and GITHUB_TOKEN-raised events do not trigger CI, so the release PR would be unmergeable."
+            echo "::error::RELEASE_APP_ID (variable) and RELEASE_APP_PRIVATE_KEY (secret) must be set. See this workflow's header comment. GITHUB_TOKEN cannot be used: main's ruleset requires ci, and GITHUB_TOKEN-raised events do not trigger workflows, so the release PR would be unmergeable."
             exit 1
           fi
 
@@ -178,8 +82,8 @@ jobs:
   sync-lockfile:
     name: sync Cargo.lock on the release PR
     needs: release-please
-    # Also runs when release-please failed after opening the PR; see
-    # release-validation.
+    # Keep going when the release PR was opened and the job then failed.
+    # The lockfile sync is what makes that PR mergeable.
     if: always() && needs.release-please.outputs.prs_created == 'true' && needs.release-please.outputs.pr_branch != ''
     runs-on: ubuntu-24.04
     # release-please cannot update Cargo.lock, and this is not a config mistake:
@@ -268,143 +172,3 @@ jobs:
           git add Cargo.lock clients/phux-web/Cargo.lock
           git commit -m "chore: sync Cargo lockfiles with the release version"
           git push origin "HEAD:${PR_BRANCH}"
-
-  release-validation:
-    name: validate exact root release commit
-    needs: release-please
-    # `always()`: the action creates the tag and the draft, then keeps walking
-    # history, and a GitHub API error there fails the job with the release
-    # already made (2026-09-15, v0.39.0 and nine other drafts). The outputs are
-    # still set, so gate on the output rather than on the job's own result --
-    # otherwise the draft is orphaned with no assets and nothing retries it.
-    if: always() && needs.release-please.outputs.release_created == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Wait for root validation
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: |
-          sha="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
-          python3 scripts/ci/wait_validation.py .github/workflows/ci.yml "$sha"
-
-  cockpit-release-validation:
-    name: validate exact Cockpit release commit
-    needs: release-please
-    # See release-validation for why this tolerates a failed release-please.
-    if: always() && needs.release-please.outputs.cockpit_release_created == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Wait for Cockpit validation and candidate artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release-please.outputs.cockpit_tag_name }}
-        run: |
-          sha="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
-          python3 scripts/ci/wait_validation.py .github/workflows/ci.yml "$sha"
-          python3 scripts/ci/wait_validation.py .github/workflows/cockpit-ci.yml "$sha"
-
-  release-artifacts:
-    name: build + attach binaries
-    needs: [release-please, release-validation]
-    if: always() && needs.release-validation.result == 'success' && needs.release-please.outputs.release_created == 'true'
-    uses: ./.github/workflows/release.yml
-    permissions:
-      contents: write
-    secrets: inherit
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
-
-  # The mobile pin's input, attached beside the CLI tarballs. It never gates
-  # the draft's publication: release.yml owns that, and a failed xcframework
-  # build is repaired by dispatching ffi-xcframework.yml against the same tag.
-  ffi-xcframework-artifacts:
-    name: build + attach PhuxFFI xcframework
-    needs: [release-please, release-validation]
-    if: always() && needs.release-validation.result == 'success' && needs.release-please.outputs.release_created == 'true'
-    uses: ./.github/workflows/ffi-xcframework.yml
-    permissions:
-      contents: write
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
-
-  ffi-android-artifacts:
-    name: build + attach Android UniFFI zip
-    needs: [release-please, release-validation]
-    if: always() && needs.release-validation.result == 'success' && needs.release-please.outputs.release_created == 'true'
-    uses: ./.github/workflows/ffi-android.yml
-    permissions:
-      contents: write
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
-
-  cockpit-release-artifacts:
-    name: build + attach Cockpit app
-    needs: [release-please, cockpit-release-validation]
-    if: always() && needs.cockpit-release-validation.result == 'success' && needs.release-please.outputs.cockpit_release_created == 'true'
-    uses: ./.github/workflows/cockpit-release.yml
-    permissions:
-      contents: write
-    secrets: inherit
-    with:
-      tag: ${{ needs.release-please.outputs.cockpit_tag_name }}
-
-  # Report each tagged component to its Linear pipeline. Syncing at tag time
-  # puts it in Building; the matching promote moves it to Released only after
-  # binaries, the public GitHub release, and tap/cask updates are complete. A
-  # failed artifact build leaves a private draft for repair.
-  #
-  # Both stages live in linear-release.yml rather than inline here, because
-  # these jobs are gated on release-please outputs and this workflow only runs
-  # on push. A hand-recovered release — v0.19.0 was one — has that output false,
-  # so inline jobs could never report it and there was no way to do it after the
-  # fact. linear-release.yml is `workflow_dispatch`able for exactly that case.
-  linear-release-sync:
-    name: report release to Linear
-    needs: release-please
-    if: always() && needs.release-please.outputs.release_created == 'true'
-    uses: ./.github/workflows/linear-release.yml
-    secrets: inherit
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
-      stage: building
-
-  linear-release-promote:
-    name: mark the Linear release released
-    needs: [release-please, release-artifacts]
-    if: always() && needs.release-artifacts.result == 'success' && needs.release-please.outputs.release_created == 'true'
-    uses: ./.github/workflows/linear-release.yml
-    secrets: inherit
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
-      stage: released
-
-  cockpit-linear-release-sync:
-    name: report Cockpit release to Linear
-    needs: release-please
-    if: always() && needs.release-please.outputs.cockpit_release_created == 'true'
-    uses: ./.github/workflows/linear-release.yml
-    secrets: inherit
-    with:
-      tag: ${{ needs.release-please.outputs.cockpit_tag_name }}
-      stage: building
-
-  cockpit-linear-release-promote:
-    name: mark the Linear Cockpit release released
-    needs: [release-please, cockpit-release-artifacts]
-    if: always() && needs.cockpit-release-artifacts.result == 'success' && needs.release-please.outputs.cockpit_release_created == 'true'
-    uses: ./.github/workflows/linear-release.yml
-    secrets: inherit
-    with:
-      tag: ${{ needs.release-please.outputs.cockpit_tag_name }}
-      stage: released
