@@ -53,8 +53,9 @@ class BuildContracts(unittest.TestCase):
             r"(?ms)^      - uses: actions/cache/(?:restore|save)@.*?(?=^      - |\Z)",
             workflow,
         )
-        self.assertEqual(len(steps), 2)
-        return steps
+        zig = [step for step in steps if "~/.cache/zig" in step]
+        self.assertEqual(len(zig), 2)
+        return zig
 
     def test_ci_uses_shared_zig_cache_without_isolated_duplicate(self):
         env = dict(os.environ, GITHUB_ACTIONS="true")
@@ -99,10 +100,12 @@ class BuildContracts(unittest.TestCase):
         self.assertNotIn("${{ github.sha }}", key)
         self.assertIn("${{ runner.os }}", key)
         self.assertIn("${{ runner.arch }}", key)
-        self.assertTrue(key.startswith("mini-v2-cockpit-zig-"))
+        self.assertTrue(key.startswith("mini-v3-cockpit-zig-"))
         self.assertIn("hashFiles(", key)
+        self.assertIn("clients/cockpit/src/**", key)
+        self.assertIn("relsafe-aarch64-baseline-phux-traceoff", key)
         self.assertIn(f"          key: {key}", save)
-        self.assertRegex(restore, r"restore-keys: \|\n            mini-v2-cockpit-zig-0\.16\.0-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-\n")
+        self.assertRegex(restore, r"restore-keys: \|\n            mini-v3-cockpit-zig-0\.16\.0-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-\n")
         self.assertIn("github.ref == 'refs/heads/main'", save)
         self.assertIn("steps.zig-cache.outputs.cache-hit != 'true'", save)
 

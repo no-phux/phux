@@ -112,13 +112,28 @@ class RoutingTests(unittest.TestCase):
                     self.assertIn(outputs.get(key + "_needed"), ("true", "false"))
 
     def test_all_coordinator_crates(self):
-        # Conservative whole root-crate closure covers the bundled CLI and FFI.
+        # Library inputs in the phux binary or FFI closure rebuild Cockpit.
+        # The MCP binary and server testkit are not in either closure.
+        outside = {"phux-mcp", "phux-server-testkit"}
         for manifest in (ROOT / "crates").glob("*/Cargo.toml"):
             with self.subTest(crate=manifest.parent.name):
                 outputs = classify([str(manifest.parent.relative_to(ROOT) / "src/lib.rs")])
                 self.assertEqual(outputs["phux_needed"], "true")
-                self.assertEqual(outputs["cockpit_needed"], "true")
                 self.assertEqual(outputs["native_needed"], "false")
+                wanted = "false" if manifest.parent.name in outside else "true"
+                self.assertEqual(outputs["cockpit_needed"], wanted)
+
+    def test_server_test_file_does_not_rebuild_cockpit_or_the_workspace(self):
+        test_file = classify(["crates/phux-server/tests/hub_relay_federation.rs"])
+        self.assertEqual(test_file["cockpit_needed"], "false")
+        self.assertEqual(test_file["web_needed"], "false")
+        self.assertEqual(test_file["unit_mode"], "narrow")
+        self.assertEqual(test_file["unit_targets"], "phux-server:hub_relay_federation")
+        self.assertEqual(test_file["e2e_needed"], "false")
+        library = classify(["crates/phux-server/src/lib.rs"])
+        self.assertEqual(library["cli_needed"], "true")
+        self.assertEqual(library["shipping_needed"], "false")
+        self.assertEqual(library["unit_mode"], "rdeps")
 
     def test_cheap_flags(self):
         for paths, docs, workflows in [
@@ -327,7 +342,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("needs.changes.outputs.test_filterset", workflow)
         self.assertIn("PHUX_NEXTEST_FILTERSET", recipe)
         self.assertIn("cargo nextest run --workspace", recipe)
-        self.assertNotIn("cargo nextest run -p", recipe)
+        self.assertIn('PHUX_UNIT_MODE:-workspace}" == "narrow"', recipe)
         self.assertIn("test_filterset:", action)
 
     def test_shared_detection_has_no_outer_path_filter(self):

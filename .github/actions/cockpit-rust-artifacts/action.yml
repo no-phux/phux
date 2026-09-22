@@ -13,31 +13,52 @@ runs:
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       if: inputs.mode == 'build'
       with:
-        path: target/ci-cockpit-artifacts
-        key: ${{ steps.identity.outputs.key }}
+        path: target/ci-cockpit-artifacts/ffi
+        key: ${{ steps.identity.outputs.ffi_key }}
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.mode == 'build'
+      with:
+        path: target/ci-cockpit-artifacts/cli
+        key: ${{ steps.identity.outputs.cli_key }}
     - id: restore
       if: inputs.mode == 'build'
       shell: bash
       run: python3 scripts/ci/cockpit_artifacts.py restore
-    - name: Build same-checkout artifacts on a miss
-      if: inputs.mode == 'build' && steps.restore.outputs.restored != 'true'
+    - name: Build the FFI archive on a miss
+      if: inputs.mode == 'build' && steps.restore.outputs.ffi_restored != 'true'
       shell: bash
-      run: bash clients/cockpit/scripts/build-phux-artifacts.sh
+      run: bash clients/cockpit/scripts/build-phux-artifacts.sh --only staticlib
+    - name: Build the coordinator CLI on a miss
+      if: inputs.mode == 'build' && steps.restore.outputs.cli_restored != 'true'
+      shell: bash
+      run: bash clients/cockpit/scripts/build-phux-artifacts.sh --only cli
     - name: Record verified build outputs for fresh CLI staging
       if: inputs.mode == 'build'
       shell: bash
       run: |
         python3 scripts/ci/cockpit_artifacts.py save
         echo 'PHUX_CI_ARTIFACTS_VERIFIED=true' >> "$GITHUB_ENV"
-    - id: existing
+    - id: existing-ffi
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main'
       with:
-        path: target/ci-cockpit-artifacts
-        key: ${{ steps.identity.outputs.key }}
+        path: target/ci-cockpit-artifacts/ffi
+        key: ${{ steps.identity.outputs.ffi_key }}
+        lookup-only: true
+    - id: existing-cli
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      with:
+        path: target/ci-cockpit-artifacts/cli
+        key: ${{ steps.identity.outputs.cli_key }}
         lookup-only: true
     - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.cache-hit != 'true'
+      if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing-ffi.outputs.cache-hit != 'true'
       with:
-        path: target/ci-cockpit-artifacts
-        key: ${{ steps.identity.outputs.key }}
+        path: target/ci-cockpit-artifacts/ffi
+        key: ${{ steps.identity.outputs.ffi_key }}
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: inputs.mode == 'save' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing-cli.outputs.cache-hit != 'true'
+      with:
+        path: target/ci-cockpit-artifacts/cli
+        key: ${{ steps.identity.outputs.cli_key }}

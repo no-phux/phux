@@ -93,9 +93,9 @@ jobs:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
-          key: mini-v2-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+          key: mini-v3-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-relsafe-aarch64-baseline-phux-traceoff-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon', 'clients/cockpit/src/**', 'clients/cockpit/**/*.zig', 'clients/cockpit/**/*.ts', 'clients/cockpit/**/*.native', '.config/zig-toolchain.json', 'clients/cockpit/scripts/build-shipping-app.sh', 'clients/cockpit/scripts/zig-build.sh', 'clients/cockpit/scripts/build-phux-cli.sh', 'clients/cockpit/scripts/build-phux-artifacts.sh', 'clients/cockpit/scripts/native-cargo-target.sh', 'scripts/install-zig.sh') }}
           restore-keys: |
-            mini-v2-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
+            mini-v3-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Fetch Zig packages
         working-directory: clients/cockpit
