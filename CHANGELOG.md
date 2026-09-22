@@ -9,6 +9,26 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.43.0](https://github.com/no-phux/phux/compare/v0.42.0...v0.43.0) (2026-09-22)
+
+
+### Features
+
+* **cockpit:** add identity-safe native tab context actions ([#840](https://github.com/no-phux/phux/issues/840)) ([3b64ad2](https://github.com/no-phux/phux/commit/3b64ad2ae56e0e04c6575ddfa634e4fcce113c07))
+* **pair:** list and prune credentials; reuse or replace on re-enroll ([#841](https://github.com/no-phux/phux/issues/841)) ([2f26009](https://github.com/no-phux/phux/commit/2f260094f2e1e2b8fcca7cb0fc6ec0e6f37fdbf8))
+* **protocol:** share RenderPool through a narrow render-pool feature ([#832](https://github.com/no-phux/phux/issues/832)) ([22b5b81](https://github.com/no-phux/phux/commit/22b5b81db1fa84ade1c8fe3439ff7a71f8432881))
+
+
+### Bug Fixes
+
+* **ci:** dispatch integration publish so npm trusts the workflow ([#836](https://github.com/no-phux/phux/issues/836)) ([3d047b8](https://github.com/no-phux/phux/commit/3d047b819287f8837dc2adab2fde4e28ecb5ebbe))
+* **ci:** ship drafts from one publish workflow ([#833](https://github.com/no-phux/phux/issues/833)) ([bf37d88](https://github.com/no-phux/phux/commit/bf37d88bbbee3ecbd0fc0e57cde7d197c517b74b))
+* **ci:** stop relinking artifacts the diff did not change ([#837](https://github.com/no-phux/phux/issues/837)) ([fe6f95f](https://github.com/no-phux/phux/commit/fe6f95fc1b32dd872cc93fd67742c8784e9b8ca2))
+* **client:** share one session-rename policy across FFI, CLI, and TUI ([#838](https://github.com/no-phux/phux/issues/838)) ([e303956](https://github.com/no-phux/phux/commit/e30395693eff86aabd842e7e563e869f38d112ad))
+* **cockpit:** finish native interaction and presentation craft pass ([#839](https://github.com/no-phux/phux/issues/839)) ([a7e06ee](https://github.com/no-phux/phux/commit/a7e06ee2931ee88dd69b3a12b1bbbbb11d9c730c))
+* **server:** deliver the final screen to a fenced pump before pane close (phux-fpgl.28) ([#830](https://github.com/no-phux/phux/issues/830)) ([569c585](https://github.com/no-phux/phux/commit/569c585bc5c511e43d5f9023cf0101ee23f00233))
+* **server:** make the canonical terminal accessor total (phux-c0r0) ([#835](https://github.com/no-phux/phux/issues/835)) ([6f42e39](https://github.com/no-phux/phux/commit/6f42e3999a3416322270cca3ef5579a7c6fe347b))
+
 ## [0.42.0](https://github.com/no-phux/phux/compare/v0.41.0...v0.42.0) (2026-09-22)
 
 
