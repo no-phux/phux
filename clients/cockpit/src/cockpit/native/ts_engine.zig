@@ -3476,26 +3476,32 @@ pub const Engine = struct {
     /// trees own their fraction directly; shared trees keep the drag commit's
     /// optimistic-then-authoritative contract.
     pub fn applyNativeSplitResize(self: *Engine, window_index: usize, node: layout.NodeId, value: f32) bool {
-        if (!std.math.isFinite(value) or window_index >= self.split_resize_captures.len) return false;
+        if (!std.math.isFinite(value)) return false;
         if (!self.model.focused) return false;
         // Raw surface drags own terminal mouse arbitration and already mutate
         // this branch through routeSplitDrag. The SDK emits the same resize
         // echo for its overlapping semantic divider; accepting it would turn
         // one pointer move into a second, uncaptured commit.
         if (self.split_drag != null) return false;
-        const drag = self.split_resize_captures[window_index][node] orelse return false;
-        if (drag.node != node) return false;
-        const tree = self.splitDragTree(drag) orelse return false;
-        const entry = tree.node(node);
-        if (entry.kind != .branch or entry.orientation != drag.orientation) return false;
-        const before = entry.fraction;
-        tree.setFraction(node, value);
-        if (tree.node(node).fraction == before) return false;
-        if (drag.shared_id) |_| return self.finishSplitDrag(drag, true);
+        const target = self.nativeSplitResizeTarget(window_index, node) orelse return false;
+        const before = target.tree.node(node).fraction;
+        target.tree.setFraction(node, value);
+        if (target.tree.node(node).fraction == before) return false;
+        if (target.drag.shared_id) |_| return self.finishSplitDrag(target.drag, true);
         self.sequence +%= 1;
         self.revision +%= 1;
         self.intent_refused = false;
         return true;
+    }
+
+    fn nativeSplitResizeTarget(self: *Engine, window_index: usize, node: layout.NodeId) ?struct { drag: SplitDrag, tree: *layout.Tree } {
+        if (window_index >= self.split_resize_captures.len) return null;
+        const drag = self.split_resize_captures[window_index][node] orelse return null;
+        if (drag.node != node) return null;
+        const tree = self.splitDragTree(drag) orelse return null;
+        const entry = tree.node(node);
+        if (entry.kind != .branch or entry.orientation != drag.orientation) return null;
+        return .{ .drag = drag, .tree = tree };
     }
 
     fn cancelSplitDrag(self: *Engine) void {

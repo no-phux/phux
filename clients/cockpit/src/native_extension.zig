@@ -4232,7 +4232,7 @@ test "shipping divider keyboard and accessibility resizes survive a rebuild" {
     try rig.settle(1, "READY");
     const branch = engine.model.ws().selectedTree().?.root;
     const initial = engine.model.ws().selectedTree().?.node(branch).fraction;
-    const divider = try shippingSplitDivider(&rig);
+    var divider = try shippingSplitDivider(&rig);
 
     _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
         rig.decorated,
@@ -4243,6 +4243,8 @@ test "shipping divider keyboard and accessibility resizes survive a rebuild" {
     try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
     const after_arrow = engine.model.ws().selectedTree().?.node(branch).fraction;
     try std.testing.expect(after_arrow > initial);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    divider = try shippingSplitDivider(&rig);
 
     try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas end");
     const after_end = engine.model.ws().selectedTree().?.node(branch).fraction;
@@ -4267,10 +4269,10 @@ test "shipping divider keyboard and accessibility resizes survive a rebuild" {
         canvas_label,
         .{ .id = divider, .action = .decrement },
     );
-    try std.testing.expect(engine.model.ws().selectedTree().?.node(branch).fraction < after_increment);
-
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
-    try std.testing.expect(engine.model.ws().selectedTree().?.node(branch).fraction < after_increment);
+    const after_decrement = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_decrement < after_increment);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(after_decrement, engine.model.ws().selectedTree().?.node(branch).fraction);
 }
 
 test "shipping vertical divider uses up and down but ignores cross-axis keys" {
@@ -4315,6 +4317,12 @@ test "shipping replay ignores keyboard and accessibility split resizes" {
     const fraction = tree.node(root).fraction;
     const sequence = engine.sequence;
     const ticket = engine.model.shared_mutations.next_ticket;
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
     try rig.decorated.replayControl(.arm);
 
     _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
