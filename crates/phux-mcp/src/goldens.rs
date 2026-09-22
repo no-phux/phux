@@ -229,7 +229,18 @@ const CASES: &[Case] = &[
         golden: "rename",
         tool: "phux_rename",
         args: || json!({ "session": "work", "new_name": "play" }),
-        spec: || ScriptSpec::new().state(state()),
+        // The pre-check and the barrier are two `GET_STATE`s on one
+        // connection. The scripted server stores `SET_METADATA` without
+        // rewriting its snapshot, so the barrier answer is the applied name.
+        spec: || {
+            let mut applied = state();
+            applied
+                .sessions
+                .first_mut()
+                .expect("state has a session")
+                .name = "play".to_owned();
+            ScriptSpec::new().states([state(), applied])
+        },
     },
     Case {
         golden: "insert_pane",

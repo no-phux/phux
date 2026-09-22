@@ -85,7 +85,10 @@ pub mod selector;
 pub mod send_keys;
 // Session-identity writes over L3 (`phux rename` today; ADR-0022 §5).
 // [`session::rename_checked`] is the snapshot check + write + ordering
-// barrier both the CLI and MCP `phux_rename` call.
+// barrier both the CLI and MCP `phux_rename` call. The decision itself is
+// [`rename`], re-exported from `phux-client-core`: the TUI calls it through
+// this crate, and the FFI bridge calls `phux_client_core::rename` directly
+// so it does not link this crate's tokio connection.
 pub mod session;
 // The `phux ls --json` document, shared by the CLI and the MCP `phux_ls`.
 pub mod session_list;
@@ -122,4 +125,4 @@ pub mod watch;
 // Pane-interior substrate, re-exported from `phux-client-core` so the
 // `ratatui`-free boundary is compiler-enforced (ADR-0020) while consumers
 // keep stable `phux_client::{layout, multi_pane, predict}` paths.
-pub use phux_client_core::{layout, multi_pane, predict};
+pub use phux_client_core::{layout, multi_pane, predict, rename};

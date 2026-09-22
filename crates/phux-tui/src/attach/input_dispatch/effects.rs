@@ -14,9 +14,8 @@ use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
-use phux_protocol::wire::frame::{
-    Command, FrameKind, SESSION_NAME_KEY, Scope, StateScope, encode_session_rename,
-};
+use phux_protocol::wire::frame::{FrameKind, Scope};
+use phux_protocol::wire::info::SessionInfo;
 
 use crate::attach::actions::{self, PendingSplit, PendingWindow};
 use crate::attach::connection::Connection;
@@ -134,9 +133,10 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         effects.rename_session,
         conn,
         ctx.session_name,
-        ctx.focused_session,
+        ctx.sessions,
         ctx.next_request_id,
         ctx.rename_pending,
+        ctx.rename_notice,
     )
     .await?;
     Ok(layout_changed)
@@ -502,22 +502,23 @@ fn is_current_session(
     id.map_or_else(|| name == session_name, |id| Some(id) == focused_session)
 }
 
-/// rename-session: since the v0.3.0 "Option B" re-tier (ADR-0019 /
-/// ADR-0027) removed the `RENAME_SESSION` verb, a rename is a `SET_METADATA`
-/// write of the conventional `SESSION_NAME_KEY` (`Scope::Global`, value
-/// `current\0new`); the server intercepts it and applies the registry
-/// rename. `SET_METADATA` has no reply, so this client does not change the
-/// local status name until a correlated `GET_STATE` barrier (or a
-/// `METADATA_CHANGED` on the subscribed key) confirms the write. A refused
-/// rename therefore leaves the current name authoritative. A no-op rename
-/// (new == current) is dropped: nothing to send, nothing to repaint.
+/// rename-session: the shared [`phux_client::rename`] policy.
+///
+/// The attach connection cannot run `rename_checked` — a request/response
+/// helper would consume pane output interleaved ahead of the reply — so this
+/// sends the same frames and lets the driver correlate the barrier. The
+/// cached session list is the pre-check. A refusal or a no-op sends nothing;
+/// a refusal is parked on `rename_notice` for the status bar. The local
+/// status name stays unchanged until the barrier (or a `METADATA_CHANGED`
+/// on the subscribed key) confirms the write.
 async fn send_session_rename(
     rename_session: Option<String>,
     conn: &mut Connection,
     session_name: &str,
-    focused_session: Option<SessionId>,
+    sessions: &[SessionInfo],
     next_request_id: &mut u32,
     rename_pending: &mut Option<PendingSessionRename>,
+    rename_notice: &mut Option<String>,
 ) -> Result<(), AttachError> {
     let Some(new_name) = rename_session.filter(|n| n != session_name) else {
         return Ok(());
@@ -526,31 +527,33 @@ async fn send_session_rename(
         tracing::warn!("rename-session already in flight; dropping a second request");
         return Ok(());
     }
+    let roster: Vec<_> = sessions
+        .iter()
+        .map(|session| phux_client::rename::NamedSession {
+            id: session.id,
+            name: session.name.as_str(),
+        })
+        .collect();
+    let session_id = match phux_client::rename::plan_rename(&roster, session_name, &new_name) {
+        phux_client::rename::RenamePlan::Unchanged { .. } => return Ok(()),
+        phux_client::rename::RenamePlan::Refused(refusal) => {
+            *rename_notice = Some(format!("could not rename session to {new_name}: {refusal}"));
+            return Ok(());
+        }
+        phux_client::rename::RenamePlan::Send { session_id } => session_id,
+    };
     let request_id = *next_request_id;
     *next_request_id = next_request_id.wrapping_add(1);
-    conn.send(&FrameKind::SetMetadata {
-        request_id,
-        scope: Scope::Global,
-        key: SESSION_NAME_KEY.to_owned(),
-        value: encode_session_rename(session_name, &new_name),
-    })
-    .await?;
-    // SET_METADATA is fire-and-forget; GET_STATE is the ordering barrier
-    // the CLI and FFI clients already use so a refusal (unknown session /
-    // name taken) is visible without inventing a reply frame.
     let barrier = *next_request_id;
     *next_request_id = next_request_id.wrapping_add(1);
-    conn.send(&FrameKind::Command {
-        request_id: barrier,
-        command: Command::GetState {
-            scope: StateScope::Server,
-        },
-    })
-    .await?;
+    let (write, barrier_frame) =
+        phux_client::rename::rename_frames(request_id, barrier, session_name, &new_name);
+    conn.send(&write).await?;
+    conn.send(&barrier_frame).await?;
     tracing::info!(new_name = %new_name, "rename-session sent; waiting for GET_STATE confirmation");
     *rename_pending = Some(PendingSessionRename {
         barrier,
-        session_id: focused_session,
+        session_id: Some(session_id),
         current: session_name.to_owned(),
         new_name,
     });

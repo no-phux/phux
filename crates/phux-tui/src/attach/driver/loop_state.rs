@@ -705,6 +705,9 @@ pub(super) struct SessionLoop {
     session_name: String,
     /// In-flight `rename-session` waiting on its `GET_STATE` barrier.
     rename_pending: Option<PendingSessionRename>,
+    /// A rename refused by the shared policy before a write was sent.
+    /// Drained onto the status bar at the end of the input batch.
+    rename_notice: Option<String>,
     /// ADR-0105: whether the attached session is keep-empty, from ATTACHED
     /// and `phux.session.keep_empty/v1` broadcasts.
     keep_empty_session: bool,
@@ -925,6 +928,7 @@ impl SessionLoop {
             cell_px_dims,
             session_name: String::new(),
             rename_pending: None,
+            rename_notice: None,
             keep_empty_session: false,
             peers: PeerCaches {
                 sweep_pending: true,
@@ -1449,14 +1453,25 @@ impl SessionLoop {
                 };
                 self.peers.sessions.clone_from(&snapshot.sessions);
                 self.adopt_snapshot_graph(snapshot);
-                if let Some(id) = self.peers.focused_session.or(pending.session_id)
-                    && let Some(info) = snapshot.sessions.iter().find(|s| s.id == id)
-                {
-                    self.session_name.clone_from(&info.name);
-                    if info.name != pending.new_name {
+                if let Some(id) = pending.session_id.or(self.peers.focused_session) {
+                    let roster: Vec<_> = snapshot
+                        .sessions
+                        .iter()
+                        .map(|session| phux_client::rename::NamedSession {
+                            id: session.id,
+                            name: session.name.as_str(),
+                        })
+                        .collect();
+                    if let Some(info) = snapshot.sessions.iter().find(|session| session.id == id) {
+                        self.session_name.clone_from(&info.name);
+                    }
+                    if let Some(reason) =
+                        phux_client::rename::barrier_verdict(&roster, id, &pending.new_name)
+                            .refusal_reason()
+                    {
                         self.apply_notices(
                             vec![Notice::warn(format!(
-                                "could not rename session to {}",
+                                "could not rename session to {}: {reason}",
                                 pending.new_name
                             ))],
                             repaint,
@@ -1473,6 +1488,19 @@ impl SessionLoop {
             _ => {
                 self.fail_session_rename("the server did not confirm the session rename", repaint);
             }
+        }
+    }
+
+    /// Surface a pre-check refusal the input batch parked.
+    fn take_rename_notice(&mut self, now: std::time::Instant) -> bool {
+        let Some(line) = self.rename_notice.take() else {
+            return false;
+        };
+        if let Some(status) = self.settings.status_bar.as_mut() {
+            status.set_notice(Notice::warn(line), now)
+        } else {
+            tracing::warn!(line = %line, "session rename refused");
+            false
         }
     }
 
@@ -2467,6 +2495,7 @@ impl SessionLoop {
             focused_session: self.peers.focused_session,
             session_name: &mut self.session_name,
             rename_pending: &mut self.rename_pending,
+            rename_notice: &mut self.rename_notice,
             switch_request: &mut self.switch_request,
             zoomed: &mut self.zoomed,
             sidebar,
@@ -2524,6 +2553,7 @@ impl SessionLoop {
                 tracing::warn!(line = %line, "acknowledged input outcome");
             }
         }
+        layout_changed |= self.take_rename_notice(now);
         Ok(layout_changed)
     }
 

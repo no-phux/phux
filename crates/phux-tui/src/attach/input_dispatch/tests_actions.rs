@@ -2830,6 +2830,10 @@ async fn rename_session_does_not_apply_locally_until_confirmed() {
     fx.next_request_id = 100;
     fx.session_name = "work".to_owned();
     fx.focused_session = Some(phux_protocol::ids::SessionId::new(1));
+    fx.sessions = vec![phux_protocol::wire::info::SessionInfo::new(
+        phux_protocol::ids::SessionId::new(1),
+        "work",
+    )];
     let mut ctx = fx.ctx();
     let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
@@ -2880,5 +2884,64 @@ async fn rename_session_does_not_apply_locally_until_confirmed() {
             } if *request_id == pending.barrier
         )),
         "rename must send a correlated GET_STATE barrier: {frames:?}"
+    );
+    assert_eq!(
+        pending.session_id.map(phux_protocol::ids::SessionId::get),
+        Some(1)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rename_session_refuses_a_taken_name_before_sending() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String("notes".to_owned()));
+    let action = phux_config::keybind::ResolvedAction {
+        action: "rename-session".to_owned(),
+        args,
+    };
+    let effects = run(&action, &mut workspace);
+    let mut fx = CtxFixture::default();
+    fx.workspace = workspace;
+    fx.session_name = "work".to_owned();
+    fx.sessions = vec![
+        phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(1), "work"),
+        phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(2), "notes"),
+    ];
+    let mut ctx = fx.ctx();
+    let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
+    let mut conn = Connection::from_stream(a);
+    let mut peer = Connection::from_stream(b);
+    let mut out: Vec<u8> = Vec::new();
+    let mut focused_resource = None;
+    let mut detach_pending = false;
+    let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
+    let panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+    apply_action_effects(
+        effects,
+        &mut out,
+        &mut conn,
+        &mut ctx,
+        &mut focused_resource,
+        &mut detach_pending,
+        &mut predict,
+        &panes,
+    )
+    .await
+    .expect("apply rename");
+    drop(conn);
+    assert!(
+        fx.rename_pending.is_none(),
+        "a refused rename is not in flight"
+    );
+    let notice = fx.rename_notice.expect("refusal notice");
+    assert!(notice.contains("already exists"), "{notice}");
+    let mut frames = Vec::new();
+    while let Ok(Ok(frame)) = tokio::time::timeout(PEER_DRAIN_DEADLINE, peer.recv()).await {
+        frames.push(frame);
+    }
+    assert!(
+        frames.is_empty(),
+        "a taken name must not be written: {frames:?}"
     );
 }

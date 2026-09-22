@@ -32,9 +32,11 @@ use crate::c::client::Client;
 use crate::c::error::{BridgeError, bytes_in, check_struct};
 use crate::c::types::{PhuxBytes, bytes_out};
 use crate::c::{PhuxClient, PhuxClientResult, with_client_mut, with_client_ref};
-use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, SESSION_NAME_KEY, Scope, StateScope,
+use phux_client_core::rename::{
+    BarrierVerdict, NamedSession, RenamePlan, barrier_verdict, plan_rename, rename_frames,
 };
+use phux_protocol::ids::SessionId;
+use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind, SESSION_NAME_KEY, Scope};
 
 /// No rename has been asked on this client.
 const STATUS_NONE: u32 = 0;
@@ -195,11 +197,25 @@ fn confirmed(client: &mut Client, result: CommandResult) -> Result<(), BridgeErr
         }
     };
     let id = client.session_rename.session_id;
+    let roster: Vec<NamedSession<'_>> = snapshot
+        .sessions
+        .iter()
+        .map(|session| NamedSession {
+            id: session.id,
+            name: session.name.as_str(),
+        })
+        .collect();
+    let verdict = barrier_verdict(&roster, SessionId::new(id), {
+        std::str::from_utf8(&client.session_rename.new_name).unwrap_or("")
+    });
     let Some(session) = snapshot.sessions.iter().find(|s| s.id.get() == id) else {
         if client.session_rename.pending() {
-            client
-                .session_rename
-                .settle(STATUS_REFUSED, "the session no longer exists");
+            client.session_rename.settle(
+                STATUS_REFUSED,
+                BarrierVerdict::Gone
+                    .refusal_reason()
+                    .unwrap_or("the session no longer exists"),
+            );
         }
         return Ok(());
     };
@@ -214,13 +230,9 @@ fn confirmed(client: &mut Client, result: CommandResult) -> Result<(), BridgeErr
     if !rename.pending() {
         return Ok(());
     }
-    if name == rename.new_name {
-        rename.settle(STATUS_RENAMED, "");
-    } else {
-        rename.settle(
-            STATUS_REFUSED,
-            "the server did not rename the session (the name may have been taken meanwhile)",
-        );
+    match verdict.refusal_reason() {
+        None => rename.settle(STATUS_RENAMED, ""),
+        Some(reason) => rename.settle(STATUS_REFUSED, reason),
     }
     Ok(())
 }
@@ -239,27 +251,22 @@ fn valid_name(name: &[u8]) -> Result<(), BridgeError> {
         .map_err(|_| BridgeError::invalid("a session name must be UTF-8"))
 }
 
-/// Why this rename must not be sent, judged against the latest list: an
-/// unknown session, or a name another session already holds. The session's
-/// id when the rename may go ahead, else the reason.
-fn refusal(client: &Client, current: &[u8], new_name: &[u8]) -> Result<u32, String> {
-    let Some(session) = client.sessions.iter().find(|s| s.name == current) else {
-        return Err(format!(
-            "no session named {:?}",
-            String::from_utf8_lossy(current)
-        ));
-    };
-    let taken = client
+/// The shared rename plan against this client's session list.
+///
+/// `current` and `new_name` are already validated UTF-8. A catalog name that
+/// is not UTF-8 cannot match either side and is ignored.
+fn plan(client: &Client, current: &str, new_name: &str) -> RenamePlan {
+    let roster: Vec<NamedSession<'_>> = client
         .sessions
         .iter()
-        .any(|other| other.name == new_name && other.session_id != session.session_id);
-    if taken {
-        return Err(format!(
-            "{:?} already exists",
-            String::from_utf8_lossy(new_name)
-        ));
-    }
-    Ok(session.session_id)
+        .filter_map(|session| {
+            Some(NamedSession {
+                id: SessionId::new(session.session_id),
+                name: std::str::from_utf8(&session.name).ok()?,
+            })
+        })
+        .collect();
+    plan_rename(&roster, current, new_name)
 }
 
 /// Subscribe to the rename key once per client. Read-only: it attaches
@@ -288,26 +295,14 @@ pub(crate) fn negotiated(client: &mut Client) -> Result<(), BridgeError> {
 fn queue_rename(
     client: &mut Client,
     request_id: u32,
-    current: &[u8],
-    new_name: &[u8],
+    current: &str,
+    new_name: &str,
 ) -> Result<(), BridgeError> {
     subscribe(client)?;
-    let mut value = current.to_vec();
-    value.push(0);
-    value.extend_from_slice(new_name);
-    client.queue_frame(&FrameKind::SetMetadata {
-        request_id,
-        scope: Scope::Global,
-        key: SESSION_NAME_KEY.to_owned(),
-        value,
-    })?;
     let barrier = client.workspace.reserve_internal()?;
-    client.queue_frame(&FrameKind::Command {
-        request_id: barrier,
-        command: Command::GetState {
-            scope: StateScope::Server,
-        },
-    })?;
+    let (write, barrier_frame) = rename_frames(request_id, barrier, current, new_name);
+    client.queue_frame(&write)?;
+    client.queue_frame(&barrier_frame)?;
     client.session_rename.barrier = Some(barrier);
     Ok(())
 }
@@ -337,6 +332,10 @@ pub unsafe extern "C" fn phux_client_rename_session(
         let new_name = unsafe { bytes_in(new_name.data, new_name.len) }?;
         valid_name(current)?;
         valid_name(new_name)?;
+        let current_name = std::str::from_utf8(current)
+            .map_err(|_| BridgeError::invalid("a session name must be UTF-8"))?;
+        let new_name_str = std::str::from_utf8(new_name)
+            .map_err(|_| BridgeError::invalid("a session name must be UTF-8"))?;
         client.operations.check_request_id(request_id)?;
         if client.outgoing.len() + 3 > crate::c::operations::MAX_OPERATIONS {
             return Err(BridgeError::state(
@@ -344,24 +343,24 @@ pub unsafe extern "C" fn phux_client_rename_session(
             ));
         }
         client.operations.consume_request_id(request_id);
-        let judged = refusal(client, current, new_name);
+        let judged = plan(client, current_name, new_name_str);
         let rename = &mut client.session_rename;
         rename.request_id = request_id;
         rename.current = current.to_vec();
         rename.new_name = new_name.to_vec();
         match judged {
-            Err(reason) => {
+            RenamePlan::Refused(reason) => {
                 rename.session_id = 0;
-                rename.settle(STATUS_REFUSED, &reason);
+                rename.settle(STATUS_REFUSED, &reason.to_string());
             }
-            Ok(session_id) if current == new_name => {
-                rename.session_id = session_id;
+            RenamePlan::Unchanged { session_id } => {
+                rename.session_id = session_id.get();
                 rename.settle(STATUS_RENAMED, "");
             }
-            Ok(session_id) => {
-                rename.session_id = session_id;
+            RenamePlan::Send { session_id } => {
+                rename.session_id = session_id.get();
                 rename.settle(STATUS_PENDING, "");
-                if let Err(error) = queue_rename(client, request_id, current, new_name) {
+                if let Err(error) = queue_rename(client, request_id, current_name, new_name_str) {
                     client.session_rename.settle(STATUS_REFUSED, &error.message);
                     return Err(error);
                 }
@@ -444,7 +443,7 @@ mod tests {
     use super::*;
     use crate::c::client::{Limits, SessionSummary};
     use crate::c::types::ABI_VERSION;
-    use phux_protocol::wire::frame::ErrorCode;
+    use phux_protocol::wire::frame::{Command, ErrorCode};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
@@ -632,7 +631,7 @@ mod tests {
         assert_eq!(rename(client, 2, "gone", "x"), PhuxClientResult::Ok);
         let (_, status, _, message) = info(client);
         assert_eq!(status, STATUS_REFUSED);
-        assert_eq!(message, "no session named \"gone\"");
+        assert_eq!(message, "no such session");
         assert!(sent(client).is_empty());
 
         // The same name is nothing to do.
