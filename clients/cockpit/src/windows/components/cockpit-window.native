@@ -129,6 +129,7 @@
 
             </row>
             <row gap="4" cross="center" label="Navigator views">
+              <button size="sm" variant="ghost" selected="{navigatorView == 0}" on-press="palette_open">All work</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 1}" on-press="sessions_open">Sessions</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 2}" on-press="machines_open">Machines</button>
               <button size="sm" variant="ghost" selected="{navigatorView == 3}" on-press="windows_open">Windows</button>
@@ -146,7 +147,7 @@
               <list gap="4" label="Commands">
                 <for each="actionRows" key="index" as="action">
                   <list-item height="48" label="{action.label}" selected="{action.highlighted}" disabled="{action.disabled}" accent="surface_pressed" accent-foreground="text" on-press="commands_pick:{action.index}">
-                    <row gap="8" cross="center">
+                    <row grow="1" gap="8" cross="center">
                       <if test="{action.highlighted}"><spacer width="2" height="24" background="accent" /></if>
                       <else><spacer width="2" height="24" /></else>
                       <column grow="1" gap="0">
@@ -165,20 +166,24 @@
                 <list gap="4" label="Saved machines">
                   <for each="machineRows" key="target" as="machine">
                     <list-item height="{machine.height}" label="{machine.name}" selected="{machine.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="machine_pick:{machine.target}">
-                      <column gap="4">
-                        <row gap="8" cross="center">
-                          <text grow="1" overflow="ellipsis">{machine.name}</text>
-                          <text foreground="text_muted">{machine.status}</text>
-                        </row>
-                        <text foreground="text_muted" overflow="ellipsis">{machine.endpoint}</text>
-                        <if test="{machine.message}"><text wrap="true" foreground="warning">{machine.message}</text></if>
-                        <row gap="8" cross="center">
-                          <text foreground="text_muted">{machine.action}</text>
-                          <spacer grow="1" />
-                          <if test="{machine.canDisconnect}"><button size="sm" variant="ghost" on-press="machine_disconnect:{machine.target}">Disconnect</button></if>
-                          <if test="{machine.canForget}"><button size="sm" variant="ghost" on-press="machine_forget:{machine.target}">Forget…</button></if>
-                        </row>
-                      </column>
+                      <row grow="1" gap="8" cross="center">
+                        <if test="{machine.highlighted}"><spacer width="2" height="24" background="accent" /></if>
+                        <else><spacer width="2" height="24" /></else>
+                        <column grow="1" gap="4">
+                          <row gap="8" cross="center">
+                            <text grow="1" overflow="ellipsis">{machine.name}</text>
+                            <text foreground="text_muted">{machine.status}</text>
+                          </row>
+                          <text foreground="text_muted" overflow="ellipsis">{machine.endpoint}</text>
+                          <if test="{machine.message}"><text wrap="true" foreground="warning">{machine.message}</text></if>
+                          <row gap="8" cross="center">
+                            <text foreground="text_muted">{machine.action}</text>
+                            <spacer grow="1" />
+                            <if test="{machine.canDisconnect}"><button size="sm" variant="ghost" on-press="machine_disconnect:{machine.target}">Disconnect</button></if>
+                            <if test="{machine.canForget}"><button size="sm" variant="ghost" on-press="machine_forget:{machine.target}">Forget…</button></if>
+                          </row>
+                        </column>
+                      </row>
                     </list-item>
                   </for>
                 </list>
@@ -189,7 +194,7 @@
             <list gap="0" label="Terminals and sessions">
               <for each="paletterows" key="target" as="row">
                 <list-item height="40" label="{row.label}" selected="{row.highlighted}" disabled="{row.disabled}" accent="surface_pressed" accent-foreground="text" on-press="palette_pick:{row.target}">
-                  <row gap="8" cross="center">
+                  <row grow="1" gap="8" cross="center">
                     <if test="{row.highlighted}"><spacer width="2" height="24" background="accent" /></if>
                     <else><spacer width="2" height="24" /></else>
                     <column grow="1" gap="0">
@@ -419,7 +424,11 @@
             <list gap="0" label="Directories">
               <for each="dirRows" key="id" as="row">
                 <list-item height="40" label="{row.label}" selected="{row.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="dir_pick:{row.index}">
-                  <text overflow="ellipsis">{row.label}</text>
+                  <row grow="1" gap="8" cross="center">
+                    <if test="{row.highlighted}"><spacer width="2" height="24" background="accent" /></if>
+                    <else><spacer width="2" height="24" /></else>
+                    <text grow="1" overflow="ellipsis">{row.label}</text>
+                  </row>
                 </list-item>
               </for>
             </list>

@@ -248,6 +248,7 @@ test('agent rows decode from the extension record and hang under their tab', () 
   assert.deepEqual(model.railRows.map(row => text(row.label)), ['Terminal 1', 'claude', 'codex']);
   assert.deepEqual(model.railRows.map(row => text(row.state)), ['', 'working', 'blocked']);
   assert.deepEqual(model.railRows.map(row => text(row.mark)), ['', '', '\u25cf']);
+  assert.deepEqual(model.railRows.map(row => text(row.attentionLabel)), ['', '', 'Needs attention: codex']);
   // Every agent row names the tab a press would select, and takes none itself.
   assert.deepEqual(model.railRows.map(row => row.index), [0, 0, 0]);
   assert.deepEqual(model.railRows.map(row => row.selected), [true, false, false]);
@@ -269,6 +270,7 @@ test('offline and delayed snapshots cannot leave an agent claiming current block
   body[23] = 3;
   let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
   assert.equal(model.visibleTabs[0].agents[0].attention, false);
+  assert.equal(text(model.railRows[1].attentionLabel), '');
   assert.match(text(model.visibleTabs[0].agents[0].state), /offline/);
   [model] = step(model, { kind: 'snapshot_failed', error: bytes('unavailable') });
   assert.equal(model.railRows.some(row => row.agent), false);

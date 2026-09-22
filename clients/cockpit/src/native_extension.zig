@@ -5717,6 +5717,28 @@ test "terminal ground stays opaque inside measured content and leaves material c
     }
 }
 
+test "navigator command shortcuts align to the row trailing edge" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.commands_open);
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var row: ?native_sdk.geometry.RectF = null;
+        var shortcut: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (node.widget.kind == .list_item and std.mem.eql(u8, node.widget.semantics.label, "New Window")) row = node.frame;
+            if (node.widget.kind == .text and std.mem.eql(u8, node.widget.text, "Cmd+n")) shortcut = node.frame;
+        }
+        const row_frame = row orelse return error.TestExpectedCommandRow;
+        const shortcut_frame = shortcut orelse return error.TestExpectedCommandShortcut;
+        // A variable title must not determine where the shortcut column sits.
+        try std.testing.expectApproxEqAbs(row_frame.x + row_frame.width, shortcut_frame.x + shortcut_frame.width, 1);
+    }
+}
+
 test "navigator modal dismisses outside without activating the underlying toolbar" {
     var rig = try Rig.start();
     defer rig.stop();

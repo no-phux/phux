@@ -78,3 +78,29 @@ test('Commands captures an off-strip secondary tab and refuses retargeting', () 
   assert.equal(refused.paletteOpen, true);
   assert.match(text(refused.paletteNotice), /captured context/);
 });
+
+test('All work returns from every navigator view and clears the previous scope', () => {
+  for (const kind of ['sessions_open', 'machines_open', 'windows_open', 'commands_open']) {
+    const [opened] = step(initialModel()[0], { kind });
+    assert.notEqual(opened.navigatorView, 0);
+    const [model, request] = step(opened, { kind: 'palette_open' });
+    assert.equal(model.paletteOpen, true);
+    assert.equal(model.navigatorView, 0, kind);
+    assert.equal(model.paletteScope, 0, kind);
+    assert.equal(text(model.paletteQuery), '');
+    assert.equal(request.cmds[1].name, 'cockpit.navigation');
+  }
+});
+
+test('late command shortcuts preserve the destination navigator presentation', () => {
+  for (const kind of ['palette_open', 'sessions_open', 'machines_open', 'windows_open', 'palette_close']) {
+    const [commands] = step(initialModel()[0], { kind: 'commands_open' });
+    const [destination] = step(commands, { kind });
+    const [loaded] = step(destination, { kind: 'keybindings_loaded', body: new Uint8Array([1, 0, 0, 0]) });
+    assert.equal(loaded.navigatorView, destination.navigatorView, kind);
+    assert.equal(loaded.paletteOpen, destination.paletteOpen, kind);
+    assert.deepEqual(loaded.paletteNotice, destination.paletteNotice, kind);
+    assert.equal(loaded.paletteCursor, destination.paletteCursor, kind);
+    assert.equal(loaded.paletteLoading, destination.paletteLoading, kind);
+  }
+});

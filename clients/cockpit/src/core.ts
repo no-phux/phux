@@ -1133,7 +1133,7 @@ function changeNavigation(model: Model, msg: Msg): Model {
   switch (msg.kind) {
     case "palette_open":
     case "agents_open":
-      if (model.paletteOpen && model.agentsMode === (msg.kind === "agents_open")) return model;
+      if (model.paletteOpen && model.navigatorView === 0 && model.agentsMode === (msg.kind === "agents_open")) return model;
       return requestNavigation(scopeOverlays({ ...model, agentsMode: msg.kind === "agents_open", paletteOpen: true, settingsOpen: false, hostOpen: false, hostAwaiting: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
         navigatorView: 0, navigatorTitle: asciiBytes(msg.kind === "agents_open" ? "Inspect agents" : "Go to Terminal"),
         paletteScope: 0, paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES }), 0);
@@ -1970,7 +1970,7 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
       const row = rows[j];
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
       const label = row.resource.length === 0 ? row.provider : joinBytes(row.provider, asciiBytes(" / "), joinBytes(row.resource, asciiBytes(" under "), row.parent));
-      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: NO_BYTES });
+      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: attentionLabel(label, row.attention) });
       ordinal += 1;
     }
   }
@@ -3011,6 +3011,7 @@ function loadedKeybindings(model: Model, body: Uint8Array): NavigatorDecision {
     bindingRows: filteredBindings(bindings, model.settingsQuery), settingsNotice: bindings.notice }, 0, NO_BYTES);
   const next = { ...model, bindings, bindingRows: filteredBindings(bindings, model.settingsQuery), appearanceBusy: false, settingsNotice: bindings.notice };
   if (model.settingsOpen) return navigatorDecision({ ...next, appearanceBusy: true }, 7, appearanceRequest(0, 0));
+  if (!model.paletteOpen || model.navigatorView !== 4) return navigatorDecision(next, 0, NO_BYTES);
   return navigatorDecision(refreshActions(next, model.paletteCursor), 0, NO_BYTES);
 }
 
