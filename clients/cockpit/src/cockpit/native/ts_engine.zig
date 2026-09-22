@@ -197,7 +197,7 @@ test "native split resize callback cannot retarget a rebuilt local divider" {
     try std.testing.expectEqual(before, replacement.node(replacement.root).fraction);
 }
 
-test "native split resize callback commits a shared divider by captured identity" {
+test "native split resize callback rolls back a shared divider without a provider" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
     engine.model.focused = true;
@@ -212,6 +212,7 @@ test "native split resize callback commits a shared divider by captured identity
 
     try std.testing.expect(engine.applyNativeSplitResize(0, root, 0.7));
     try std.testing.expectEqual(original, tree.node(root).fraction);
+    try std.testing.expect(engine.model.shared_workspace.refused);
 }
 
 const SplitDrag = struct {

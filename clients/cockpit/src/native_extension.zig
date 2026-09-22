@@ -1494,6 +1494,7 @@ fn emptyInteraction(ui: *Adapter.Ui) Adapter.Ui.Node {
 fn shippingSplitResizeHandler(comptime window_index: usize, comptime node: cockpit.layout.NodeId) Adapter.Ui.ValueMsgFn {
     return struct {
         fn make(value: f32) core.Msg {
+            if (bridge.replayInteraction()) return .engine_wake;
             if (bridge.engine) |engine| {
                 if (engine.applyNativeSplitResize(window_index, node, value)) bridge.announce(engine);
             }
@@ -4270,6 +4271,62 @@ test "shipping divider keyboard and accessibility resizes survive a rebuild" {
 
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
     try std.testing.expect(engine.model.ws().selectedTree().?.node(branch).fraction < after_increment);
+}
+
+test "shipping vertical divider uses up and down but ignores cross-axis keys" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try rig.dispatch(core.commandMsg("pane.split-down").?);
+    try rig.settle(1, "READY");
+    const branch = engine.model.ws().selectedTree().?.root;
+    const divider = try shippingSplitDivider(&rig);
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    const initial = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    try std.testing.expectEqual(initial, engine.model.ws().selectedTree().?.node(branch).fraction);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
+    try std.testing.expect(engine.model.ws().selectedTree().?.node(branch).fraction > initial);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowup");
+    try std.testing.expectEqual(initial, engine.model.ws().selectedTree().?.node(branch).fraction);
+}
+
+test "shipping replay ignores keyboard and accessibility split resizes" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTree().?;
+    workspace.shared_ids[workspace.selected_tab] = @splat(1);
+    engine.model.shared_workspace.revision = 10;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const divider = try shippingSplitDivider(&rig);
+    const root = tree.root;
+    const fraction = tree.node(root).fraction;
+    const sequence = engine.sequence;
+    const ticket = engine.model.shared_mutations.next_ticket;
+    try rig.decorated.replayControl(.arm);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .increment },
+    );
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    try std.testing.expectEqual(fraction, tree.node(root).fraction);
+    try std.testing.expectEqual(sequence, engine.sequence);
+    try std.testing.expectEqual(ticket, engine.model.shared_mutations.next_ticket);
 }
 
 fn shippingSplitDivider(rig: *Rig) !canvas.ObjectId {
