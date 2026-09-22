@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initialModel, update } from '../core.ts';
-import { enqueueTabCommand, enqueueCatalogCommand, receiveTabReceipt, initialTabCommands } from '../tab-commands.ts';
+import { enqueueTabCommand, enqueueCatalogCommand, enqueueTabActionCommand, receiveTabReceipt, initialTabCommands } from '../tab-commands.ts';
 import { snapshot } from '../protocol.ts';
 
 const step = (model, msg) => {
@@ -169,4 +169,36 @@ test('catalog pending notice is observable and a malformed admission cancels the
   assert.equal(model.tabCommands.outcome, 5);
   assert.equal(model.tabCommands.queue.length, 0);
   assert.equal(command, null);
+});
+
+test('captured tab actions retain target bytes and share the receipt FIFO', () => {
+  const captured = target(42);
+  let decision = enqueueTabActionCommand(initialTabCommands(), captured, 5);
+  const first = decision.request;
+  assert.equal(first[1], 5);
+  assert.deepEqual(first.subarray(10), captured);
+  captured[18] = 99;
+  decision = enqueueTabActionCommand(decision.state, target(7), 4);
+  assert.equal(decision.request.length, 0);
+  assert.equal(decision.state.queue[0].bytes[28], 42);
+  const pending = receipt(first); pending[1] = 3;
+  decision = receiveTabReceipt(decision.state, pending);
+  assert.equal(decision.state.outcome, 7);
+  assert.equal(decision.request[1], 4);
+  assert.equal(decision.request[28], 7);
+});
+
+test('compiled core routes captured tab menu actions without speculative selection', () => {
+  let model = initialModel()[0];
+  const selected = model.selectedTab;
+  const captured = target(9);
+  let command;
+  [model, command] = step(model, { kind: 'move_tab_next_target', target: captured });
+  assert.equal(model.selectedTab, selected);
+  assert.equal(command.name, 'cockpit.tab-command');
+  assert.equal(command.payload[1], 6);
+  assert.deepEqual(command.payload.subarray(10), captured);
+  const malformed = step(model, { kind: 'close_tab_target', target: captured.subarray(0, 21) });
+  assert.equal(malformed[1], null);
+  assert.equal(malformed[0].tabCommands.outcome, 3);
 });

@@ -26,6 +26,7 @@ const remote_commands = @import("remote_presentation_commands.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
 const shared_workspace = @import("../shared_workspace.zig");
+const shared_mutations = @import("../shared_mutations.zig");
 const peer_edits = @import("../peer_edits.zig");
 const session_attachments = @import("session_attachments.zig");
 const local_tool_launch = @import("local_tool_launch.zig");
@@ -254,6 +255,10 @@ pub const Engine = struct {
     sequence: u64 = 0,
     revision: u64 = 1,
     selection_epoch: u64 = 1,
+    /// Captured tab actions share the TypeScript FIFO's monotonic IDs. Once an
+    /// action is admitted or refused, the same (or an older) packet can never
+    /// mutate presentation after a delayed host-call replay.
+    last_tab_action_id: u64 = 0,
     intent_refused: bool = false,
     /// The pty key each registry slot was last spawned for, so `spawnShells`
     /// is idempotent across frames and a reused slot spawns again.
@@ -1043,7 +1048,77 @@ pub const Engine = struct {
             .tab => |target| self.applyTabTarget(request.id, target),
             .catalog => |target| self.applyCatalogTarget(request.id, target, fx),
             .operation => |operation| self.applyOperationTarget(request.id, operation, fx),
+            .action => |action| self.applyCapturedTabAction(request.id, action, fx),
         };
+    }
+
+    fn applyCapturedTabAction(self: *Engine, id: u64, action: tab_commands.ActionTarget, fx: anytype) tab_commands.Receipt {
+        if (id <= self.last_tab_action_id) return self.tabReceipt(id, .invalid_command);
+        self.last_tab_action_id = id;
+        const index = action.target.resolve(self.model) orelse return self.tabReceipt(id, .stale_target);
+        const status = if (self.model.phux() == null)
+            self.applyLocalTabAction(action.target.window, index, action.action, fx)
+        else
+            self.applySharedTabAction(id, action.target.window, index, action.action) orelse
+                return self.tabReceipt(id, .unavailable);
+        if (status == .rejected) return self.tabReceipt(id, .unavailable);
+        self.revision +%= 1;
+        var receipt = self.tabReceipt(id, .none);
+        receipt.status = status;
+        return receipt;
+    }
+
+    fn applyLocalTabAction(self: *Engine, window: usize, index: u8, action: tab_commands.Action, fx: anytype) tab_commands.Status {
+        const changed = switch (action) {
+            .close => lifecycle.closeTab(self.model, fx, window, index),
+            .previous, .next => self.moveLocalTab(window, index, action == .next),
+        };
+        return if (changed) .applied else .rejected;
+    }
+
+    fn moveLocalTab(self: *Engine, window: usize, index: u8, right: bool) bool {
+        const workspace = self.model.wsAt(window) orelse return false;
+        const terminal = workspace.tabTerminal(index) orelse return false;
+        return workspace.moveTerminal(terminal, if (right) 1 else -1);
+    }
+
+    fn applySharedTabAction(self: *Engine, id: u64, window: usize, index: u8, action: tab_commands.Action) ?tab_commands.Status {
+        const workspace = self.model.wsAt(window) orelse return null;
+        const tree = workspace.treeConst(index) orelse return null;
+        const owner = shared_workspace.tabAuthority(tree) orelse return null;
+        const shared_id = workspace.shared_ids[index] orelse return null;
+        if (action == .close) {
+            trySharedClose(self, id, owner, shared_id) catch return null;
+            if (workspace.selected_tab == index) self.supersedeSelection();
+            return .accepted_pending;
+        }
+        const right = action == .next;
+        if (!sameOwnerNeighbor(workspace, index, owner, right)) return null;
+        trySharedReorder(self, id, owner, shared_id, right) catch return null;
+        return .accepted_pending;
+    }
+
+    fn trySharedClose(self: *Engine, id: u64, owner: support.ProviderId, shared_id: shared_mutations.WindowId) !void {
+        if (self.model.phux().?.providerId() == owner) {
+            return self.model.shared_mutations.requestRemoveWindowCorrelated(self.model, shared_id, id);
+        }
+        return self.peer_edits.removeWindowCorrelated(self.model, owner, shared_id, id);
+    }
+
+    fn trySharedReorder(self: *Engine, id: u64, owner: support.ProviderId, shared_id: shared_mutations.WindowId, right: bool) !void {
+        if (self.model.phux().?.providerId() == owner) {
+            const windows = self.model.phux().?.workspaceSnapshot().windows;
+            const target = peer_edits.neighborIndex(windows, shared_id, right) orelse return error.StaleTarget;
+            return self.model.shared_mutations.requestReorderCorrelated(self.model, shared_id, target, id);
+        }
+        return self.peer_edits.reorderCorrelated(self.model, owner, shared_id, right, id);
+    }
+
+    fn sameOwnerNeighbor(workspace: *const model_module.Workspace, index: usize, owner: support.ProviderId, right: bool) bool {
+        if ((!right and index == 0) or (right and index + 1 >= workspace.tab_count)) return false;
+        const neighbor = if (right) index + 1 else index - 1;
+        const tree = workspace.treeConst(neighbor) orelse return false;
+        return shared_workspace.tabAuthority(tree) == owner;
     }
 
     fn applyTabTarget(self: *Engine, id: u64, target: tab_commands.Target) tab_commands.Receipt {

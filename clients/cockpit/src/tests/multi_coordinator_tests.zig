@@ -11,6 +11,7 @@ const contract = @import("provider_contract");
 const support = @import("../cockpit/phux_support.zig");
 const model_module = @import("../cockpit/model.zig");
 const ts_engine = @import("../cockpit/native/ts_engine.zig");
+const captured_tab_commands = @import("../cockpit/native/tab_commands.zig");
 const navigation = @import("../cockpit/native/ts_navigation.zig");
 const interaction = @import("../cockpit/terminal_interaction.zig");
 const picker = @import("../cockpit/native/directory_picker.zig");
@@ -272,6 +273,38 @@ test "the same numeric terminal on two coordinators is two identities, and input
     // Handed another coordinator's owner, a provider refuses and sends nothing.
     try testing.expectError(error.InvalidState, pair.here.sendPaste(mini_owner, "wrong machine", false));
     try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+}
+
+test "captured tab reorder refuses to cross a coordinator boundary" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var pair = try Pair.start(true);
+    defer pair.engine.destroy();
+    try pair.projectBoth();
+    const engine = pair.engine;
+    const model = engine.model;
+    const here = try refOn(pair.here, 7);
+    const mini = try refOn(pair.mini, 7);
+    const here_place = model.locateTerminal(here).?;
+    const mini_place = model.locateTerminal(mini).?;
+    try testing.expectEqual(here_place.window, mini_place.window);
+    try testing.expectEqual(here_place.tab + 1, mini_place.tab);
+    const target = captured_tab_commands.capture(model, here_place.window, here_place.tab).?;
+    var packet: [captured_tab_commands.request_len]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = @intFromEnum(captured_tab_commands.Action.next);
+    std.mem.writeInt(u64, packet[2..10], 41, .little);
+    @memcpy(packet[10..], &target.encode());
+
+    const receipt = engine.applyTabCommand(&packet);
+    try testing.expectEqual(captured_tab_commands.Status.rejected, receipt.status);
+    try testing.expectEqual(captured_tab_commands.Reason.unavailable, receipt.reason);
+    try testing.expect(model.focusedTerminalRef().?.eql(mini));
+    try testing.expectEqual(here_place.tab, model.locateTerminal(here).?.tab);
+    try testing.expectEqual(mini_place.tab, model.locateTerminal(mini).?.tab);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.here).total);
+    try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
+    try testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    try testing.expect(engine.peer_edits.peekCompletion() == null);
 }
 
 test "two coordinators project side by side; each publication replaces only its own tabs" {

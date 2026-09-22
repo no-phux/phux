@@ -989,13 +989,19 @@ const Bridge = struct {
             self.result_len = result_wire.encodeResult(source, result, &self.result_buffer).len;
             return;
         }
+        if (engine.peer_edits.peekCompletion()) |result| {
+            self.result_len = result_wire.encodeResult(.shared, result, &self.result_buffer).len;
+            return;
+        }
         self.result_len = copyInto(&self.result_buffer, &result_wire.empty);
     }
 
     fn ackResult(_: *Bridge, engine: *Engine, ack: result_wire.Ack) void {
         switch (ack.source) {
             .creation => _ = engine.creation.ackCompletion(ack.command_id),
-            .shared => _ = engine.model.shared_mutations.ackCompletion(ack.command_id),
+            .shared => {
+                if (!engine.model.shared_mutations.ackCompletion(ack.command_id)) _ = engine.peer_edits.ackCompletion(ack.command_id);
+            },
             .native_shared => _ = engine.model.shared_mutations.ackNativeCompletion(ack.command_id),
         }
     }
@@ -3178,6 +3184,155 @@ test "held painted tab action follows identity after metadata and reorder" {
     try rig.settle(@intCast(engine.sequence), "READY");
     try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.tabCommands.outcome);
     try std.testing.expectEqual(expected_command, rig.app_state.model.tabCommands.lastId.lo);
+}
+
+const TabMenuHost = struct { id: canvas.ObjectId, frame: native_sdk.geometry.RectF };
+
+fn matchesTabMenu(menu: []const canvas.WidgetContextMenuItem, previous_disabled: bool, next_disabled: bool) bool {
+    if (menu.len != 4) return false;
+    if (!std.mem.eql(u8, menu[0].label, "Move Left")) return false;
+    if (previous_disabled != !menu[0].enabled) return false;
+    if (next_disabled != !menu[1].enabled) return false;
+    if (!std.mem.eql(u8, menu[1].label, "Move Right")) return false;
+    if (!menu[2].separator) return false;
+    return std.mem.eql(u8, menu[3].label, "Close Tab");
+}
+
+fn tabMenuHost(rig: *Rig, previous_disabled: bool, next_disabled: bool) !TabMenuHost {
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (layout.nodes) |node| {
+        if (!matchesTabMenu(node.widget.context_menu, previous_disabled, next_disabled)) continue;
+        return .{ .id = node.widget.id, .frame = node.frame };
+    }
+    return error.TestExpectedTabMenu;
+}
+
+fn openTabMenu(rig: *Rig, host: TabMenuHost) !u64 {
+    const before = rig.harness.null_platform.context_menu_request_count;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = host.frame.x + host.frame.width / 2,
+        .y = host.frame.y + host.frame.height / 2,
+    } });
+    try std.testing.expectEqual(before + 1, rig.harness.null_platform.context_menu_request_count);
+    return rig.harness.null_platform.context_menu_token;
+}
+
+fn chooseTabMenuItem(rig: *Rig, token: u64, item: u32) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .token = token,
+        .item_id = item,
+    } });
+    for (0..8) |_| {
+        if (rig.app_state.model.tabCommands.queue.len == 0) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.tabCommands.queue.len);
+}
+
+test "shipping tab context menu retains a background target across rebuild move and close" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const first = engine.model.focusedTerminalRef().?;
+    try rig.dispatch(.new_terminal);
+    try rig.settleCurrent();
+    try rig.dispatch(.new_terminal);
+    try rig.settleCurrent();
+    const selected = engine.model.focusedTerminalRef().?;
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().selected_tab);
+
+    const first_menu = try tabMenuHost(&rig, true, false);
+    const move_token = try openTabMenu(&rig, first_menu);
+    // The host owns the menu's static dispatch bytes after both build arenas
+    // have been replaced; a later frame cannot retarget this action.
+    for (0..2) |_| {
+        try rig.dispatch(.engine_wake);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    }
+    try chooseTabMenuItem(&rig, move_token, 2);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tabOfTerminal(first).?);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().selected_tab);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+
+    const middle_menu = try tabMenuHost(&rig, false, false);
+    const close_token = try openTabMenu(&rig, middle_menu);
+    try chooseTabMenuItem(&rig, close_token, 4);
+    try std.testing.expect(engine.model.locateTerminal(first) == null);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    _ = try tabMenuHost(&rig, true, false);
+}
+
+test "captured tab actions reject malformed expired and nonexistent targets without changing focus" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const commands = cockpit.engine.tab_commands;
+    const focused = engine.model.focusedTerminalRef().?;
+    const target = commands.capture(engine.model, 0, 0).?;
+    var packet: [commands.request_len]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = @intFromEnum(commands.Action.close);
+
+    try std.testing.expect(commands.decode(packet[0 .. packet.len - 1]) == null);
+    var bad_kind = packet;
+    bad_kind[1] = 7;
+    std.mem.writeInt(u64, bad_kind[2..10], 1, .little);
+    @memcpy(bad_kind[10..], &target.encode());
+    try std.testing.expect(commands.decode(&bad_kind) == null);
+
+    var stale = target;
+    stale.window_epoch +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 1, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    stale = target;
+    stale.tab_generation +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 2, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    stale = target;
+    stale.tab_id +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 3, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    try std.testing.expect(focused.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+}
+
+test "captured shared tab close reports pending until the coordinator confirms it" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const engine = try cockpit.durable_tests.start();
+    defer engine.destroy();
+    const commands = cockpit.engine.tab_commands;
+    const target = commands.capture(engine.model, 0, 0).?;
+    var packet: [commands.request_len]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = @intFromEnum(commands.Action.close);
+    std.mem.writeInt(u64, packet[2..10], 41, .little);
+    @memcpy(packet[10..], &target.encode());
+    const receipt = engine.applyTabCommand(&packet);
+    try std.testing.expectEqual(commands.Status.accepted_pending, receipt.status);
+    try std.testing.expectEqual(commands.Reason.none, receipt.reason);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    var pending: usize = 0;
+    for (engine.model.shared_mutations.pending) |entry| if (entry != null) {
+        pending += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), pending);
+    try std.testing.expectEqual(commands.Reason.invalid_command, engine.applyTabCommand(&packet).reason);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
 }
 
 test "tab command receipt survives snapshot and navigation requests and rejects reused windows" {

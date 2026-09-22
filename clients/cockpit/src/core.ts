@@ -1,7 +1,7 @@
 import { Cmd, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
 import { type WindowDescriptor, type ScrollState } from "@native-sdk/core/events";
 import { applyTextInputEvent, type TextEditState, type TextInputEvent } from "@native-sdk/core/text";
-import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, enqueueOperationCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
+import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, enqueueOperationCommand, enqueueTabActionCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
 import { type CommandResults, type ResultDecision, initialCommandResults, requestCommandResults, receiveCommandResult, failedCommandResults } from "./command-results.ts";
 import { type Appearance, initialAppearance, appearanceRequest, appearanceResponse } from "./appearance.ts";
 import { type ActionRow, commandRows, commandDefinition, contextualCommand, containsQuery } from "./commands.ts";
@@ -111,6 +111,8 @@ export interface RailRow {
   readonly target: Uint8Array;
   readonly parentIndex: number;
   readonly attentionLabel: Uint8Array;
+  readonly movePreviousDisabled: boolean;
+  readonly moveNextDisabled: boolean;
 }
 
 export interface Tab {
@@ -126,6 +128,8 @@ export interface Tab {
   /// sent, so a session that closed is simply absent from the next one.
   readonly agents: readonly AgentRow[];
   readonly target: Uint8Array;
+  readonly movePreviousDisabled: boolean;
+  readonly moveNextDisabled: boolean;
 }
 
 /// One catalog row: display bookkeeping and label beside the captured native
@@ -474,6 +478,9 @@ export type Msg =
   | { readonly kind: "command_result_loaded"; readonly body: Uint8Array }
   | { readonly kind: "command_result_failed"; readonly error: Uint8Array }
   | { readonly kind: "select_target"; readonly target: Uint8Array }
+  | { readonly kind: "close_tab_target"; readonly target: Uint8Array }
+  | { readonly kind: "move_tab_previous_target"; readonly target: Uint8Array }
+  | { readonly kind: "move_tab_next_target"; readonly target: Uint8Array }
   | { readonly kind: "tab_command_completed"; readonly body: Uint8Array }
   | { readonly kind: "tab_command_failed"; readonly error: Uint8Array }
   | { readonly kind: "select_tab"; readonly index: number }
@@ -843,6 +850,7 @@ const EMPTY_AGENT_ROW: AgentRow = {
 const EMPTY_TAB: Tab = {
   id: 0, index: 0, slot: 0, title: NO_BYTES, cwd: NO_BYTES, selected: false, attention: false,
   attentionLabel: NO_BYTES, agents: EMPTY_TAB_AGENTS, target: NO_BYTES,
+  movePreviousDisabled: true, moveNextDisabled: true,
 };
 const EMPTY_ACTION_ROW: ActionRow = {
   index: 0, label: NO_BYTES, shortcut: NO_BYTES, detail: NO_BYTES, highlighted: false, disabled: true,
@@ -873,6 +881,7 @@ function copyTab(tab: Tab, selected: boolean): Tab {
     slot: slot >= 0 && slot <= 9007199254740991 ? Math.trunc(slot) : 0,
     title: tab.title, cwd: tab.cwd, selected, attention: tab.attention,
     attentionLabel: tab.attentionLabel, agents: tab.agents, target: tab.target,
+    movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled,
   };
 }
 
@@ -1951,7 +1960,8 @@ function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readon
     if (!(rawIndex >= 0 && rawIndex <= 31) || !(rawId >= 1 && rawId <= 4294967295)) continue;
     const index = Math.trunc(rawIndex);
     const id = Math.trunc(rawId);
-    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, attentionLabel: attentionLabel(t.title, t.attention), agents: agentRowsFor(agents, w, index, connection), target: t.target });
+    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, attentionLabel: attentionLabel(t.title, t.attention), agents: agentRowsFor(agents, w, index, connection), target: t.target,
+      movePreviousDisabled: index === 0, moveNextDisabled: index + 1 === tabs.length });
   }
   return out;
 }
@@ -1965,14 +1975,16 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
   for (let i = 0; i < tabs.length; i += 1) {
     const tab = tabs[i];
     if (!(ordinal >= 0 && ordinal <= 65535)) break;
-    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: tab.attention ? ATTENTION_MARK : NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target, attentionLabel: tab.attentionLabel });
+    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: tab.attention ? ATTENTION_MARK : NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target, attentionLabel: tab.attentionLabel,
+      movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled });
     ordinal += 1;
     const rows = tab.agents;
     for (let j = 0; j < rows.length; j += 1) {
       const row = rows[j];
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
       const label = row.resource.length === 0 ? row.provider : joinBytes(row.provider, asciiBytes(" / "), joinBytes(row.resource, asciiBytes(" under "), row.parent));
-      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: attentionLabel(label, row.attention) });
+      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: attentionLabel(label, row.attention),
+        movePreviousDisabled: true, moveNextDisabled: true });
       ordinal += 1;
     }
   }
@@ -2220,8 +2232,8 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),
@@ -2532,10 +2544,21 @@ function tabCommandTransition(model: Model, msg: Msg): TabCommandTransition | nu
   if (msg.kind === "tab_command_failed") {
     return { model: tabCommandModel(model, unknownTabCommand(model.tabCommands)), request: NO_BYTES };
   }
+  if (msg.kind === "close_tab_target" || msg.kind === "move_tab_previous_target" || msg.kind === "move_tab_next_target") {
+    const decision = enqueueTabActionCommand(model.tabCommands, msg.target, tabAction(msg));
+    return { model: freshCommandModel(model, decision), request: decision.request };
+  }
   const operation = operationIntent(model, msg);
   if (operation.length === 0) return null;
   const decision = enqueueOperationCommand(model.tabCommands, operation);
   return { model: freshCommandModel(model, decision), request: decision.request };
+}
+
+function tabAction(msg: Msg): number {
+  if (msg.kind === "close_tab_target") return 4;
+  if (msg.kind === "move_tab_previous_target") return 5;
+  if (msg.kind === "move_tab_next_target") return 6;
+  return 0;
 }
 
 function operationIntent(model: Model, msg: Msg): Uint8Array {

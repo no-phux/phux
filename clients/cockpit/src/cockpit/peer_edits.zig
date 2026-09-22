@@ -385,6 +385,13 @@ pub const Edits = struct {
         try self.states.items[slot].mutations.requestRemoveWindow(&peer_view, id);
     }
 
+    pub fn removeWindowCorrelated(self: *Edits, model: *Model, coordinator: support.ProviderId, id: WindowId, command_id: u64) !void {
+        const slot = try slotOf(model, coordinator);
+        try self.ensure(slot);
+        var peer_view = try view(model, slot);
+        try self.states.items[slot].mutations.requestRemoveWindowCorrelated(&peer_view, id, command_id);
+    }
+
     /// Close one of the peer's panes on that coordinator.
     pub fn removePane(self: *Edits, model: *Model, ref: TerminalRef) !void {
         const slot = try slotOf(model, ref.provider_id);
@@ -400,6 +407,24 @@ pub const Edits = struct {
         var peer_view = try view(model, slot);
         const target = neighborIndex(peer_view.peer.workspaceSnapshot().windows, id, right) orelse return error.StaleTarget;
         try self.states.items[slot].mutations.requestReorder(&peer_view, id, target);
+    }
+
+    pub fn reorderCorrelated(self: *Edits, model: *Model, coordinator: support.ProviderId, id: WindowId, right: bool, command_id: u64) !void {
+        const slot = try slotOf(model, coordinator);
+        try self.ensure(slot);
+        var peer_view = try view(model, slot);
+        const target = neighborIndex(peer_view.peer.workspaceSnapshot().windows, id, right) orelse return error.StaleTarget;
+        try self.states.items[slot].mutations.requestReorderCorrelated(&peer_view, id, target, command_id);
+    }
+
+    pub fn peekCompletion(self: *const Edits) ?@import("command_results.zig").Result {
+        for (self.states.items) |state| if (state.mutations.peekCompletion()) |result| return result;
+        return null;
+    }
+
+    pub fn ackCompletion(self: *Edits, command_id: u64) bool {
+        for (self.states.items) |state| if (state.mutations.ackCompletion(command_id)) return true;
+        return false;
     }
 
     /// Commit a divider drag on the peer's window `id`. The path was taken
