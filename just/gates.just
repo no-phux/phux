@@ -35,6 +35,8 @@ binding-uniffi-test:
 
 
 # One agent integration's type, unit, packed-artifact, and audit gates.
+# The all-packages lane (scripts/ci/agent-integrations.sh) repeats the npm
+# invocations below; keep the audit env and `npm run gates` step in both.
 [group('gates')]
 integration-check PACKAGE:
     #!/usr/bin/env bash
@@ -75,12 +77,14 @@ precommit: fmt lint docs-gen test e2e
 
 
 # Lint shell scripts with shellcheck (the harness, the boundary/docs
-# guards, and the examples). Provided by the dev shell. Gates at
-# `warning` severity: the examples carry deliberate `info`-level nits
+# guards, scripts/ci, and the examples). Provided by the dev shell. Gates
+# at `warning` severity: the examples carry deliberate `info`-level nits
 # (sourced libs shellcheck can't follow, single-quoted heredoc-ish
-# program strings) that are correct as written. On-demand, not in `ci`.
+# program strings) that are correct as written. `workflow-check` depends
+# on this recipe, so `just ci` and ci.yml's workflow gate both fail if
+# these scripts rot.
 [group('gates')]
-[doc('Lint the harness, guard, and example shell scripts at warning severity.')]
+[doc('Lint harness, CI, guard, and example shell scripts at warning severity.')]
 shellcheck:
     shellcheck --severity=warning scripts/*.sh scripts/ci/*.sh \
       examples/agents/*.sh \
@@ -93,7 +97,7 @@ shellcheck:
 [group('gates')]
 [private]
 [doc('Workflow syntax, the CI path-routing truth table, and action SHA pins.')]
-workflow-check:
+workflow-check: shellcheck
     actionlint .github/workflows/*.yml
     bash scripts/check-release-cpu-baselines.sh
     python3 clients/cockpit/scripts/check-build-contracts.py
@@ -194,17 +198,12 @@ e2e-lane-check:
 
 
 # All integration packages and their shared version contract.
+# The body is scripts/ci/agent-integrations.sh so ci.yml runs the same
+# commands as this recipe, including the runtime suite and dist check.
 [group('gates')]
 [private]
 agent-integrations-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    node scripts/check-agent-integration-versions.mjs
-    just integration-check runtime
-    git diff --exit-code -- integrations/runtime/dist
-    for package in opencode pi claude; do
-      just integration-check "$package"
-    done
+    bash scripts/ci/agent-integrations.sh
 
 
 # Full root gate set; iterate with scoped checks from docs/SETUP.md first.
