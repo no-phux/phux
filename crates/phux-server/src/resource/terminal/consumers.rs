@@ -52,14 +52,17 @@ impl TerminalActor {
         // pass that primes both — see the tick emit gate.)
         let tick_managed = wants_state_sync || self.consumer_tick_emits;
         let (last_cursor_mode, reference) = if tick_managed {
-            let terminal = self.terminal.borrow();
+            let canonical = self.terminal.borrow();
+            let Some(terminal) = canonical.try_terminal() else {
+                return Err(crate::grid::SynthesisError::TerminalUnavailable.into());
+            };
             // Cursor + DEC mode capture happens against a one-shot
             // `RenderState` so we don't conflict with the shared
             // synthesizer's borrow used to prime the reference below.
             let last_cursor_mode = {
                 let mut render_state = RenderState::new()?;
-                let snapshot = render_state.update(&terminal)?;
-                LastAckedCursorMode::capture(&terminal, &snapshot)
+                let snapshot = render_state.update(terminal)?;
+                LastAckedCursorMode::capture(terminal, &snapshot)
             };
             // Prime the reference against the live terminal so the next
             // `synthesize_against_reference` emits only deltas from *now* —
@@ -68,7 +71,7 @@ impl TerminalActor {
             let mut reference = ConsumerReference::new();
             self.synth
                 .borrow_mut()
-                .prime_reference(&terminal, &mut reference)?;
+                .prime_reference(terminal, &mut reference)?;
             (last_cursor_mode, reference)
         } else {
             (LastAckedCursorMode::unprimed(), ConsumerReference::new())
@@ -233,7 +236,14 @@ impl TerminalActor {
     pub(super) fn enable_loss_tolerance(&mut self, client_id: ClientId) {
         // Disjoint field borrows: `self.terminal` / `self.synth` (RefCell
         // interior) vs `self.consumer_states` (via `get_mut`).
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            // Priming needs the live grid. Leaving the consumer on the
+            // emit-once path is the documented safe fallback for a failed
+            // prime, and it is what a loaned terminal gets too.
+            trace!(?client_id, "loss tolerance deferred: terminal is on loan");
+            return;
+        };
         let synth = &self.synth;
         let Some(state) = self.consumer_states.get_mut(&client_id) else {
             trace!(
@@ -244,7 +254,7 @@ impl TerminalActor {
         };
         match synth
             .borrow_mut()
-            .prime_reference(&terminal, &mut state.acked_reference)
+            .prime_reference(terminal, &mut state.acked_reference)
         {
             Ok(()) => {
                 state.loss_tolerant = true;
@@ -348,14 +358,18 @@ impl TerminalActor {
         let sampled = Self::fold_rtt_sample(client_id, consumer, seq);
         // Capture through the tick renderer: a second RenderState would consume
         // canonical dirty bits without refreshing the tick's cached row bodies.
-        if let Some(cm) = Self::capture_acked_cursor_mode(
-            &mut self.synth.borrow_mut(),
-            &self.terminal.borrow(),
-            client_id,
-            seq,
-        ) {
+        let canonical = self.terminal.borrow();
+        if let Some(terminal) = canonical.try_terminal()
+            && let Some(cm) = Self::capture_acked_cursor_mode(
+                &mut self.synth.borrow_mut(),
+                terminal,
+                client_id,
+                seq,
+            )
+        {
             consumer.last_cursor_mode = cm;
         }
+        drop(canonical);
 
         trace!(
             ?client_id,

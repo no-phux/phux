@@ -36,7 +36,8 @@ fn seeded_default_colors_are_installed_before_actor_run() {
     .expect("actor");
     let mut actor = bundle.actor;
     {
-        let terminal = actor.terminal.borrow();
+        let canonical = actor.terminal.borrow();
+        let terminal = canonical.try_terminal().expect("no capture in flight");
         assert_eq!(
             terminal.default_fg_color().expect("foreground"),
             Some(libghostty_vt::style::RgbColor {
@@ -1248,12 +1249,13 @@ fn configured_history_bytes_decides_retained_scrollback() {
                 terminal.vt_write(format!("scrollback row {row}\r\n").as_bytes());
             }
         }
-        let rows = bundle
-            .actor
-            .terminal
-            .borrow()
+        let canonical = bundle.actor.terminal.borrow();
+        let rows = canonical
+            .try_terminal()
+            .expect("no capture in flight")
             .scrollback_rows()
             .expect("retained scrollback rows");
+        drop(canonical);
         bundle.token.cancel();
         rows
     }
@@ -1361,6 +1363,76 @@ async fn progressive_native_ready_stays_within_one_seed_window() {
             run.await.expect("actor run");
         })
         .await;
+}
+
+/// phux-c0r0: every reader of the canonical terminal degrades while a
+/// snapshot capture holds it, instead of aborting the process.
+///
+/// The two shipped crashes were each one *route* into
+/// `NativeTerminalManager::terminal`'s `unreachable!`, closed one at a time by
+/// adding a guard at the call site. This asserts the property those guards
+/// were standing in for: with a capture genuinely in flight, the readers the
+/// actor exposes all return rather than panic. `try_terminal` returning
+/// `Option` is what makes that checkable — and unavoidable for a future
+/// caller, which no amount of `select!` guarding was.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
+    let bundle = TerminalActor::new(80, 24).expect("new actor");
+    let mut actor = bundle.actor;
+    let (reply, _replied) = oneshot::channel();
+    actor.start_native_bootstrap(NativeBootstrapRequest {
+        owner: 31,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        limits: phux_protocol::caps::BootstrapLimits::default(),
+        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        reply,
+    });
+    assert!(
+        actor.terminal.borrow().try_terminal().is_none(),
+        "the capture must actually hold the terminal for this to test anything",
+    );
+
+    // Each of these used to reach the aborting accessor. None may panic, and
+    // each must report the loan rather than inventing an answer.
+    assert!(
+        matches!(
+            actor.synthesize(),
+            Err(crate::grid::SynthesisError::TerminalUnavailable)
+        ),
+        "snapshot synthesis must refuse, not abort",
+    );
+    assert!(
+        matches!(
+            actor.screen_state(1, None, false, 0),
+            Err(crate::grid::SynthesisError::TerminalUnavailable)
+        ),
+        "GET_SCREEN must refuse, not abort",
+    );
+    assert!(
+        actor.viewport_lines().is_none(),
+        "the agent detector must skip its tick, not abort",
+    );
+    assert!(
+        !actor.refresh_title(),
+        "a title read must report unchanged, not abort",
+    );
+    // Void readers: the assertion is simply that these return at all.
+    actor.publish_input_snapshot();
+
+    // ...and the terminal is usable again once the capture lands.
+    actor.land_native_cuts();
+    assert!(
+        actor.terminal.borrow().try_terminal().is_some(),
+        "landing the cut must return the terminal",
+    );
+    assert!(
+        actor.synthesize().is_ok(),
+        "synthesis works once it is back"
+    );
 }
 
 /// Fails-without-the-fix guard for the OTHER two routes into the same abort.

@@ -116,6 +116,12 @@ pub enum SynthesisError {
     /// Host allocation failed while reserving bounded synthesis storage.
     #[error("snapshot allocation failed")]
     OutOfMemory,
+    /// The canonical terminal is on loan to a snapshot capture, so there is
+    /// nothing to project right now. Transient and caller-retryable: the cut
+    /// returns the terminal, and the resync that follows repaints whatever
+    /// this read skipped.
+    #[error("canonical terminal is on loan to a snapshot capture")]
+    TerminalUnavailable,
     /// A requested `GET_SCREEN` rendered capture (`format != 0`) would
     /// exceed the server's per-read byte budget, measured via the
     /// engine Formatter's own `format_len` *before* any allocation (D9,

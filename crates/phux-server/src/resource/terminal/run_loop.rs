@@ -1281,14 +1281,21 @@ impl TerminalActor {
         // Borrow the terminal + shared synthesizer once per tick. The
         // synthesizer's `RenderState`/iterators are reused across
         // consumers; the per-consumer state lives in each `reference`.
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            // The tick renders the canonical grid; with it on loan there is
+            // nothing to diff against. Skipping one tick is invisible — the
+            // capture's return is followed by a resync that repaints.
+            trace!("tick skipped: canonical terminal is on loan to a capture");
+            return None;
+        };
         let mut synth = self.synth.borrow_mut();
         // phux-ahk.2: render the grid ONCE for this tick (the consumer-
         // independent snapshot + per-row cell render + cursor/mode FFI +
         // epilogue/screen-toggle precompute). Each consumer below then only
         // DIFFS against the shared result via `diff_consumer`, so a pane with
         // N state-sync consumers renders once, not N times.
-        let render = match synth.prepare_tick(&terminal) {
+        let render = match synth.prepare_tick(terminal) {
             Ok((cols, rows, live_cm)) => TickRender {
                 cols,
                 rows,
@@ -1326,7 +1333,7 @@ impl TerminalActor {
             }
         }
         drop(synth);
-        drop(terminal);
+        drop(canonical);
         Some(TickEmitWalk {
             emitted,
             total_out_bytes,

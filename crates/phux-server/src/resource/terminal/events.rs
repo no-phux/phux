@@ -113,8 +113,13 @@ impl TerminalActor {
     /// steady path: the common case compares and returns `false`.
     pub(super) fn refresh_title(&mut self) -> bool {
         let next: Option<String> = {
-            let terminal = self.terminal.borrow();
-            let current = terminal.title().unwrap_or("");
+            let canonical = self.terminal.borrow();
+            // On loan to a capture: the title cannot have changed under us
+            // without a `vt_write` we also deferred, so report "unchanged".
+            let current = canonical
+                .try_terminal()
+                .and_then(|terminal| terminal.title().ok())
+                .unwrap_or("");
             (current != self.last_title).then(|| current.to_owned())
         }; // borrow released here — required
         match next {
@@ -136,9 +141,10 @@ impl TerminalActor {
     /// not consume the shared libghostty dirty bits the per-consumer
     /// state-sync tick needs (the phux-ia4 bug). Do not "optimize" it.
     pub(super) fn viewport_lines(&self) -> Option<Vec<String>> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let terminal = canonical.try_terminal()?;
         let synth = self.synth.borrow();
-        match synth.screen_state_with_scrollback(&terminal, 0, None, false) {
+        match synth.screen_state_with_scrollback(terminal, 0, None, false) {
             Ok(state) => Some(state.lines),
             Err(err) => {
                 trace!(error = %err, "agent-detect: viewport read failed; skipping tick");

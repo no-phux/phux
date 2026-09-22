@@ -25,11 +25,14 @@ impl TerminalActor {
         &self,
         scrollback: Option<u32>,
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            return Err(crate::grid::SynthesisError::TerminalUnavailable);
+        };
         // phux-uow0: the full snapshot uses a fresh RenderState internally, so
         // it needs only a shared borrow.
         let synth = self.synth.borrow();
-        synth.synthesize_with_scrollback(&terminal, scrollback)
+        synth.synthesize_with_scrollback(terminal, scrollback)
     }
 
     pub(super) fn synthesize_with_scrollback_bounded(
@@ -37,9 +40,12 @@ impl TerminalActor {
         scrollback: Option<u32>,
         max_bytes: usize,
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            return Err(crate::grid::SynthesisError::TerminalUnavailable);
+        };
         let synth = self.synth.borrow();
-        synth.synthesize_with_scrollback_bounded(&terminal, scrollback, max_bytes)
+        synth.synthesize_with_scrollback_bounded(terminal, scrollback, max_bytes)
     }
 
     /// Project the current `Terminal` grid into a structured
@@ -75,13 +81,16 @@ impl TerminalActor {
         cells: bool,
         format: u8,
     ) -> Result<phux_core::screen::ScreenState, crate::grid::SynthesisError> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            return Err(crate::grid::SynthesisError::TerminalUnavailable);
+        };
         // Shared borrow: the read goes through a fresh per-call
         // `RenderState` (see the synthesizer body), so it never contends
         // with the tick path's `&mut` use of the pooled state.
         let synth = self.synth.borrow();
-        let mut screen = synth.screen_state_with_scrollback(&terminal, pane, scrollback, cells)?;
-        match synth.render_screen(&terminal, scrollback, format) {
+        let mut screen = synth.screen_state_with_scrollback(terminal, pane, scrollback, cells)?;
+        match synth.render_screen(terminal, scrollback, format) {
             Ok(rendered) => screen.rendered = rendered,
             Err(err @ crate::grid::SynthesisError::RenderBudgetExceeded { .. }) => return Err(err),
             Err(err) => {
@@ -107,8 +116,14 @@ impl TerminalActor {
     /// Publish the complete terminal-derived encoder state after a terminal
     /// mutation. Capture failures retain the previous good snapshot.
     pub(super) fn publish_input_snapshot(&self) {
-        let terminal = self.terminal.borrow();
-        match InputEncoderSnapshot::capture(&terminal, self.cell_px) {
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            // On loan to a capture. The snapshot the encoders already hold
+            // stays valid, and the cut's return is followed by a resync.
+            trace!("input snapshot skipped: canonical terminal is on loan");
+            return;
+        };
+        match InputEncoderSnapshot::capture(terminal, self.cell_px) {
             Ok(snapshot) => {
                 self.input_snapshot_tx.send_replace(snapshot);
             }
@@ -136,26 +151,34 @@ impl TerminalActor {
         &self,
         input: &TerminalInput,
     ) -> Result<Option<Vec<u8>>, libghostty_vt::Error> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            // Encoding reads terminal modes (DECCKM, kitty flags, DEC 2004),
+            // so it cannot be done without the terminal. `Ok(None)` is this
+            // function's existing "deliberately dropped" answer; the gated
+            // input arms keep this out of the production path.
+            trace!("input dropped: canonical terminal is on loan to a capture");
+            return Ok(None);
+        };
         match input {
             TerminalInput::Key(event) => {
                 let mut enc = self.key_enc.borrow_mut();
-                let bytes = enc.encode(event, &terminal)?;
+                let bytes = enc.encode(event, terminal)?;
                 Ok(Some(bytes.to_vec()))
             }
             TerminalInput::Mouse(event) => {
                 let mut enc = self.mouse_enc.borrow_mut();
-                let bytes = enc.encode(event, &terminal, self.cell_px)?;
+                let bytes = enc.encode(event, terminal, self.cell_px)?;
                 Ok(Some(bytes.to_vec()))
             }
             TerminalInput::Focus(event) => {
                 let mut enc = self.focus_enc.borrow_mut();
-                let bytes = enc.encode(*event, &terminal)?;
+                let bytes = enc.encode(*event, terminal)?;
                 Ok(bytes.map(<[u8]>::to_vec))
             }
             TerminalInput::Paste(event) => {
                 let mut enc = self.paste_enc.borrow_mut();
-                match enc.encode(event, &terminal)? {
+                match enc.encode(event, terminal)? {
                     PasteOutcome::Encoded(bytes) => Ok(Some(bytes.to_vec())),
                     PasteOutcome::Rejected => Ok(None),
                 }
@@ -304,7 +327,9 @@ impl TerminalActor {
             // requested dims: on error (e.g. a clamped 0 that still failed)
             // the grid is unchanged, so caching the request would desync
             // the cache from the real grid size.
-            (term.cols().unwrap_or(cols), term.rows().unwrap_or(rows))
+            term.try_terminal().map_or((cols, rows), |t| {
+                (t.cols().unwrap_or(cols), t.rows().unwrap_or(rows))
+            })
         };
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         {
