@@ -1,10 +1,13 @@
 # Release agent integration — the publish lane for public host adapters.
 #
-# Flow: publish.yml calls this once ci.yml is green for the component tag.
-# This workflow re-tests that exact tree, packs one artifact, publishes it to
-# npm where applicable, attaches it to the draft, and only then flips the
-# draft public. It does not trigger on the tag push itself; that would race
-# publish.yml and ship the same version twice.
+# Flow: publish.yml dispatches this workflow once ci.yml is green for the
+# component tag. This file re-tests that exact tree, packs one artifact,
+# publishes it to npm where applicable, attaches it to the draft, and only
+# then flips the draft public.
+#
+# npm trusted publishing matches the entry workflow filename. This file is
+# that filename. Do not turn the publish into a workflow_call from
+# publish.yml: npm would see publish.yml and answer 404.
 #
 # THIS LANE WAS DEAD ON ARRIVAL. Its first four invocations all failed, leaving
 # four permanent 0-asset drafts (opencode-plugin-v0.2.0, pi-extension-v0.2.0,
@@ -51,16 +54,6 @@
 name: Release agent integration
 
 on:
-  workflow_call:
-    inputs:
-      tag:
-        description: Existing component-vX.Y.Z tag to validate and publish
-        required: true
-        type: string
-      dry_run:
-        description: Validate without publishing or changing the GitHub release
-        required: true
-        type: boolean
   workflow_dispatch:
     inputs:
       tag:

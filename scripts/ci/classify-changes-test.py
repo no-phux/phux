@@ -92,6 +92,7 @@ class RoutingTests(unittest.TestCase):
             (["scripts/ci/classify-changes.sh"], set()),
             (["scripts/ci/validation_receipt.py"], set()),
             (["scripts/ci/publish_plan.py"], set()),
+            (["scripts/ci/dispatch_integration_publishes.py"], set()),
             (["scripts/ci/extract_changelog_section.py"], set()),
             (["scripts/ci/setup-linux-release-userspace.sh"], set()),
             (["scripts/ci/test_runner_policy.py"], set()),

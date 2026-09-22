@@ -8,12 +8,13 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (path) => readFile(join(root, path), "utf8");
 
-const [configText, manifestText, releasePlease, publish, linearWorkflow, cockpitVersionText] = await Promise.all([
+const [configText, manifestText, releasePlease, publish, linearWorkflow, integrationWorkflow, cockpitVersionText] = await Promise.all([
   read("release-please-config.json"),
   read(".release-please-manifest.json"),
   read(".github/workflows/release-please.yml"),
   read(".github/workflows/publish.yml"),
   read(".github/workflows/linear-release.yml"),
+  read(".github/workflows/agent-integration-release.yml"),
   read("clients/cockpit/version.txt"),
 ]);
 const config = JSON.parse(configText);
@@ -41,6 +42,21 @@ assert.match(publish, /ffi-android\.yml/, "root releases attach the Android UniF
 assert.match(publish, /ffi-xcframework\.yml/, "root releases attach the xcframework");
 assert.match(publish, /linear-release\.yml/, "published releases are reported to Linear");
 assert.match(publish, /publish_plan\.py/, "one plan decides every component");
+assert.doesNotMatch(
+  publish,
+  /uses: \.\/\.github\/workflows\/agent-integration-release\.yml/,
+  "npm trusts agent-integration-release.yml as the entry workflow; workflow_call publishes as publish.yml and npm returns 404",
+);
+assert.match(
+  publish,
+  /python3 scripts\/ci\/dispatch_integration_publishes\.py/,
+  "publish dispatches the integration workflow so the OIDC filename matches npm",
+);
+assert.doesNotMatch(
+  integrationWorkflow,
+  /workflow_call:/,
+  "the integration publisher must be the entry workflow",
+);
 
 assert.ok(
   linearWorkflow.includes("name: ${{ inputs.tag }}"),
