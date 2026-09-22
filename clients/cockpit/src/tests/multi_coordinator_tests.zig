@@ -127,6 +127,92 @@ const Pair = struct {
     }
 };
 
+/// Two attached sessions on one coordinator. The active attachment projects
+/// into the primary window; its sibling projects into secondary window 1.
+const SameCoordinator = struct {
+    engine: *ts_engine.Engine,
+    primary: *support.PhuxProvider,
+    secondary: *support.PhuxProvider,
+
+    fn start(secondary_session: u32) !SameCoordinator {
+        const engine = try ts_engine.Engine.create(testing.allocator, testing.io);
+        errdefer engine.destroy();
+        const endpoint = "/captured-tab-same-coordinator";
+        const primary = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = endpoint }, null, "primary");
+        engine.model.phux_provider = primary;
+        try engine.model.ensurePeerSlots(1);
+        const secondary = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = endpoint }, null, "secondary");
+        engine.model.peers.items[0].provider = secondary;
+        try secondary.show(secondary_session);
+        try fixture.attachHost(primary.host);
+        try fixture.attachHost(secondary.host);
+        // The fixture attaches session 1. Retarget only the sibling's test
+        // publication when this scenario needs another session; its attachment
+        // context is distinct either way.
+        secondary.session_id = secondary_session;
+        secondary.host.attached_session_id = secondary_session;
+        secondary.host.workspace_store.info.session_id = secondary_session;
+        try testing.expectEqual(primary.providerId(), secondary.providerId());
+        try testing.expect(primary.context_id != secondary.context_id);
+
+        const model = engine.model;
+        _ = model.openWindow(1) orelse return error.NoWindow;
+        model.shared_workspace.authority = primary.providerId();
+        model.shared_workspace.attachment_id = primary.context_id;
+        _ = try model.shared_workspace.apply(model, primary.workspaceSnapshot(), primary.connectionEpoch());
+        const state = &model.peers.items[0].workspace;
+        state.authority = secondary.providerId();
+        state.attachment_id = secondary.context_id;
+        state.placement_hint = .{
+            .shared_id = secondary.workspaceSnapshot().windows[0].id,
+            .window = 1,
+            .window_epoch = model.window_epochs[1],
+        };
+        _ = try state.apply(model, secondary.workspaceSnapshot(), secondary.connectionEpoch());
+        model.active_window = 0;
+        model.primary.selected_tab = 0;
+        primary.bridge.outgoing.reset();
+        secondary.bridge.outgoing.reset();
+        return .{ .engine = engine, .primary = primary, .secondary = secondary };
+    }
+
+    fn publishTwoSecondaryWindows(self: *SameCoordinator) !void {
+        const remote = self.secondary;
+        try testing.expectEqual(@as(u32, 1), try remote.requestSpawn(null, .{ .cols = 80, .rows = 24 }));
+        try fixture.stageFixture(remote.bridge, "spawn-local.bin");
+        _ = try remote.drainReadiness();
+        _ = remote.takeOperationResult();
+        try testing.expectEqual(@as(?u32, 2), try remote.requestWorkspaceRefresh());
+        try stageMappedWorkspaceReply(remote, "workspace_add_metadata.bin", 14, 3);
+        try stageMappedWorkspaceReply(remote, "workspace_add_state.bin", 13, 2);
+        _ = try remote.drainReadiness();
+        const state = &self.engine.model.peers.items[0].workspace;
+        _ = try state.apply(self.engine.model, remote.workspaceSnapshot(), remote.connectionEpoch());
+        self.engine.model.active_window = 0;
+        self.engine.model.primary.selected_tab = 0;
+        self.primary.bridge.outgoing.reset();
+        remote.bridge.outgoing.reset();
+    }
+};
+
+fn stageMappedWorkspaceReply(remote: *support.PhuxProvider, comptime name: []const u8, expected: u32, request: u32) !void {
+    var bytes = @embedFile("../providers/phux/fixtures/" ++ name).*;
+    try testing.expectEqualSlices(u8, &.{ 1, 4, 4 }, bytes[5..8]);
+    try testing.expectEqual(0x8000_0000 + expected, std.mem.readInt(u32, bytes[8..12], .big));
+    std.mem.writeInt(u32, bytes[8..12], 0x8000_0000 + request, .big);
+    try testing.expect(remote.bridge.incoming.stage(&bytes));
+}
+
+fn tabActionPacket(model: *const model_module.Model, window: usize, tab: usize, action: captured_tab_commands.Action, id: u64) ![captured_tab_commands.request_len]u8 {
+    const target = captured_tab_commands.capture(model, window, tab) orelse return error.MissingTarget;
+    var packet: [captured_tab_commands.request_len]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = @intFromEnum(action);
+    std.mem.writeInt(u64, packet[2..10], id, .little);
+    @memcpy(packet[10..], &target.encode());
+    return packet;
+}
+
 test "captured machine session pages admit only the supplied exact attachments" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const pair = try Pair.start(false);
@@ -305,6 +391,120 @@ test "captured tab reorder refuses to cross a coordinator boundary" {
     try testing.expectEqual(@as(usize, 0), countFrames(pair.mini).total);
     try testing.expect(engine.model.shared_mutations.peekCompletion() == null);
     try testing.expect(engine.peer_edits.peekCompletion() == null);
+}
+
+test "captured background close routes to the exact same-coordinator attachment" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var siblings = try SameCoordinator.start(2);
+    defer siblings.engine.destroy();
+    const engine = siblings.engine;
+    const model = engine.model;
+    const primary_id = model.primary.shared_ids[0].?;
+    const secondary = model.wsAt(1).?;
+    const secondary_id = secondary.shared_ids[0].?;
+    const primary_tab = model.primary.tab_ids[0];
+    const packet = try tabActionPacket(model, 1, 0, .close, 41);
+
+    const receipt = engine.applyTabCommand(&packet);
+    try testing.expectEqual(captured_tab_commands.Status.accepted_pending, receipt.status);
+    try testing.expectEqual(captured_tab_commands.Reason.none, receipt.reason);
+    try testing.expectEqual(@as(usize, 0), model.active_window);
+    try testing.expectEqual(primary_tab, model.primary.tab_ids[model.primary.selected_tab]);
+    try testing.expectEqualDeep(primary_id, model.primary.shared_ids[0].?);
+    try testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+    try testing.expectEqual(@as(usize, 1), model.wsAt(1).?.tab_count);
+    try testing.expect(model.shared_mutations.peekCompletion() == null);
+    try testing.expectEqual(@as(usize, 1), engine.peer_edits.states.items.len);
+    const pending = engine.peer_edits.states.items[0].mutations.pending[0].?;
+    try testing.expectEqual(.remove_window, pending.mutation.kind);
+    try testing.expectEqualDeep(secondary_id, pending.mutation.window_id);
+    try testing.expectEqual(@as(?u64, 41), pending.command_id);
+    try testing.expectEqual(@as(usize, 0), countFrames(siblings.primary).total);
+    try testing.expect(countFrames(siblings.secondary).command >= 1);
+}
+
+test "captured background reorder targets the exact same-coordinator attachment and authoritative neighbor" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var siblings = try SameCoordinator.start(1);
+    defer siblings.engine.destroy();
+    try siblings.publishTwoSecondaryWindows();
+    const engine = siblings.engine;
+    const model = engine.model;
+    const secondary = model.wsAt(1).?;
+    try testing.expectEqual(@as(usize, 2), secondary.tab_count);
+    const primary_id = model.primary.shared_ids[0].?;
+    const primary_tab = model.primary.tab_ids[0];
+    const first_id = secondary.shared_ids[0].?;
+    const second_id = secondary.shared_ids[1].?;
+    const packet = try tabActionPacket(model, 1, 0, .next, 45);
+
+    const receipt = engine.applyTabCommand(&packet);
+    try testing.expectEqual(captured_tab_commands.Status.accepted_pending, receipt.status);
+    try testing.expectEqual(captured_tab_commands.Reason.none, receipt.reason);
+    try testing.expectEqual(@as(usize, 0), model.active_window);
+    try testing.expectEqual(primary_tab, model.primary.tab_ids[model.primary.selected_tab]);
+    try testing.expectEqualDeep(primary_id, model.primary.shared_ids[0].?);
+    try testing.expectEqualDeep(first_id, model.wsAt(1).?.shared_ids[0].?);
+    try testing.expectEqualDeep(second_id, model.wsAt(1).?.shared_ids[1].?);
+    const pending = engine.peer_edits.states.items[0].mutations.pending[0].?;
+    try testing.expectEqual(.reorder, pending.mutation.kind);
+    try testing.expectEqualDeep(first_id, pending.mutation.window_id);
+    try testing.expectEqual(@as(usize, 1), pending.mutation.index);
+    try testing.expectEqual(@as(?u64, 45), pending.command_id);
+    try testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    try testing.expectEqual(@as(usize, 0), countFrames(siblings.primary).total);
+    try testing.expect(countFrames(siblings.secondary).command >= 1);
+}
+
+test "peer captured action confirms through its exact attachment and requires exact acknowledgement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var siblings = try SameCoordinator.start(1);
+    defer siblings.engine.destroy();
+    const engine = siblings.engine;
+    const packet = try tabActionPacket(engine.model, 1, 0, .close, 51);
+    try testing.expectEqual(captured_tab_commands.Status.accepted_pending, engine.applyTabCommand(&packet).status);
+    const pending = engine.peer_edits.states.items[0].mutations.pending[0].?;
+    try testing.expect(pending.mutation_request != 0);
+
+    // A real two-reply provider publication confirms the correlated mutation.
+    // This is the next workspace exchange after the fixture's initial 0/1 pair.
+    try fixture.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_refresh_state.bin");
+    _ = try siblings.secondary.drainReadiness();
+    try fixture.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_refresh_metadata.bin");
+    _ = try siblings.secondary.drainReadiness();
+    _ = engine.peer_edits.pump(engine.model, 0);
+    const result = engine.peer_edits.peekCompletion().?;
+    try testing.expectEqual(@as(u64, 51), result.command_id);
+    try testing.expectEqual(.success, result.operation);
+    try testing.expectEqual(pending.mutation_request, result.request_id);
+    try testing.expect(!engine.peer_edits.ackCompletion(999));
+    try testing.expectEqualDeep(result, engine.peer_edits.peekCompletion().?);
+    try testing.expect(engine.peer_edits.ackCompletion(51));
+    try testing.expect(engine.peer_edits.peekCompletion() == null);
+    try testing.expect(!engine.peer_edits.ackCompletion(51));
+}
+
+test "peer disconnect retains one unknown captured-action result until exact acknowledgement" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var siblings = try SameCoordinator.start(2);
+    defer siblings.engine.destroy();
+    const engine = siblings.engine;
+    const packet = try tabActionPacket(engine.model, 1, 0, .close, 61);
+    try testing.expectEqual(captured_tab_commands.Status.accepted_pending, engine.applyTabCommand(&packet).status);
+
+    engine.peer_edits.forget(engine.model, 0);
+    const result = engine.peer_edits.peekCompletion().?;
+    try testing.expectEqual(@as(u64, 61), result.command_id);
+    try testing.expectEqual(.unknown, result.operation);
+    try testing.expectEqual(.disconnected, result.reason);
+    try testing.expect(!engine.peer_edits.ackCompletion(60));
+    try testing.expectEqualDeep(result, engine.peer_edits.peekCompletion().?);
+    // Repeated teardown and eventual slot reuse cannot duplicate or erase it.
+    engine.peer_edits.forget(engine.model, 0);
+    try testing.expectEqualDeep(result, engine.peer_edits.peekCompletion().?);
+    try testing.expect(engine.peer_edits.ackCompletion(61));
+    try testing.expect(engine.peer_edits.peekCompletion() == null);
+    try testing.expect(!engine.peer_edits.ackCompletion(61));
 }
 
 test "two coordinators project side by side; each publication replaces only its own tabs" {

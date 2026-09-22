@@ -3237,6 +3237,103 @@ fn chooseTabMenuItem(rig: *Rig, token: u64, item: u32) !void {
     try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.tabCommands.queue.len);
 }
 
+const ShippingSameCoordinator = struct {
+    primary: *cockpit.PhuxProvider,
+    secondary: *cockpit.PhuxProvider,
+
+    fn project(engine: *Engine) !ShippingSameCoordinator {
+        const endpoint = "/shipping-captured-tab-same-coordinator";
+        const primary = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = endpoint }, null, "primary");
+        engine.model.phux_provider = primary;
+        try engine.model.ensurePeerSlots(1);
+        const secondary = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = endpoint }, null, "secondary");
+        engine.model.peers.items[0].provider = secondary;
+        try secondary.show(1);
+        try cockpit.PhuxProvider.test_support.attachHost(primary.host);
+        try cockpit.PhuxProvider.test_support.attachHost(secondary.host);
+        try std.testing.expectEqual(primary.providerId(), secondary.providerId());
+        try std.testing.expect(primary.context_id != secondary.context_id);
+
+        const model = engine.model;
+        model.shared_workspace.authority = primary.providerId();
+        model.shared_workspace.attachment_id = primary.context_id;
+        _ = try model.shared_workspace.apply(model, primary.workspaceSnapshot(), primary.connectionEpoch());
+        const state = &model.peers.items[0].workspace;
+        state.authority = secondary.providerId();
+        state.attachment_id = secondary.context_id;
+        _ = try state.apply(model, secondary.workspaceSnapshot(), secondary.connectionEpoch());
+        try std.testing.expectEqual(@as(usize, 2), model.primary.tab_count);
+        try std.testing.expectEqual(primary.context_id, model.primary.tabs[0].attachment_id.?);
+        try std.testing.expectEqual(secondary.context_id, model.primary.tabs[1].attachment_id.?);
+        model.active_window = 0;
+        model.primary.selected_tab = 0;
+        primary.bridge.outgoing.reset();
+        secondary.bridge.outgoing.reset();
+        return .{ .primary = primary, .secondary = secondary };
+    }
+};
+
+test "shipping background peer tab action keeps primary selected and completes through exact acknowledgement" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const siblings = try ShippingSameCoordinator.project(engine);
+    const selected = engine.model.focusedTerminalRef().?;
+    const primary_id = engine.model.primary.shared_ids[0].?;
+    const secondary_id = engine.model.primary.shared_ids[1].?;
+    engine.sequence +%= 1;
+    engine.revision +%= 1;
+    bridge.announce(engine);
+    try rig.settle(@intCast(engine.sequence), "READY");
+
+    const peer_menu = try tabMenuHost(&rig, false, true);
+    const token = try openTabMenu(&rig, peer_menu);
+    try chooseTabMenuItem(&rig, token, 4);
+    try std.testing.expectEqual(@as(i64, 7), rig.app_state.model.tabCommands.outcome);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.primary.selected_tab);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqualDeep(primary_id, engine.model.primary.shared_ids[0].?);
+    try std.testing.expectEqualDeep(secondary_id, engine.model.primary.shared_ids[1].?);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.primary.tab_count);
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    const pending = engine.peer_edits.states.items[0].mutations.pending[0].?;
+    try std.testing.expectEqual(.remove_window, pending.mutation.kind);
+    try std.testing.expectEqualDeep(secondary_id, pending.mutation.window_id);
+    try std.testing.expect(pending.command_id != null);
+    try std.testing.expectEqual(@as(usize, 0), countOutgoingFrames(siblings.primary));
+    try std.testing.expect(countOutgoingFrames(siblings.secondary) >= 1);
+
+    try cockpit.PhuxProvider.test_support.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_refresh_state.bin");
+    _ = try siblings.secondary.drainReadiness();
+    try cockpit.PhuxProvider.test_support.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_refresh_metadata.bin");
+    _ = try siblings.secondary.drainReadiness();
+    _ = engine.peer_edits.pump(engine.model, 0);
+    try std.testing.expectEqual(pending.command_id.?, engine.peer_edits.peekCompletion().?.command_id);
+
+    try std.testing.expect(!bridge.result_pending);
+    Bridge.request(&bridge, result_wire.request_name, 871, &result_wire.empty);
+    const completion = Bridge.poll(&bridge).?;
+    try std.testing.expectEqual(@as(u64, 871), completion.key);
+    var owned: [result_wire.max_bytes]u8 = undefined;
+    @memcpy(owned[0..completion.bytes.len], completion.bytes);
+    try rig.dispatch(.{ .command_result_loaded = owned[0..completion.bytes.len] });
+    try std.testing.expect(engine.peer_edits.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.commandResults.recent.len);
+    try std.testing.expect(std.mem.indexOf(u8, rig.app_state.model.commandNotice, "succeeded") != null);
+}
+
+fn countOutgoingFrames(remote: *cockpit.PhuxProvider) usize {
+    var count: usize = 0;
+    while (remote.bridge.outgoing.take()) |frame| {
+        remote.bridge.outgoing.release(frame);
+        count += 1;
+    }
+    return count;
+}
+
 test "shipping tab context menu retains a background target across rebuild move and close" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -3310,7 +3407,7 @@ test "captured tab actions reject malformed expired and nonexistent targets with
     try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
 }
 
-test "captured shared tab close reports pending until the coordinator confirms it" {
+test "captured shared tab close queues pending without changing presentation" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const engine = try cockpit.durable_tests.start();
     defer engine.destroy();

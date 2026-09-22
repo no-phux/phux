@@ -18,8 +18,9 @@
 //! New tabs and splits spawn first, then place: SPAWN on the peer, wait for
 //! its terminal to publish live, then refresh-and-add (or split) through the
 //! same queue. A confirmed placement asks the peer's projection to select the
-//! new terminal. Nothing here outlives the peer's connection: a restart,
-//! failure or removal forgets the slot's edits (`forget`).
+//! new terminal. A restart, failure or removal retires pending work, retaining
+//! correlated results until the core acknowledges them; uncorrelated edits and
+//! creations are forgotten (`forget`).
 
 const std = @import("std");
 const support = @import("phux_support.zig");
@@ -156,11 +157,14 @@ pub const Edits = struct {
     /// nothing queued for it may continue. A mutation already sent may still
     /// land on that server; forgetting it never rolls one back. A bound
     /// spawn whose placement was never sent is kept as a stray.
-    pub fn forget(self: *Edits, slot: usize) void {
+    pub fn forget(self: *Edits, model: *Model, slot: usize) void {
         if (slot >= self.states.items.len) return;
         const state = self.states.items[slot];
+        if (model.phuxPeerAt(slot)) |peer| {
+            var peer_view: PeerView = .{ .peer = peer, .shared_workspace = &model.peers.items[slot].workspace };
+            state.mutations.disconnect(&peer_view);
+        }
         for (state.creations) |held| if (held) |entry| self.drop(slot, entry);
-        state.mutations = .{};
         state.creations = @splat(null);
         state.empty_tab_settlements = @splat(null);
     }
@@ -385,11 +389,10 @@ pub const Edits = struct {
         try self.states.items[slot].mutations.requestRemoveWindow(&peer_view, id);
     }
 
-    pub fn removeWindowCorrelated(self: *Edits, model: *Model, coordinator: support.ProviderId, id: WindowId, command_id: u64) !void {
-        const slot = try slotOf(model, coordinator);
-        try self.ensure(slot);
-        var peer_view = try view(model, slot);
-        try self.states.items[slot].mutations.requestRemoveWindowCorrelated(&peer_view, id, command_id);
+    pub fn removeWindowCorrelatedForAttachment(self: *Edits, model: *Model, attachment: u64, id: WindowId, command_id: u64) !void {
+        var target = try viewForAttachment(model, attachment);
+        try self.ensure(target.slot);
+        try self.states.items[target.slot].mutations.requestRemoveWindowCorrelated(&target.view, id, command_id);
     }
 
     /// Close one of the peer's panes on that coordinator.
@@ -409,12 +412,10 @@ pub const Edits = struct {
         try self.states.items[slot].mutations.requestReorder(&peer_view, id, target);
     }
 
-    pub fn reorderCorrelated(self: *Edits, model: *Model, coordinator: support.ProviderId, id: WindowId, right: bool, command_id: u64) !void {
-        const slot = try slotOf(model, coordinator);
-        try self.ensure(slot);
-        var peer_view = try view(model, slot);
-        const target = neighborIndex(peer_view.peer.workspaceSnapshot().windows, id, right) orelse return error.StaleTarget;
-        try self.states.items[slot].mutations.requestReorderCorrelated(&peer_view, id, target, command_id);
+    pub fn reorderCorrelatedForAttachment(self: *Edits, model: *Model, attachment: u64, id: WindowId, target_index: usize, command_id: u64) !void {
+        var target = try viewForAttachment(model, attachment);
+        try self.ensure(target.slot);
+        try self.states.items[target.slot].mutations.requestReorderCorrelated(&target.view, id, target_index, command_id);
     }
 
     pub fn peekCompletion(self: *const Edits) ?@import("command_results.zig").Result {
@@ -715,6 +716,16 @@ fn view(model: *Model, slot: usize) !PeerView {
     if (state.session == 0 or state.epoch != peer.connectionEpoch()) return error.WorkspaceUnavailable;
     if (state.authority != peer.providerId()) return error.StaleContext;
     return .{ .peer = peer, .shared_workspace = state };
+}
+
+const AttachmentView = struct { slot: usize, view: PeerView };
+
+fn viewForAttachment(model: *Model, attachment: u64) !AttachmentView {
+    const slot = model.peerSlotForAttachment(attachment) orelse return error.NotPeerAttachment;
+    const peer_view = try view(model, slot);
+    if (peer_view.peer.context_id != attachment) return error.StaleContext;
+    if (peer_view.shared_workspace.attachment_id != attachment) return error.StaleContext;
+    return .{ .slot = slot, .view = peer_view };
 }
 
 /// Whether coordinator `id` is a peer that can take an edit now.
