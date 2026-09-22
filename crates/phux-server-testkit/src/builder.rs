@@ -334,12 +334,13 @@ impl ReplicaGeneration {
 struct ReplicaScreen {
     generation: ReplicaGeneration,
     screen: Screen,
+    next_output_seq: Option<u64>,
 }
 
 #[derive(Debug)]
 struct StagedScreen {
     replica: ReplicaScreen,
-    next_chunk_seq: u32,
+    next_chunk_seq: Option<u32>,
 }
 
 /// Minimal terminal-replica state needed by the testkit's rendered-screen
@@ -413,7 +414,7 @@ impl ScreenOracle {
                 profile,
                 cols,
                 rows,
-                ..
+                base_seq,
             } => self.begin(
                 terminal_id,
                 *stream_id,
@@ -421,6 +422,7 @@ impl ScreenOracle {
                 *profile,
                 *cols,
                 *rows,
+                *base_seq,
             ),
             FrameKind::BootstrapChunk {
                 terminal_id,
@@ -439,13 +441,17 @@ impl ScreenOracle {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
+                seq,
                 bytes,
-                ..
-            } => self.output(terminal_id, *stream_id, *bootstrap_id, bytes),
+            } => self.output(terminal_id, *stream_id, *bootstrap_id, *seq, bytes),
             _ => AppliedFrame::Ignored,
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the helper validates the BOOTSTRAP_BEGIN wire fields without duplicating them"
+    )]
     fn begin(
         &mut self,
         terminal_id: &ResourceId,
@@ -454,6 +460,7 @@ impl ScreenOracle {
         profile: BootstrapStreamProfile,
         cols: u16,
         rows: u16,
+        base_seq: u64,
     ) -> AppliedFrame {
         let generation = ReplicaGeneration::new(terminal_id, stream_id, bootstrap_id);
         let profile_is_vt = matches!(
@@ -487,8 +494,9 @@ impl ScreenOracle {
             replica: ReplicaScreen {
                 generation,
                 screen: Screen::new(cols, rows).expect("Screen::new for bootstrap"),
+                next_output_seq: base_seq.checked_add(1),
             },
-            next_chunk_seq: 0,
+            next_chunk_seq: Some(0),
         });
         AppliedFrame::Ignored
     }
@@ -509,11 +517,20 @@ impl ScreenOracle {
         else {
             return AppliedFrame::Ignored;
         };
-        if chunk_seq != staging.next_chunk_seq {
-            return AppliedFrame::Ignored;
+        let Some(expected) = staging.next_chunk_seq else {
+            panic!("bootstrap chunk sequence exhausted for matching generation");
+        };
+        match chunk_seq.cmp(&expected) {
+            std::cmp::Ordering::Less => {
+                panic!("duplicate bootstrap chunk: expected {expected}, got {chunk_seq}")
+            }
+            std::cmp::Ordering::Greater => {
+                panic!("bootstrap chunk gap: expected {expected}, got {chunk_seq}")
+            }
+            std::cmp::Ordering::Equal => {}
         }
-        staging.next_chunk_seq = staging.next_chunk_seq.saturating_add(1);
         staging.replica.screen.write(payload);
+        staging.next_chunk_seq = chunk_seq.checked_add(1);
         AppliedFrame::RenderedStaging
     }
 
@@ -541,6 +558,7 @@ impl ScreenOracle {
         terminal_id: &ResourceId,
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
+        seq: u64,
         bytes: &[u8],
     ) -> AppliedFrame {
         let generation = ReplicaGeneration::new(terminal_id, stream_id, bootstrap_id);
@@ -551,7 +569,20 @@ impl ScreenOracle {
         else {
             return AppliedFrame::Ignored;
         };
+        let Some(expected) = published.next_output_seq else {
+            panic!("live output sequence exhausted for matching generation");
+        };
+        match seq.cmp(&expected) {
+            std::cmp::Ordering::Less => {
+                panic!("duplicate live output: expected {expected}, got {seq}")
+            }
+            std::cmp::Ordering::Greater => {
+                panic!("live output gap: expected {expected}, got {seq}")
+            }
+            std::cmp::Ordering::Equal => {}
+        }
         published.screen.write(bytes);
+        published.next_output_seq = seq.checked_add(1);
         AppliedFrame::RenderedPublished
     }
 }
@@ -585,6 +616,9 @@ impl BufferedFrameReceiver {
         deadline: tokio::time::Instant,
     ) -> ReceiveBefore {
         loop {
+            if tokio::time::Instant::now() >= deadline {
+                return ReceiveBefore::Deadline;
+            }
             if let Some(frame) = self.decode_buffered() {
                 return ReceiveBefore::Frame(frame);
             }
@@ -1369,6 +1403,7 @@ mod colored_burst_tests {
 
 #[cfg(test)]
 mod client_oracle_tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::time::Duration;
 
     use bytes::Bytes;
@@ -1392,6 +1427,16 @@ mod client_oracle_tests {
     }
 
     fn begin(terminal_id: &ResourceId, generation: u64, cols: u16, rows: u16) -> FrameKind {
+        begin_at(terminal_id, generation, cols, rows, 0)
+    }
+
+    fn begin_at(
+        terminal_id: &ResourceId,
+        generation: u64,
+        cols: u16,
+        rows: u16,
+        base_seq: u64,
+    ) -> FrameKind {
         FrameKind::BootstrapBegin {
             terminal_id: terminal_id.clone(),
             stream_id: stream(1),
@@ -1399,7 +1444,7 @@ mod client_oracle_tests {
             profile: BootstrapStreamProfile::SynthesizedVtRaw,
             cols,
             rows,
-            base_seq: 0,
+            base_seq,
         }
     }
 
@@ -1425,6 +1470,126 @@ mod client_oracle_tests {
             bootstrap_id: bootstrap(generation),
             history_cursor: None,
         }
+    }
+
+    fn output(
+        terminal_id: &ResourceId,
+        generation: u64,
+        seq: u64,
+        bytes: &'static [u8],
+    ) -> FrameKind {
+        FrameKind::ResourceOutput {
+            terminal_id: terminal_id.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(generation),
+            seq,
+            bytes: Bytes::from_static(bytes),
+        }
+    }
+
+    fn published_oracle(terminal_id: &ResourceId, generation: u64, base_seq: u64) -> ScreenOracle {
+        let mut oracle = ScreenOracle::new(terminal_id.clone());
+        let _ = oracle.apply(&begin_at(terminal_id, generation, 20, 2, base_seq));
+        let _ = oracle.apply(&chunk(terminal_id, generation, 0, b"BASE"));
+        let _ = oracle.apply(&ready(terminal_id, generation));
+        oracle
+    }
+
+    fn assert_panics(f: impl FnOnce()) {
+        assert!(catch_unwind(AssertUnwindSafe(f)).is_err());
+    }
+
+    #[test]
+    fn matching_bootstrap_chunk_sequence_violations_panic() {
+        let terminal_id = ResourceId::local(7);
+
+        let mut duplicate = ScreenOracle::new(terminal_id.clone());
+        let _ = duplicate.apply(&begin(&terminal_id, 1, 20, 2));
+        let _ = duplicate.apply(&chunk(&terminal_id, 1, 0, b"FIRST"));
+        assert_panics(|| {
+            let _ = duplicate.apply(&chunk(&terminal_id, 1, 0, b"DUPLICATE"));
+        });
+
+        let mut gap = ScreenOracle::new(terminal_id.clone());
+        let _ = gap.apply(&begin(&terminal_id, 2, 20, 2));
+        assert_panics(|| {
+            let _ = gap.apply(&chunk(&terminal_id, 2, 1, b"GAP"));
+        });
+
+        let mut exhausted = ScreenOracle::new(terminal_id.clone());
+        let _ = exhausted.apply(&begin(&terminal_id, 3, 20, 2));
+        exhausted
+            .staging
+            .as_mut()
+            .expect("staging generation")
+            .next_chunk_seq = Some(u32::MAX);
+        let _ = exhausted.apply(&chunk(&terminal_id, 3, u32::MAX, b"LAST"));
+        let staging = exhausted.staging.as_mut().expect("staging generation");
+        assert!(staging.replica.screen.contains("LAST"));
+        assert_eq!(staging.next_chunk_seq, None);
+        assert_panics(|| {
+            let _ = exhausted.apply(&chunk(&terminal_id, 3, u32::MAX, b"AFTER_LAST"));
+        });
+    }
+
+    #[test]
+    fn matching_live_output_sequence_violations_panic_but_mismatches_are_ignored() {
+        let terminal_id = ResourceId::local(7);
+        let wrong_terminal = ResourceId::local(99);
+
+        let mut duplicate = published_oracle(&terminal_id, 1, 40);
+        let _ = duplicate.apply(&output(&terminal_id, 1, 41, b"FIRST"));
+        assert_panics(|| {
+            let _ = duplicate.apply(&output(&terminal_id, 1, 41, b"DUPLICATE"));
+        });
+
+        let mut gap = published_oracle(&terminal_id, 2, 40);
+        assert_panics(|| {
+            let _ = gap.apply(&output(&terminal_id, 2, 42, b"GAP"));
+        });
+
+        let mut mismatched = published_oracle(&terminal_id, 3, 40);
+        assert_eq!(
+            mismatched.apply(&output(&terminal_id, 99, 41, b"STALE")),
+            super::AppliedFrame::Ignored
+        );
+        assert_eq!(
+            mismatched.apply(&output(&wrong_terminal, 3, 41, b"WRONG_OWNER")),
+            super::AppliedFrame::Ignored
+        );
+        let screen = mismatched.screen_mut();
+        assert!(!screen.contains("STALE"));
+        assert!(!screen.contains("WRONG_OWNER"));
+    }
+
+    #[test]
+    fn expired_receive_deadline_preserves_buffered_frame() {
+        run_local(async {
+            let (mut stream, _peer) = UnixStream::pair().expect("loopback pair");
+            let mut receiver = BufferedFrameReceiver::default();
+            receiver
+                .buffered
+                .extend_from_slice(&encode_frame(&FrameKind::Detach));
+            let buffered_len = receiver.buffered.len();
+
+            assert!(matches!(
+                receiver
+                    .receive_before(&mut stream, tokio::time::Instant::now())
+                    .await,
+                super::ReceiveBefore::Deadline
+            ));
+            assert_eq!(receiver.buffered.len(), buffered_len);
+            assert!(matches!(
+                receiver
+                    .receive_before(
+                        &mut stream,
+                        tokio::time::Instant::now() + Duration::from_secs(1)
+                    )
+                    .await,
+                super::ReceiveBefore::Frame(FrameKind::Detach)
+            ));
+            assert!(receiver.buffered.is_empty());
+        });
     }
 
     #[test]
