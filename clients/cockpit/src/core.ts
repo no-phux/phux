@@ -1054,7 +1054,7 @@ function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
 
 function navigationNotice(agents: boolean, scope: number, total: number, offset: number): Uint8Array {
   if (agents) {
-    if (total === 0) return asciiBytes("No agent resources in the attached catalog");
+    if (total === 0) return asciiBytes("No agents found. Refresh to check again.");
     return joinBytes(asciiBytes("Agent "), decimalBytes(offset + 1), joinBytes(asciiBytes(" of "), decimalBytes(total), asciiBytes(" / Last reported state")));
   }
   if (scope === 4) return total === 0 ? asciiBytes("No matching windows") : asciiBytes("Choose a window or tab to bring existing work forward");
@@ -2811,7 +2811,7 @@ function commandContextCurrent(model: Model): boolean {
 }
 
 function refreshActions(model: Model, cursor: number): Model {
-  const rows = commandRows(model.paletteQuery, cursor, model.engineConnected && activeTabs(model).length > 0, model.workspaceLabel, model.bindings);
+  const rows = commandRows(model.paletteQuery, cursor, model.engineConnected && activeTabs(model).length > 0, model.bindings);
   const available: ActionRow[] = [];
   for (const row of rows) {
     const command = commandDefinition(row.index);

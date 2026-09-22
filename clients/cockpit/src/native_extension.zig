@@ -6172,6 +6172,28 @@ test "terminal ground stays opaque inside measured content and leaves material c
     }
 }
 
+test "selected tab underline stays inside its button rather than the attention slot" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var tab: ?native_sdk.geometry.RectF = null;
+        var underline: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (node.widget.semantics.role == .tab and node.widget.state.selected) tab = node.frame;
+            if (node.widget.style.background == null) continue;
+            if (node.frame.y < 50 and node.frame.height == 2) underline = node.frame;
+        }
+        const button = tab orelse return error.TestExpectedSelectedTab;
+        const bar = underline orelse return error.TestExpectedTabUnderline;
+        try std.testing.expect(bar.x > button.x);
+        try std.testing.expect(bar.x + bar.width < button.x + button.width);
+    }
+}
+
 test "navigator command shortcuts align to the row trailing edge" {
     var rig = try Rig.start();
     defer rig.stop();

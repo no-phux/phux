@@ -30,7 +30,7 @@
               <column gap="16">
                 <if test="{settingsSection == 2}">
                   <column gap="16">
-                    <text wrap="true" foreground="text_muted">Use chords such as super+shift+p. Enter none to remove a shortcut.</text>
+                    <text wrap="true" foreground="text_muted">Use a chord such as Cmd+Shift+p. Enter none to remove a shortcut.</text>
                     <if test="{noBindingRows}"><text foreground="text_muted">No matching keyboard shortcuts</text></if>
                     <for each="bindingRows" key="index" as="binding">
                       <column gap="8">
