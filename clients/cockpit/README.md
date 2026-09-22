@@ -399,12 +399,6 @@ than as a command. The pointer decides the pane, and focus follows the drop.
 naming the terminal. In the foreground it stays a dot in the tab strip: a banner
 for the pane you are typing in is how notifications get turned off wholesale.
 
-**The menu-bar extra** (`PX`) carries the open terminal count, turns its title
-warning-toned when one of them wants something, and lists every terminal in the
-active window with a row that goes straight to it — raising the window on the
-way, since a menu-bar pick happens while Cockpit is behind whatever you were
-actually looking at.
-
 ## Requirements
 
 - Apple silicon Mac running macOS 11 or later
