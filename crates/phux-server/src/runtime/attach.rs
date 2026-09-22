@@ -875,18 +875,21 @@ impl OutputPumpContext {
         {
             return Err(PumpFault::TombstoneNotQueued);
         }
-        let reply = self
-            .capture_native_checkpoint(generation.bootstrap_id())
-            .await?;
+        // Same rule as the synthesized path: the id advances only once the
+        // replacement frames are queued. A capture or publish failure leaves
+        // the generation on the id the client already has.
+        let bootstrap_id = next_bootstrap_id(prior_bootstrap_id);
+        let reply = self.capture_native_checkpoint(bootstrap_id).await?;
         let (cut, cursor) = publish_native_bootstrap(&self.out_tx, reply)
             .await
             .map_err(|()| PumpFault::GenerationLost)?;
+        generation.set_bootstrap_id(bootstrap_id);
         let publication = activate_native_publication(
             &self.terminal,
             self.client_id.0,
             self.wire_terminal_id.clone(),
             self.stream_id,
-            generation.bootstrap_id(),
+            bootstrap_id,
             cursor,
         )
         .await
@@ -968,7 +971,6 @@ impl OutputPumpContext {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if self.publishes_native_checkpoints() {
             let prior_bootstrap_id = generation.bootstrap_id();
-            generation.set_bootstrap_id(next_bootstrap_id(prior_bootstrap_id));
             return match self
                 .republish_native_generation(
                     generation,
@@ -4195,56 +4197,72 @@ mod tests {
         .await;
         assert_eq!((deferred, tx.capacity()), (SnapshotQueue::Deferred, 0));
 
-        let tx_exit = tx.clone();
-        let queued = tokio::spawn(async move {
-            queue_resync_bootstrap(
-                &tx_exit,
-                crate::terminal_actor::ResyncReason::Exit,
-                frames,
-                true,
-            )
-            .await
-        });
-        // Park the exit reservation before close asks for a slot. Draining
-        // first lets close fill the empty mailbox ahead of the bootstrap.
-        tokio::task::yield_now().await;
-        let tx_close = tx.clone();
-        let closed = tokio::spawn(async move {
-            tx_close
-                .send(Outbound::Frame(FrameKind::ResourceClosed {
-                    terminal_id,
-                    exit_status: Some(0),
-                    reason: CloseReason::Exited,
-                    signal: None,
-                }))
-                .await
-                .expect("queue RESOURCE_CLOSED");
-        });
-        tokio::task::yield_now().await;
-        assert!(!queued.is_finished() && !closed.is_finished() && tx.capacity() == 0);
+        // Park the exit reservation on this task before close asks for a
+        // slot. `yield_now` does not order two spawned waiters, and the
+        // first one in the semaphore queue takes every freed slot.
+        let exit =
+            queue_resync_bootstrap(&tx, crate::terminal_actor::ResyncReason::Exit, frames, true);
+        tokio::pin!(exit);
+        std::future::poll_fn(|cx| match std::future::Future::poll(exit.as_mut(), cx) {
+            std::task::Poll::Pending => std::task::Poll::Ready(()),
+            std::task::Poll::Ready(queue) => {
+                panic!("exit bootstrap finished on a full mailbox: {queue:?}")
+            }
+        })
+        .await;
+        let close = tx.send(Outbound::Frame(FrameKind::ResourceClosed {
+            terminal_id,
+            exit_status: Some(0),
+            reason: CloseReason::Exited,
+            signal: None,
+        }));
+        tokio::pin!(close);
+        tokio::select! {
+            biased;
+            queue = &mut exit => panic!("exit bootstrap finished before any drain: {queue:?}"),
+            result = &mut close => {
+                panic!("close took a slot ahead of the exit bootstrap: {result:?}")
+            }
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(tx.capacity(), 0);
 
         let mut saw_chunk = false;
         let mut saw_ready = false;
-        while let Some(message) = rx.recv().await {
-            match message {
-                Outbound::Frame(FrameKind::BootstrapChunk { payload, .. }) => {
-                    assert_eq!(payload.as_ref(), b"FINAL_SCREEN");
-                    saw_chunk = true;
+        let mut exit_queued = false;
+        let mut close_queued = false;
+        loop {
+            tokio::select! {
+                biased;
+                queue = &mut exit, if !exit_queued => {
+                    assert_eq!(queue, SnapshotQueue::Queued);
+                    exit_queued = true;
                 }
-                Outbound::Frame(FrameKind::BootstrapReady { .. }) => {
-                    assert!(saw_chunk, "READY arrived before the final chunk");
-                    saw_ready = true;
+                result = &mut close, if !close_queued => {
+                    result.expect("queue RESOURCE_CLOSED");
+                    close_queued = true;
                 }
-                Outbound::Frame(FrameKind::ResourceClosed { .. }) => break,
-                _ => {}
+                message = rx.recv() => {
+                    match message {
+                        Some(Outbound::Frame(FrameKind::BootstrapChunk { payload, .. })) => {
+                            assert_eq!(payload.as_ref(), b"FINAL_SCREEN");
+                            saw_chunk = true;
+                        }
+                        Some(Outbound::Frame(FrameKind::BootstrapReady { .. })) => {
+                            assert!(saw_chunk, "READY arrived before the final chunk");
+                            saw_ready = true;
+                        }
+                        Some(Outbound::Frame(FrameKind::ResourceClosed { .. })) => break,
+                        Some(_) => {}
+                        None => panic!("mailbox closed before RESOURCE_CLOSED"),
+                    }
+                }
             }
         }
         assert!(
-            saw_chunk && saw_ready,
+            saw_chunk && saw_ready && exit_queued && close_queued,
             "RESOURCE_CLOSED split the final screen off the bootstrap"
         );
-        assert_eq!(queued.await.expect("exit queue"), SnapshotQueue::Queued);
-        closed.await.expect("close task");
     }
 
     /// ADR-0124 / ADR-0126: the hub's forwarded spawn carries `retain_secs`

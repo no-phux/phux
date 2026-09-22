@@ -2583,17 +2583,12 @@ impl AttachResourcePumpCtx {
         resync: &PumpResync,
     ) -> PumpStep {
         // Resync is control, so an unchanged cut still tombstones and
-        // replaces the published generation. The synthesized path bumps the
-        // id only once the frames are actually queued, so a deferred snapshot
-        // does not relabel live output the client has not opened.
+        // replaces the published generation. The id advances only once the
+        // replacement frames are queued, so a deferred snapshot does not
+        // relabel live output the client has not opened.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if native_checkpoint_profile(self.stream_profile) {
             let prior_bootstrap_id = stream.generation.bootstrap_id();
-            stream
-                .generation
-                .set_bootstrap_id(crate::runtime::attach::next_bootstrap_id(
-                    prior_bootstrap_id,
-                ));
             return self
                 .republish_native_generation(stream, prior_bootstrap_id, resync)
                 .await;
@@ -2667,6 +2662,7 @@ impl AttachResourcePumpCtx {
         {
             return self.abandon_connection();
         }
+        let bootstrap_id = crate::runtime::attach::next_bootstrap_id(prior_bootstrap_id);
         let (reply, reply_rx) = oneshot::channel();
         if self
             .native_bootstrap
@@ -2674,7 +2670,7 @@ impl AttachResourcePumpCtx {
                 owner: self.client_id.0,
                 terminal_id: self.wire_terminal_id.clone(),
                 stream_id: self.stream_id,
-                bootstrap_id: stream.generation.bootstrap_id(),
+                bootstrap_id,
                 limits: self.bootstrap_limits,
                 max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
                 max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
@@ -2701,12 +2697,13 @@ impl AttachResourcePumpCtx {
         else {
             return self.abandon_connection();
         };
+        stream.generation.set_bootstrap_id(bootstrap_id);
         let Ok(publication) = crate::runtime::attach::activate_native_publication(
             &self.terminal,
             self.client_id.0,
             self.wire_terminal_id.clone(),
             self.stream_id,
-            stream.generation.bootstrap_id(),
+            bootstrap_id,
             cursor,
         )
         .await
