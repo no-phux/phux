@@ -18,7 +18,13 @@ default = ["render"]
 # `default-features = false` and get ONLY the asciicast codec: the TUI build
 # then compiles no image encoders and no second libghostty handle. Everything
 # under `render` is offline export machinery that the live client never runs.
-render = ["dep:libghostty-vt", "dep:png", "dep:gif"]
+render = [
+    "dep:libghostty-vt",
+    "dep:png",
+    "dep:gif",
+    "dep:phux-protocol",
+    "phux-protocol/render-pool",
+]
 
 [dependencies]
 # `RenderedFrame` / `RenderedCell` / `CellStyle` / `CellColor` are the boundary
@@ -26,6 +32,10 @@ render = ["dep:libghostty-vt", "dep:png", "dep:gif"]
 # domain crate keeps this crate testable with hand-built frames and no
 # emulator in the loop.
 phux-core.workspace = true
+# Render-feature only: the shared render trio (`render-pool`), not the
+# `server` surface. The codec-only build (`default-features = false`) does
+# not depend on this crate. See ADR-0086.
+phux-protocol = { workspace = true, optional = true }
 # asciicast is NDJSON: a JSON object header plus one JSON array per event.
 # We hand-order the header keys (serde_json's map is sorted, and the format
 # pins an order), but string escaping and number parsing are serde_json's.

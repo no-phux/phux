@@ -9,8 +9,8 @@
 //! identical to a regex on stripped output).
 //!
 //! Instead, this helper feeds the bytes into a *fresh* `libghostty_vt::Terminal`
-//! and walks the resulting grid via the same `RenderState`/`RowIterator`/
-//! `CellIterator` surface the production client uses. The result is a
+//! and walks the resulting grid through `phux_protocol::render_pool::RenderPool`,
+//! the same trio the production client uses. The result is a
 //! row-major plain-text snapshot you can assert on directly:
 //!
 //! ```ignore
@@ -32,11 +32,13 @@
 //!   `Ok(None)` cases as "(0, 0)" so the harness degrades to a safe
 //!   default rather than panicking inside an assertion helper.
 
+use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::screen::CellWide;
-use libghostty_vt::{
-    Terminal as GhosttyTerminal,
-    render::{CellIterator, RenderState, RowIterator},
-};
+use phux_protocol::render_pool::{RenderPool, RenderWalk};
+
+/// `Screen` owns one terminal for its whole life, so the pool's identity
+/// token never changes. A resize still rebuilds the trio on the next walk.
+const POOL_GENERATION: u128 = 0;
 
 /// Errors the harness can surface during construction. Runtime walk
 /// failures are absorbed into best-effort defaults so tests can keep
@@ -49,17 +51,16 @@ pub enum ScreenError {
     Ghostty(#[from] libghostty_vt::Error),
 }
 
-/// A self-contained VT oracle: owns a libghostty `Terminal` plus the
-/// render iterators needed to walk its grid into plain strings.
+/// A self-contained VT oracle: owns a libghostty `Terminal` plus a
+/// [`RenderPool`] that walks its
+/// grid into plain strings.
 ///
 /// `Screen` is `!Send` (the inner `Terminal` is `!Send`); construct it
 /// on the thread that will use it. Tests typically construct one per
 /// scenario inside `run_local`.
 pub struct Screen {
     terminal: GhosttyTerminal<'static, 'static>,
-    state: RenderState<'static>,
-    rows: RowIterator<'static>,
-    cells: CellIterator<'static>,
+    pool: RenderPool<'static>,
     cols: u16,
     n_rows: u16,
 }
@@ -77,12 +78,19 @@ impl Screen {
         };
         Ok(Self {
             terminal,
-            state: RenderState::new()?,
-            rows: RowIterator::new()?,
-            cells: CellIterator::new()?,
+            pool: RenderPool::new()?,
             cols,
             n_rows: rows,
         })
+    }
+
+    /// Resize the owned terminal. The pooled trio rebuilds on the next read,
+    /// when the walked geometry no longer matches the last walk.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), ScreenError> {
+        self.terminal.resize(cols, rows, 0, 0)?;
+        self.cols = cols;
+        self.n_rows = rows;
+        Ok(())
     }
 
     /// Feed VT bytes into the underlying terminal. Bytes may be split
@@ -115,7 +123,8 @@ impl Screen {
     /// cursor (e.g. because it lives in the scrollback, or because the
     /// FFI returned an error).
     pub fn cursor(&mut self) -> (u16, u16) {
-        let Ok(snapshot) = self.state.update(&self.terminal) else {
+        let Ok(RenderWalk { snapshot, .. }) = self.pool.begin(&self.terminal, POOL_GENERATION)
+        else {
             return (0, 0);
         };
         if let Ok(Some(c)) = snapshot.cursor_viewport() {
@@ -143,7 +152,12 @@ impl Screen {
         // Empty grid is a reasonable degradation: assertions like
         // `contains("foo")` cleanly return false, the caller can
         // print `snapshot_text()` and see "" rather than panic.
-        let Ok(snapshot) = self.state.update(&self.terminal) else {
+        let Ok(RenderWalk {
+            snapshot,
+            rows,
+            cells,
+        }) = self.pool.begin(&self.terminal, POOL_GENERATION)
+        else {
             return vec![String::new(); usize::from(self.n_rows)];
         };
 
@@ -152,7 +166,7 @@ impl Screen {
         let total_rows = snapshot.rows().unwrap_or(self.n_rows);
         let mut out: Vec<String> = Vec::with_capacity(usize::from(total_rows));
 
-        let Ok(mut row_iter) = self.rows.update(&snapshot) else {
+        let Ok(mut row_iter) = rows.update(&snapshot) else {
             return vec![String::new(); usize::from(total_rows)];
         };
 
@@ -162,7 +176,7 @@ impl Screen {
                 break;
             }
             let mut buf = String::with_capacity(usize::from(self.cols));
-            let Ok(mut cell_iter) = self.cells.update(row) else {
+            let Ok(mut cell_iter) = cells.update(row) else {
                 out.push(String::new());
                 row_index += 1;
                 continue;

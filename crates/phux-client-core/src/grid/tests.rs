@@ -87,7 +87,7 @@ fn projects_a_dense_viewport_over_one_utf8_arena() {
     // Row 0: "hi", a bold red "B", then a wide CJK glyph; row 1 stays empty.
     let terminal = seeded_terminal(6, 2, "hi\x1b[1;31mB\x1b[m\u{6f22}".as_bytes());
     let mut projector = GridProjector::new().expect("projector");
-    let snapshot = projector.project(&terminal).expect("project");
+    let snapshot = projector.project(&terminal, 0).expect("project");
 
     assert_eq!((snapshot.cols, snapshot.rows), (6, 2));
     let buffer = snapshot.buffer;
@@ -144,7 +144,7 @@ fn cursor_reports_the_wide_glyph_under_it() {
     // Write the glyph, then step back onto its head cell.
     let terminal = seeded_terminal(4, 1, "\u{6f22}\x1b[2D".as_bytes());
     let mut projector = GridProjector::new().expect("projector");
-    let snapshot = projector.project(&terminal).expect("project");
+    let snapshot = projector.project(&terminal, 0).expect("project");
     assert_eq!((snapshot.cursor.col, snapshot.cursor.row), (0, 0));
     assert_eq!(snapshot.cursor.width, CursorWidth::Wide);
     assert!(snapshot.cursor.width.is_wide());
@@ -154,7 +154,7 @@ fn cursor_reports_the_wide_glyph_under_it() {
 fn hyperlink_uris_share_the_arena_and_set_the_flag() {
     let terminal = seeded_terminal(4, 1, b"\x1b]8;;https://phux.sh\x1b\\L\x1b]8;;\x1b\\x");
     let mut projector = GridProjector::new().expect("projector");
-    let snapshot = projector.project(&terminal).expect("project");
+    let snapshot = projector.project(&terminal, 0).expect("project");
     let buffer = snapshot.buffer;
 
     let linked = &buffer.cells[0];
@@ -174,12 +174,12 @@ fn hyperlink_uris_share_the_arena_and_set_the_flag() {
 fn reprojecting_reuses_the_buffer_and_tracks_the_cursor() {
     let mut terminal = seeded_terminal(3, 2, b"a");
     let mut projector = GridProjector::new().expect("projector");
-    let first = projector.project(&terminal).expect("project");
+    let first = projector.project(&terminal, 0).expect("project");
     assert_eq!(first.buffer.utf8, b"a");
     assert_eq!((first.cursor.col, first.cursor.row), (1, 0));
 
     terminal.vt_write(b"\r\nbc");
-    let second = projector.project(&terminal).expect("project");
+    let second = projector.project(&terminal, 0).expect("project");
     assert_eq!(second.buffer.cells.len(), 6);
     assert_eq!(second.buffer.utf8, b"abc");
     assert_eq!((second.cursor.col, second.cursor.row), (2, 1));
@@ -193,17 +193,17 @@ fn reprojecting_reuses_the_buffer_and_tracks_the_cursor() {
 fn damage_and_row_dirty_track_changes_between_projections() {
     let mut terminal = seeded_terminal(4, 3, b"a");
     let mut projector = GridProjector::new().expect("projector");
-    let first = projector.project(&terminal).expect("project");
+    let first = projector.project(&terminal, 0).expect("project");
     assert_eq!(first.damage, GridDamage::Full);
     assert_eq!(first.buffer.row_dirty, vec![true, true, true]);
 
-    let unchanged = projector.project(&terminal).expect("project");
+    let unchanged = projector.project(&terminal, 0).expect("project");
     assert_eq!(unchanged.damage, GridDamage::Clean);
     assert!(unchanged.buffer.row_dirty.iter().all(|dirty| !dirty));
 
     // Move to row 3 and write: only that row is dirty.
     terminal.vt_write(b"\x1b[3;1Hz");
-    let third = projector.project(&terminal).expect("project");
+    let third = projector.project(&terminal, 0).expect("project");
     assert_ne!(third.damage, GridDamage::Clean);
     assert!(third.buffer.row_dirty[2], "the written row is dirty");
     if third.damage == GridDamage::Rows {
@@ -218,13 +218,53 @@ fn damage_and_row_dirty_track_changes_between_projections() {
 fn swap_buffer_hands_the_projection_out_without_copying() {
     let terminal = seeded_terminal(3, 1, b"xy");
     let mut projector = GridProjector::new().expect("projector");
-    projector.project(&terminal).expect("project");
+    projector.project(&terminal, 0).expect("project");
     let mut taken = GridBuffer::default();
     projector.swap_buffer(&mut taken);
     assert_eq!(taken.utf8, b"xy");
     assert_eq!(taken.cell_text(1), b"y");
     assert!(projector.buffer().cells.is_empty());
-    let again = projector.project(&terminal).expect("project");
+    let again = projector.project(&terminal, 0).expect("project");
     assert_eq!(again.buffer.utf8, b"xy");
     assert_eq!(again.damage, GridDamage::Clean);
+}
+
+/// phux-u8zm / phux-5pyx: a resize rebuilds the pooled trio, so cells that
+/// did not exist at the old width are part of the next projection and the
+/// damage is a full repaint.
+#[test]
+fn resize_rebuilds_the_pool_past_the_old_width() {
+    let mut terminal = seeded_terminal(4, 2, b"ab");
+    let mut projector = GridProjector::new().expect("projector");
+    let first = projector.project(&terminal, 0).expect("project");
+    assert_eq!((first.cols, first.rows), (4, 2));
+    assert_eq!(first.buffer.cell_text(0), b"a");
+
+    terminal.resize(8, 3, 0, 0).expect("resize");
+    terminal.vt_write(b"\x1b[1;5HX");
+    let after = projector.project(&terminal, 0).expect("project");
+    assert_eq!((after.cols, after.rows), (8, 3));
+    assert_eq!(after.buffer.cells.len(), 8 * 3);
+    assert_eq!(after.damage, GridDamage::Full);
+    assert_eq!(after.buffer.cell_text(0), b"a");
+    assert_eq!(after.buffer.cell_text(4), b"X");
+}
+
+/// phux-994s: a generation change rebuilds at identical geometry, so the
+/// next projection is full instead of serving the previous generation's
+/// already-cleared cache as clean.
+#[test]
+fn generation_change_rebuilds_at_identical_geometry() {
+    let terminal = seeded_terminal(4, 1, b"ab");
+    let mut projector = GridProjector::new().expect("projector");
+    let first = projector.project(&terminal, 1).expect("project");
+    assert_eq!(first.damage, GridDamage::Full);
+
+    let second = projector.project(&terminal, 1).expect("project");
+    assert_eq!(second.damage, GridDamage::Clean);
+
+    let third = projector.project(&terminal, 2).expect("project");
+    assert_eq!(third.damage, GridDamage::Full);
+    assert_eq!(third.buffer.utf8, b"ab");
+    assert_eq!(third.buffer.cell_text(0), b"a");
 }

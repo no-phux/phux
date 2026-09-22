@@ -568,9 +568,10 @@ impl Owner {
             terminal.active_screen(),
             Ok(libghostty_vt::screen::Screen::Alternate)
         );
+        let token = slot.token;
         let projected = slot
             .projector
-            .project(terminal)
+            .project(terminal, token)
             .map(|snapshot| {
                 let mut colors = frame_colors(&snapshot.colors);
                 colors.has_foreground = defaults.0.is_some();

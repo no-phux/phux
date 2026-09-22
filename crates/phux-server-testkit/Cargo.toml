@@ -29,7 +29,9 @@ workspace = true
 # test binary went from 1015s of CPU across 65 units to 88s across 62.
 
 [dependencies]
-phux-protocol.workspace = true
+# `render-pool` only. `phux-server` unifies the `server` feature into this
+# crate's graph; this edge does not request png or the conversion surface.
+phux-protocol = { workspace = true, features = ["render-pool"] }
 # The helpers drive the server through its PUBLIC `ServerRuntime` surface
 # only — never its internals. That invariant is what let this move out of
 # `tests/` at all, and it is what keeps the tests honest: a regression that

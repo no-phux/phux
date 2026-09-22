@@ -18,9 +18,14 @@ workspace = true
 # The default wire codec and input atoms are pure Rust, with no git-only
 # dependencies, so browser consumers and crates.io need no native VT build.
 default = []
+# `render-pool` exposes `render_pool` and nothing else: libghostty-vt with
+# no kitty-graphics and no png. Walkers that pool a render trio without the
+# server's image or conversion surface (record, the client projector, the
+# testkit oracle) enable this instead of `server`. See ADR-0086.
+render-pool = ["dep:libghostty-vt"]
 # `server` adds libghostty conversions and rendering/replay helpers. Native
 # terminal consumers enable it; the codec itself does not require it.
-server = ["dep:libghostty-vt", "dep:png", "libghostty-vt/kitty-graphics", "libghostty-vt/png"]
+server = ["render-pool", "dep:png", "libghostty-vt/kitty-graphics", "libghostty-vt/png"]
 
 [dependencies]
 thiserror.workspace = true

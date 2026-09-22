@@ -201,6 +201,16 @@ mod screen_oracle_tests {
     }
 
     #[test]
+    fn resize_rebuilds_the_pool_past_the_old_width() {
+        let mut s = Screen::new(4, 2).unwrap();
+        s.write(b"ab");
+        assert_eq!(s.row(0), "ab");
+        s.resize(8, 3).unwrap();
+        s.write(b"\x1b[1;5HX");
+        assert_eq!(s.row(0), "ab  X");
+        assert_eq!(s.rows().len(), 3);
+    }
+
     fn sgr_escapes_are_stripped_in_text_output() {
         let mut s = Screen::new(20, 3).unwrap();
         // Bold + red + "ok" + reset. The libghostty parser must absorb

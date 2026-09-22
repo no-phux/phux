@@ -2538,6 +2538,7 @@ dependencies = [
  "gif",
  "libghostty-vt",
  "phux-core",
+ "phux-protocol",
  "png",
  "serde_json",
  "thiserror 2.0.20",
