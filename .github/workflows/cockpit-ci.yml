@@ -191,26 +191,28 @@ jobs:
         working-directory: clients/cockpit
         run: ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all
 
+      # PRs prove the CLI links with ffi-dev (no fat LTO). Main and the merge
+      # queue build ffi-release, which is the artifact release restores.
       - name: Build the coordinator CLI
-        if: steps.rust-restore.outputs.cli_restored != 'true' && (needs.changes.outputs.cli_needed == 'true' || needs.changes.outputs.shipping_needed == 'true')
-        run: bash clients/cockpit/scripts/build-phux-artifacts.sh --only cli
+        if: steps.rust-restore.outputs.cli_restored != 'true' && (needs.changes.outputs.cli_needed == 'true' || (needs.changes.outputs.shipping_needed == 'true' && github.event_name != 'pull_request'))
+        run: bash clients/cockpit/scripts/build-phux-artifacts.sh --only cli ${{ github.event_name == 'pull_request' && 'ffi-dev' || 'ffi-release' }}
 
       - name: Record verified coordinator bytes
-        if: needs.changes.outputs.shipping_needed == 'true'
+        if: needs.changes.outputs.shipping_needed == 'true' && github.event_name != 'pull_request'
         run: |
           python3 scripts/ci/cockpit_artifacts.py save
           python3 scripts/ci/cockpit_artifacts.py verify
           echo 'PHUX_CI_ARTIFACTS_VERIFIED=true' >> "$GITHUB_ENV"
 
-      # One shipping compile, and only when Zig or the FFI archive changed.
-      # Archive, DMG, and the lifecycle soak belong to publish.
+      # ReleaseSafe is the slow compile. PRs run the Debug test graph above.
+      # Main and the merge queue own the shipping compile and the dead_strip check.
       - name: Build the production macOS app
-        if: needs.changes.outputs.shipping_needed == 'true'
+        if: needs.changes.outputs.shipping_needed == 'true' && github.event_name != 'pull_request'
         working-directory: clients/cockpit
         run: bash ./scripts/build-shipping-app.sh --summary all
 
       - name: Check ring P-256 helpers survived dead_strip
-        if: needs.changes.outputs.shipping_needed == 'true'
+        if: needs.changes.outputs.shipping_needed == 'true' && github.event_name != 'pull_request'
         working-directory: clients/cockpit
         run: python3 ./scripts/check-ring-p256-helpers.py zig-out/bin/phux-cockpit
 
