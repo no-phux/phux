@@ -9,6 +9,48 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.42.0](https://github.com/no-phux/phux/compare/v0.41.0...v0.42.0) (2026-09-22)
+
+
+### Features
+
+* **client-ffi:** one binding crate, one projection, two encoders (phux-ase2.1) ([#822](https://github.com/no-phux/phux/issues/822)) ([38aa532](https://github.com/no-phux/phux/commit/38aa53214359dd1e1cd44b48f7fbf7ceb08391fc))
+* **ffi:** cockpit on the runtime's connected client (ADR-0133 rung 10) ([#809](https://github.com/no-phux/phux/issues/809)) ([f67f2ee](https://github.com/no-phux/phux/commit/f67f2ee3b798d6f8c97c6a4454721d0055f7cb86))
+* **ffi:** publish the Android UniFFI zip ([#805](https://github.com/no-phux/phux/issues/805)) ([cdcabd0](https://github.com/no-phux/phux/commit/cdcabd0a60066c3cea5b952bb55cdeca1a68a6f0))
+* **mcp:** share kill/signal/tag/rename builders with the CLI (phux-c3vw) ([#813](https://github.com/no-phux/phux/issues/813)) ([f07b1c6](https://github.com/no-phux/phux/commit/f07b1c6d7f1e4e49d33ffa8ce69c5bd6083777c9))
+* **server:** forward retain_secs on satellite-relayed spawns (phux-fpgl.32) ([#817](https://github.com/no-phux/phux/issues/817)) ([7a3fa41](https://github.com/no-phux/phux/commit/7a3fa41f5c01e25d342235e4624315cebf62af8b))
+* **server:** mirror satellite agent metadata on the hub (phux-lxov.2) ([#823](https://github.com/no-phux/phux/issues/823)) ([e970e52](https://github.com/no-phux/phux/commit/e970e5247c4067d15c5a94afe0e16984d881b7da))
+* **tui:** open satellite panes beside local ones (phux-lxov.1) ([b8bfa6c](https://github.com/no-phux/phux/commit/b8bfa6c1d9f7d9ea362313dfa32ca2eb7d7f6665))
+* **tui:** show a live drop indicator while dragging tabs (phux-mv5y) ([#819](https://github.com/no-phux/phux/issues/819)) ([30dcbf6](https://github.com/no-phux/phux/commit/30dcbf6d5b05d37c56ad596f46b91ad063d50aa4))
+* **tui:** show retained panes in the sidebar and window tabs (phux-fpgl.33) ([8a54b70](https://github.com/no-phux/phux/commit/8a54b70bb0beb08aa89d8415774513c98a52ad7d))
+
+
+### Bug Fixes
+
+* cascade kill-pane through grandchildren (phux-v4tv) ([#811](https://github.com/no-phux/phux/issues/811)) ([70d8795](https://github.com/no-phux/phux/commit/70d879558f2c1383cfc1646a01073ea4ab358848))
+* **ci:** install mold on the Android UniFFI producer ([#808](https://github.com/no-phux/phux/issues/808)) ([bd5c53e](https://github.com/no-phux/phux/commit/bd5c53ebb7d6d751b314ac015ce3bbd6fd0273e6))
+* **client-ffi:** close the mobile-artifact and CI gaps review found in [#822](https://github.com/no-phux/phux/issues/822) (phux-ase2.1) ([84d5fd9](https://github.com/no-phux/phux/commit/84d5fd96145514892a725cbd7fb55c710797e189))
+* stop the server aborting on a loaned terminal, and make kill-pane and run actually work ([#807](https://github.com/no-phux/phux/issues/807)) ([f21c7a9](https://github.com/no-phux/phux/commit/f21c7a9f6537e3a3e159d48ce9fadbf52a5c5dfd))
+
+
+### Performance
+
+* **runtime:** coalesce batched grid projections ([#802](https://github.com/no-phux/phux/issues/802)) ([182d416](https://github.com/no-phux/phux/commit/182d41645456ed42bccab99a882a17dae1303ef6))
+
+
+### Refactors
+
+* **agent-rules:** extract the manifest evaluator from phux-server (phux-w7z2.24) ([52f852a](https://github.com/no-phux/phux/commit/52f852ab502079df7eedcf9ef674e521b310c0e2))
+
+
+### Documentation
+
+* **adr:** close the ServerFeature u32 before the last bit (phux-ppy8) ([#828](https://github.com/no-phux/phux/issues/828)) ([406a285](https://github.com/no-phux/phux/commit/406a2855155046d0a7f64b692165b7a417276b00))
+* **adr:** restore ADR-0133 and record its refinements as ADR-0134 ([ee682b0](https://github.com/no-phux/phux/commit/ee682b02f935569fba00c0d9a03bfc5dbdb80612))
+* **architecture:** record what a consumer touches when the binding crate changes ([ffedae9](https://github.com/no-phux/phux/commit/ffedae98f8b9eaac45b237bb829135a827633e91))
+* **cockpit:** capture UI and code craft direction ([7571395](https://github.com/no-phux/phux/commit/7571395bf0f246e3a4d9c4cf49c3860ecd84693e))
+* reconcile SSH-stdio under paired workload mode (phux-fpgl.29) ([#812](https://github.com/no-phux/phux/issues/812)) ([cf1da5f](https://github.com/no-phux/phux/commit/cf1da5f9ee5ded6ca153c59111624248c249d53f))
+
 ## [0.41.0](https://github.com/no-phux/phux/compare/v0.40.0...v0.41.0) (2026-09-21)
 
 
