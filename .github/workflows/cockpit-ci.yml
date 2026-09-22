@@ -71,16 +71,9 @@ jobs:
       - name: Check native Cockpit prerequisites
         run: bash scripts/doctor.sh cockpit
 
-      # Node 24 will not strip @native-sdk/core .ts under node_modules; the
-      # navigation-loader does. just cockpit-node-test is the same command.
-      - name: Run Cockpit Node tests
-        if: needs.changes.outputs.zig_needed == 'true'
-        working-directory: clients/cockpit
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs
-
       # Exact-input FFI and CLI, keyed on the files that enter each binary.
+      # Compute identity before Node tests: npm leaves worktree dirt that is
+      # unrelated to Rust inputs but used to fail a whole-tree clean check.
       # A test file does not miss. The CLI is not built before zig tests.
       - name: Cockpit Rust artifact identity
         id: rust-artifacts
@@ -99,6 +92,15 @@ jobs:
       - name: Restore exact-input FFI and CLI
         id: rust-restore
         run: python3 scripts/ci/cockpit_artifacts.py restore
+
+      # Node 24 will not strip @native-sdk/core .ts under node_modules; the
+      # navigation-loader does. just cockpit-node-test is the same command.
+      - name: Run Cockpit Node tests
+        if: needs.changes.outputs.zig_needed == 'true'
+        working-directory: clients/cockpit
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs
 
       # rust-cache is the dependency archive for a miss. The fat-LTO link is
       # the exact-input artifact above; sccache does not cache that link.

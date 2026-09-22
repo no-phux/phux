@@ -20,6 +20,9 @@ FILES = KIND_FILES["ffi"] + KIND_FILES["cli"]
 CACHE = Path("target/ci-cockpit-artifacts")
 OUTPUT = Path("target/ffi-release")
 SHARED_INPUTS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
+# Only these paths enter a kind's digest. Cockpit Node tests and other lanes
+# may leave dirt elsewhere; that must not break Rust artifact identity.
+INPUT_PATHS = (*SHARED_INPUTS, ".cargo", "crates")
 BUILD_ENV = {"RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
              "CARGO_ENCODED_RUSTFLAGS", "CARGO_ENCODED_RUSTDOCFLAGS", "CARGO_BUILD_TARGET",
              "CARGO_BUILD_RUSTFLAGS", "MACOSX_DEPLOYMENT_TARGET", "SDKROOT", "DEVELOPER_DIR",
@@ -58,7 +61,7 @@ def input_digest(kind):
     classifier = load_classifier()
     root = "phux-client-ffi" if kind == "ffi" else "phux"
     directories = classifier.closure_directories(root)
-    listed = command("git", "ls-files", "-s", "--", *SHARED_INPUTS, ".cargo", "crates")
+    listed = command("git", "ls-files", "-s", "--", *INPUT_PATHS)
     lines = select_input_lines(listed.splitlines(), directories)
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
@@ -72,11 +75,16 @@ def load_classifier():
     return module
 
 
+def require_clean_inputs():
+    """Refuse identity when an input path is dirty; ignore unrelated worktree dirt."""
+    if command("git", "status", "--porcelain", "--untracked-files=normal", "--", *INPUT_PATHS):
+        raise ValueError("exact-input artifacts require a clean checkout")
+
+
 def build_identity(kind="cli"):
     if kind not in KIND_FILES:
         raise ValueError(f"unknown artifact kind {kind}")
-    if command("git", "status", "--porcelain", "--untracked-files=normal"):
-        raise ValueError("exact-input artifacts require a clean checkout")
+    require_clean_inputs()
     if any(key in os.environ for key in ("GHOSTTY_SOURCE_DIR", "GHOSTTY_ZIG_SYSTEM_DIR")):
         raise ValueError("external Ghostty source/system overrides cannot use exact-tree artifacts")
     return {
@@ -122,9 +130,10 @@ def save(identity, source=OUTPUT, destination=CACHE, names=FILES):
     )
 
 
-def read_manifest(identity, source):
+def read_manifest(identity, source, names=FILES):
+    """Accept the present set that save wrote — full FILES or one KIND_FILES entry."""
     manifest = json.loads((source / "manifest.json").read_text())
-    if manifest["identity"] != identity or set(manifest["files"]) != set(FILES):
+    if manifest["identity"] != identity or set(manifest["files"]) != set(names):
         raise ValueError("artifact manifest identity or output set does not match")
     return manifest["files"]
 
@@ -142,7 +151,8 @@ def atomic_copy(source, destination):
 
 
 def restore(identity, source=CACHE, destination=OUTPUT, names=None):
-    hashes = read_manifest(identity, source)
+    expected = FILES if names is None else names
+    hashes = read_manifest(identity, source, expected)
     names = tuple(hashes) if names is None else names
     if not outputs_match(hashes, source, names):
         return False
@@ -155,7 +165,8 @@ def restore(identity, source=CACHE, destination=OUTPUT, names=None):
 def verify(identity, source=CACHE, destination=OUTPUT, names=None):
     # Zig can link while its coordinator staging step runs. Verification must
     # never truncate or replace an output under those concurrent readers.
-    hashes = read_manifest(identity, source)
+    expected = FILES if names is None else names
+    hashes = read_manifest(identity, source, expected)
     return outputs_match(hashes, destination, tuple(hashes) if names is None else names)
 
 
