@@ -12,6 +12,16 @@ const step = (model, message) => {
   return Array.isArray(result) ? result : [result, null];
 };
 
+test('terminal context action forwards its captured target without using focus', () => {
+  const target = new Uint8Array([1, 2, 3, 4]);
+  const original = initialModel()[0];
+  const [model, command] = step(original, { kind: 'local_clipboard_action', target });
+  assert.equal(model, original);
+  assert.ok(command, 'captured clipboard action must reach the native host');
+  assert.equal(command.name, 'cockpit.local-clipboard');
+  assert.deepEqual(command.payload, target);
+});
+
 test('command catalog derives exactly from shipping menu labels and shortcuts', () => {
   const manifest = readFileSync(new URL('../../app.zon', import.meta.url), 'utf8');
   const generated = readFileSync(new URL('../command-catalog.ts', import.meta.url), 'utf8');

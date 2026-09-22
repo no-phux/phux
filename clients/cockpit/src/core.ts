@@ -602,6 +602,7 @@ export type Msg =
   | { readonly kind: "update_loaded"; readonly body: Uint8Array }
   | { readonly kind: "update_failed"; readonly error: Uint8Array }
   | { readonly kind: "native_command"; readonly command: number }
+  | { readonly kind: "local_clipboard_action"; readonly target: Uint8Array }
   // Posted by the native engine for every shell event it consumed: no bytes
   // ride along, the core only learns that the grids beneath it moved.
   | { readonly kind: "engine_wake" }
@@ -698,6 +699,7 @@ export const viewUnbound = [
   "snapshot_loaded",
   "snapshot_failed",
   "native_command",
+  "local_clipboard_action",
   "hostOpen",
   "hostAnchor",
   "hostFocus",
@@ -4013,6 +4015,8 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "native_command":
       if (fromCommands) return [model, Cmd.batch([Cmd.host("cockpit.committed", NO_BYTES), Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))])];
       return [model, Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))];
+    case "local_clipboard_action":
+      return [model, Cmd.host("cockpit.local-clipboard", msg.target)];
     case "engine_wake":
       return { ...model };
     case "snapshot_loaded": {

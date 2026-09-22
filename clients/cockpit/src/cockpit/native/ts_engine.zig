@@ -32,6 +32,7 @@ const local_tool_launch = @import("local_tool_launch.zig");
 pub const new_session = @import("new_session.zig");
 pub const new_session_runtime = @import("new_session_runtime.zig");
 pub const machine_runtime = @import("machine_runtime.zig");
+pub const local_clipboard = @import("local_clipboard_target.zig");
 
 test {
     _ = @import("machine_engine_tests.zig");
@@ -3237,6 +3238,30 @@ pub const Engine = struct {
     }
 
     // -------------------------------------------------------- clipboard
+
+    pub fn localClipboardEnabled(self: *const Engine, ref: TerminalRef, action: local_clipboard.Action) bool {
+        const pane = self.model.provider.terminalConst(ref) orelse return false;
+        if (pointer_input.paneReportsMouse(pane)) return false;
+        return switch (action) {
+            .copy => pane.session.selectionActive(),
+            .paste => pane.acceptsInput(),
+        };
+    }
+
+    /// The menu's captured terminal incarnation, never the current focus,
+    /// authorizes both the request and its existing clipboard completion owner.
+    pub fn applyLocalClipboard(self: *Engine, fx: anytype, bytes: []const u8) bool {
+        if (self.input_suspended) return false;
+        const target = local_clipboard.decode(bytes) orelse return false;
+        const ref = target.resolve(self.model) orelse return false;
+        if (!self.localClipboardEnabled(ref, target.action)) return false;
+        switch (target.action) {
+            .copy => interaction.copy(self.model, fx, ref),
+            .paste => interaction.requestPaste(self.model, fx, ref),
+        }
+        self.sequence +%= 1;
+        return true;
+    }
 
     /// update.zig's copySelection for a local pane. The effects wrapper the
     /// graph hands in supplies the result constructor; the answer lands in
