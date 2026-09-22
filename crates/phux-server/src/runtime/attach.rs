@@ -378,6 +378,19 @@ pub(crate) fn synthesized_bootstrap_frames(
     Ok(frames)
 }
 
+/// How a resync bootstrap met the consumer mailbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapshotQueue {
+    /// Every bootstrap frame is on the mailbox, with nothing else between them.
+    Queued,
+    /// The mailbox is full and this snapshot is not the final grid. The pump
+    /// stays fenced and keeps draining the broadcast, so an exit snapshot can
+    /// still reach it (phux-fpgl.28).
+    Deferred,
+    /// The consumer is gone.
+    Closed,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_synthesized_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
@@ -391,7 +404,7 @@ pub(crate) async fn send_synthesized_bootstrap(
     base_seq: u64,
     payloads: impl IntoIterator<Item = bytes::Bytes>,
 ) -> Result<(), ()> {
-    for frame in synthesized_bootstrap_frames(
+    let frames = synthesized_bootstrap_frames(
         terminal_id,
         stream_id,
         bootstrap_id,
@@ -401,8 +414,104 @@ pub(crate) async fn send_synthesized_bootstrap(
         rows,
         base_seq,
         payloads,
-    )? {
-        out_tx.send(Outbound::Frame(frame)).await.map_err(|_| ())?;
+    )?;
+    send_frames_contiguously(out_tx, &frames).await
+}
+
+/// Queue a resync bootstrap.
+///
+/// A fenced pump defers a non-final snapshot when the mailbox is full.
+/// Parking there holds the pump off the broadcast, so the exit snapshot
+/// published later is still unread when `RESOURCE_CLOSED` takes the next
+/// free slot and the writer drops the chunk that carries the grid
+/// (phux-fpgl.28). An unfenced pump still waits: that snapshot is a resize
+/// the client has to adopt. The exit snapshot always waits, and it reserves
+/// every frame before the first one is visible, so close cannot land between
+/// `BOOTSTRAP_BEGIN` and that chunk.
+pub(crate) async fn queue_resync_bootstrap(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    reason: crate::terminal_actor::ResyncReason,
+    frames: Vec<FrameKind>,
+    defer_if_full: bool,
+) -> SnapshotQueue {
+    if frames.is_empty() {
+        return SnapshotQueue::Queued;
+    }
+    let must_deliver =
+        matches!(reason, crate::terminal_actor::ResyncReason::Exit) || !defer_if_full;
+    if !must_deliver {
+        return match try_queue_frames(out_tx, &frames) {
+            Ok(()) => SnapshotQueue::Queued,
+            Err(QueueFramesError::Full) => SnapshotQueue::Deferred,
+            Err(QueueFramesError::Closed) => SnapshotQueue::Closed,
+        };
+    }
+    match try_queue_frames(out_tx, &frames) {
+        Ok(()) => SnapshotQueue::Queued,
+        Err(QueueFramesError::Closed) => SnapshotQueue::Closed,
+        Err(QueueFramesError::Full) => match send_frames_contiguously(out_tx, &frames).await {
+            Ok(()) => SnapshotQueue::Queued,
+            Err(()) => SnapshotQueue::Closed,
+        },
+    }
+}
+
+enum QueueFramesError {
+    Full,
+    Closed,
+}
+
+/// Reserve every frame, then send them. A later `send` cannot take a slot
+/// in the middle of the bootstrap.
+fn try_queue_frames(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    frames: &[FrameKind],
+) -> Result<(), QueueFramesError> {
+    if frames.is_empty() {
+        return Ok(());
+    }
+    if frames.len() > out_tx.max_capacity() {
+        return Err(QueueFramesError::Full);
+    }
+    let mut permits = out_tx
+        .try_reserve_many(frames.len())
+        .map_err(|err| match err {
+            tokio::sync::mpsc::error::TrySendError::Full(()) => QueueFramesError::Full,
+            tokio::sync::mpsc::error::TrySendError::Closed(()) => QueueFramesError::Closed,
+        })?;
+    for frame in frames {
+        let Some(permit) = permits.next() else {
+            return Err(QueueFramesError::Closed);
+        };
+        permit.send(Outbound::Frame(frame.clone()));
+    }
+    Ok(())
+}
+
+async fn send_frames_contiguously(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    frames: &[FrameKind],
+) -> Result<(), ()> {
+    if frames.is_empty() {
+        return Ok(());
+    }
+    if frames.len() <= out_tx.max_capacity() {
+        let Ok(mut permits) = out_tx.reserve_many(frames.len()).await else {
+            return Err(());
+        };
+        for frame in frames {
+            let Some(permit) = permits.next() else {
+                return Err(());
+            };
+            permit.send(Outbound::Frame(frame.clone()));
+        }
+        return Ok(());
+    }
+    for frame in frames {
+        out_tx
+            .send(Outbound::Frame(frame.clone()))
+            .await
+            .map_err(|_| ())?;
     }
     Ok(())
 }
@@ -496,7 +605,8 @@ const fn tombstone_reason_for(
         crate::terminal_actor::ResyncReason::Resize => {
             phux_protocol::wire::frame::TombstoneReason::Resize
         }
-        crate::terminal_actor::ResyncReason::OutboundGap => {
+        crate::terminal_actor::ResyncReason::OutboundGap
+        | crate::terminal_actor::ResyncReason::Exit => {
             phux_protocol::wire::frame::TombstoneReason::OutboundGap
         }
     }
@@ -811,25 +921,33 @@ impl OutputPumpContext {
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
         let payload = downsample_for_caps(&resync.bytes, self.client_caps);
-        if send_synthesized_bootstrap(
-            &self.out_tx,
+        let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
+        let Ok(frames) = synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
             self.stream_id,
-            generation.bootstrap_id(),
+            bootstrap_id,
             self.profile,
             self.limits,
             resync.cols,
             resync.rows,
             resync.base_seq,
             [payload],
-        )
-        .await
-        .is_err()
-        {
+        ) else {
             return ControlFlow::Break(Some(PumpFault::OutboundClosed));
+        };
+        match queue_resync_bootstrap(&self.out_tx, resync.reason, frames, generation.is_fenced())
+            .await
+        {
+            SnapshotQueue::Queued => {
+                generation.set_bootstrap_id(bootstrap_id);
+                generation.republished_at(resync.base_seq);
+                ControlFlow::Continue(())
+            }
+            // Still fenced, still on the previous generation. The exit
+            // snapshot is later on this same broadcast.
+            SnapshotQueue::Deferred => ControlFlow::Continue(()),
+            SnapshotQueue::Closed => ControlFlow::Break(Some(PumpFault::OutboundClosed)),
         }
-        generation.republished_at(resync.base_seq);
-        ControlFlow::Continue(())
     }
 
     /// Replace the published generation after the actor resynchronized the
@@ -845,10 +963,9 @@ impl OutputPumpContext {
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let prior_bootstrap_id = generation.bootstrap_id();
-        generation.set_bootstrap_id(next_bootstrap_id(generation.bootstrap_id()));
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if self.publishes_native_checkpoints() {
+            let prior_bootstrap_id = generation.bootstrap_id();
+            generation.set_bootstrap_id(next_bootstrap_id(prior_bootstrap_id));
             return match self
                 .republish_native_generation(
                     generation,
@@ -4033,6 +4150,120 @@ pub(crate) fn apply_attach_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// phux-fpgl.28: a lagged mailbox is full. A gap resync must not park on
+    /// it, and the exit snapshot's chunk — the final screen — must be queued
+    /// ahead of `RESOURCE_CLOSED`, not split off after `BOOTSTRAP_BEGIN`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_resync_on_a_full_mailbox_precedes_close() {
+        use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
+        use phux_protocol::wire::frame::CloseReason;
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<Outbound>(crate::mailbox::DEFAULT_CLIENT_MAILBOX);
+        for nonce in 0..u64::try_from(tx.max_capacity()).expect("mailbox depth fits u64") {
+            tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
+                .expect("fill the lagged mailbox");
+        }
+        let terminal_id = ResourceId::local(1);
+        let stream_id = StreamId::new(1).expect("stream id");
+        let bootstrap_id = BootstrapId::new(2).expect("bootstrap id");
+        let frames = synthesized_bootstrap_frames(
+            terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            BootstrapStreamProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
+            80,
+            24,
+            9,
+            [bytes::Bytes::from_static(b"FINAL_SCREEN")],
+        )
+        .expect("bootstrap frames");
+        assert!(
+            frames.len() > 1 && frames.len() <= tx.max_capacity(),
+            "this regression is a multi-frame bootstrap that still fits one mailbox",
+        );
+
+        let deferred = queue_resync_bootstrap(
+            &tx,
+            crate::terminal_actor::ResyncReason::OutboundGap,
+            frames.clone(),
+            true,
+        )
+        .await;
+        assert_eq!(deferred, SnapshotQueue::Deferred);
+        assert_eq!(
+            tx.capacity(),
+            0,
+            "deferring a non-final resync must not take a slot"
+        );
+
+        let tx_exit = tx.clone();
+        let exit_frames = frames;
+        let queued = tokio::spawn(async move {
+            queue_resync_bootstrap(
+                &tx_exit,
+                crate::terminal_actor::ResyncReason::Exit,
+                exit_frames,
+                true,
+            )
+            .await
+        });
+        // Park the exit reservation before close asks for a slot. Draining
+        // first lets close fill the empty mailbox ahead of the bootstrap.
+        tokio::task::yield_now().await;
+        let tx_close = tx.clone();
+        let closed = tokio::spawn(async move {
+            tx_close
+                .send(Outbound::Frame(FrameKind::ResourceClosed {
+                    terminal_id,
+                    exit_status: Some(0),
+                    reason: CloseReason::Exited,
+                    signal: None,
+                }))
+                .await
+                .expect("queue RESOURCE_CLOSED");
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !queued.is_finished() && !closed.is_finished(),
+            "both sends must be waiting on the full mailbox"
+        );
+        assert_eq!(tx.capacity(), 0);
+
+        let mut saw_chunk = false;
+        let mut saw_ready = false;
+        while let Some(message) = rx.recv().await {
+            match message {
+                Outbound::Frame(FrameKind::BootstrapChunk { payload, .. }) => {
+                    assert!(
+                        payload.as_ref() == b"FINAL_SCREEN",
+                        "unexpected chunk before close"
+                    );
+                    saw_chunk = true;
+                }
+                Outbound::Frame(FrameKind::BootstrapReady { .. }) => {
+                    assert!(saw_chunk, "READY arrived before the final chunk");
+                    saw_ready = true;
+                }
+                Outbound::Frame(FrameKind::ResourceClosed { .. }) => {
+                    assert!(
+                        saw_chunk && saw_ready,
+                        "RESOURCE_CLOSED split the final screen off the bootstrap"
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_chunk && saw_ready, "the final screen never arrived");
+        assert_eq!(
+            queued.await.expect("exit queue task"),
+            SnapshotQueue::Queued
+        );
+        closed.await.expect("close task");
+    }
 
     /// ADR-0124 / ADR-0126: the hub's forwarded spawn carries `retain_secs`
     /// alongside bind and the idempotency key; omitting every field writes

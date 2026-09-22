@@ -132,6 +132,10 @@ pub enum ResyncReason {
     Resize,
     /// A bounded output subscriber observed a sequence gap.
     OutboundGap,
+    /// The pane's child has exited. This snapshot is the final grid: a
+    /// fenced pump with a full mailbox must queue it before `RESOURCE_CLOSED`
+    /// and must not stay parked on an earlier snapshot (phux-fpgl.28).
+    Exit,
 }
 
 /// One output pump on a pane: the server-local client that owns it and the

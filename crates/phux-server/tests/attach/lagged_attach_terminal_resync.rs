@@ -481,9 +481,10 @@ async fn wait_until_reaped(probe: &mut UnixStream, pane: &ResourceId) {
 
 /// phux-fpgl.28: a fenced consumer of a NON-retained pane whose child
 /// exits while the consumer is behind still receives the final screen
-/// before `RESOURCE_CLOSED`. The exit watcher used to reap the pane and
-/// abort the pump with only the close, so the pending resync died with the
-/// engine and `phux rec`-style watchers lost the last grid.
+/// before `RESOURCE_CLOSED`. The mailbox is full, so an earlier gap
+/// snapshot must not park the pump, and the exit bootstrap's chunk — the
+/// final grid — must be queued ahead of the close. The writer drops any
+/// generation frame that follows `RESOURCE_CLOSED`.
 #[test]
 fn lagged_consumer_of_an_exiting_pane_receives_the_final_screen_before_close() {
     phux_server::resource::set_output_broadcast_capacity_for_test(TEST_OUTPUT_BROADCAST);
