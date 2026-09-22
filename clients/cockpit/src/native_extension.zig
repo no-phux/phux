@@ -1491,10 +1491,32 @@ fn emptyInteraction(ui: *Adapter.Ui) Adapter.Ui.Node {
     return ui.el(.stack, .{ .grow = 1, .semantics = .{ .hidden = true } }, .{});
 }
 
+fn shippingSplitResizeHandler(comptime window_index: usize, comptime node: cockpit.layout.NodeId) Adapter.Ui.ValueMsgFn {
+    return struct {
+        fn make(value: f32) core.Msg {
+            if (bridge.engine) |engine| {
+                if (engine.applyNativeSplitResize(window_index, node, value)) bridge.announce(engine);
+            }
+            return .engine_wake;
+        }
+    }.make;
+}
+
+const shipping_split_resize_handlers: [1 + cockpit.scene.max_secondary_windows][cockpit.layout.max_nodes]Adapter.Ui.ValueMsgFn = blk: {
+    var table: [1 + cockpit.scene.max_secondary_windows][cockpit.layout.max_nodes]Adapter.Ui.ValueMsgFn = undefined;
+    for (0..table.len) |window_index| {
+        for (0..cockpit.layout.max_nodes) |node_index| {
+            table[window_index][node_index] = shippingSplitResizeHandler(window_index, @intCast(node_index));
+        }
+    }
+    break :blk table;
+};
+
 fn paneInteraction(
     ui: *Adapter.Ui,
-    engine: *const Engine,
+    engine: *Engine,
     workspace: anytype,
+    window_index: usize,
     node: cockpit.layout.NodeId,
 ) Adapter.Ui.Node {
     const current = workspace.selectedTreeConst() orelse return emptyInteraction(ui);
@@ -1531,8 +1553,9 @@ fn paneInteraction(
             }, .{});
         },
         .branch => {
-            const first = paneInteraction(ui, engine, workspace, entry.first);
-            const second = paneInteraction(ui, engine, workspace, entry.second);
+            engine.captureNativeSplitResize(window_index, node);
+            const first = paneInteraction(ui, engine, workspace, window_index, entry.first);
+            const second = paneInteraction(ui, engine, workspace, window_index, entry.second);
             return ui.split(.{
                 .grow = 1,
                 .min_width = cockpit.projection.split_pane_min_width,
@@ -1543,6 +1566,7 @@ fn paneInteraction(
                     .vertical => .vertical,
                 },
                 .value = entry.fraction,
+                .on_resize = shipping_split_resize_handlers[window_index][node],
                 .opacity = 0,
                 .semantics = .{ .label = "Terminal split" },
             }, .{ first, second });
@@ -1554,11 +1578,12 @@ fn paneInteraction(
 /// authoritative projection gives the grid painter. Compiled `.native`
 /// markup owns all visible chrome; this layer contributes pane semantics and
 /// split topology over the app-owned libghostty surfaces beneath it.
-fn terminalInteraction(ui: *Adapter.Ui, engine: *const Engine, window_index: usize) Adapter.Ui.Node {
+fn terminalInteraction(ui: *Adapter.Ui, engine: *Engine, window_index: usize) Adapter.Ui.Node {
     const workspace = engine.model.wsAtConst(window_index) orelse return emptyInteraction(ui);
     const chrome = cockpit.projection.workspaceChromeIn(engine.model, workspace, workspace.surface_size);
+    engine.clearNativeSplitResizeCaptures(window_index);
     const panes = if (workspace.selectedTreeConst()) |tree|
-        paneInteraction(ui, engine, workspace, tree.root)
+        paneInteraction(ui, engine, workspace, window_index, tree.root)
     else
         emptyInteraction(ui);
     const content = ui.row(.{ .height = chrome.content.height }, .{
@@ -4194,6 +4219,65 @@ test "native divider drag updates engine geometry without crossing the TypeScrip
         .x = divider.rect.x,
         .y = y,
     } });
+}
+
+test "shipping divider keyboard and accessibility resizes survive a rebuild" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const branch = engine.model.ws().selectedTree().?.root;
+    const initial = engine.model.ws().selectedTree().?.node(branch).fraction;
+    const divider = try shippingSplitDivider(&rig);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    const after_arrow = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_arrow > initial);
+
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas end");
+    const after_end = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_end > after_arrow);
+
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas home");
+    const after_home = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_home < after_arrow);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .increment },
+    );
+    const after_increment = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_increment > after_home);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .decrement },
+    );
+    try std.testing.expect(engine.model.ws().selectedTree().?.node(branch).fraction < after_increment);
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try std.testing.expect(engine.model.ws().selectedTree().?.node(branch).fraction < after_increment);
+}
+
+fn shippingSplitDivider(rig: *Rig) !canvas.ObjectId {
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .split_divider) return node.widget.id;
+    }
+    return error.TestExpectedSplitDivider;
 }
 
 fn beginShippingDividerDrag(rig: *Rig) !cockpit.layout.Divider {
