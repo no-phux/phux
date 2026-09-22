@@ -386,7 +386,7 @@ fn authorize_request(
 ) -> Option<crate::auth::AuthenticatedCredential> {
     let token_hex = request_token(headers)?;
     let token = hex::decode(token_hex.trim()).ok()?;
-    store.authenticate(&token)
+    store.authenticate_and_touch(&token)
 }
 
 fn request_token(headers: &HashMap<String, String>) -> Option<&str> {

@@ -142,6 +142,8 @@ phux mcp
 phux move-pane
 phux new
 phux pair
+phux pair ls
+phux pair prune
 phux pair revoke
 phux pair rotate
 phux paste

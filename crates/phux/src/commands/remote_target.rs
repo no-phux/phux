@@ -592,12 +592,16 @@ fn register_over_ssh(
     // knows their listener is not on 8788 does not have to enroll
     // separately to say so.
     let endpoint_override = target.port.map(|_| target.authority());
+    let previous_token = existing.and_then(|entry| remote::read_token(entry).ok().flatten());
+    let previous_fingerprint = existing.and_then(|entry| entry.cert_fingerprint.clone());
     let req = enroll::EnrollRequest {
         ssh_host,
         remote_phux: "phux",
         endpoint_override: endpoint_override.as_deref(),
         quic_port: target.port.unwrap_or(DEFAULT_QUIC_PORT),
         service: enroll::ServicePolicy::Install,
+        previous_token: previous_token.as_deref(),
+        previous_fingerprint: previous_fingerprint.as_deref(),
     };
     let (entry, outcome) = host::enroll_remote_over_ssh(
         &name,

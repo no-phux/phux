@@ -64,7 +64,7 @@ Machines:
   host          Add and manage the machines phux reaches [aliases: machine]
   server        Run a server in the foreground
   service       Keep a server running across logout and reboot
-  pair          Mint, rotate, or revoke remote credentials
+  pair          Mint, rotate, revoke, list, or prune remote credentials
   relay         Run a standalone relay, or enroll a route with it
   workload      Manage the mTLS workload authority
 
@@ -1787,54 +1787,105 @@ Global flags:
 ## `phux pair`
 
 ```text
-Mint, rotate, or revoke remote credentials
+Mint, rotate, revoke, list, or prune remote credentials
 
 With no subcommand, mint one credential into the server's store and print its
-stable ID, one-time bearer secret, and certificate fingerprint. `rotate`
-replaces the bearer with a bounded overlap; `revoke` denies all generations on
-future connections. These operations update the store directly and take effect
-without restarting the server.
+stable ID, one-time bearer secret, and certificate fingerprint. `ls` lists ids
+with mint time, last seen, and revoked status; `prune --unused-for DURATION`
+revokes idle credentials; `rotate` replaces the bearer with a bounded overlap;
+`revoke` denies all generations on future connections. These operations update
+the store directly and take effect without restarting the server.
 
 This never contacts a running server — it only writes the token file.
 
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
 Commands:
+  ls      List credentials in the store (id, minted, last seen, revoked).
+  prune   Revoke credentials unused for at least DURATION.
   revoke  Revoke every generation of a credential for new connections.
   rotate  Replace a credential's bearer secret with a bounded overlap.
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
-      --tokens <PATH>     Versioned credential store to update. Defaults to
-                          `PHUX_WS_TOKENS`.
-      --cert <PATH>       Server certificate PEM, used to print the pairing
-                          fingerprint. Defaults to `PHUX_WS_TLS_CERT`.
-      --qr                Also render the pairing payload as a scannable QR
-                          code. The QR encodes the same
-                          `https://phux.sh/connect` one-tap link printed as
-                          text, so a phone can pair by scanning instead of
-                          typing. Needs a server address: pass `--host`, or let
-                          it fall back to a detected overlay address plus the
-                          `PHUX_WS_ADDR` port.
-      --host <HOST:PORT>  Server address (`host:port`, or a full
-                          `ws://`/`wss://` URL) to embed in the connect link so
-                          it is fully self-contained. Omitted: derived from the
-                          detected overlay address and the `PHUX_WS_ADDR` port
-                          when possible; otherwise no link is printed (the
-                          device enters the address itself).
-      --name <NAME>       Human-readable server name to embed in the connect
-                          link, shown by the device in its server list. Omitted:
-                          the device picks a default.
-      --json              Emit the mint, rotation, or revocation result as JSON
-                          on stdout. `phux host add` consumes the mint document
-                          over ssh.
-      --migrate-legacy    Explicitly convert legacy anonymous token lines before
-                          pairing. Conversion preserves each bearer secret but
-                          stores only its verifier.
-  -h, --help              Print help
+      --tokens <PATH>        Versioned credential store to update. Defaults to
+                             `PHUX_WS_TOKENS`.
+      --cert <PATH>          Server certificate PEM, used to print the pairing
+                             fingerprint. Defaults to `PHUX_WS_TLS_CERT`.
+      --qr                   Also render the pairing payload as a scannable QR
+                             code. The QR encodes the same
+                             `https://phux.sh/connect` one-tap link printed as
+                             text, so a phone can pair by scanning instead of
+                             typing. Needs a server address: pass `--host`, or
+                             let it fall back to a detected overlay address plus
+                             the `PHUX_WS_ADDR` port.
+      --host <HOST:PORT>     Server address (`host:port`, or a full
+                             `ws://`/`wss://` URL) to embed in the connect link
+                             so it is fully self-contained. Omitted: derived
+                             from the detected overlay address and the
+                             `PHUX_WS_ADDR` port when possible; otherwise no
+                             link is printed (the device enters the address
+                             itself).
+      --name <NAME>          Human-readable server name to embed in the connect
+                             link, shown by the device in its server list.
+                             Omitted: the device picks a default.
+      --json                 Emit the mint, rotation, revocation, list, or prune
+                             result as JSON on stdout. `phux host add` consumes
+                             the mint document over ssh.
+      --migrate-legacy       Explicitly convert legacy anonymous token lines
+                             before pairing. Conversion preserves each bearer
+                             secret but stores only its verifier.
+      --replace-token <HEX>  When minting, revoke any live credential whose
+                             bearer matches this hex token first. `phux host
+                             add` passes the previously enrolled token so
+                             re-enrollment does not leave abandoned live
+                             credentials.
+  -h, --help                 Print help
 
 Global flags:
-      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux pair ls`
+
+```text
+List credentials in the store (id, minted, last seen, revoked).
+
+Usage: phux pair ls
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --tokens <PATH>  Versioned credential store to update. Defaults to
+                       `PHUX_WS_TOKENS`.
+      --json           Emit the mint, rotation, revocation, list, or prune
+                       result as JSON on stdout. `phux host add` consumes the
+                       mint document over ssh.
+```
+
+## `phux pair prune`
+
+```text
+Revoke credentials unused for at least DURATION.
+
+Usage: phux pair prune <--unused-for <DURATION>>
+
+Flags:
+      --unused-for <DURATION>  How long a credential may sit idle before prune
+                               revokes it (`30d`, `24h`, `90m`, or a bare number
+                               of seconds). Idle time is `last_seen` when
+                               recorded, otherwise the mint time.
+  -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+      --tokens <PATH>          Versioned credential store to update. Defaults to
+                               `PHUX_WS_TOKENS`.
+      --json                   Emit the mint, rotation, revocation, list, or
+                               prune result as JSON on stdout. `phux host add`
+                               consumes the mint document over ssh.
 ```
 
 ## `phux pair revoke`
@@ -1854,9 +1905,9 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
       --tokens <PATH>  Versioned credential store to update. Defaults to
                        `PHUX_WS_TOKENS`.
-      --json           Emit the mint, rotation, or revocation result as JSON on
-                       stdout. `phux host add` consumes the mint document over
-                       ssh.
+      --json           Emit the mint, rotation, revocation, list, or prune
+                       result as JSON on stdout. `phux host add` consumes the
+                       mint document over ssh.
 ```
 
 ## `phux pair rotate`
@@ -1884,9 +1935,9 @@ Global flags:
                                   `$PHUX_SOCKET`)
       --tokens <PATH>             Versioned credential store to update. Defaults
                                   to `PHUX_WS_TOKENS`.
-      --json                      Emit the mint, rotation, or revocation result
-                                  as JSON on stdout. `phux host add` consumes
-                                  the mint document over ssh.
+      --json                      Emit the mint, rotation, revocation, list, or
+                                  prune result as JSON on stdout. `phux host
+                                  add` consumes the mint document over ssh.
 ```
 
 ## `phux paste`

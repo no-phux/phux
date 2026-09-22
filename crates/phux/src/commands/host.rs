@@ -665,6 +665,9 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         }
     }
 
+    // Prefer credentials already on file for this name when re-enrolling so
+    // a stopped server does not mint another live bearer into remote-tokens.
+    let previous = previous_enrollment(&name, opts.role);
     let req = EnrollRequest {
         ssh_host: &ssh_host,
         remote_phux: &opts.remote_phux,
@@ -675,6 +678,8 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         } else {
             ServicePolicy::Install
         },
+        previous_token: previous.token.as_deref(),
+        previous_fingerprint: previous.fingerprint.as_deref(),
     };
     let outcome = match enroll::enroll_over_ssh(&req, &mut |event| narrate(&event)) {
         Ok(outcome) => outcome,
@@ -749,6 +754,31 @@ fn saved_route_answers(entry: &RemoteEntry) -> Option<Result<(), String>> {
         &token,
         entry.cert_fingerprint.as_deref(),
     ))
+}
+
+/// Token and pin already held for `name`, when re-enrolling a remote.
+struct PreviousEnrollment {
+    token: Option<String>,
+    fingerprint: Option<String>,
+}
+
+fn previous_enrollment(name: &str, role: HostRole) -> PreviousEnrollment {
+    if role != HostRole::Remote {
+        return PreviousEnrollment {
+            token: None,
+            fingerprint: None,
+        };
+    }
+    let Some(entry) = remote::find(name) else {
+        return PreviousEnrollment {
+            token: None,
+            fingerprint: None,
+        };
+    };
+    PreviousEnrollment {
+        token: remote::read_token(&entry).ok().flatten(),
+        fingerprint: entry.cert_fingerprint,
+    }
 }
 
 /// Set a registered remote up over ssh and rewrite its entry: the attach

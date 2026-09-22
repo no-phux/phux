@@ -270,7 +270,7 @@ const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
             qr: true,
             ..
         }) => Some(
-            "phux: --qr belongs to minting a credential; it cannot combine with rotate or revoke",
+            "phux: --qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
         _ => None,
     }
@@ -1480,7 +1480,18 @@ fn dispatch(
             name,
             json,
             migrate_legacy,
-        }) => commands::pair::run_pair(action, tokens, cert, qr, host, name, json, migrate_legacy),
+            replace_token,
+        }) => commands::pair::run_pair(
+            action,
+            tokens,
+            cert,
+            qr,
+            host,
+            name,
+            json,
+            migrate_legacy,
+            replace_token,
+        ),
         Some(Command::Workload { action, json }) => commands::workload::run(action, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell.into()),
         // Returned above, before process-global setup.
