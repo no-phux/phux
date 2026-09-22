@@ -2107,13 +2107,15 @@ pub(crate) enum Command {
         action: relay::RelayAction,
     },
 
-    /// Mint, rotate, or revoke remote credentials
+    /// Mint, rotate, revoke, list, or prune remote credentials
     ///
     /// With no subcommand, mint one credential into the server's store and
     /// print its stable ID, one-time bearer secret, and certificate fingerprint.
-    /// `rotate` replaces the bearer with a bounded overlap; `revoke` denies all
-    /// generations on future connections. These operations update the store
-    /// directly and take effect without restarting the server.
+    /// `ls` lists ids with mint time, last seen, and revoked status; `prune
+    /// --unused-for DURATION` revokes idle credentials; `rotate` replaces the
+    /// bearer with a bounded overlap; `revoke` denies all generations on
+    /// future connections. These operations update the store directly and take
+    /// effect without restarting the server.
     ///
     /// This never contacts a running server — it only writes the token file.
     #[usage(help_heading = "Machines", display_order = 43)]
@@ -2151,8 +2153,8 @@ pub(crate) enum Command {
         #[usage(long, value_name = "NAME")]
         name: Option<String>,
 
-        /// Emit the mint, rotation, or revocation result as JSON on stdout.
-        /// `phux host add` consumes the mint document over ssh.
+        /// Emit the mint, rotation, revocation, list, or prune result as JSON
+        /// on stdout. `phux host add` consumes the mint document over ssh.
         #[usage(long, global)]
         json: bool,
 
@@ -2160,6 +2162,12 @@ pub(crate) enum Command {
         /// Conversion preserves each bearer secret but stores only its verifier.
         #[usage(long)]
         migrate_legacy: bool,
+
+        /// When minting, revoke any live credential whose bearer matches this
+        /// hex token first. `phux host add` passes the previously enrolled
+        /// token so re-enrollment does not leave abandoned live credentials.
+        #[usage(long, value_name = "HEX")]
+        replace_token: Option<String>,
     },
 
     /// Manage the mTLS workload authority

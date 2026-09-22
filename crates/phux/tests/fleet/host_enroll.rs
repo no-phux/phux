@@ -859,6 +859,37 @@ fn satellite_add_patches_hub_into_an_existing_unit_without_dropping_flags() {
     unit_kept_existing_flags(&std::fs::read_to_string(home.hub_unit_path()).expect("unit"));
 }
 
+/// Re-enrolling a registered name whose saved route no longer answers
+/// passes `--replace-token` so the remote store revokes the previous
+/// credential instead of accumulating another live bearer (phux-gob2).
+#[test]
+fn re_enroll_passes_replace_token_for_the_previous_credential() {
+    let home = EnrollHome::new();
+    let ssh = home.install_fake_ssh();
+
+    let (code, _stdout, stderr) = home.run(&["host", "add", "me@mini"], &ssh);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let token_path = home.token_path("remotes", "mini");
+    home.assert_token_routed(&token_path, "satellites");
+
+    // Drop the call log so the re-enroll's ssh argv is alone.
+    std::fs::write(home.dir.path().join("ssh-calls"), "").expect("clear ssh calls");
+
+    // The saved route cannot answer (fake overlay), so host add re-runs the
+    // ssh middle with the previous token for reuse-or-replace.
+    let (code, _stdout, stderr) = home.run(&["host", "add", "me@mini"], &ssh);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let calls = home.ssh_calls();
+    assert!(
+        calls.contains(&format!("phux pair --json --replace-token {TOKEN}")),
+        "re-enrollment must revoke the previous bearer while minting; calls={calls:?}"
+    );
+    assert!(
+        stderr.contains("minted a new credential and revoked the previous one"),
+        "stderr should narrate the replace; stderr={stderr}"
+    );
+}
+
 /// A unit that already runs with `--hub` is left alone and reported as
 /// such.
 #[test]

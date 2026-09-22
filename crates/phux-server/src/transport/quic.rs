@@ -502,7 +502,7 @@ pub(crate) async fn authorize_preamble(
     store: &crate::auth::ReloadingTokenStore,
 ) -> Option<crate::auth::AuthenticatedCredential> {
     let token = read_preamble(recv).await?;
-    store.authenticate(&token)
+    store.authenticate_and_touch(&token)
 }
 
 /// Read the token preamble and verify it against whoever `admission` names.
