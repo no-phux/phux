@@ -211,6 +211,7 @@ mod screen_oracle_tests {
         assert_eq!(s.rows().len(), 3);
     }
 
+    #[test]
     fn sgr_escapes_are_stripped_in_text_output() {
         let mut s = Screen::new(20, 3).unwrap();
         // Bold + red + "ok" + reset. The libghostty parser must absorb
