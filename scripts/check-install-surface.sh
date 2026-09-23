@@ -273,11 +273,24 @@ forbid_fixed docs/RELEASING.md 'phall1/phux'
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
 forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
 require_fixed scripts/install.sh 'https://github.com/no-phux/phux/releases/download/${release_tag}'
-# The next-channel pointer must be an asset named channel.json. gh's
-# `file#label` syntax labels the asset; it does not rename it.
-require_fixed scripts/publish-next-channel.sh 'pointer_dir/channel.json'
+# The next-channel pointers must be assets named channel.json (phux) and
+# cockpit-channel.json (Cockpit). gh's `file#label` syntax labels the asset;
+# it does not rename it, so the pointer is written under its real basename.
+require_fixed scripts/publish-next-channel.sh 'pointer_name="channel.json"'
+require_fixed scripts/publish-next-channel.sh 'pointer_name="cockpit-channel.json"'
+require_fixed scripts/publish-next-channel.sh 'channel_json="$pointer_dir/$pointer_name"'
 require_fixed scripts/publish-next-channel.sh 'gh release upload next "$channel_json" --clobber'
-forbid_fixed scripts/publish-next-channel.sh 'channel_json#channel.json'
+forbid_fixed scripts/publish-next-channel.sh 'channel_json#'
+# Cockpit rides the same moving prerelease: the workflow publishes it, the
+# installer and in-app driver follow it, and `phux update` drives the driver.
+require_fixed .github/workflows/next-release.yml 'bash scripts/publish-next-channel.sh --cockpit'
+require_fixed .github/workflows/next-release.yml 'PHUX_BUILD_CHANNEL: next'
+require_fixed clients/cockpit/scripts/package-macos.sh 'PhuxChannel'
+require_fixed scripts/install-cockpit.sh 'releases/download/next/cockpit-channel.json'
+require_fixed scripts/install-cockpit.sh 'phux-cockpit-next.${next_sha}-macos-arm64.zip'
+require_fixed scripts/install-cockpit.sh 'PHUX_CHANNEL'
+require_fixed scripts/cockpit-self-update.sh 'PhuxBuildSHA'
+require_fixed crates/phux/src/commands/update/cockpit.rs 'scripts/cockpit-self-update.sh'
 require_fixed scripts/install-cockpit.sh 'https://github.com/no-phux/phux/releases/download/${version}'
 require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
