@@ -284,7 +284,7 @@ fn latest_roster_cell<'a>(painted: &'a str, name: &str) -> Option<&'a str> {
             };
             (suffix.is_empty() || suffix.starts_with(char::is_whitespace))
                 && suffix.chars().all(|c| {
-                    c.is_whitespace() || c.is_ascii_digit() || matches!(c, '!' | '◆' | '*' | '?')
+                    c.is_whitespace() || c.is_ascii_digit() || matches!(c, '●' | '◆' | '◐' | '?')
                 })
         })
     })
@@ -292,8 +292,8 @@ fn latest_roster_cell<'a>(painted: &'a str, name: &str) -> Option<&'a str> {
 
 #[test]
 fn roster_cell_parser_ignores_agent_rows_and_status_shortcuts() {
-    let painted = "Agents│● scratch blocked - claude│Sessions│○ work│● scratch !1│C-a s Sessions";
-    assert_eq!(latest_roster_cell(painted, "scratch"), Some("● scratch !1"));
+    let painted = "Agents│● scratch blocked - claude│Sessions│○ work│● scratch ●1│C-a s Sessions";
+    assert_eq!(latest_roster_cell(painted, "scratch"), Some("● scratch ●1"));
     assert_eq!(latest_roster_cell(painted, "work"), Some("○ work"));
 }
 
@@ -328,7 +328,7 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
     server.success(&["spawn", "--target", &peer_selector]);
     server.wait_for_persisted_layout(&peer_pane);
 
-    // `blocked` is the top rung, so it renders as `!1` and also puts the pane
+    // `blocked` is the top rung, so it renders as `●1` and also puts the pane
     // in zone 1. Any other state would either render nothing (`unknown` and
     // `idle` are omitted from the histogram by design, so the calm case adds
     // no noise) or share a glyph with a less specific rung. Targeted at the
@@ -347,11 +347,11 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
 
     let client = AttachedClient::start(&server);
 
-    // `!1` is the whole point: one blocked pane in the peer session, a count
+    // `●1` is the whole point: one blocked pane in the peer session, a count
     // the client can only know by fetching that peer's layout and then that
     // pane's agent record. The Sessions header and the peer name come free
     // with the session graph and are asserted only to keep a failure legible.
-    let painted = client.wait_for_all(&["Sessions", PEER, "!1"]);
+    let painted = client.wait_for_all(&["Sessions", PEER, "●1"]);
 
     // ADR-0112 lists the attached session in the same panel, so the peer's
     // histogram must land on the peer's OWN row: a sweep that leaked the
@@ -364,13 +364,13 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
     let peer_row = latest_roster_cell(&painted, PEER)
         .unwrap_or_else(|| panic!("no Sessions row for {PEER}:\n{painted}"));
     assert!(
-        peer_row.contains("!1"),
+        peer_row.contains("●1"),
         "the peer's row carries its swept histogram:\n{painted}"
     );
     let session_row = latest_roster_cell(&painted, SESSION)
         .unwrap_or_else(|| panic!("no Sessions row for {SESSION}:\n{painted}"));
     assert!(
-        !session_row.contains('!'),
+        !session_row.contains("●1"),
         "the peer's histogram must not leak into the attached session's row:\n{painted}"
     );
 }
