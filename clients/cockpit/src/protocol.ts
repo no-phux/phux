@@ -774,7 +774,7 @@ export interface NavigationRow {
   readonly target: Uint8Array;
   readonly highlighted: boolean;
   readonly detail: Uint8Array;
-  /// 0 open, 1 available, 2 session, 3 known host.
+  /// Catalog kind, or agent-inspection row kind (0 AgentSession, 1 terminal identity).
   readonly kind: number;
   readonly host: Uint8Array;
   readonly selectable: boolean;
@@ -953,9 +953,9 @@ function navigationHeaderValid(bytes: Uint8Array): boolean {
   return queryLength >= 0 && queryLength <= 64 && 16 + queryLength <= bytes.length;
 }
 
-/// One identity-bound inspection row: the old catalog index/label framing,
-/// then the four length-delimited identity fields. A single row fills the
-/// page; the revision fence still rejects delayed replies.
+/// One identity-bound inspection row: row kind, catalog index, label, then the
+/// four length-delimited identity fields. A single row fills the page; the
+/// revision fence still rejects delayed replies.
 // ts_agents.max_evidence_bytes: provider 256 + reason 1024 + metadata 512.
 // Identities retain their independent bounds; the page is still at most 4096.
 function inspectionFieldLimit(index: number): number {
@@ -978,17 +978,19 @@ function inspectionFields(bytes: Uint8Array, start: number): readonly Uint8Array
 }
 
 function inspectionRow(bytes: Uint8Array, at: number, highlighted: boolean): NavigationRow | null {
-  if (at + 3 > bytes.length) return null;
-  const rawIndex = bytes[at] + bytes[at + 1] * 256;
-  const length = bytes[at + 2];
+  if (at + 4 > bytes.length) return null;
+  const kind = bytes[at];
+  if (!(kind === 0 || kind === 1)) return null;
+  const rawIndex = bytes[at + 1] + bytes[at + 2] * 256;
+  const length = bytes[at + 3];
   if (!(rawIndex >= 0 && rawIndex <= 65535)) return null;
-  if (!(length >= 1 && length <= 240) || at + 3 + length > bytes.length) return null;
-  const fields = inspectionFields(bytes, at + 3 + length);
+  if (!(length >= 1 && length <= 240) || at + 4 + length > bytes.length) return null;
+  const fields = inspectionFields(bytes, at + 4 + length);
   if (fields === null) return null;
   const index = Math.trunc(rawIndex);
   const empty = new Uint8Array(0);
-  return { id: index, index, label: bytes.subarray(at + 3, at + 3 + length), target: empty, highlighted,
-    detail: empty, kind: 0, host: empty, selectable: true, current: false,
+  return { id: index, index, label: bytes.subarray(at + 4, at + 4 + length), target: empty, highlighted,
+    detail: empty, kind, host: empty, selectable: true, current: false,
     resource: fields[0], parent: fields[1], nativeId: fields[2], evidence: fields[3] };
 }
 

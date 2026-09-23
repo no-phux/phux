@@ -108,7 +108,7 @@ test('failed Save and Edit cannot leave a delayed editor launch armed', () => {
 
 test('Keyboard remapping refreshes actual dirty state and retains native rejection notice', () => {
   let [model] = step(settings(), { kind: 'settings_section', section: 2 });
-  const command = bytes('commands.open'); const label = bytes('Commands'); const chord = bytes('super+p');
+  const command = bytes('commands.open'); const label = bytes('Commands'); const chord = bytes('super+shift+p');
   const notice = bytes('Conflict with Go to Terminal');
   const body = new Uint8Array([1, 1, 1, notice.length, ...notice, 0, 0, command.length, label.length, chord.length, chord.length, ...command, ...label, ...chord, ...chord]);
   let cmd;

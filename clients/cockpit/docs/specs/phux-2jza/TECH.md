@@ -29,7 +29,7 @@ The source findings below are not live-app reproduction evidence.
 | [`remote_memory.zig:32-44`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/src/cockpit/remote_memory.zig#L32-L44) | Persistence separately caps saved reconnect records at three hosts. |
 | [`cockpit-window.native:252-345`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/src/windows/components/cockpit-window.native#L252-L345) | Settings offers appearance controls and Finder reveal, not editor launch or a searchable settings catalog. |
 | [`core.ts:2150-2152`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/src/core.ts#L2150-L2152) | Reveal is a guarded host intent. An editor launch needs a correlated local creation result, not a cosmetic replacement label. |
-| [`app.zon:13-99`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/app.zon#L13-L99) | Shipping menus include Connect to Host, Go to Directory and Rename Session, but no machine inventory or window list. Cmd+Shift+P currently opens Go to Terminal. |
+| [`app.zon:13-99`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/app.zon#L13-L99) | Shipping menus include Connect to Host, Go to Directory, Rename Session, machine inventory and window list. Sessions is Cmd+K; Commands is Cmd+Shift+P; terminal clear is Cmd+Shift+K. |
 
 The existing native/shared-workspace engine remains the authority for topology,
 terminal identity, input routing and geometry. The TypeScript core and compiled

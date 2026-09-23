@@ -339,13 +339,25 @@
                 <for each="rows" key="id" as="agent">
                   <column gap="4">
                     <text wrap="true">{agent.label}</text>
-                    <text foreground="text_muted">Resource</text>
-                    <text wrap="true" label="{agent.resource}">{agent.resource}</text>
-                    <text foreground="text_muted">Parent</text>
-                    <text wrap="true" label="{agent.parent}">{agent.parent}</text>
-                    <text foreground="text_muted">Native ID</text>
-                    <text wrap="true" label="{agent.nativeId}">{agent.nativeId}</text>
-                    <text wrap="true" foreground="text_muted" label="{agent.evidence}">{agent.evidence}</text>
+                    <if test="{agent.kind == 1}">
+                      <text foreground="text_muted">Detected terminal identity</text>
+                      <text foreground="text_muted">Terminal</text>
+                      <text wrap="true" label="{agent.resource}">{agent.resource}</text>
+                      <text foreground="text_muted">Native session ID</text>
+                      <if test="{agent.nativeId}"><text wrap="true" label="{agent.nativeId}">{agent.nativeId}</text></if>
+                      <else><text foreground="text_muted">Not reported</text></else>
+                      <text wrap="true" foreground="text_muted" label="{agent.evidence}">{agent.evidence}</text>
+                    </if>
+                    <else>
+                      <text foreground="text_muted">AgentSession resource</text>
+                      <text foreground="text_muted">Resource</text>
+                      <text wrap="true" label="{agent.resource}">{agent.resource}</text>
+                      <text foreground="text_muted">Parent</text>
+                      <text wrap="true" label="{agent.parent}">{agent.parent}</text>
+                      <text foreground="text_muted">Native ID</text>
+                      <text wrap="true" label="{agent.nativeId}">{agent.nativeId}</text>
+                      <text wrap="true" foreground="text_muted" label="{agent.evidence}">{agent.evidence}</text>
+                    </else>
                   </column>
                 </for>
               </column>
