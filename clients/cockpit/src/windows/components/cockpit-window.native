@@ -12,7 +12,7 @@
         <if test="{tabPlacement == 'top'}">
           <tabs grow="1" gap="4" label="Terminal tabs">
             <for each="tabs" key="id" as="tab">
-              <column width="0" grow="1" gap="4">
+              <stack width="0" grow="1" height="32">
                 <row gap="4" cross="center">
                   <!-- Full titles stay available to accessibility. The marker
                        owns a fixed slot so attention cannot shorten the button. -->
@@ -28,15 +28,18 @@
                   <if test="{tab.attention}"><text width="16" foreground="warning" label="{tab.attentionLabel}">●</text></if>
                   <else><spacer width="16" /></else>
                 </row>
-                <!-- Inset the indicator within the button, excluding its 16pt
-                     attention slot and 4pt gap. Attention never changes width. -->
-                <row height="2">
-                  <spacer width="8" />
-                  <if test="{tab.selected}"><spacer grow="1" height="2" background="accent" /></if>
-                  <else><spacer grow="1" height="2" /></else>
-                  <spacer width="28" />
-                </row>
-              </column>
+                <!-- Overlay the indicator inside the shared 32pt control
+                     register: it must not lift tab titles above the + / menu. -->
+                <column grow="1">
+                  <spacer grow="1" />
+                  <row height="2">
+                    <spacer width="8" />
+                    <if test="{tab.selected}"><spacer grow="1" height="2" background="accent" /></if>
+                    <else><spacer grow="1" height="2" /></else>
+                    <spacer width="28" />
+                  </row>
+                </column>
+              </stack>
             </for>
             <if test="{more}"><stack width="32"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button><tooltip anchor="below">Show hidden tabs</tooltip></stack></if>
           </tabs>

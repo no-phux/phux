@@ -6541,6 +6541,15 @@ test "tab-first header fills its measured strip and actions menu stays within th
             // tab is lost to quantization, never hundreds to a fixed cap.
             try std.testing.expect(used + cue <= strip);
             try std.testing.expect(strip - used - cue < @as(f32, @floatFromInt(run.count)) + 1);
+            const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+            var action_center: ?f32 = null;
+            for (layout.nodes) |node| {
+                if (std.mem.eql(u8, node.widget.semantics.label, "New Tab")) action_center = node.frame.y + node.frame.height / 2;
+            }
+            for (layout.nodes) |node| {
+                if (node.widget.semantics.role != .tab) continue;
+                try std.testing.expectApproxEqAbs(action_center orelse return error.MissingNewTab, node.frame.y + node.frame.height / 2, 0.01);
+            }
             try rig.dispatch(.header_menu_toggle);
             try std.testing.expect(rig.app_state.model.mainHeaderMenuOpen);
             for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
