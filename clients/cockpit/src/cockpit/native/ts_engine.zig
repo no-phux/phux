@@ -3958,7 +3958,9 @@ pub const Engine = struct {
             selected - count + 1
         else
             anchor;
-        const extent = @max(0, @min(projection.tab_extent, usable / @as(f32, @floatFromInt(count)) - gap));
+        // The measured strip belongs to the tabs. Equal shares fill it even
+        // with only one or two tabs; the minimum above still governs overflow.
+        const extent = @max(0, usable / @as(f32, @floatFromInt(count)) - gap);
         return .{ .first = @intCast(first), .count = @intCast(count), .extent = @intFromFloat(extent) };
     }
 

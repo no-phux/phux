@@ -253,7 +253,7 @@ test('closing a window clears its context on the next snapshot', () => {
 
 test('every window template binds its own context, not the ambient primary labels', () => {
   const markup = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
-  const header = markup.slice(markup.indexOf('<list-item height="40" width="176" label="Sessions"'), markup.indexOf('</list-item>'));
+  const header = markup.slice(markup.indexOf('<dropdown-menu'), markup.indexOf('</dropdown-menu>'));
   assert.match(header, /\{title\}/);
   assert.match(header, /\{detail\}/);
   assert.doesNotMatch(header, /workspaceLabel|machineLabel/);

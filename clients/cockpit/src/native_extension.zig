@@ -288,7 +288,7 @@ fn WorkflowReply(comptime capacity: usize) type {
 const Bridge = struct {
     const Keybindings = cockpit.keybindings_runtime.State(native_sdk.platform);
     const Admission = cockpit.keybindings_runtime.replay.Journal(native_sdk);
-    const InteractionMode = enum { terminal, palette, settings };
+    const InteractionMode = enum { terminal, palette, settings, menu };
     /// Mirrors committed core modality, never the most recently painted view.
     /// The core's modal is app-wide even when presented in a secondary window.
     interaction_mode: InteractionMode = .terminal,
@@ -438,6 +438,7 @@ const Bridge = struct {
     }
 
     fn interactionMode(model: *const core.Model) InteractionMode {
+        if (model.headerMenuWindow >= 0) return .menu;
         // Connect to Host and Rename Session take text like the switcher;
         // none may type into a terminal behind it.
         return if (model.paletteOpen or model.hostOpen or model.dirOpen or model.renameOpen) .palette else if (model.settingsOpen) .settings else .terminal;
@@ -1486,12 +1487,21 @@ fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
 
 fn onKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     const replaying = bridge.replayInteraction();
+    if (bridge.interaction_mode == .menu) return headerMenuKey(event);
     if (bridge.interaction_mode != .terminal) return overlayKey(event);
     if (primaryChord(event)) |msg| return msg;
     if (replaying) return null;
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     engine.onKey(fx, event);
+    return null;
+}
+
+fn headerMenuKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
+    if (event.phase == .key_up) return null;
+    if (std.ascii.eqlIgnoreCase(event.key, "Escape")) return .header_menu_close;
+    // Arrow/Enter navigation belongs to the SDK dropdown. Unclaimed text
+    // must never reach the terminal behind it.
     return null;
 }
 
@@ -1834,6 +1844,9 @@ const PointerHost = struct {
     inner: native_sdk.App = undefined,
     selection_autoscroll_timer_active: bool = false,
     maintenance_timer_active: bool = false,
+    menu_dismiss_pending: bool = false,
+    menu_dismiss_pointer: ?u64 = null,
+    menu_dismiss_window: u64 = 0,
 
     fn wrap(self: *PointerHost, inner: native_sdk.App) native_sdk.App {
         self.* = .{ .inner = inner };
@@ -1875,6 +1888,7 @@ const PointerHost = struct {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         try bridge.takeNativeReplayError();
         if (try bridge.nativeReplayEvent(value)) return;
+        if (self.consumeMenuDismissal(runtime, value)) return;
         const previous_origin = bridge.fallback_origin;
         const previous_admission = bridge.command_admission;
         defer bridge.fallback_origin = previous_origin;
@@ -1898,6 +1912,57 @@ const PointerHost = struct {
         try self.inner.event(runtime, modalInputEvent(admitted));
         syncWindowIds(runtime);
         if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
+    }
+
+    /// SDK light-dismiss is published before the same cycle's routed pointer
+    /// and raw input. Closing the model resumes input immediately, but that
+    /// dismissal gesture still belongs to the menu, including its release.
+    fn consumeMenuDismissal(self: *PointerHost, runtime: *native_sdk.Runtime, value: native_sdk.Event) bool {
+        switch (value) {
+            .canvas_widget_dismiss => {
+                // Physical input keeps the SDK refresh batch open through
+                // dismissal and raw delivery. Accessibility/automation dismiss
+                // is standalone and must not swallow the NEXT real gesture.
+                self.menu_dismiss_pending = bridge.interaction_mode == .menu and
+                    runtime.canvas_widget_display_list_refresh_batch_depth > 0;
+            },
+            .canvas_widget_pointer => |routed| {
+                if (routed.pointer.phase == .down and !self.menu_dismiss_pending) self.menu_dismiss_pointer = null;
+                return self.menu_dismiss_pending or self.dismissalPointerMatches(routed.window_id, routed.pointer.pointer_id);
+            },
+            .gpu_surface_input => |raw| return self.consumeMenuDismissRaw(raw),
+            else => {},
+        }
+        return false;
+    }
+
+    fn dismissalPointerMatches(self: *const PointerHost, window: u64, pointer: u64) bool {
+        return self.menu_dismiss_pointer == pointer and self.menu_dismiss_window == window;
+    }
+
+    fn resetMenuDismissal(self: *PointerHost) void {
+        self.menu_dismiss_pending = false;
+        self.menu_dismiss_pointer = null;
+        self.menu_dismiss_window = 0;
+    }
+
+    fn consumeMenuDismissRaw(self: *PointerHost, raw: native_sdk.platform.GpuSurfaceInputEvent) bool {
+        const dismissed = self.menu_dismiss_pending;
+        self.menu_dismiss_pending = false;
+        if (raw.kind == .pointer_down) {
+            self.menu_dismiss_pointer = null;
+            if (dismissed) {
+                self.menu_dismiss_pointer = raw.pointer_id;
+                self.menu_dismiss_window = raw.window_id;
+            }
+        }
+        if (!self.dismissalPointerMatches(raw.window_id, raw.pointer_id)) return false;
+        switch (raw.kind) {
+            .pointer_up, .pointer_cancel => self.menu_dismiss_pointer = null,
+            .pointer_down, .pointer_move, .pointer_drag => {},
+            else => return false,
+        }
+        return true;
     }
 
     fn refreshNativeState(runtime: *native_sdk.Runtime, value: native_sdk.Event) void {
@@ -1990,6 +2055,7 @@ const PointerHost = struct {
         try bridge.takeNativeReplayError();
         switch (control) {
             .arm => {
+                self.resetMenuDismissal();
                 bridge.admission.deinit();
                 try bridge.admission.armReplay();
                 if (bridge.runtime) |runtime| try bridge.admission.start(std.heap.page_allocator, admission_channel_key, runtime.options.session_recorder);
@@ -2009,6 +2075,7 @@ const PointerHost = struct {
     /// Every ledger checks its own leftovers. All three run before the first
     /// failure is reported, so one ledger's refusal never hides another's.
     fn finishReplay(self: *PointerHost) !void {
+        self.resetMenuDismissal();
         defer bridge.admission.deinit();
         defer bridge.resetNativeReplay();
         const admission = bridge.admission.finishReplay();
@@ -2377,6 +2444,20 @@ const Rig = struct {
         _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
         try std.testing.expect(engine.model.shared_workspace.revision > before);
         try std.testing.expectEqual(@as(usize, 2), engine.model.ws().selectedTree().?.paneCount());
+        remote.bridge.outgoing.reset();
+    }
+
+    fn attachSharedTabFixture(self: *Rig) !void {
+        _ = try self.attachFixture();
+        const engine = bridge.engine.?;
+        const remote = engine.model.phux().?;
+        const before = engine.model.shared_workspace.revision;
+        _ = (try remote.requestWorkspaceRefresh()).?;
+        try stageWorkspaceReply(remote, "workspace_add_metadata.bin", 14, 3);
+        try stageWorkspaceReply(remote, "workspace_add_state.bin", 13, 2);
+        _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+        try std.testing.expect(engine.model.shared_workspace.revision > before);
+        try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
         remote.bridge.outgoing.reset();
     }
 
@@ -4620,11 +4701,15 @@ test "shipping Phux callbacks emit structured key text paste and focus frames" {
 }
 
 fn expectOutgoingTag(remote: anytype, tag: u8) !void {
+    try takeOutgoingTag(remote, tag);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+fn takeOutgoingTag(remote: anytype, tag: u8) !void {
     const frame = remote.bridge.outgoing.take() orelse return error.TestExpectedOutgoingFrame;
     defer remote.bridge.outgoing.release(frame);
     try std.testing.expect(frame.len > 4);
     try std.testing.expectEqual(tag, frame[4]);
-    try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
 fn stageRemoteOutput(remote: anytype, text: []const u8, seq: u64) !void {
@@ -4741,6 +4826,66 @@ test "shipping platform shortcut executes once and rejects the superseded regist
     try bridge.editKeybindings(&.{ 1, 1, 0, 5, 'C', 'm', 'd', '+', 'r' });
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = shortcut });
     try std.testing.expectEqual(before + 1, bridge.engine.?.model.ws().tab_count);
+}
+
+test "shipping Cmd W confirms a shared non-last tab close and remains responsive" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedTabFixture();
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    try rig.dispatch(.{ .select_tab = 1 });
+    try rig.settleCurrent();
+    const closing = engine.model.focusedTerminalRef().?;
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "w") and item.modifiers.command) break item;
+    } else return error.TestExpectedCloseShortcut;
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
+        .id = shortcut.id,
+        .key = shortcut.key,
+        .modifiers = shortcut.modifiers,
+        .window_id = 1,
+    } });
+    try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+    const pending = engine.model.shared_mutations.pending[0] orelse return error.TestExpectedSharedClose;
+    try std.testing.expectEqual(.remove, pending.mutation.kind);
+    try std.testing.expect(pending.mutation.terminal_ref.?.eql(closing));
+    try std.testing.expectEqual(.pending, remote.workspaceSnapshot().status);
+    const request = remote.workspaceSnapshot().request_id;
+    try std.testing.expectEqual(pending.mutation_request, request);
+    remote.bridge.outgoing.reset();
+
+    // Initial attach used wire requests 0/1 and the setup refresh used 2/3.
+    // The mutation confirmation reads use 4/5; the host's aggregate request
+    // ID above intentionally belongs to a different namespace.
+    try stageWorkspaceReply(remote, "workspace_refresh_metadata.bin", 3, 5);
+    try stageWorkspaceReply(remote, "workspace_refresh_state.bin", 2, 4);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try rig.settleCurrent();
+
+    try std.testing.expectEqual(@as(usize, 1), engine.model.ws().tab_count);
+    try std.testing.expect(engine.model.locateTerminal(closing) == null);
+    try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
+    try std.testing.expect(!Bridge.hasPending(&bridge));
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.commandResults.recent.len);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.commandResults.recent[0].operation);
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var terminal_count: usize = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role == .textbox) terminal_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), terminal_count);
+    remote.bridge.outgoing.reset();
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas z z");
+    try takeOutgoingTag(remote, 0x10);
+    try expectOutgoingTag(remote, 0x10);
 }
 
 test "first chord in another window obeys that window's search ownership" {
@@ -4955,6 +5100,122 @@ test "shipping Phux macOS editing gestures target word and line bindings" {
     try expectOutgoingKey(remote, 76, 0);
     _ = onKey(.{ .phase = .key_up, .key = "arrowleft" });
     try expectOutgoingKey(remote, 76, 0);
+}
+
+test "workspace menu owns terminal input until dismissal or command handoff" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try std.testing.expect(!engine.input_suspended);
+    try rig.dispatch(.header_menu_toggle);
+    try std.testing.expect(engine.input_suspended);
+    try std.testing.expectEqual(.menu, bridge.interaction_mode);
+    try std.testing.expect(onKey(.{ .phase = .key_down, .key = "a" }) == null);
+    const escape = onKey(.{ .phase = .key_down, .key = "Escape" }).?;
+    try std.testing.expectEqual(core.Msg.header_menu_close, escape);
+    try rig.dispatch(escape);
+    try std.testing.expect(!engine.input_suspended);
+    try rig.dispatch(.header_menu_toggle);
+    try rig.dispatch(.header_tab_placement);
+    try std.testing.expectEqual(.side, rig.app_state.model.tabPlacement);
+    try std.testing.expect(!engine.input_suspended);
+}
+
+test "workspace menu keyboard and outside dismissal use retained SDK routing" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.header_menu_toggle);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "Escape",
+    } });
+    try std.testing.expectEqual(@as(i64, -1), rig.app_state.model.headerMenuWindow);
+    try std.testing.expect(!bridge.engine.?.input_suspended);
+    try rig.dispatch(.header_menu_toggle);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.session.feed("selected terminal content");
+    try std.testing.expect(pane.session.selectAllHistory());
+    try pressCanvasFrame(&rig, .init(400, 300, 2, 2));
+    try std.testing.expectEqual(@as(i64, -1), rig.app_state.model.headerMenuWindow);
+    try std.testing.expect(!bridge.engine.?.input_suspended);
+    try std.testing.expect(pane.session.selectionActive());
+}
+
+test "workspace menu trigger and rows work through SDK keyboard focus" {
+    const Keys = struct {
+        fn press(rig: *Rig, key: []const u8) !void {
+            inline for (.{ .key_down, .key_up }) |kind| {
+                try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+                    .window_id = 1,
+                    .label = canvas_label,
+                    .kind = kind,
+                    .key = key,
+                } });
+            }
+        }
+    };
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var trigger: ?native_sdk.geometry.RectF = null;
+    var trigger_id: u64 = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .button and std.mem.eql(u8, node.widget.semantics.label, "Workspace actions")) {
+            trigger = node.frame;
+            trigger_id = node.widget.id;
+        }
+    }
+    try pressCanvasFrame(&rig, trigger orelse return error.MissingMenuTrigger);
+    try std.testing.expect(rig.app_state.model.mainHeaderMenuOpen);
+    try Keys.press(&rig, "Escape");
+    try std.testing.expect(!rig.app_state.model.mainHeaderMenuOpen);
+    // Seed keyboard focus on the trigger; all activation/traversal below
+    // goes through the retained SDK tree, rather than dispatching core Msgs.
+    rig.harness.runtime.views[0].canvas_widget_focused_id = trigger_id;
+    try Keys.press(&rig, "Enter");
+    try std.testing.expect(rig.app_state.model.mainHeaderMenuOpen);
+    try Keys.press(&rig, "ArrowDown");
+    try Keys.press(&rig, "ArrowUp");
+    try Keys.press(&rig, "Enter");
+    try std.testing.expect(!rig.app_state.model.mainHeaderMenuOpen);
+    try std.testing.expect(rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.navigatorView);
+}
+
+test "standalone menu dismissal does not consume the next terminal click" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.header_menu_toggle);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var menu: ?u64 = null;
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .dropdown_menu) menu = node.widget.id;
+    }
+    // Accessibility and automation publish a standalone dismiss, without a
+    // physical input refresh batch or a subsequent raw event in that cycle.
+    try rig.decorated.event(&rig.harness.runtime, .{ .canvas_widget_dismiss = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .id = menu orelse return error.MissingMenu,
+    } });
+    try std.testing.expectEqual(@as(i64, -1), rig.app_state.model.headerMenuWindow);
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.session.feed("selected terminal content");
+    try std.testing.expect(pane.session.selectAllHistory());
+    try pressCanvasFrame(&rig, .init(400, 300, 2, 2));
+    try std.testing.expect(!pane.session.selectionActive());
 }
 
 test "committed palette owns input even when an older model is painted" {
@@ -6341,6 +6602,42 @@ test "the markup chrome passes the layout audit at every declared size, density 
     try std.testing.expectEqual(@as(usize, 0), total);
 }
 
+test "tab-first header fills its measured strip and actions menu stays within the window" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    for ([_]usize{ 1, 3, 16 }) |count| {
+        try rig.reach(.{ .label = "tab-first header", .tabs = count });
+        for (parity_sizes) |size| {
+            try rig.resize(size);
+            const run = bridge.engine.?.currentRun();
+            const strip = bridge.engine.?.model.wsConst().shipping_tab_strip_width;
+            const gaps = @as(f32, @floatFromInt(run.count - 1)) * 4;
+            const used = @as(f32, @floatFromInt(run.count * run.extent)) + gaps;
+            const cue: f32 = if (run.count < count) 36 else 0;
+            // Extents cross the wire as whole points; at most one point per
+            // tab is lost to quantization, never hundreds to a fixed cap.
+            try std.testing.expect(used + cue <= strip);
+            try std.testing.expect(strip - used - cue < @as(f32, @floatFromInt(run.count)) + 1);
+            const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+            var action_center: ?f32 = null;
+            for (layout.nodes) |node| {
+                if (std.mem.eql(u8, node.widget.semantics.label, "New Tab")) action_center = node.frame.y + node.frame.height / 2;
+            }
+            for (layout.nodes) |node| {
+                if (node.widget.semantics.role != .tab) continue;
+                try std.testing.expectApproxEqAbs(action_center orelse return error.MissingNewTab, node.frame.y + node.frame.height / 2, 0.01);
+            }
+            try rig.dispatch(.header_menu_toggle);
+            try std.testing.expect(rig.app_state.model.mainHeaderMenuOpen);
+            for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
+                try std.testing.expectEqual(@as(usize, 0), try auditChromeAt(&rig.app_state.model, size, density, "workspace menu"));
+            }
+            try rig.dispatch(.header_menu_close);
+        }
+    }
+}
+
 fn pressCanvasFrame(rig: *Rig, frame: native_sdk.geometry.RectF) !void {
     return pressCanvasFrameOn(rig, frame, 1, canvas_label);
 }
@@ -6568,16 +6865,16 @@ fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: nativ
     }
     try std.testing.expect(widest >= size.width - 16);
 
-    var settings_index: ?usize = null;
+    var actions_index: ?usize = null;
     var leading_index: ?usize = null;
     for (layout.nodes, 0..) |entry, index| {
-        if (std.mem.eql(u8, entry.widget.semantics.label, "Settings")) settings_index = index;
+        if (std.mem.eql(u8, entry.widget.semantics.label, "Workspace actions")) actions_index = index;
         if (entry.frame.y < 60 and entry.frame.x < 16 and @abs(entry.frame.width - 78) < 0.5) {
             leading_index = index;
         }
     }
-    const settings = settings_index orelse return error.TestExpectedSettingsControl;
-    try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, settings) == null);
+    const actions = actions_index orelse return error.TestExpectedActionsControl;
+    try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, actions) == null);
     const leading = leading_index orelse return error.TestExpectedTitlebarLeadingReserve;
     try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, leading) != null);
     try std.testing.expectEqual(drag_index, canvas.widgetWindowDragTargetIndexFromNode(layout, leading));
@@ -6809,7 +7106,8 @@ test "crowded tab strip keeps every tab and overflow cue inside its allocated ch
             if (node.widget.semantics.role != .tab and !std.mem.eql(u8, node.widget.semantics.label, "Tabs not shown")) continue;
             seen += 1;
             try std.testing.expect(node.frame.x >= frame.x);
-            try std.testing.expect(node.frame.x + node.frame.width <= frame.x + frame.width);
+            // Equal-share grow layout has fractional edges at some widths.
+            try std.testing.expect(node.frame.x + node.frame.width <= frame.x + frame.width + 0.01);
         }
         try std.testing.expect(seen > 1);
     }
@@ -6851,9 +7149,8 @@ test "shipping chrome keeps command access and elided tab titles discoverable" {
     try rig.reach(.{ .label = "discoverable crowded strip", .tabs = 16 });
     try rig.resize(.init(900, 420));
 
-    // Commands is an explicit top-toolbar escape hatch, not only a side-rail
-    // action or an accidental consequence of opening the overflow palette.
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Commands"));
+    // One persistent actions trigger exposes commands, independently of overflow.
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Workspace actions"));
     // Tab buttons expose the complete title as their semantic label even when
     // the fixed-width visible title is elided by the toolkit.
     try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Terminal 1"));
@@ -6862,20 +7159,26 @@ test "shipping chrome keeps command access and elided tab titles discoverable" {
     try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Tabs not shown"));
 
     try rig.reach(.{ .label = "discoverable rail", .tabs = 16, .placement = .side });
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Commands"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Workspace actions"));
 }
 
-test "Commands toolbar action is pointer reachable in primary and secondary chrome" {
+fn pressHeaderCommands(rig: *Rig, window_id: u64, label: []const u8) !void {
+    for ([_][]const u8{ "Workspace actions", "All commands" }) |target| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const widgets = try rig.harness.runtime.canvasWidgetLayout(window_id, label);
+        var frame: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (std.mem.eql(u8, node.widget.semantics.label, target)) frame = node.frame;
+        }
+        try pressCanvasFrameOn(rig, frame orelse return error.TestExpectedMenuControl, window_id, label);
+    }
+}
+
+test "Commands menu action is pointer reachable in primary and secondary chrome" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
-    var widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
-    var commands: ?native_sdk.geometry.RectF = null;
-    for (widgets.nodes) |node| {
-        if (std.mem.eql(u8, node.widget.semantics.label, "Commands")) commands = node.frame;
-    }
-    try pressCanvasFrame(&rig, commands orelse return error.TestExpectedCommandsControl);
+    try pressHeaderCommands(&rig, 1, canvas_label);
     try std.testing.expect(rig.app_state.model.paletteOpen);
     try std.testing.expectEqual(@as(i64, 4), rig.app_state.model.navigatorView);
 
@@ -6896,13 +7199,7 @@ test "Commands toolbar action is pointer reachable in primary and secondary chro
         .frame_index = 2,
         .timestamp_ns = 2,
     } });
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
-    widgets = try rig.harness.runtime.canvasWidgetLayout(secondary.window_id, "phux-cockpit-canvas-1");
-    commands = null;
-    for (widgets.nodes) |node| {
-        if (std.mem.eql(u8, node.widget.semantics.label, "Commands")) commands = node.frame;
-    }
-    try pressCanvasFrameOn(&rig, commands orelse return error.TestExpectedSecondaryCommandsControl, secondary.window_id, "phux-cockpit-canvas-1");
+    try pressHeaderCommands(&rig, secondary.window_id, "phux-cockpit-canvas-1");
     try std.testing.expect(rig.app_state.model.window1PaletteOpen);
     try std.testing.expect(!rig.app_state.model.mainPaletteOpen);
     try std.testing.expectEqual(@as(usize, 1), bridge.engine.?.model.active_window);
@@ -8776,11 +9073,14 @@ test "each window header names its own session, machine and state from window co
     const model = &rig.app_state.model;
     try std.testing.expect(model.window1Open and model.window2Open);
 
+    // Session identity now lives inside the window's actions menu.
+    rig.app_state.model.mainHeaderMenuOpen = true;
     try Chrome.expect(model, 0, "alpha", true);
     try Chrome.expect(model, 0, "studio", true);
     try Chrome.expect(model, 0, "beta", false);
     try Chrome.expect(model, 0, "primary-global", false);
 
+    rig.app_state.model.window1HeaderMenuOpen = true;
     try Chrome.expect(model, 1, "beta", true);
     try Chrome.expect(model, 1, "mini \u{b7} Offline", true);
     try Chrome.expect(model, 1, "alpha", false);
@@ -8790,6 +9090,7 @@ test "each window header names its own session, machine and state from window co
     try Chrome.expect(model, 0, "Empty session on mini", false);
 
     // Open without a record: an explicit unknown, never the primary's labels.
+    rig.app_state.model.window2HeaderMenuOpen = true;
     try Chrome.expect(model, 2, "Session unknown", true);
     try Chrome.expect(model, 2, "Window context unavailable", true);
     try Chrome.expect(model, 2, "alpha", false);
