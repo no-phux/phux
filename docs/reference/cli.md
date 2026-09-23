@@ -919,6 +919,7 @@ Bare `phux channel` reports the rail this install follows and what is published
 there. `phux channel next` follows green `main`; `phux channel latest` (also
 `stable`) follows the numbered GitHub releases. Switching persists the choice
 and runs the same update path as `phux update --channel`, so live panes survive.
+An installed Phux Cockpit switches with it.
 
 Examples:
 phux channel
@@ -3399,6 +3400,10 @@ printed instead — and an unrecognized location is refused rather than
 overwritten.
 
 The previous binaries are kept beside the new ones; `--rollback` puts them back.
+
+On macOS, an installed Phux Cockpit follows the same channel: it is reported by
+`--check` and reinstalled through the Cockpit installer when it is behind. A
+Homebrew Cockpit gets `brew upgrade` instead.
 
 Examples:
 phux update --check

@@ -41,6 +41,7 @@
 
 pub(crate) mod apply;
 pub(crate) mod channel;
+pub(crate) mod cockpit;
 pub(crate) mod release;
 pub(crate) mod source;
 
@@ -926,8 +927,21 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
 
     match execute(opts, &env) {
         Ok(outcome) => {
+            let cockpit = sync_cockpit(opts, &outcome);
+            let shadow = std::env::var_os("PATH")
+                .and_then(|path| shadowing_phux(&outcome.plan.install, &path));
             if opts.json {
-                match serde_json::to_string_pretty(&outcome.document()) {
+                let mut document = outcome.document();
+                document["cockpit"] = cockpit
+                    .as_ref()
+                    .map_or(serde_json::Value::Null, |(app, report)| {
+                        report.document(app)
+                    });
+                document["path_shadowed_by"] =
+                    shadow.as_ref().map_or(serde_json::Value::Null, |path| {
+                        serde_json::Value::String(path.display().to_string())
+                    });
+                match serde_json::to_string_pretty(&document) {
                     Ok(rendered) => outln!("{rendered}"),
                     Err(err) => {
                         return json_err::emit(
@@ -945,6 +959,12 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
                 for line in outcome.lines() {
                     outln!("{line}");
                 }
+                for line in cockpit.iter().flat_map(|(_, report)| report.lines()) {
+                    outln!("{line}");
+                }
+                if let Some(path) = shadow.as_ref() {
+                    outln!("{}", shadow_warning(path, &outcome.plan.install.executable));
+                }
             }
             reconcile_installed(outcome.action, opts.json, |print| {
                 super::service::reconcile_after_update(print);
@@ -953,6 +973,57 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
         }
         Err(err) => err.report(opts.json),
     }
+}
+
+/// Keep an installed Phux Cockpit on the CLI's channel. `--check` reports,
+/// an install or channel switch installs, and `--dry-run` / `--rollback`
+/// leave the app alone. `None` when there is no Cockpit to speak of.
+fn sync_cockpit(opts: &UpdateOpts, outcome: &Outcome) -> Option<(PathBuf, cockpit::Report)> {
+    if !matches!(
+        outcome.action,
+        Action::Checked | Action::UpToDate | Action::Installed
+    ) {
+        return None;
+    }
+    let app = super::cockpit::installed_app()?;
+    let report = cockpit::sync(
+        &app,
+        outcome.plan.channel,
+        !opts.check,
+        outcome.plan.install.bin_dir(),
+    );
+    Some((app, report))
+}
+
+/// The first `phux` on `PATH`, when it is not the binary this command
+/// maintains. A stale `cargo install` or version-manager shim ahead of the
+/// release install makes every update look like it did nothing.
+fn shadowing_phux(install: &Install, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    if install.source != InstallSource::DirectRelease {
+        return None;
+    }
+    let ours = std::fs::canonicalize(&install.executable).ok()?;
+    let first = std::env::split_paths(path)
+        .map(|dir| dir.join("phux"))
+        .find(|candidate| is_executable(candidate))?;
+    let resolved = std::fs::canonicalize(&first).ok()?;
+    (resolved != ours).then_some(first)
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+fn shadow_warning(shadow: &std::path::Path, ours: &std::path::Path) -> String {
+    format!(
+        "warning:  `phux` on your PATH is {} first, not {}\n  \
+         remove the stale copy or put {} earlier on PATH (`which -a phux` lists them)",
+        shadow.display(),
+        ours.display(),
+        ours.parent().unwrap_or(ours).display()
+    )
 }
 
 /// Reconcile every successful install while keeping machine output silent.
@@ -1718,5 +1789,28 @@ mod tests {
         assert_eq!(Handoff::Failed(String::new()).as_str(), "failed");
         assert_eq!(Handoff::Refused("why".to_owned()).detail(), Some("why"));
         assert_eq!(Handoff::Upgrading.detail(), None);
+    }
+
+    #[test]
+    fn a_stale_phux_earlier_on_path_is_named() {
+        let temp = tempfile::tempdir().unwrap();
+        let stale = temp.path().join("cargo-bin");
+        let ours = temp.path().join("local-bin");
+        for dir in [&stale, &ours] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("phux"), "#!/bin/sh\n").unwrap();
+            fs::set_permissions(dir.join("phux"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let install = install_at(&ours.join("phux"), InstallSource::DirectRelease);
+        let path = std::env::join_paths([&stale, &ours]).unwrap();
+        assert_eq!(
+            super::shadowing_phux(&install, &path),
+            Some(stale.join("phux"))
+        );
+        let path = std::env::join_paths([&ours, &stale]).unwrap();
+        assert_eq!(super::shadowing_phux(&install, &path), None);
+        let brew = install_at(&ours.join("phux"), InstallSource::Homebrew);
+        let path = std::env::join_paths([&stale, &ours]).unwrap();
+        assert_eq!(super::shadowing_phux(&brew, &path), None);
     }
 }

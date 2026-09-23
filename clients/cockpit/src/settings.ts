@@ -49,7 +49,7 @@ export function settingsCatalog(): readonly Setting[] {
     setting(11, 2, "Keyboard shortcuts", "Shipping Cockpit commands", "Remap and reset actual Cockpit bindings below. Use Cmd-based chords or none; conflicts are checked before applying.", "Live preview; persisted on Save", false, 0),
     setting(12, 4, "Attached session", "Current workspace", "Read-only attached session. Use Sessions to change work.", "Shown on Connection", false, 0),
     setting(13, 4, "Serving machine", "phux on the attached machine", "Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.", "Owned by the serving machine", false, 0),
-    setting(14, 5, "App version", "CFBundleShortVersionString", "The running Phux Cockpit release. Check for Updates uses the same cockpit-vX.Y.Z GitHub stream as scripts/install-cockpit.sh.", "In-app check; installer-placed copies can reinstall", false, 0),
+    setting(14, 5, "App version", "CFBundleShortVersionString", "The running Phux Cockpit release. Check for Updates follows the channel this copy was installed from: cockpit-vX.Y.Z releases, or next (green main) via phux channel next.", "In-app check; installer-placed copies can reinstall", false, 0),
   ];
 }
 

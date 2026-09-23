@@ -34,7 +34,7 @@ same release.
 | Cockpit ZIP, DMG, signature/notarization evidence, and publication | `cockpit-release.yml`, called by `publish.yml` |
 | `phux-cockpit` Homebrew cask | `cockpit-release.yml` |
 | `PhuxFFI-<tag>.xcframework.zip`, its `.sha256`, and `.provenance` on the root release | `ffi-xcframework.yml`, called by `publish.yml` |
-| Moving `next` prerelease (green `main`) | `next-release.yml` |
+| Moving `next` prerelease (green `main`), CLI and Cockpit | `next-release.yml` |
 
 `release.yml` never creates a tag, release, or release body. It uploads assets
 onto the draft release-please made and only flips that draft to public after the
@@ -82,7 +82,7 @@ tap build.
 | Scoped mutation | manual | Bounded Rust or Zig advisory scans; ordinary changed-code checks remain in the product lanes. |
 | Release drift | daily at 15:20 UTC, or manual | `scripts/check-release-drift.mjs`. Fails if a release is stuck. See "When a release goes quiet". |
 | Linear release report | called by `publish` after a public release, or manual dispatch | `linear-release.yml`. Names the Linear release after the tag and copies the tagged changelog section. Root `vX.Y.Z` goes to pipeline `phux`; `cockpit-vX.Y.Z` goes to `phux-cockpit` (secret `LINEAR_COCKPIT_RELEASE_ACCESS_KEY`). A missing Cockpit key warns and skips; it does not hold the GitHub release in draft. |
-| next channel | `ci.yml` success on `main`, coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`. |
+| next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and an ad-hoc-signed Phux Cockpit when its inputs moved, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`; `install-cockpit.sh --channel next` and the app follow `cockpit-channel.json`. |
 
 ### Standard public runner policy
 
@@ -349,6 +349,12 @@ The opt-in `next` channel ([ADR-0113](adr/0113-next-release-channel.md))
 reuses the same member set (either license layout accepted). GitHub's tag is the moving prerelease `next`;
 assets are `phux-next.<sha>-<target>.tar.gz` plus sidecar, and `channel.json`
 is the pointer `phux update --channel next` reads. Homebrew stays on stable.
+Cockpit rides the same prerelease ([ADR-0138](adr/0138-cockpit-rides-the-next-channel.md)):
+`phux-cockpit-next.<sha>-macos-arm64.zip` plus a `.sha256` sidecar in the same
+`"<64 hex>  <archive>"` form, with `cockpit-channel.json` as its pointer. Each
+product rebuilds only when its own inputs moved since its pointer's SHA, and
+`scripts/publish-next-channel.sh [--cockpit]` prunes only that product's
+assets.
 
 ## Versioning
 
