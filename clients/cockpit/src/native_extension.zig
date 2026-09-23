@@ -2447,6 +2447,20 @@ const Rig = struct {
         remote.bridge.outgoing.reset();
     }
 
+    fn attachSharedTabFixture(self: *Rig) !void {
+        _ = try self.attachFixture();
+        const engine = bridge.engine.?;
+        const remote = engine.model.phux().?;
+        const before = engine.model.shared_workspace.revision;
+        _ = (try remote.requestWorkspaceRefresh()).?;
+        try stageWorkspaceReply(remote, "workspace_add_metadata.bin", 14, 3);
+        try stageWorkspaceReply(remote, "workspace_add_state.bin", 13, 2);
+        _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+        try std.testing.expect(engine.model.shared_workspace.revision > before);
+        try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+        remote.bridge.outgoing.reset();
+    }
+
     fn attachFixtureWithHello(self: *Rig, hello: []const u8) !cockpit.TerminalRef {
         if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
         const engine = bridge.engine.?;
@@ -4687,11 +4701,15 @@ test "shipping Phux callbacks emit structured key text paste and focus frames" {
 }
 
 fn expectOutgoingTag(remote: anytype, tag: u8) !void {
+    try takeOutgoingTag(remote, tag);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+fn takeOutgoingTag(remote: anytype, tag: u8) !void {
     const frame = remote.bridge.outgoing.take() orelse return error.TestExpectedOutgoingFrame;
     defer remote.bridge.outgoing.release(frame);
     try std.testing.expect(frame.len > 4);
     try std.testing.expectEqual(tag, frame[4]);
-    try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
 fn stageRemoteOutput(remote: anytype, text: []const u8, seq: u64) !void {
@@ -4808,6 +4826,66 @@ test "shipping platform shortcut executes once and rejects the superseded regist
     try bridge.editKeybindings(&.{ 1, 1, 0, 5, 'C', 'm', 'd', '+', 'r' });
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = shortcut });
     try std.testing.expectEqual(before + 1, bridge.engine.?.model.ws().tab_count);
+}
+
+test "shipping Cmd W confirms a shared non-last tab close and remains responsive" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedTabFixture();
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    try rig.dispatch(.{ .select_tab = 1 });
+    try rig.settleCurrent();
+    const closing = engine.model.focusedTerminalRef().?;
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "w") and item.modifiers.command) break item;
+    } else return error.TestExpectedCloseShortcut;
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
+        .id = shortcut.id,
+        .key = shortcut.key,
+        .modifiers = shortcut.modifiers,
+        .window_id = 1,
+    } });
+    try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+    const pending = engine.model.shared_mutations.pending[0] orelse return error.TestExpectedSharedClose;
+    try std.testing.expectEqual(.remove, pending.mutation.kind);
+    try std.testing.expect(pending.mutation.terminal_ref.?.eql(closing));
+    try std.testing.expectEqual(.pending, remote.workspaceSnapshot().status);
+    const request = remote.workspaceSnapshot().request_id;
+    try std.testing.expectEqual(pending.mutation_request, request);
+    remote.bridge.outgoing.reset();
+
+    // Initial attach used wire requests 0/1 and the setup refresh used 2/3.
+    // The mutation confirmation reads use 4/5; the host's aggregate request
+    // ID above intentionally belongs to a different namespace.
+    try stageWorkspaceReply(remote, "workspace_refresh_metadata.bin", 3, 5);
+    try stageWorkspaceReply(remote, "workspace_refresh_state.bin", 2, 4);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try rig.settleCurrent();
+
+    try std.testing.expectEqual(@as(usize, 1), engine.model.ws().tab_count);
+    try std.testing.expect(engine.model.locateTerminal(closing) == null);
+    try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
+    try std.testing.expect(!Bridge.hasPending(&bridge));
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.commandResults.recent.len);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.commandResults.recent[0].operation);
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var terminal_count: usize = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role == .textbox) terminal_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), terminal_count);
+    remote.bridge.outgoing.reset();
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas z z");
+    try takeOutgoingTag(remote, 0x10);
+    try expectOutgoingTag(remote, 0x10);
 }
 
 test "first chord in another window obeys that window's search ownership" {
