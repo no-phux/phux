@@ -3,6 +3,21 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0](https://github.com/no-phux/phux/compare/cockpit-v0.29.0...cockpit-v0.30.0) (2026-09-23)
+
+
+### Features
+
+* **cockpit:** make the header tab-first with grouped workspace actions ([#846](https://github.com/no-phux/phux/issues/846)) ([5589e8e](https://github.com/no-phux/phux/commit/5589e8e96fa62610f4c76d431298f35a1ac5f2d0))
+* **cockpit:** refine native tab interaction and recovery ([#850](https://github.com/no-phux/phux/issues/850)) ([6393503](https://github.com/no-phux/phux/commit/6393503d400347fad65e8c353697ab64b400493a))
+* **release:** ship Cockpit on the next channel and switch it with phux channel ([#851](https://github.com/no-phux/phux/issues/851)) ([56c7a3e](https://github.com/no-phux/phux/commit/56c7a3e8df8a980103c29394da8d9f323d3cc91f))
+
+
+### Bug Fixes
+
+* **ci:** keep ReleaseSafe and fat LTO off pull requests ([#842](https://github.com/no-phux/phux/issues/842)) ([0303d38](https://github.com/no-phux/phux/commit/0303d3872676d400e78735ec3359d68f1fac3625))
+* **cockpit:** align switcher shortcuts and agent discovery ([#848](https://github.com/no-phux/phux/issues/848)) ([55c635b](https://github.com/no-phux/phux/commit/55c635b698f38473efe7ca1097a4a1892e55185c))
+
 ## [0.29.0](https://github.com/no-phux/phux/compare/cockpit-v0.28.0...cockpit-v0.29.0) (2026-09-22)
 
 
