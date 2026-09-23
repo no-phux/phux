@@ -3,6 +3,20 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0](https://github.com/no-phux/phux/compare/cockpit-v0.28.0...cockpit-v0.29.0) (2026-09-22)
+
+
+### Features
+
+* **cockpit:** add identity-safe native tab context actions ([#840](https://github.com/no-phux/phux/issues/840)) ([3b64ad2](https://github.com/no-phux/phux/commit/3b64ad2ae56e0e04c6575ddfa634e4fcce113c07))
+
+
+### Bug Fixes
+
+* **ci:** ship drafts from one publish workflow ([#833](https://github.com/no-phux/phux/issues/833)) ([bf37d88](https://github.com/no-phux/phux/commit/bf37d88bbbee3ecbd0fc0e57cde7d197c517b74b))
+* **ci:** stop relinking artifacts the diff did not change ([#837](https://github.com/no-phux/phux/issues/837)) ([fe6f95f](https://github.com/no-phux/phux/commit/fe6f95fc1b32dd872cc93fd67742c8784e9b8ca2))
+* **cockpit:** finish native interaction and presentation craft pass ([#839](https://github.com/no-phux/phux/issues/839)) ([a7e06ee](https://github.com/no-phux/phux/commit/a7e06ee2931ee88dd69b3a12b1bbbbb11d9c730c))
+
 ## [0.28.0](https://github.com/no-phux/phux/compare/cockpit-v0.27.1...cockpit-v0.28.0) (2026-09-22)
 
 

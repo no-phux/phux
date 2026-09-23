@@ -520,8 +520,7 @@ pub(crate) enum Command {
         /// Attach as a viewer: watch every pane, type into none.
         /// The server refuses this attach's input, and widening it takes a
         /// fresh attach without the flag, which every watcher sees. Your
-        /// viewport still sizes the panes, and an app waiting on a
-        /// terminal-query reply times out.
+        /// viewport still sizes the panes.
         #[usage(long, conflicts("--take"), help_heading = "Attach role")]
         viewer: bool,
 

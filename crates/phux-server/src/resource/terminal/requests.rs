@@ -295,8 +295,8 @@ pub(crate) struct EncodedInputRequest {
     pub(crate) bytes: Bytes,
     /// Whether this request may arm the `echo.server` sample: true for a key
     /// or paste (something a program answers), false for mouse, focus, and
-    /// opaque replies, which would otherwise be paired with the next
-    /// unrelated output.
+    /// terminal-generated replies, which would otherwise be paired with the
+    /// next unrelated output.
     pub(crate) echo_probe: bool,
     /// See [`WriteCompletion`] and [`WriteCompletionSink`]. Dropping the sink
     /// reports indeterminate delivery.
@@ -314,14 +314,6 @@ impl EncodedInputRequest {
         Self {
             bytes: bytes.into(),
             echo_probe,
-            completion: None,
-        }
-    }
-
-    pub(crate) const fn opaque(bytes: Bytes) -> Self {
-        Self {
-            bytes,
-            echo_probe: false,
             completion: None,
         }
     }

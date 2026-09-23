@@ -25,8 +25,8 @@ use crate::state::{
     TerminalInput,
 };
 use crate::terminal_actor::{
-    ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenReply,
-    ScreenRequest, TerminalActor, TerminalHandle,
+    ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalActor,
+    TerminalHandle,
 };
 
 /// The command-result shape of a Terminal-only request aimed at a resource
@@ -6094,126 +6094,28 @@ pub(crate) fn handle_terminal_input(
     }
 }
 
-/// Route one opaque terminal-engine reply directly to the PTY byte lane.
+/// Discard one client terminal-engine reply without writing it to the PTY.
 ///
-/// These bytes are already encoded by the client's terminal emulator in
-/// response to terminal output (for example DSR or color queries). They must
-/// not pass through key/paste encoders or any text normalization. The same
-/// subscription and input-lease authority gate as ordinary input prevents an
-/// unattached client or non-holder from writing to another terminal.
+/// The server's canonical terminal already answers every query the child
+/// writes (DSR, DA, DECRQM, XTWINOPS, OSC 10/11, ...) the moment it parses
+/// the output, exactly once, whether zero or many clients are attached. A
+/// client replica parses the same bytes and generates the same reply a
+/// network round trip later; writing it too would hand the child a second
+/// answer it never asked for, which a prompt library such as `gh`'s reads
+/// as typed input (`1R` in a filter box). The frame stays accepted so a
+/// client built before this change keeps working, but its bytes are
+/// dropped here (input.md §6).
 pub(crate) fn handle_terminal_reply(
-    state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
-    bytes: Bytes,
+    bytes: &[u8],
 ) {
-    const FRAME_LABEL: &str = "INPUT_TERMINAL_REPLY";
-
-    if let ResolvedOwned::Remote(route) =
-        state.with(|s| s.resolve_resource(wire_terminal_id).into_owned())
-    {
-        relay_terminal_reply(
-            state,
-            client_id,
-            wire_terminal_id,
-            &route,
-            bytes,
-            FRAME_LABEL,
-        );
-        return;
-    }
-
-    let _ = with_attached_input_destination(
-        state,
-        client_id,
-        wire_terminal_id,
-        FRAME_LABEL,
-        |destination| {
-            let dispatched = destination
-                .handle
-                .encoded_input
-                .try_send(EncodedInputRequest::opaque(bytes));
-            log_terminal_reply_dispatch(&dispatched, client_id, wire_terminal_id);
-        },
+    trace!(
+        ?client_id,
+        ?wire_terminal_id,
+        bytes = bytes.len(),
+        "terminal reply discarded: the canonical terminal answers queries",
     );
-}
-
-/// Relay a satellite-routed terminal reply over the hub link.
-///
-/// The same subscription and input-lease authority gate as ordinary input
-/// applies: the caller needs its own `ATTACH_RESOURCE` proxy attach, and a
-/// non-holder cannot write while another hub consumer holds the lease.
-fn relay_terminal_reply(
-    state: &SharedState,
-    client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    route: &RelayRoute,
-    bytes: Bytes,
-    frame_label: &'static str,
-) {
-    if !state.with(|s| s.has_satellite_proxy_attach(client_id, &route.host, route.id)) {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            "satellite terminal reply requires this client's ATTACH_RESOURCE proxy; dropping",
-        );
-        return;
-    }
-    if state.with(|s| {
-        s.satellite_lease_holder(&route.host, route.id)
-            .is_some_and(|holder| holder != client_id)
-    }) {
-        trace!(
-            ?client_id,
-            ?wire_terminal_id,
-            "satellite terminal reply dropped: another hub consumer holds the input lease",
-        );
-        return;
-    }
-    if !relay_satellite_frame(
-        client_id,
-        wire_terminal_id,
-        route,
-        frame_label,
-        |terminal_id| FrameKind::InputTerminalReply { terminal_id, bytes },
-    ) {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            "terminal reply carried an unroutable satellite terminal id; dropping",
-        );
-    }
-}
-
-/// Log the outcome of handing one opaque terminal reply to the PTY byte lane.
-fn log_terminal_reply_dispatch(
-    dispatched: &Result<(), tokio::sync::mpsc::error::TrySendError<EncodedInputRequest>>,
-    client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-) {
-    match dispatched {
-        Ok(()) => {
-            trace!(
-                ?client_id,
-                ?wire_terminal_id,
-                "opaque terminal reply routed to PTY byte lane",
-            );
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            warn!(
-                ?client_id,
-                ?wire_terminal_id,
-                "encoded-input actor mailbox full; dropping terminal reply",
-            );
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            debug!(
-                ?client_id,
-                ?wire_terminal_id,
-                "pane actor gone; dropping terminal reply",
-            );
-        }
-    }
 }
 
 /// Route an inbound `FRAME_ACK` (SPEC §7.proto.1 / §12.2) to the
