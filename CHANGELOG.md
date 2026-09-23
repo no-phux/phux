@@ -9,6 +9,27 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.44.0](https://github.com/no-phux/phux/compare/v0.43.0...v0.44.0) (2026-09-23)
+
+
+### Features
+
+* **release:** ship Cockpit on the next channel and switch it with phux channel ([#851](https://github.com/no-phux/phux/issues/851)) ([56c7a3e](https://github.com/no-phux/phux/commit/56c7a3e8df8a980103c29394da8d9f323d3cc91f))
+* **tui:** align the chrome on one grid with one badge vocabulary ([73b55ad](https://github.com/no-phux/phux/commit/73b55adfac02d4b740a2370e8c67cb5f76cce1a6))
+* **tui:** align the chrome on one grid with one badge vocabulary ([#849](https://github.com/no-phux/phux/issues/849)) ([73b55ad](https://github.com/no-phux/phux/commit/73b55adfac02d4b740a2370e8c67cb5f76cce1a6))
+
+
+### Bug Fixes
+
+* **ci:** keep ReleaseSafe and fat LTO off pull requests ([#842](https://github.com/no-phux/phux/issues/842)) ([0303d38](https://github.com/no-phux/phux/commit/0303d3872676d400e78735ec3359d68f1fac3625))
+* **server:** answer terminal queries once, from the canonical terminal ([#845](https://github.com/no-phux/phux/issues/845)) ([935e414](https://github.com/no-phux/phux/commit/935e4143b3d4eed9f62ed5a350b3251acdb6ce4b))
+* **site:** pin hosted native to 0.43.0 ([#844](https://github.com/no-phux/phux/issues/844)) ([7b70501](https://github.com/no-phux/phux/commit/7b70501ab39643c7006b41f5cde8f56d50d98bdd))
+
+
+### Documentation
+
+* **site:** add a privacy policy for the phux apps and phux.sh ([#847](https://github.com/no-phux/phux/issues/847)) ([b3587a6](https://github.com/no-phux/phux/commit/b3587a61862d9285e205ffc4d42776aa6ed43487))
+
 ## [0.43.0](https://github.com/no-phux/phux/compare/v0.42.0...v0.43.0) (2026-09-22)
 
 
