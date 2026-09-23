@@ -43,6 +43,8 @@ The 640pt Settings/picker maximum is a composition choice on the same grid;
 the compiled layout audit verifies it at 900×420, 1100×640 and 1680×1000.
 Healthy windows give footer space back to the terminal. Failure notices retain
 their measured band, and terminal geometry is measured from the compiled tree.
+Connection recovery takes precedence over retained command feedback: an old
+command outcome must never hide the Reconnect action.
 
 The top header is tab-first: traffic-light reserve, equal-width tabs, New Tab,
 and one Workspace actions trigger. Tabs divide the measured strip without a
@@ -51,6 +53,26 @@ menu groups session/machine/agent navigation, window/layout actions, and
 Commands/Settings. It names the current window's session and connection inside
 the menu rather than charging every tab for a permanent session chip. Side-tab
 mode uses the freed header space for the session title.
+
+Top-tab titles are direct SDK tab triggers: Left/Right and Home/End move
+keyboard focus among visible tabs, and Enter/Space activates the focused tab.
+The SDK paints their selected underline within the shared 32pt header-control
+height. Each tab has a separate 32pt close target and a fixed 16pt attention
+slot; neither participates in arrow traversal. The shipping tab floor is 156pt:
+the existing 120pt readable floor plus the 32pt close target and its 4pt gap.
+The strip overflows before titles collapse into control furniture. Closing a
+background tab uses its captured identity and preserves the selected terminal.
+Every close action
+has a full-title accessible name; the selected tab also has a full-title close
+tooltip. Limiting that transient surface to selection keeps a crowded rail
+within the SDK's anchored-surface budget. Side tabs use the same close target
+and identity contract.
+
+An empty session uses a quiet inline group: session heading, machine/status
+detail, and New Tab. It sits below the header and beside the side rail, retaining
+its semantic surface behind chrome text over arbitrary terminal themes. The
+action reads Opening while pending, with failures shown next to it. A picked
+remote session retains its explicit dismiss action.
 
 The anchored menu is 280pt wide (a 4pt-grid composition choice), aligned to the
 trailing trigger with an 8pt token gap. Its rows, separators, corners and shadow

@@ -10,35 +10,25 @@
       <row height="50" padding="4" gap="8" cross="center" window-drag="true">
         <spacer width="78" />
         <if test="{tabPlacement == 'top'}">
-          <tabs grow="1" gap="4" label="Terminal tabs">
+          <tabs height="32" grow="1" gap="4" cross="center" label="Terminal tabs">
             <for each="tabs" key="id" as="tab">
-              <stack width="0" grow="1" height="32">
-                <row gap="4" cross="center">
-                  <!-- Full titles stay available to accessibility. The marker
-                       owns a fixed slot so attention cannot shorten the button. -->
-                  <stack grow="1" on-press="select_target:{tab.target}">
-                    <toggle-button size="sm" variant="ghost" role="tab" label="{tab.title}" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}" grow="1">{tab.title}</toggle-button>
-                    <context-menu>
-                      <menu-item disabled="{tab.movePreviousDisabled}" on-press="move_tab_previous_target:{tab.target}">Move Left</menu-item>
-                      <menu-item disabled="{tab.moveNextDisabled}" on-press="move_tab_next_target:{tab.target}">Move Right</menu-item>
-                      <separator />
-                      <menu-item on-press="close_tab_target:{tab.target}">Close Tab</menu-item>
-                    </context-menu>
-                  </stack>
-                  <if test="{tab.attention}"><text width="16" foreground="warning" label="{tab.attentionLabel}">●</text></if>
-                  <else><spacer width="16" /></else>
-                </row>
-                <!-- Overlay the indicator inside the shared 32pt control
-                     register: it must not lift tab titles above the + / menu. -->
-                <column grow="1">
-                  <spacer grow="1" />
-                  <row height="2">
-                    <spacer width="8" />
-                    <if test="{tab.selected}"><spacer grow="1" height="2" background="accent" /></if>
-                    <else><spacer grow="1" height="2" /></else>
-                    <spacer width="28" />
-                  </row>
-                </column>
+              <!-- Direct buttons become native tab triggers: sibling arrow,
+                   Home/End focus and the selected underline belong to the SDK.
+                   Fixed attention/close slots keep all titles equal in width. -->
+              <button width="0" grow="1" height="32" size="sm" variant="ghost" role="tab" label="{tab.title}" selected="{tab.selected}" accent="accent" on-press="select_target:{tab.target}">{tab.title}
+                <context-menu>
+                  <menu-item disabled="{tab.movePreviousDisabled}" on-press="move_tab_previous_target:{tab.target}">Move Left</menu-item>
+                  <menu-item disabled="{tab.moveNextDisabled}" on-press="move_tab_next_target:{tab.target}">Move Right</menu-item>
+                  <separator />
+                  <menu-item on-press="close_tab_target:{tab.target}">Close Tab</menu-item>
+                </context-menu>
+              </button>
+              <if test="{tab.attention}"><text width="16" foreground="warning" label="{tab.attentionLabel}">●</text></if>
+              <else><spacer width="16" /></else>
+              <!-- Wrapping only the close control keeps it out of tab traversal. -->
+              <stack width="32" height="32">
+                <button size="sm" variant="ghost" icon="x" label="{tab.closeLabel}" on-press="close_tab_target:{tab.target}" />
+                <if test="{tab.selected}"><tooltip anchor="below">Close {tab.title}</tooltip></if>
               </stack>
             </for>
             <if test="{more}"><stack width="32"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button><tooltip anchor="below">Show hidden tabs</tooltip></stack></if>
@@ -109,6 +99,10 @@
                       </list-item>
                       <if test="{row.mark}"><text width="16" foreground="warning" label="{row.attentionLabel}">{row.mark}</text></if>
                       <else><spacer width="16" /></else>
+                      <stack width="32" height="32">
+                        <button size="sm" variant="ghost" icon="x" label="{row.closeLabel}" on-press="close_tab_target:{row.target}" />
+                        <if test="{row.selected}"><tooltip anchor="below">Close {row.label}</tooltip></if>
+                      </stack>
                     </row>
                   </else>
                 </for>
@@ -118,15 +112,15 @@
         </if>
         <column grow="1">
           <spacer grow="1" label="phux-terminal-space" />
-          <if test="{commandNotice}"><status-bar>{commandNotice}</status-bar></if>
+          <if test="{canReconnect}">
+            <row height="40" gap="8" padding="4" cross="center" background="surface">
+              <icon name="alert" width="16" height="16" foreground="warning" />
+              <text grow="1">{status}</text>
+              <button size="sm" variant="ghost" on-press="reconnect">Reconnect</button>
+            </row>
+          </if>
           <else>
-            <if test="{canReconnect}">
-              <row height="40" gap="8" padding="4" cross="center" background="surface">
-                <icon name="alert" width="16" height="16" foreground="warning" />
-                <text grow="1">{status}</text>
-                <button size="sm" variant="ghost" on-press="reconnect">Reconnect</button>
-              </row>
-            </if>
+            <if test="{commandNotice}"><status-bar>{commandNotice}</status-bar></if>
             <else>
               <if test="{status != 'Local terminals'}">
                 <if test="{status != 'Phux connected'}"><status-bar height="24">{status}</status-bar></if>
@@ -403,25 +397,31 @@
 <template name="cockpit-empty" args="emptyopen name detail picked">
   <stack>
     <if test="{emptyopen}">
-      <row main="center" cross="start" padding="16">
-        <panel grow="1" max-width="640" padding="16">
-          <column gap="8">
-            <row cross="center" gap="8">
-              <icon name="terminal" width="16" height="16" />
-              <text grow="1" overflow="ellipsis">{name}</text>
-              <if test="{picked}"><button size="sm" variant="ghost" icon="x" label="Dismiss empty session" on-press="empty_dismiss" /></if>
-            </row>
-            <text foreground="text_muted" overflow="ellipsis">{detail}</text>
-            <text size="heading">Empty session</text>
-            <text wrap="true">Open a new tab to start a terminal.</text>
-            <if test="{emptyNotice}"><text wrap="true" foreground="text_muted">{emptyNotice}</text></if>
-            <row gap="8" cross="center">
-              <spacer grow="1" />
-              <button size="sm" disabled="{emptyBusy}" on-press="empty_new_tab">New Tab</button>
-            </row>
-          </column>
-        </panel>
-      </row>
+      <column>
+        <!-- Match the header and side rail; an empty session leaves both usable. -->
+        <spacer height="50" />
+        <row cross="start">
+          <if test="{tabPlacement == 'side'}"><spacer width="224" /></if>
+          <row grow="1" main="center" cross="start" padding="16">
+            <!-- Chrome ink must retain its own surface over arbitrary VT themes. -->
+            <column grow="1" max-width="640" padding="16" gap="8" background="surface">
+              <row cross="center" gap="8">
+                <icon name="terminal" width="16" height="16" />
+                <text grow="1" size="heading" overflow="ellipsis">{name}</text>
+                <if test="{picked}"><button size="sm" variant="ghost" icon="x" label="Dismiss empty session" on-press="empty_dismiss" /></if>
+              </row>
+              <text foreground="text_muted" overflow="ellipsis">{detail}</text>
+              <if test="{emptyBusy}">
+                <row><button size="sm" disabled="true" on-press="empty_new_tab">Opening…</button></row>
+              </if>
+              <else>
+                <if test="{emptyNotice}"><text wrap="true" foreground="warning">{emptyNotice}</text></if>
+                <row><button size="sm" on-press="empty_new_tab">New Tab</button></row>
+              </else>
+            </column>
+          </row>
+        </row>
+      </column>
     </if>
   </stack>
 </template>
