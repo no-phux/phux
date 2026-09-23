@@ -250,7 +250,7 @@ fn agentRequest(revision: u64, offset: u16) [13]u8 {
 fn inspectionField(page: []const u8, index: usize) ![]const u8 {
     try testing.expect(page.len >= 19);
     try testing.expectEqual(@as(u8, 1), page[15]);
-    var at: usize = 19 + @as(usize, page[18]);
+    var at: usize = 20 + @as(usize, page[19]);
     for (0..index) |_| {
         try testing.expect(at + 2 <= page.len);
         at += 2 + @as(usize, std.mem.readInt(u16, page[at..][0..2], .little));
@@ -259,6 +259,53 @@ fn inspectionField(page: []const u8, index: usize) ![]const u8 {
     const length = std.mem.readInt(u16, page[at..][0..2], .little);
     try testing.expect(at + 2 + length <= page.len);
     return page[at + 2 ..][0..length];
+}
+
+test "agent inspector lists declared terminal identities without inventing AgentSessions" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const parent = try remoteParent(engine);
+    try fixture.adoptAgentIdentities(model.phux().?.host, &.{.{
+        .terminal = parent.id,
+        .provider_name = "opencode",
+        .native_id = "thread-42",
+        .state = "idle",
+    }});
+
+    try testing.expectEqual(@as(usize, 0), model.phux().?.agentSessions().len);
+    try testing.expectEqual(@as(usize, 1), ts_agents.total(model));
+    const request = agentRequest(engine.revision, 0);
+    var buffer: [4096]u8 = undefined;
+    const page = try engine.navigationSnapshot(&request, &buffer);
+    try testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, page[13..15], .little));
+    try testing.expectEqual(@as(u8, 1), page[15]);
+    try testing.expectEqual(@intFromEnum(ts_agents.InspectionKind.terminal_identity), page[16]);
+    try testing.expectEqualStrings("phux:0:7@", try inspectionField(page, 0));
+    try testing.expectEqualStrings("", try inspectionField(page, 1));
+    try testing.expectEqualStrings("thread-42", try inspectionField(page, 2));
+    try testing.expect(std.mem.indexOf(u8, try inspectionField(page, 3), "No AgentSession evidence stream is attached") != null);
+    const target = std.mem.readInt(u16, page[17..19], .little);
+    const resolved = engine_module.navigation.resolve(model, engine.revision, engine.revision, target).?;
+    try testing.expect(resolved.placed_terminal.terminal_ref.eql(parent.ref));
+}
+
+test "a terminal identity is not duplicated when its AgentSession is listed" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const parent = try remoteParent(engine);
+    try fixture.adoptAgentSessions(model.phux().?.host, &.{.{ .id = 9001, .parent = parent.id, .provider_name = "opencode", .state = "working" }});
+    try fixture.adoptAgentIdentities(model.phux().?.host, &.{.{ .terminal = parent.id, .provider_name = "opencode", .state = "idle" }});
+
+    try testing.expectEqual(@as(usize, 1), ts_agents.total(model));
+    var buffer: [4096]u8 = undefined;
+    const page = try engine.navigationSnapshot(&agentRequest(engine.revision, 0), &buffer);
+    try testing.expectEqual(@intFromEnum(ts_agents.InspectionKind.session), page[16]);
+    try testing.expectEqualStrings("phux:0:9001@", try inspectionField(page, 0));
+    try testing.expectEqualStrings("phux:0:7@", try inspectionField(page, 1));
 }
 
 test "agent inspection preserves full reason provider identity and lossless u64 evidence" {

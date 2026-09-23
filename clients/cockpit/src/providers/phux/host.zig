@@ -29,6 +29,7 @@ test {
     _ = @import("close_resource_tests.zig");
 }
 pub const AgentSession = agent_sessions.Session;
+pub const AgentIdentity = agent_sessions.Identity;
 pub const AgentState = agent_sessions.State;
 pub const AgentRecordsKind = agent_sessions.RecordsKind;
 
@@ -1197,6 +1198,12 @@ pub const Host = struct {
         return host.agents.all();
     }
 
+    /// Agent identities declared on Terminal resources, without synthetic
+    /// AgentSession resources or stream evidence.
+    pub fn agentIdentities(host: *const Host) []const AgentIdentity {
+        return host.agents.allIdentities();
+    }
+
     /// The agent sessions running under one terminal. `out` bounds the answer.
     pub fn agentSessionsUnder(host: *const Host, ref: provider.TerminalRef, out: []*const AgentSession) usize {
         const parent = host.remoteFromRef(ref) orelse return 0;
@@ -1982,12 +1989,15 @@ pub const Host = struct {
         const count = c.phux_client_resource_count(host.client);
         var entries: std.ArrayListUnmanaged(agent_sessions.Entry) = .empty;
         defer entries.deinit(host.gpa);
+        var identities: std.ArrayListUnmanaged(agent_sessions.IdentityEntry) = .empty;
+        defer identities.deinit(host.gpa);
         for (0..count) |index| {
             var raw = workspace_bridge.record(c.PhuxResourceInfo);
             try resultError(c.phux_client_resource_get(host.client, index, &raw));
             try host.appendAgentEntry(&entries, raw);
+            try host.appendAgentIdentity(&identities, raw);
         }
-        try host.adoptAgentEntries(entries.items);
+        try host.adoptAgentCatalog(entries.items, identities.items);
     }
 
     fn appendAgentEntry(host: *Host, entries: *std.ArrayListUnmanaged(agent_sessions.Entry), raw: c.PhuxResourceInfo) !void {
@@ -1998,9 +2008,22 @@ pub const Host = struct {
         try entries.append(host.gpa, entry);
     }
 
+    fn appendAgentIdentity(host: *Host, entries: *std.ArrayListUnmanaged(agent_sessions.IdentityEntry), raw: c.PhuxResourceInfo) !void {
+        if (raw.kind != c.PHUX_RESOURCE_TERMINAL) return;
+        const entry = try agentIdentityEntryFromC(raw) orelse return;
+        if (entries.items.len == agent_sessions.max_sessions) return error.Protocol;
+        try entries.append(host.gpa, entry);
+    }
+
     fn adoptAgentEntries(host: *Host, entries: []const agent_sessions.Entry) !void {
         const changed = !host.agents.catalogMatches(entries);
-        try host.agents.adopt(host.gpa, entries);
+        try host.agents.adoptCatalog(host.gpa, entries, &.{});
+        if (changed) host.metadata_changed = true;
+    }
+
+    fn adoptAgentCatalog(host: *Host, entries: []const agent_sessions.Entry, identities: []const agent_sessions.IdentityEntry) !void {
+        const changed = !host.agents.catalogMatches(entries) or !host.agents.identitiesMatch(identities);
+        try host.agents.adoptCatalog(host.gpa, entries, identities);
         if (changed) host.metadata_changed = true;
     }
 
@@ -2409,6 +2432,17 @@ fn agentEntryFromC(raw: c.PhuxResourceInfo) !agent_sessions.Entry {
     };
 }
 
+fn agentIdentityEntryFromC(raw: c.PhuxResourceInfo) !?agent_sessions.IdentityEntry {
+    const provider_name = try effectSlice(raw.provider);
+    if (provider_name.len == 0) return null;
+    return .{
+        .terminal = try remoteFromC(raw.terminal_id),
+        .provider_name = provider_name,
+        .native_id = try effectSlice(raw.native_id),
+        .state = try effectSlice(raw.state),
+    };
+}
+
 fn effectSlice(raw: c.PhuxBytes) ![]const u8 {
     if (raw.len != 0 and raw.data == null) return error.Protocol;
     return if (raw.len == 0) &.{} else raw.data[0..raw.len];
@@ -2509,10 +2543,13 @@ fn agentRecordsEffect(id: u32, detail: u32, payload: []const u8) c.PhuxClientEff
 fn adoptCatalogFixture(host: *Host, catalog: []const c.PhuxResourceInfo) !void {
     var entries: std.ArrayListUnmanaged(agent_sessions.Entry) = .empty;
     defer entries.deinit(host.gpa);
+    var identities: std.ArrayListUnmanaged(agent_sessions.IdentityEntry) = .empty;
+    defer identities.deinit(host.gpa);
     for (catalog) |raw| {
         try host.appendAgentEntry(&entries, raw);
+        try host.appendAgentIdentity(&identities, raw);
     }
-    try host.adoptAgentEntries(entries.items);
+    try host.adoptAgentCatalog(entries.items, identities.items);
 }
 
 test "the resource catalog projects agent rows under a parent and never a replica" {
@@ -2523,7 +2560,7 @@ test "the resource catalog projects agent rows under a parent and never a replic
 
     const parent_raw: c.PhuxResourceId = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = 7, .host = bytes("") };
     const catalog = [_]c.PhuxResourceInfo{
-        resourceInfoFixture(7, c.PHUX_RESOURCE_TERMINAL, null, "", "", ""),
+        resourceInfoFixture(7, c.PHUX_RESOURCE_TERMINAL, null, "opencode", "native-thread", "idle"),
         resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "claude", "sess-1", "working"),
         resourceInfoFixture(11, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "codex", "sess-2", "done"),
         // A kind this header does not name is opaque and is never a terminal.
@@ -2540,6 +2577,11 @@ test "the resource catalog projects agent rows under a parent and never a replic
     try std.testing.expect(rows[0].parentRef().?.eql(parent_ref));
     try std.testing.expectEqual(AgentState.done, rows[1].state());
     try std.testing.expect(!host.agentAttention(parent_ref));
+    try std.testing.expectEqual(@as(usize, 1), host.agentIdentities().len);
+    try std.testing.expect(host.agentIdentities()[0].ref().eql(parent_ref));
+    try std.testing.expectEqualStrings("opencode", host.agentIdentities()[0].provider_name);
+    try std.testing.expectEqualStrings("native-thread", host.agentIdentities()[0].native_id);
+    try std.testing.expectEqualStrings("idle", host.agentIdentities()[0].state);
 
     // A row is not a surface: no replica was minted, the terminal roster is
     // untouched, and the identity is refused if anything tries to mint one.

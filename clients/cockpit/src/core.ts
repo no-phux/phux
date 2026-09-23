@@ -1078,7 +1078,7 @@ function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
 
 function navigationNotice(agents: boolean, scope: number, total: number, offset: number): Uint8Array {
   if (agents) {
-    if (total === 0) return asciiBytes("No agents found. Refresh to check again.");
+    if (total === 0) return asciiBytes("No agent identities or AgentSessions are reported.");
     return joinBytes(asciiBytes("Agent "), decimalBytes(offset + 1), joinBytes(asciiBytes(" of "), decimalBytes(total), asciiBytes(" / Last reported state")));
   }
   if (scope === 4) return total === 0 ? asciiBytes("No matching windows") : asciiBytes("Choose a window or tab to bring existing work forward");

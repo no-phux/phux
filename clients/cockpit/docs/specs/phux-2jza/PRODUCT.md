@@ -181,10 +181,11 @@ continue to govern presentation.
     terms, actual shortcut hints and context. It includes session and tab
     creation, splits, rename, directory navigation, machine/window navigation,
     settings and Edit Configuration. Disabled actions explain their condition.
-23. Cmd+Shift+P opens Commands. The existing Go to Terminal action remains
-    available within it and from native menus. Cmd+K continues to mean Clear;
-    Cmd+Shift+G remains Find Previous. Familiar working shortcuts are preserved
-    unless this contract explicitly changes their meaning.
+23. Cmd+K opens the searchable Sessions switcher. Cmd+Shift+P opens Commands;
+    the existing Go to Terminal action remains available within it and from
+    native menus. Cmd+Shift+K clears the terminal; Cmd+Shift+G remains Find
+    Previous. Familiar working shortcuts are preserved unless this contract
+    explicitly changes their meaning.
 24. Native menus expose ordinary work without requiring any shortcut knowledge.
     The initial empty state gives one useful action, not an introduction to
     internal architecture. Labels and tooltips teach the same vocabulary used

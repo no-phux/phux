@@ -104,7 +104,8 @@ pub const PhuxProvider = struct {
     pub const test_support = host_mod.test_support;
     pub const SessionSummary = host_mod.SessionSummary;
     pub const OperationResult = host_mod.OperationResult;
-    pub const AgentSession = host_mod.AgentSession;
+pub const AgentSession = host_mod.AgentSession;
+pub const AgentIdentity = host_mod.AgentIdentity;
     pub const AgentState = host_mod.AgentState;
     context_id: u64,
     gpa: std.mem.Allocator,
@@ -832,6 +833,12 @@ pub const PhuxProvider = struct {
     /// Agent sessions from the resource catalog, in catalog order.
     pub fn agentSessions(self: *const PhuxProvider) []const AgentSession {
         return self.host.agentSessions();
+    }
+
+    /// Agent identities declared on Terminal resources, without an
+    /// AgentSession resource or record stream.
+    pub fn agentIdentities(self: *const PhuxProvider) []const AgentIdentity {
+        return self.host.agentIdentities();
     }
 
     /// The agent sessions running under one terminal.

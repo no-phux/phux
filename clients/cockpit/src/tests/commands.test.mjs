@@ -28,10 +28,12 @@ test('command catalog derives exactly from shipping menu labels and shortcuts', 
   assert.equal(generated, generatedCatalog(manifest));
   const fixture = readFileSync(new URL('./shipping_commands.zig', import.meta.url), 'utf8');
   assert.equal(fixture, generatedShippingFixture(manifest));
+  assert.match(fixture, /\.id = "navigator.sessions", \.key = "k", \.modifiers = \.\{ \.primary = true \}/);
   assert.match(fixture, /\.id = "commands.open", \.key = "p", \.modifiers = \.\{ \.primary = true, \.shift = true \}/);
+  assert.match(fixture, /\.id = "terminal.clear", \.key = "k", \.modifiers = \.\{ \.primary = true, \.shift = true \}/);
   assert.equal((fixture.match(/\.command = /g) ?? []).length, COMMAND_CATALOG.length);
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'commands.open').shortcut), 'Cmd+Shift+P');
-  assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.clear').shortcut), 'Cmd+K');
+  assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.clear').shortcut), 'Cmd+Shift+K');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'terminal.find-previous').shortcut), 'Cmd+Shift+G');
   assert.equal(text(COMMAND_CATALOG.find(command => command.name === 'tabs.palette').shortcut), '');
 });
@@ -48,6 +50,12 @@ test('CmdShiftP opens actions; action selection uses the same message as native 
   assert.equal(after.paletteOpen, false);
   assert.equal(action.cmds[0].name, 'cockpit.committed');
   assert.deepEqual(action.cmds[1], native);
+});
+
+test('CmdK opens the searchable Sessions switcher', () => {
+  const [model] = step(initialModel()[0], commandMsg('navigator.sessions'));
+  assert.equal(model.paletteOpen, true);
+  assert.equal(model.navigatorView, 1);
 });
 
 test('disabled actions explain missing terminal and Enter cannot execute them', () => {

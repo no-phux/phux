@@ -19,6 +19,14 @@ pub const AgentSessionFixture = struct {
     state: []const u8 = "",
 };
 
+/// A `phux.agent/v1` facet attached to a Terminal, not an AgentSession child.
+pub const AgentIdentityFixture = struct {
+    terminal: u32,
+    provider_name: []const u8,
+    native_id: []const u8 = "",
+    state: []const u8 = "",
+};
+
 /// Adopt a hand-built resource catalog, exactly as an attach snapshot does.
 ///
 /// There is no wire fixture to stage and none to regenerate: the resource
@@ -38,6 +46,20 @@ pub fn adoptAgentSessions(host: anytype, rows: []const AgentSessionFixture) !voi
         };
     }
     try host.agents.adopt(host.gpa, entries[0..rows.len]);
+}
+
+pub fn adoptAgentIdentities(host: anytype, rows: []const AgentIdentityFixture) !void {
+    std.debug.assert(rows.len <= max_agent_fixture_rows);
+    var entries: [max_agent_fixture_rows]agent_sessions.IdentityEntry = undefined;
+    for (rows, entries[0..rows.len]) |row, *entry| {
+        entry.* = .{
+            .terminal = try provider.RemoteResourceId.fromPhux(0, row.terminal, ""),
+            .provider_name = row.provider_name,
+            .native_id = row.native_id,
+            .state = row.state,
+        };
+    }
+    try host.agents.adoptIdentities(host.gpa, entries[0..rows.len]);
 }
 
 /// Fold one hand-built AGENT_RECORDS batch, exactly as `captureEffects` does.
