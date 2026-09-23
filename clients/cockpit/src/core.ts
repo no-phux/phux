@@ -229,6 +229,12 @@ export interface Model {
   /// Native projection slot for the platform window that owns modal chrome.
   /// Platform ids never cross the seam; the snapshot carries only 0..4.
   readonly activeWindow: number;
+  readonly headerMenuWindow: number;
+  readonly mainHeaderMenuOpen: boolean;
+  readonly window1HeaderMenuOpen: boolean;
+  readonly window2HeaderMenuOpen: boolean;
+  readonly window3HeaderMenuOpen: boolean;
+  readonly window4HeaderMenuOpen: boolean;
   readonly paletteOpen: boolean;
   readonly agentsMode: boolean;
   readonly inspectedResource: Uint8Array;
@@ -496,6 +502,15 @@ export type Msg =
   | { readonly kind: "agent_parent"; readonly index: number }
   | { readonly kind: "navigator_open"; readonly view: number }
   | { readonly kind: "commands_open" }
+  | { readonly kind: "header_menu_toggle" }
+  | { readonly kind: "header_menu_close" }
+  | { readonly kind: "header_sessions" }
+  | { readonly kind: "header_machines" }
+  | { readonly kind: "header_agents" }
+  | { readonly kind: "header_new_window" }
+  | { readonly kind: "header_tab_placement" }
+  | { readonly kind: "header_commands" }
+  | { readonly kind: "header_settings" }
   | { readonly kind: "commands_pick"; readonly index: number }
   | { readonly kind: "keybindings_loaded"; readonly body: Uint8Array }
   | { readonly kind: "new_session_cancelled"; readonly body: Uint8Array }
@@ -1773,10 +1788,51 @@ function scopeOverlays(model: Model): Model {
     window3EmptyOpen: emptyShown(model, 8),
     window4EmptyOpen: emptyShown(model, 16),
   };
-  const navigation = scopePaletteOverlays(scoped, active);
+  const navigation = scopePaletteOverlays(scopeHeaderMenu(scoped), active);
   const settings = scopeSettingsOverlays(navigation, active);
   const host = scopeHostOverlays(settings, active);
   return scopeDirectoryOverlays(scopeRenameOverlays(host, active), active);
+}
+
+function setHeaderMenu(model: Model, rawWindow: number): Model {
+  const window = rawWindow >= 0 && rawWindow <= 4 ? Math.trunc(rawWindow) : -1;
+  return { ...model, headerMenuWindow: window,
+    mainHeaderMenuOpen: window === 0, window1HeaderMenuOpen: window === 1,
+    window2HeaderMenuOpen: window === 2, window3HeaderMenuOpen: window === 3,
+    window4HeaderMenuOpen: window === 4 };
+}
+
+function scopeHeaderMenu(model: Model): Model {
+  if (model.headerMenuWindow !== model.activeWindow) return setHeaderMenu(model, -1);
+  if (model.paletteOpen || model.settingsOpen || model.hostOpen || model.dirOpen || model.renameOpen) return setHeaderMenu(model, -1);
+  return model;
+}
+
+function headerMenuAction(msg: Msg): Msg | null {
+  switch (msg.kind) {
+    case "header_sessions": return { kind: "sessions_open" };
+    case "header_machines": return { kind: "machines_open" };
+    case "header_agents": return { kind: "agents_open" };
+    case "header_new_window": return { kind: "new_window" };
+    case "header_tab_placement": return { kind: "toggle_tab_placement" };
+    case "header_commands": return { kind: "commands_open" };
+    case "header_settings": return { kind: "settings_open" };
+    default: return null;
+  }
+}
+
+function prepareHeaderMenu(model: Model, msg: Msg): PreparedMessage {
+  const action = headerMenuAction(msg);
+  if (action === null) return { model, msg };
+  if (model.headerMenuWindow !== model.activeWindow) return { model, msg: { kind: "header_menu_close" } };
+  return { model: setHeaderMenu(model, -1), msg: action };
+}
+
+function headerMenuTransition(model: Model, msg: Msg): NavigatorDecision | null {
+  if (msg.kind === "header_menu_close") return navigatorDecision(setHeaderMenu(model, -1), 1, NO_BYTES);
+  if (msg.kind !== "header_menu_toggle") return null;
+  const window = model.headerMenuWindow === model.activeWindow ? -1 : model.activeWindow;
+  return navigatorDecision(scopeHeaderMenu(setHeaderMenu(model, window)), 1, NO_BYTES);
 }
 
 function scopeRenameOverlays(model: Model, active: number): Model {
@@ -2258,6 +2314,12 @@ export function initialModel(): [Model, Cmd<Msg>] {
       window3RailRows: NO_RAIL_ROWS,
       window4RailRows: NO_RAIL_ROWS,
       activeWindow: 0,
+      headerMenuWindow: -1,
+      mainHeaderMenuOpen: false,
+      window1HeaderMenuOpen: false,
+      window2HeaderMenuOpen: false,
+      window3HeaderMenuOpen: false,
+      window4HeaderMenuOpen: false,
       paletteOpen: false,
       agentsMode: false,
       inspectedResource: NO_BYTES,
@@ -3068,6 +3130,8 @@ function commandsTransition(model: Model, msg: Msg): NavigatorDecision | null {
 }
 
 function navigatorTransition(incoming: Model, msg: Msg): NavigatorDecision | null {
+  const menu = headerMenuTransition(incoming, msg);
+  if (menu !== null) return menu;
   const departure = departureTransition(incoming, msg);
   if (departure !== null) return departure;
   if (msg.kind === "navigator_scrolled") return navigatorDecision({ ...incoming, navigatorScroll: msg.scroll.offsetY, navigatorViewport: msg.scroll.viewportExtentY }, 0, NO_BYTES);
@@ -3797,7 +3861,8 @@ function resumeSettingsAction(model: Model, msg: Msg): PreparedMessage {
 }
 
 function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
-  const session = resumeSessionAction(model, msg);
+  const menu = prepareHeaderMenu(model, msg);
+  const session = resumeSessionAction(menu.model, menu.msg);
   const settings = resumeSettingsAction(session.model, session.msg);
   let next = settings.model;
   const action = settings.msg;
@@ -3810,6 +3875,7 @@ function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
 }
 
 function commandDeparture(previous: Model, next: Model): boolean {
+  if (previous.headerMenuWindow >= 0 && next.headerMenuWindow < 0) return true;
   if (previous.settingsOpen && !next.settingsOpen) return true;
   return next.paletteOpen && next.navigatorView === 4;
 }
@@ -4173,6 +4239,14 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const directoryMoved = model.dirOpen && model.lastConnection !== 255 && projected.connection !== model.lastConnection;
       const directoryRelists = directoryMoved && projected.connection === 2;
       const scoped = retainMachineInvalidation(directoryMoved ? relistDirectory(scopeOverlays(synced), directoryRelists) : scopeOverlays(synced));
+      // Menus cannot coexist with the editors/pickers below. Native focus may
+      // retire one via a snapshot; release input before refreshing host status.
+      if (model.headerMenuWindow >= 0 && scoped.headerMenuWindow < 0) return [scoped, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
+          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
+        }),
+      ])];
       const machinePoll = refreshMachineSnapshot(scoped);
       if (machinePoll !== null) return [machinePoll.model, Cmd.request("cockpit.machines", machinePoll.request, { key: "cockpit-machines", ok: "machines_loaded", err: "machines_failed" })];
       // Remote status is asked for only when the connection moved (or a

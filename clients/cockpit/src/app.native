@@ -1,5 +1,5 @@
 <import src="windows/components/cockpit-window.native" />
-<use template="cockpit-window" tabs="{visibleTabs}" rail="{railRows}" width="{tabWidth}" more="{hasOverflow}" cue="{overflowLabel}" paletteopen="{mainPaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" status="{connectionStatus}" title="{mainContext.title}" detail="{mainContext.detail}">
+<use template="cockpit-window" tabs="{visibleTabs}" rail="{railRows}" width="{tabWidth}" more="{hasOverflow}" cue="{overflowLabel}" menuopen="{mainHeaderMenuOpen}" paletteopen="{mainPaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" status="{connectionStatus}" title="{mainContext.title}" detail="{mainContext.detail}">
   <use template="cockpit-settings" settingsopen="{mainSettingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />
   <use template="cockpit-host" hostopen="{mainHostOpen}" />
   <use template="cockpit-directory" diropen="{mainDirOpen}" />

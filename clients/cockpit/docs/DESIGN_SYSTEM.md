@@ -44,6 +44,20 @@ the compiled layout audit verifies it at 900×420, 1100×640 and 1680×1000.
 Healthy windows give footer space back to the terminal. Failure notices retain
 their measured band, and terminal geometry is measured from the compiled tree.
 
+The top header is tab-first: traffic-light reserve, equal-width tabs, New Tab,
+and one Workspace actions trigger. Tabs divide the measured strip without a
+maximum width; the readable minimum still determines overflow. The actions
+menu groups session/machine/agent navigation, window/layout actions, and
+Commands/Settings. It names the current window's session and connection inside
+the menu rather than charging every tab for a permanent session chip. Side-tab
+mode uses the freed header space for the session title.
+
+The anchored menu is 280pt wide (a 4pt-grid composition choice), aligned to the
+trailing trigger with an 8pt token gap. Its rows, separators, corners and shadow
+are SDK menu primitives. The open menu owns input; Escape, outside dismissal,
+action handoff and native window changes release that ownership. Layout tests
+cover the open menu at the same declared sizes and densities as the chrome.
+
 The navigator is a semantic SDK dialog with a preferred 640×640pt frame. The
 width reuses the picker maximum; the square preferred envelope is a composition
 choice, capped by the SDK's viewport placement (24pt modal margins). At the

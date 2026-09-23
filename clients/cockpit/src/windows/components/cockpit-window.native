@@ -1,29 +1,18 @@
 <import src="cockpit-settings.native" />
-<template name="cockpit-window" args="tabs rail width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status title detail">
+<template name="cockpit-window" args="tabs rail width more cue menuopen paletteopen palettequery paletterows paletteprevious palettenext palettenotice status title detail">
   <stack>
     <column>
       <!-- Hidden-inset chrome: this header row is the window-drag surface.
-           Press-claiming children (tabs, buttons, the session chip) stay
+            Press-claiming children (tabs and buttons) stay
            buttons; empty chrome, gaps, and the traffic-light reserve move
            the window. Do not park window-drag on the 78pt spacer alone —
            that reserve sits under the lights and is not a usable grab. -->
       <row height="50" padding="4" gap="8" cross="center" window-drag="true">
         <spacer width="78" />
-        <list-item height="40" width="176" label="Sessions" on-press="sessions_open">
-          <column gap="0">
-            <text overflow="ellipsis">{title}</text>
-            <text foreground="text_muted" overflow="ellipsis">{detail}</text>
-          </column>
-        </list-item>
-        <stack width="32">
-          <button size="sm" variant="ghost" icon="terminal" label="Inspect agents" on-press="agents_open" />
-          <tooltip anchor="below">Inspect agents</tooltip>
-        </stack>
-
         <if test="{tabPlacement == 'top'}">
           <tabs grow="1" gap="4" label="Terminal tabs">
             <for each="tabs" key="id" as="tab">
-              <column width="{width}" gap="4">
+              <column width="0" grow="1" gap="4">
                 <row gap="4" cross="center">
                   <!-- Full titles stay available to accessibility. The marker
                        owns a fixed slot so attention cannot shorten the button. -->
@@ -52,23 +41,33 @@
             <if test="{more}"><stack width="32"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button><tooltip anchor="below">Show hidden tabs</tooltip></stack></if>
           </tabs>
         </if>
-        <else><spacer grow="1" /></else>
-        <button size="sm" variant="ghost" icon="external-link" label="Machines" on-press="machines_open">Machines</button>
-        <stack width="32">
-          <button size="sm" variant="ghost" icon="search" label="Commands" on-press="commands_open" />
-          <tooltip anchor="below">Commands</tooltip>
-        </stack>
+        <else><text grow="1" foreground="text_muted" overflow="ellipsis">{title}</text></else>
         <stack width="32">
           <button size="sm" variant="ghost" icon="plus" label="New Tab" on-press="new_terminal" />
           <tooltip anchor="below">New tab</tooltip>
         </stack>
         <stack width="32">
-          <button size="sm" variant="ghost" icon="panel-left" label="Move tabs to top or side" on-press="toggle_tab_placement" />
-          <tooltip anchor="below">Move tabs to top or side</tooltip>
-        </stack>
-        <stack width="32">
-          <button size="sm" variant="ghost" icon="settings" label="Settings" on-press="settings_open" />
-          <tooltip anchor="below">Settings</tooltip>
+          <button size="sm" variant="ghost" icon="chevron-down" label="Workspace actions" selected="{menuopen}" on-press="header_menu_toggle" />
+          <tooltip anchor="below">Workspace actions</tooltip>
+          <if test="{menuopen}">
+            <dropdown-menu width="280" anchor="below" anchor-alignment="end" anchor-offset="8" on-dismiss="header_menu_close" label="Workspace actions">
+              <column padding="8" gap="4">
+                <text overflow="ellipsis">{title}</text>
+                <text foreground="text_muted" overflow="ellipsis">{detail}</text>
+              </column>
+              <separator />
+              <menu-item icon="folder" autofocus="true" on-press="header_sessions">Sessions</menu-item>
+              <menu-item icon="external-link" on-press="header_machines">Machines</menu-item>
+              <menu-item icon="terminal" on-press="header_agents">Inspect agents</menu-item>
+              <separator />
+              <menu-item icon="external-link" on-press="header_new_window">New window</menu-item>
+              <if test="{tabPlacement == 'top'}"><menu-item icon="panel-left" on-press="header_tab_placement">Move tabs to side</menu-item></if>
+              <else><menu-item icon="panel-left" on-press="header_tab_placement">Move tabs to top</menu-item></else>
+              <separator />
+              <menu-item icon="search" label="All commands" on-press="header_commands">All commands…</menu-item>
+              <menu-item icon="settings" on-press="header_settings">Settings…</menu-item>
+            </dropdown-menu>
+          </if>
         </stack>
       </row>
       <row grow="1">
@@ -112,10 +111,6 @@
                 </for>
               </column>
             </scroll>
-            <separator />
-            <button size="sm" variant="ghost" icon="folder" on-press="sessions_open">Sessions</button>
-            <button size="sm" variant="ghost" icon="search" label="Commands" on-press="commands_open">Commands</button>
-            <button size="sm" variant="ghost" icon="external-link" on-press="new_window">New window</button>
           </column>
         </if>
         <column grow="1">
