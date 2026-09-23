@@ -3940,7 +3940,10 @@ pub const Engine = struct {
         // overflow cue. The old Zig chrome run also reserved an inline plus
         // button and two cues; its surrounding toolbar was different too.
         const gap = projection.chrome_band_inset;
-        const step = projection.tab_min_extent + gap;
+        // Preserve the readable title floor when adding the direct 32pt close
+        // target and its 4pt gap to each shipping tab.
+        const tab_floor = projection.tab_min_extent + projection.chrome_control_extent + gap;
+        const step = tab_floor + gap;
         var usable = @max(0, workspace.shipping_tab_strip_width) + gap;
         var count = @max(1, @as(usize, @intFromFloat(@floor(usable / step))));
         if (count < total) {

@@ -104,6 +104,7 @@ export interface RailRow {
   readonly id: number;
   readonly index: number;
   readonly label: Uint8Array;
+  readonly closeLabel: Uint8Array;
   readonly state: Uint8Array;
   readonly mark: Uint8Array;
   readonly selected: boolean;
@@ -120,6 +121,7 @@ export interface Tab {
   readonly index: number;
   readonly slot: number;
   readonly title: Uint8Array;
+  readonly closeLabel: Uint8Array;
   readonly cwd: Uint8Array;
   readonly selected: boolean;
   readonly attention: boolean;
@@ -864,7 +866,7 @@ const EMPTY_AGENT_ROW: AgentRow = {
 };
 const EMPTY_TAB: Tab = {
   id: 0, index: 0, slot: 0, title: NO_BYTES, cwd: NO_BYTES, selected: false, attention: false,
-  attentionLabel: NO_BYTES, agents: EMPTY_TAB_AGENTS, target: NO_BYTES,
+  attentionLabel: NO_BYTES, closeLabel: NO_BYTES, agents: EMPTY_TAB_AGENTS, target: NO_BYTES,
   movePreviousDisabled: true, moveNextDisabled: true,
 };
 const EMPTY_ACTION_ROW: ActionRow = {
@@ -894,7 +896,7 @@ function copyTab(tab: Tab, selected: boolean): Tab {
     id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
     index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
     slot: slot >= 0 && slot <= 9007199254740991 ? Math.trunc(slot) : 0,
-    title: tab.title, cwd: tab.cwd, selected, attention: tab.attention,
+    title: tab.title, closeLabel: tab.closeLabel, cwd: tab.cwd, selected, attention: tab.attention,
     attentionLabel: tab.attentionLabel, agents: tab.agents, target: tab.target,
     movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled,
   };
@@ -2017,6 +2019,7 @@ function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readon
     const index = Math.trunc(rawIndex);
     const id = Math.trunc(rawId);
     out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, attentionLabel: attentionLabel(t.title, t.attention), agents: agentRowsFor(agents, w, index, connection), target: t.target,
+      closeLabel: joinBytes(asciiBytes("Close tab: "), t.title, NO_BYTES),
       movePreviousDisabled: index === 0, moveNextDisabled: index + 1 === tabs.length });
   }
   return out;
@@ -2032,7 +2035,7 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
     const tab = tabs[i];
     if (!(ordinal >= 0 && ordinal <= 65535)) break;
     out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: tab.attention ? ATTENTION_MARK : NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target, attentionLabel: tab.attentionLabel,
-      movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled });
+      closeLabel: tab.closeLabel, movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled });
     ordinal += 1;
     const rows = tab.agents;
     for (let j = 0; j < rows.length; j += 1) {
@@ -2040,7 +2043,7 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
       const label = row.resource.length === 0 ? row.provider : joinBytes(row.provider, asciiBytes(" / "), joinBytes(row.resource, asciiBytes(" under "), row.parent));
       out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: attentionLabel(label, row.attention),
-        movePreviousDisabled: true, moveNextDisabled: true });
+        closeLabel: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true });
       ordinal += 1;
     }
   }
@@ -2288,8 +2291,8 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),

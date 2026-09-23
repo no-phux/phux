@@ -1889,6 +1889,7 @@ const PointerHost = struct {
         try bridge.takeNativeReplayError();
         if (try bridge.nativeReplayEvent(value)) return;
         if (self.consumeMenuDismissal(runtime, value)) return;
+        if (tabOwnsNavigation(value)) return;
         const previous_origin = bridge.fallback_origin;
         const previous_admission = bridge.command_admission;
         defer bridge.fallback_origin = previous_origin;
@@ -2298,6 +2299,25 @@ fn activatedControl(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
 }
 
 var pointer_host = PointerHost{};
+
+/// The SDK moves tab focus, but reports an unmoved edge as unhandled. Those
+/// keys (including release) still belong to the tab, never to the terminal.
+fn tabOwnsNavigation(value: native_sdk.Event) bool {
+    if (value != .canvas_widget_keyboard) return false;
+    const routed = value.canvas_widget_keyboard;
+    const target = routed.target orelse return false;
+    if (target.kind != .segmented_control) return false;
+    // Match SDK traversal: arrows allow Shift; Home/End require no modifiers.
+    var modifiers = routed.keyboard.modifiers;
+    modifiers.shift = false;
+    if (!std.meta.eql(modifiers, canvas.WidgetKeyboardModifiers{})) return false;
+    for ([_][]const u8{ "ArrowLeft", "ArrowRight" }) |key| {
+        if (std.ascii.eqlIgnoreCase(routed.keyboard.key, key)) return true;
+    }
+    if (routed.keyboard.modifiers.shift) return false;
+    return std.ascii.eqlIgnoreCase(routed.keyboard.key, "Home") or
+        std.ascii.eqlIgnoreCase(routed.keyboard.key, "End");
+}
 
 fn activatedTab(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
     const target = routed.press_target orelse return false;
@@ -3550,6 +3570,35 @@ test "shipping tab context menu retains a background target across rebuild move 
     try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
     try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
     _ = try tabMenuHost(&rig, true, false);
+}
+
+test "direct close buttons preserve the selected terminal when closing a background tab" {
+    inline for (.{ .top, .side }) |placement| {
+        var rig = try Rig.start();
+        defer rig.stop();
+        try rig.settle(0, "READY");
+        const engine = bridge.engine.?;
+        const first = engine.model.focusedTerminalRef().?;
+        try rig.reach(.{ .label = "direct background close", .tabs = 3, .placement = placement });
+        try rig.dispatch(.{ .select_tab = 2 });
+        try rig.settleCurrent();
+        const selected = engine.model.focusedTerminalRef().?;
+        try std.testing.expect(!selected.eql(first));
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var close: ?native_sdk.geometry.RectF = null;
+        for (layout.nodes) |node| {
+            if (std.mem.eql(u8, node.widget.semantics.label, "Close tab: Terminal 1")) close = node.frame;
+        }
+        const frame = close orelse return error.MissingCloseTabButton;
+        try std.testing.expectApproxEqAbs(@as(f32, 32), frame.width, 0.01);
+        try std.testing.expectApproxEqAbs(@as(f32, 32), frame.height, 0.01);
+        try pressCanvasFrame(&rig, frame);
+        try rig.settleCurrent();
+        try std.testing.expect(engine.model.locateTerminal(first) == null);
+        try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
+        try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    }
 }
 
 test "captured tab actions reject malformed expired and nonexistent targets without changing focus" {
@@ -6252,7 +6301,7 @@ test "clicking the selected tab returns Enter to its focused split pane in strip
         const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
         var tab: ?native_sdk.geometry.RectF = null;
         for (layout.nodes) |node| {
-            if (node.widget.state.selected and (node.widget.kind == .toggle_button or node.widget.kind == .list_item)) tab = node.frame;
+            if (node.widget.state.selected and node.widget.semantics.role == .tab) tab = node.frame;
         }
         const frame = tab orelse return error.TestExpectedTab;
         inline for (.{ .pointer_down, .pointer_up }) |kind| {
@@ -6880,6 +6929,157 @@ fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: nativ
     try std.testing.expectEqual(drag_index, canvas.widgetWindowDragTargetIndexFromNode(layout, leading));
 }
 
+test "top tabs use native sibling arrow and edge traversal without selecting on focus" {
+    const Keys = struct {
+        fn press(rig: *Rig, key: []const u8) !void {
+            inline for (.{ .key_down, .key_up }) |kind| {
+                try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+                    .window_id = 1,
+                    .label = canvas_label,
+                    .kind = kind,
+                    .key = key,
+                } });
+            }
+        }
+    };
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "keyboard tabs", .tabs = 3 });
+    try rig.dispatch(.{ .select_tab = 2 });
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var ids: [3]u64 = undefined;
+    var count: usize = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role != .tab) continue;
+        if (count == ids.len) return error.TooManyTabs;
+        try std.testing.expectEqual(.segmented_control, node.widget.kind);
+        try std.testing.expectEqual(.tabs, layout.nodes[node.parent_index.?].widget.kind);
+        try std.testing.expectApproxEqAbs(@as(f32, 32), node.frame.height, 0.01);
+        ids[count] = node.widget.id;
+        count += 1;
+    }
+    try std.testing.expectEqual(ids.len, count);
+    const engine = bridge.engine.?;
+    const selected = engine.model.focusedTerminalRef().?;
+    rig.harness.runtime.views[0].canvas_widget_focused_id = ids[0];
+    try Keys.press(&rig, "ArrowRight");
+    try std.testing.expectEqual(ids[1], rig.harness.runtime.views[0].canvas_widget_focused_id);
+    try Keys.press(&rig, "End");
+    try std.testing.expectEqual(ids[2], rig.harness.runtime.views[0].canvas_widget_focused_id);
+    try Keys.press(&rig, "ArrowLeft");
+    try std.testing.expectEqual(ids[1], rig.harness.runtime.views[0].canvas_widget_focused_id);
+    try Keys.press(&rig, "Home");
+    try std.testing.expectEqual(ids[0], rig.harness.runtime.views[0].canvas_widget_focused_id);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try Keys.press(&rig, "Enter");
+    try rig.settleCurrent();
+    try std.testing.expectEqual(@as(usize, 0), engine.model.wsConst().selected_tab);
+}
+
+test "tab traversal at an edge never leaks navigation keys to the terminal" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedTabFixture();
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const remote = bridge.engine.?.model.phux().?;
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var ids: [2]u64 = undefined;
+    var count: usize = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role != .tab) continue;
+        if (count == ids.len) return error.TooManyTabs;
+        ids[count] = node.widget.id;
+        count += 1;
+    }
+    try std.testing.expectEqual(ids.len, count);
+    const cases = .{
+        .{ 0, "ArrowLeft", false, 0 },
+        .{ 0, "Home", false, 0 },
+        .{ 1, "ArrowRight", false, 1 },
+        .{ 1, "End", false, 1 },
+        .{ 0, "ArrowLeft", true, 0 },
+        .{ 1, "ArrowRight", true, 1 },
+        .{ 0, "ArrowRight", true, 1 },
+        .{ 1, "ArrowLeft", true, 0 },
+    };
+    inline for (cases) |case| {
+        rig.harness.runtime.views[0].canvas_widget_focused_id = ids[case[0]];
+        remote.bridge.outgoing.reset();
+        inline for (.{ .key_down, .key_up }) |kind| {
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+                .window_id = 1,
+                .label = canvas_label,
+                .kind = kind,
+                .key = case[1],
+                .modifiers = .{ .shift = case[2] },
+            } });
+        }
+        try std.testing.expectEqual(ids[case[3]], rig.harness.runtime.views[0].canvas_widget_focused_id);
+        try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    }
+    // Modified terminal navigation retains its existing owner.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "ArrowLeft",
+        .modifiers = .{ .option = true },
+    } });
+    try expectOutgoingKey(remote, 21, 4);
+}
+
+test "empty session action stays below the header beside the rail and on a chrome surface" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    inline for (.{ core.TabPlacement.top, core.TabPlacement.side }) |placement| {
+        for ([_]bool{ false, true }) |busy| {
+            var model = rig.app_state.model;
+            model.mainEmptyOpen = true;
+            model.tabPlacement = placement;
+            model.emptyBusy = busy;
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var ui = Adapter.Ui.init(arena.allocator());
+            const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+            const tree = try ui.finalizeWithTokens(chromeViewAt(&ui, &model, 0), tokens);
+            const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+            const layout = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, 900, 420), tokens, nodes);
+            var found = false;
+            for (layout.nodes) |node| {
+                if (!std.mem.eql(u8, node.widget.text, if (busy) "Opening…" else "New Tab")) continue;
+                found = true;
+                try std.testing.expect(node.frame.y >= 50);
+                try std.testing.expect(node.frame.x >= if (placement == .side) @as(f32, 224) else 0);
+                try std.testing.expectEqual(busy, node.widget.state.disabled);
+                const row = layout.nodes[node.parent_index.?];
+                const group = layout.nodes[row.parent_index.?];
+                try std.testing.expectEqualDeep(tokens.colors.surface, group.widget.style.background.?);
+            }
+            try std.testing.expect(found);
+        }
+    }
+}
+
+test "connection recovery stays available alongside retained command feedback" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    var model = rig.app_state.model;
+    model.canReconnect = true;
+    try std.testing.expect(try compiledViewHasText(&model, "Reconnect"));
+    model.commandNotice = "Outcome unknown; check the session before retrying.";
+    try std.testing.expect(try compiledViewHasText(&model, "Reconnect"));
+    model.canReconnect = false;
+    try std.testing.expect(try compiledViewHasText(&model, model.commandNotice));
+}
+
 test "titlebar chrome is a window-drag surface in every window and placement" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -7236,6 +7436,10 @@ test "selected tab underline stays inside its button rather than the attention s
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
     for (parity_sizes) |size| {
         try rig.resize(size);
         try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
@@ -7244,8 +7448,13 @@ test "selected tab underline stays inside its button rather than the attention s
         var underline: ?native_sdk.geometry.RectF = null;
         for (widgets.nodes) |node| {
             if (node.widget.semantics.role == .tab and node.widget.state.selected) tab = node.frame;
-            if (node.widget.style.background == null) continue;
-            if (node.frame.y < 50 and node.frame.height == 2) underline = node.frame;
+        }
+        builder.initAt(commands);
+        try canvas.emitWidgetLayout(builder, widgets, cockpit.projection.cockpitTokens(bridge.engine.?.model));
+        for (builder.displayList().commands) |command| {
+            if (command != .fill_rect) continue;
+            const rect = command.fill_rect.rect;
+            if (rect.y < 50 and rect.height == 2) underline = rect;
         }
         const button = tab orelse return error.TestExpectedSelectedTab;
         const bar = underline orelse return error.TestExpectedTabUnderline;
@@ -8313,6 +8522,20 @@ test "shipping config probe survives title-only churn without adopting a window"
     try rig.dispatch(.settings_open);
     try std.testing.expect(engine.config_probe.probed);
     try std.testing.expect(!engine.intent_refused);
+}
+
+fn compiledViewHasText(model: *const core.Model, text: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const tree = try ui.finalizeWithTokens(chromeViewAt(&ui, model, 0), tokens);
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const layout = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, 1100, 640), tokens, nodes);
+    for (layout.nodes) |node| {
+        if (std.mem.eql(u8, node.widget.text, text)) return true;
+    }
+    return false;
 }
 
 fn compiledViewHasLabel(model: *const core.Model, window_index: usize, label: []const u8) !bool {
