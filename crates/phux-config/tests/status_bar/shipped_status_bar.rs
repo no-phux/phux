@@ -24,6 +24,7 @@ fn win(name: &str, active: bool) -> WindowInfo {
         attention: false,
         branch: None,
         exited: None,
+        badge: None,
     }
 }
 
@@ -82,7 +83,7 @@ fn a_roomy_terminal_shows_the_whole_lineup() {
     let windows = [win("zsh", false), win("nvim", true), win("server", false)];
     let text = shipped_text(120, "phux", &windows);
 
-    assert!(text.starts_with(" 0:zsh   1:nvim   2:server "), "{text:?}");
+    assert!(text.starts_with(" 0 zsh   1 nvim   2 server "), "{text:?}");
     assert!(!text.contains("s Sessions"), "{text:?}");
     assert!(!text.contains("S Settings"), "{text:?}");
     assert!(text.contains("phux"), "{text:?}");
@@ -91,8 +92,9 @@ fn a_roomy_terminal_shows_the_whole_lineup() {
 }
 
 /// Inactive tabs are dim text with no fill; the active tab is the lime
-/// chip. Session name and clock recede to the same dim, so the bar is
-/// not a slab of filled chips.
+/// chip on the selection bed. The index recedes behind the name without
+/// leaving the tab's bed. Session name and clock recede to the same dim,
+/// so the bar is not a slab of filled chips.
 #[test]
 fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
     let windows = [win("zsh", false), win("nvim", true), win("server", false)];
@@ -112,8 +114,16 @@ fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
         .and_then(|c| c.style.as_ref())
         .expect("active tab styled");
     assert_eq!(active.fg.as_deref(), Some("#bef264"));
-    assert_eq!(active.bg, None);
+    assert_eq!(active.bg.as_deref(), Some("#293628"));
     assert!(active.bold);
+
+    let index = row
+        .iter()
+        .find(|c| c.hit == Some(CellHit::Window(1)) && c.text.first() == Some(&'1'))
+        .and_then(|c| c.style.as_ref())
+        .expect("active index styled");
+    assert_eq!(index.fg.as_deref(), Some("#7c8696"), "the index recedes");
+    assert_eq!(index.bg.as_deref(), Some("#293628"), "but keeps the bed");
 
     let session = row
         .iter()
@@ -148,7 +158,7 @@ fn a_narrow_terminal_trades_context_for_an_affordance() {
     assert!(text.contains(" switch "), "{text:?}");
     assert!(!text.contains("C-a"), "no teaching strip: {text:?}");
     // The active tab is always visible, whole.
-    assert!(text.contains("1:nvim"), "{text:?}");
+    assert!(text.contains("1 nvim"), "{text:?}");
     // And no tab is half-drawn: every window name present is complete.
     assert!(!text.contains('\u{2026}'), "no clipped tab: {text:?}");
 }

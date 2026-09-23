@@ -161,7 +161,9 @@ pub(super) fn refresh_window_chrome(
     // how a 22-argument function happens (phux-jx39).
     peers: crate::attach::sidebar_zones::PeerInputs<'_>,
 ) -> bool {
-    let windows = window_infos(workspace, panes, zoomed, &agent_meta.records, vcs);
+    let mut windows = window_infos(workspace, panes, zoomed, &agent_meta.records, vcs);
+    let local = agent_entries(workspace, panes, agent_meta, agent_sessions, peers.review);
+    badge_windows(&mut windows, workspace, &local, sidebar_painter.theme());
     let mut changed = false;
     if let Some(sb) = status_bar {
         changed |= sb.set_windows(windows.clone());
@@ -177,7 +179,6 @@ pub(super) fn refresh_window_chrome(
         changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
     }
     changed |= sidebar_painter.set_windows(windows);
-    let local = agent_entries(workspace, panes, agent_meta, agent_sessions, peers.review);
     changed |=
         sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(&peers, &local));
     // Stable navigation order; lifecycle changes only restyle existing rows.
@@ -196,10 +197,52 @@ pub(super) fn refresh_window_chrome(
     changed
 }
 
+/// Give each window the badge of the agent in its focused pane.
+///
+/// Projected from the same [`agent_entries`] rows the sidebar paints, through
+/// the same [`agent_badge`](crate::render::chrome::agent_badge) vocabulary, so
+/// a tab, its sidebar row, and the pane's own title cannot disagree about
+/// state. The badge replaces the `(working)` text the label used to carry.
+pub(super) fn badge_windows(
+    windows: &mut [phux_config::widget::WindowInfo],
+    workspace: &Workspace,
+    agents: &[AgentEntry],
+    theme: &crate::render::Theme,
+) {
+    for (i, (info, window)) in windows.iter_mut().zip(&workspace.windows).enumerate() {
+        let focused_leaf = window.state.focus.as_ref().and_then(|focus| {
+            window
+                .state
+                .tree
+                .as_ref()
+                .map(crate::layout::leaves)
+                .and_then(|leaves| leaves.iter().position(|id| id == focus))
+        });
+        let Some(entry) = agents
+            .iter()
+            .find(|e| e.window == i && e.pane.is_some() && e.pane == focused_leaf)
+        else {
+            continue;
+        };
+        let badge =
+            crate::render::chrome::agent_badge(theme, entry.state, entry.attention, entry.seen);
+        info.badge = Some(phux_config::widget::WindowBadge {
+            glyph: badge.glyph.to_owned(),
+            style: phux_config::widget::CellStyle {
+                fg: Some(crate::render::theme::color_to_string(badge.color)),
+                bold: badge.emphatic,
+                ..phux_config::widget::CellStyle::default()
+            },
+        });
+    }
+}
+
 /// Snapshot the current workspace as the window widget's input.
 ///
-/// Labels prefer structured agent metadata, then the focused pane's cached
-/// OSC 0/2 title, then the stored window name.
+/// Labels prefer a name the user gave the window, then the structured agent
+/// name, then the focused pane's cached OSC 0/2 title, then the focused
+/// pane's working directory, then the auto-numbered stored name. Agent state
+/// is not part of the label: [`badge_windows`] carries it as a glyph.
 pub(super) fn window_infos(
     workspace: &Workspace,
     panes: &HashMap<ResourceId, PaneSlot>,
@@ -222,7 +265,7 @@ pub(super) fn window_infos(
             let focus = w.state.focus.as_ref();
             let agent_label = focus
                 .and_then(|fid| agent_meta.get(fid))
-                .map(AgentRecord::label);
+                .map(|record| record.name.clone());
             let title = focus
                 .and_then(|fid| panes.get(fid))
                 .map(|slot| slot.last_title.trim())
@@ -244,16 +287,67 @@ pub(super) fn window_infos(
             // phux-p4vp: the branch line under the label — the focused
             // leaf's cwd resolved to its VCS branch (cached file read).
             let branch = focus.and_then(|fid| vcs.branch_for_pane(fid));
+            let place = focus
+                .and_then(|fid| panes.get(fid))
+                .and_then(|slot| slot.cwd.as_deref())
+                .and_then(cwd_basename);
+            // A name the user gave wins: it is the one label they chose.
+            // An auto-numbered window has not been named, so it takes the
+            // agent it runs, then the program's title, then where it is.
+            let explicit = (!auto_named(&w.name)).then(|| w.name.clone());
             phux_config::widget::WindowInfo {
-                name: agent_label.or(title).unwrap_or_else(|| w.name.clone()),
+                name: explicit
+                    .or(agent_label)
+                    .or(title)
+                    .or(place)
+                    .unwrap_or_else(|| w.name.clone()),
                 active,
                 zoomed: active && zoomed.is_some(),
                 attention,
                 branch,
                 exited: window_exited_mark(&leaves, focus, panes),
+                badge: None,
             }
         })
         .collect()
+}
+
+/// `true` for a name [`Workspace::default_window_name`] handed out: a bare
+/// positive integer. It carries no information, and beside the 0-based
+/// selector it reads as a second, disagreeing index (`4 3`), so the tab
+/// prefers where the window is working.
+fn auto_named(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Where an agent row says the agent is: the window's name when the user
+/// gave it one, otherwise the agent pane's working directory, otherwise the
+/// auto-numbered name. The row's right column already names the agent, so
+/// the locator must not repeat it.
+fn agent_locator(window_name: &str, slot: Option<&PaneSlot>) -> String {
+    if !auto_named(window_name) {
+        return window_name.to_owned();
+    }
+    slot.and_then(|slot| slot.cwd.as_deref())
+        .and_then(cwd_basename)
+        .unwrap_or_else(|| window_name.to_owned())
+}
+
+/// The last component of a working directory, `~` for the home directory
+/// itself. `None` for the filesystem root or an empty path.
+fn cwd_basename(cwd: &str) -> Option<String> {
+    let trimmed = cwd.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if std::env::var_os("HOME").is_some_and(|home| home == trimmed) {
+        return Some("~".to_owned());
+    }
+    trimmed
+        .rsplit('/')
+        .next()
+        .filter(|base| !base.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 /// ADR-0124 / phux-fpgl.33: compact exit status for chrome when any leaf is
@@ -315,7 +409,7 @@ pub(super) fn agent_entries(
                 session_id: None,
                 resource: id.host().map(|_| id.clone()),
                 window: i,
-                window_name: w.name.clone(),
+                window_name: agent_locator(&w.name, panes.get(id)),
                 pane: Some(leaf),
                 name: String::new(),
                 state: AgentMetaState::Unknown,
@@ -698,8 +792,8 @@ mod tests {
 
         let infos = window_infos(&workspace, &panes, None, &records, &mut VcsIndex::default());
         assert_eq!(
-            infos[0].name, "!reviewer (blocked)",
-            "structured record must beat the OSC title"
+            infos[0].name, "reviewer",
+            "structured record must beat the OSC title; state rides the badge, not the label"
         );
     }
 
@@ -1157,5 +1251,79 @@ mod tests {
             &mut VcsIndex::default(),
         );
         assert!(!infos[0].zoomed && !infos[1].zoomed);
+    }
+
+    /// An auto-numbered window has not been named, so its tab says where it
+    /// is working instead of a second number beside the selector.
+    #[test]
+    fn an_auto_numbered_window_is_labelled_by_where_it_works() {
+        let id = ResourceId::local(1);
+        let workspace = Workspace::single(id.clone());
+        let (_, _, mut panes) = published_test_state(&[(&id, 80, 24, b"")]);
+        panes.get_mut(&id).expect("slot").cwd = Some("/src/phux/".to_owned());
+        let infos = window_infos(
+            &workspace,
+            &panes,
+            None,
+            &HashMap::new(),
+            &mut VcsIndex::default(),
+        );
+        assert_eq!(infos[0].name, "phux");
+    }
+
+    /// A name the user gave is the label they chose; it outranks the agent
+    /// record and the program's title.
+    #[test]
+    fn a_name_the_user_gave_beats_the_agent_and_the_title() {
+        let id = ResourceId::local(1);
+        let mut workspace = Workspace::single(id.clone());
+        workspace.windows[0].name = "deploy".to_owned();
+        let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;~/src\x07")]);
+        let records = HashMap::from([(
+            id,
+            AgentRecord {
+                name: "claude".to_owned(),
+                ..AgentRecord::default()
+            },
+        )]);
+        let infos = window_infos(&workspace, &panes, None, &records, &mut VcsIndex::default());
+        assert_eq!(infos[0].name, "deploy");
+    }
+
+    /// The tab badge is the focused pane's agent badge, from the same
+    /// vocabulary the sidebar paints.
+    #[test]
+    fn badge_windows_marks_the_focused_agent() {
+        let id = ResourceId::local(1);
+        let workspace = Workspace::single(id.clone());
+        let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"")]);
+        let mut infos = window_infos(
+            &workspace,
+            &panes,
+            None,
+            &HashMap::new(),
+            &mut VcsIndex::default(),
+        );
+        let agents = vec![AgentEntry {
+            session: None,
+            session_id: None,
+            resource: None,
+            window: 0,
+            window_name: "1".to_owned(),
+            pane: Some(0),
+            name: "claude".to_owned(),
+            state: AgentMetaState::Working,
+            attention: false,
+            host: None,
+            seen: true,
+        }];
+        let theme = crate::render::Theme::default();
+        badge_windows(&mut infos, &workspace, &agents, &theme);
+        let badge = infos[0].badge.as_ref().expect("badged");
+        assert_eq!(badge.glyph, crate::render::chrome::AGENT_WORKING_GLYPH);
+        assert_eq!(
+            badge.style.fg.as_deref(),
+            Some(crate::render::theme::color_to_string(theme.agent_working).as_str())
+        );
     }
 }

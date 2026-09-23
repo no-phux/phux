@@ -4,7 +4,8 @@
 //! the active one in the `active` style and the rest in `inactive`,
 //! joined by `separator`. Each segment's text comes from `format` with
 //! `{index}` (0-based position, the `select-window` selector) and
-//! `{name}` (the editable label) substituted.
+//! `{name}` (the editable label) substituted. The index can carry its own
+//! `index` ink, and a window's agent badge precedes its name.
 
 use std::collections::BTreeMap;
 
@@ -22,7 +23,9 @@ pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
     kind: KIND,
     summary: "The tmux-style tab bar: one segment per window, the active \
               one in the `active` style and the rest in `inactive`, joined \
-              by `separator`. A zoomed active window gets a ` Z` marker, a \
+              by `separator`. A window whose focused pane runs an agent \
+              shows that agent's badge glyph before its name. A zoomed \
+              active window gets a ` Z` marker, a \
               window waiting on a human answer a ` !` marker, a window \
               holding a retained (exited) pane a dim ` x` / ` xN` marker, \
               and every tab is a click target committing `select-window` \
@@ -41,6 +44,14 @@ pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
             aliases: &[],
             doc: "style table, default dim — style of inactive windows' \
                   segments.",
+        },
+        WidgetOptSpec {
+            name: "index",
+            aliases: &[],
+            doc: "style table, default none — ink layered over the \
+                  segment's style for the `{index}` part only, so the \
+                  selector can recede behind the name while keeping the \
+                  tab's background.",
         },
         WidgetOptSpec {
             name: "separator",
@@ -65,6 +76,8 @@ pub struct WindowsWidget {
     pub active: CellStyle,
     /// Style applied to inactive windows' segments.
     pub inactive: CellStyle,
+    /// Ink layered over the segment style for the `{index}` part.
+    pub index: CellStyle,
     /// Literal text placed between segments.
     pub separator: String,
     /// Per-segment template; `{index}` and `{name}` are substituted.
@@ -85,6 +98,7 @@ impl Default for WindowsWidget {
                 dim: true,
                 ..CellStyle::default()
             },
+            index: CellStyle::default(),
             separator: " ".to_owned(),
             format: "{index}:{name}".to_owned(),
         }
@@ -92,54 +106,87 @@ impl Default for WindowsWidget {
 }
 
 impl WindowsWidget {
-    #[allow(
-        clippy::literal_string_with_formatting_args,
-        reason = "`{index}`/`{name}` are this widget's own template placeholders, not std format args"
-    )]
-    fn segment_text(&self, index: usize, name: &str) -> String {
-        self.format
-            .replace("{index}", &index.to_string())
-            .replace("{name}", name)
-    }
-}
-
-impl WindowsWidget {
     /// The cells of window `i`'s tab, markers and hit stamps included.
+    ///
+    /// `format` is walked part by part rather than substituted into one
+    /// string, so `{index}` can take its own ink and the badge its own
+    /// colour while every cell keeps the segment's background: a tab is one
+    /// bed with several inks on it, not several beds.
     fn segment(&self, i: usize, w: &WindowInfo) -> Vec<Cell> {
-        // phux-x2hm: a zoomed active window gets tmux's `Z` marker.
-        let mut text = self.segment_text(i, &w.name);
-        if w.zoomed {
-            text.push_str(" Z");
-        }
-        // phux-foz.1: a window holding a pane that asked for a human
-        // answer (ADR-0035) gets a `!` marker so it is findable from
-        // any window. Plain ASCII, matching the `Z` marker convention.
-        if w.attention {
-            text.push_str(" !");
-        }
-        // ADR-0124 / phux-fpgl.33: a window holding a retained (exited)
-        // pane gets a compact `x` marker plus the exit status, so it is
-        // findable without focusing that pane.
-        if let Some(marker) = w.exited_marker() {
-            text.push_str(&marker);
-        }
-        let style = if w.active {
+        let base = if w.active {
             self.active.clone()
         } else {
             self.inactive.clone()
         };
-        let style = if style.is_plain() { None } else { Some(style) };
+        let index_style = base.layered(&self.index);
+        let mut segment = Vec::new();
+        let mut rest = self.format.as_str();
+        while !rest.is_empty() {
+            let next = [rest.find("{index}"), rest.find("{name}")]
+                .into_iter()
+                .flatten()
+                .min();
+            let Some(at) = next else {
+                push_text(&mut segment, rest, &base);
+                break;
+            };
+            push_text(&mut segment, &rest[..at], &base);
+            rest = &rest[at..];
+            if let Some(after) = rest.strip_prefix("{index}") {
+                push_text(&mut segment, &i.to_string(), &index_style);
+                rest = after;
+            } else if let Some(after) = rest.strip_prefix("{name}") {
+                push_name(&mut segment, w, &base);
+                rest = after;
+            }
+        }
         // phux-foz.12: stamp every cell of the segment (markers
         // included) as a hit target for window `i`, so a click on the
         // tab commits `select-window { index = i }`. Separator cells
         // stay inert.
-        let mut segment = WidgetCells::from_styled(&text, style).cells;
         for cell in &mut segment {
             cell.hit = Some(CellHit::Window(i));
         }
         segment
     }
+}
 
+/// The `{name}` part of a tab: badge, label, then the state markers.
+fn push_name(segment: &mut Vec<Cell>, w: &WindowInfo, base: &CellStyle) {
+    if let Some(badge) = &w.badge {
+        push_text(segment, &badge.glyph, &base.layered(&badge.style));
+        push_text(segment, " ", base);
+    }
+    let mut text = w.name.clone();
+    // phux-x2hm: a zoomed active window gets tmux's `Z` marker.
+    if w.zoomed {
+        text.push_str(" Z");
+    }
+    // phux-foz.1: a window holding a pane that asked for a human
+    // answer (ADR-0035) gets a `!` marker so it is findable from
+    // any window. Plain ASCII, matching the `Z` marker convention.
+    if w.attention {
+        text.push_str(" !");
+    }
+    // ADR-0124 / phux-fpgl.33: a window holding a retained (exited)
+    // pane gets a compact `x` marker plus the exit status, so it is
+    // findable without focusing that pane.
+    if let Some(marker) = w.exited_marker() {
+        text.push_str(&marker);
+    }
+    push_text(segment, &text, base);
+}
+
+/// Append `text` to `cells` in `style` (`None` for an all-default style).
+fn push_text(cells: &mut Vec<Cell>, text: &str, style: &CellStyle) {
+    if text.is_empty() {
+        return;
+    }
+    let style = (!style.is_plain()).then(|| style.clone());
+    cells.extend(WidgetCells::from_styled(text, style).cells);
+}
+
+impl WindowsWidget {
     /// The separator cells placed between two tabs (empty when the
     /// configured separator is).
     fn separator_cells(&self) -> Vec<Cell> {
@@ -313,7 +360,7 @@ impl StatusWidget for WindowsWidget {
 /// Factory: builds a [`WindowsWidget`] from a TOML `opts` map.
 ///
 /// Accepted keys (all optional; omitted keys keep the default preset):
-/// - `active` / `inactive` (inline table) — a [`CellStyle`]:
+/// - `active` / `inactive` / `index` (inline table) — a [`CellStyle`]:
 ///   `fg`/`bg` (color strings), `bold`/`dim`/`italic`/`underline`/`reverse`
 ///   (bools).
 /// - `separator` (string) — text between segments (default `" "`).
@@ -331,11 +378,13 @@ pub(in crate::widget) fn factory(
     let defaults = WindowsWidget::default();
     let active = style_opt(KIND, opts, "active")?.unwrap_or(defaults.active);
     let inactive = style_opt(KIND, opts, "inactive")?.unwrap_or(defaults.inactive);
+    let index = style_opt(KIND, opts, "index")?.unwrap_or(defaults.index);
     let separator = string_opt(opts, "separator")?.unwrap_or(defaults.separator);
     let format = string_opt(opts, "format")?.unwrap_or(defaults.format);
     Ok(Box::new(WindowsWidget {
         active,
         inactive,
+        index,
         separator,
         format,
     }))

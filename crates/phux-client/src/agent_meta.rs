@@ -370,19 +370,6 @@ impl AgentRecord {
         })
     }
 
-    /// The window/tab label a chrome consumer renders for this record:
-    /// `name (state)`, with a `!` prefix when effective attention is high.
-    /// Purely structured — no title parsing anywhere.
-    #[must_use]
-    pub fn label(&self) -> String {
-        let bang = if self.effective_attention() == AgentAttention::High {
-            "!"
-        } else {
-            ""
-        };
-        format!("{bang}{} ({})", self.name, self.state.as_str())
-    }
-
     /// Encode this record to the UTF-8 JSON bytes `SET_METADATA` carries.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
@@ -580,17 +567,5 @@ mod tests {
             )),
             ShellCheck::Unanswerable
         );
-    }
-
-    #[test]
-    fn label_is_structured_and_flags_high_attention() {
-        let mut record = AgentRecord {
-            name: "reviewer".to_owned(),
-            state: AgentMetaState::Blocked,
-            ..AgentRecord::default()
-        };
-        assert_eq!(record.label(), "!reviewer (blocked)");
-        record.state = AgentMetaState::Idle;
-        assert_eq!(record.label(), "reviewer (idle)");
     }
 }

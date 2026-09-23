@@ -1485,6 +1485,7 @@ fn probe_window(name: &str, active: bool) -> WindowInfo {
         attention: false,
         branch: None,
         exited: None,
+        badge: None,
     }
 }
 
@@ -1499,7 +1500,7 @@ fn shipped_frame_at_a_roomy_viewport() {
     ];
     let rows = shipped_frame_rows((100, 12), &windows, None);
     let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1:nvim "), "{bar:?}");
+    assert!(bar.contains(" 1 nvim "), "{bar:?}");
     assert!(!bar.contains("s Sessions"), "{bar:?}");
     assert!(!bar.contains("S Settings"), "{bar:?}");
     assert!(bar.contains("phux"), "{bar:?}");
@@ -1520,7 +1521,7 @@ fn shipped_frame_at_a_phone_sized_viewport() {
     ];
     let rows = shipped_frame_rows((46, 12), &windows, None);
     let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
+    assert!(bar.contains(" 1 nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains("switch"), "{bar:?}");
     assert!(!bar.contains("Space palette"), "no teaching strip: {bar:?}");
     assert!(bar.chars().count() <= 46, "row overran: {bar:?}");
@@ -1542,9 +1543,9 @@ fn shipped_frame_when_the_tab_strip_must_collapse() {
     ];
     let rows = shipped_frame_rows((36, 10), &windows, None);
     let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
+    assert!(bar.contains(" 1 nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains('\u{203a}'), "hidden tabs are marked: {bar:?}");
-    assert!(!bar.contains("3:logs"), "the far tab is dropped: {bar:?}");
+    assert!(!bar.contains("3 logs"), "the far tab is dropped: {bar:?}");
     assert!(bar.contains("switch"), "affordance survives: {bar:?}");
     assert!(bar.chars().count() <= 36, "row overran: {bar:?}");
     insta::assert_snapshot!("shipped_frame_collapsed_tabs", rows.join("\n"));
@@ -1764,6 +1765,7 @@ fn paint_overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> V
         attention: false,
         branch: None,
         exited: None,
+        badge: None,
     }]);
 
     let mut overlays = OverlayState::new();

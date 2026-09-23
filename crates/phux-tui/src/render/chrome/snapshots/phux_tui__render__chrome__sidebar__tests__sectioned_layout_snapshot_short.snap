@@ -1,14 +1,15 @@
 ---
 source: crates/phux-tui/src/render/chrome/sidebar.rs
+assertion_line: 2575
 expression: "strip_text(&p, rect)"
 ---
- Agents                  │
- ● phux codex            │
+ Agents                1 │
+ ● phux            codex │
                          │
                          │
- Sessions                │
+ Sessions              2 │
  ○ development           │
    mini                  │
-   ● phux main           │
+   ● phux           main │
  +1 sessions, +1 windows │
  + new window            ‹

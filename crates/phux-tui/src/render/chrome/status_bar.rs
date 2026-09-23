@@ -211,7 +211,7 @@ pub fn render_status_bar<W: Write>(
     //    cell's style across the boundary. The Buffer's coordinate space
     //    is (0,0)..(cols,1); we never read it back.
     let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
-    fill_buffer(&mut buffer, &row, cols);
+    fill_buffer(&mut buffer, &row, cols, Color::Reset);
 
     // 3. Emit the buffer to VT. Cursor hide for the duration of the
     //    paint; SGR reset on entry and exit so we don't inherit nor
@@ -306,10 +306,14 @@ fn mark_window_drop(row: &mut [WidgetCell], drop_at: Option<usize>) {
 ///
 /// Blank widget cells map to a literal ASCII space; non-blank cells
 /// concatenate their grapheme codepoints into the buffer cell's
-/// symbol. Styling is intentionally minimal: the widget contract
-/// today only carries text. When the widget cell shape grows colors
-/// (tracked in `phux-config`), grow it here too.
-fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16) {
+/// symbol. `fill` is the row's bed: every cell a widget left without a
+/// background of its own takes it, so the bar reads as one surface with
+/// the sidebar rather than text floating on the terminal. `Reset` leaves
+/// the host background showing.
+fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color) {
+    if fill != Color::Reset {
+        buffer.set_style(Rect::new(0, 0, cols, 1), Style::default().bg(fill));
+    }
     let mut tmp = [0u8; 4];
     for (col, cell) in row.iter().enumerate().take(usize::from(cols)) {
         // `col < cols (u16)` from the `.take(usize::from(cols))` bound, so
@@ -705,6 +709,9 @@ pub struct StatusBarPainter {
     /// `attention` slot (the painter never hardcodes it). Under the chip's
     /// reverse video the foreground reads as the fill color.
     attention_fg: Color,
+    /// The row's bed, from the theme's `surface` slot: the same material
+    /// as the sidebar, so the two read as one frame around the panes.
+    fill: Color,
     prefix: String,
     /// phux-foz.4: the focused pane's live working directory, fed by the
     /// driver from `cwd_changed` events (via the pane slots) and injected
@@ -735,6 +742,7 @@ impl std::fmt::Debug for StatusBarPainter {
             .field("supervisory", &self.supervisory)
             .field("attention", &self.attention)
             .field("attention_fg", &self.attention_fg)
+            .field("fill", &self.fill)
             .field("prefix", &self.prefix)
             .field("focused_cwd", &self.focused_cwd)
             .field("last_exit", &self.last_exit)
@@ -758,6 +766,7 @@ impl StatusBarPainter {
             supervisory: None,
             attention: None,
             attention_fg: Color::Reset,
+            fill: Color::Reset,
             prefix: "C-a".to_owned(),
             focused_cwd: None,
             last_exit: None,
@@ -788,6 +797,7 @@ impl StatusBarPainter {
             supervisory: None,
             attention: None,
             attention_fg: Color::Reset,
+            fill: Color::Reset,
             prefix: "C-a".to_owned(),
             focused_cwd: None,
             last_exit: None,
@@ -973,6 +983,16 @@ impl StatusBarPainter {
         }
     }
 
+    /// Set the row's bed from the theme's `surface` slot. The driver calls
+    /// this beside [`Self::set_attention_color`]; `Reset` shows the host
+    /// terminal's own background.
+    pub fn set_fill(&mut self, color: Color) {
+        if self.fill != color {
+            self.fill = color;
+            self.invalidate();
+        }
+    }
+
     /// Cells the attention chip is shifted in from the right edge: the
     /// supervisory badge's width plus a 1-cell gap, or `0` when no badge is
     /// showing. Shared by the live paint and the snapshot compose so both
@@ -1098,7 +1118,7 @@ impl StatusBarPainter {
         // identical; `render_status_bar` stays as the standalone entry point
         // for callers that have no painter.
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
-        fill_buffer(&mut buffer, &new_row, cols);
+        fill_buffer(&mut buffer, &new_row, cols, self.fill);
         write_buffer(out, &buffer, row_index, x, cols)?;
         self.paint_row_overlays(out, row_index, x, cols)?;
         self.last_row = Some((x, cols, new_row));
@@ -1205,7 +1225,9 @@ impl StatusBarPainter {
         cols: u16,
     ) -> io::Result<()> {
         if let Some(gap) = self.badge_gap(cols) {
-            write!(out, "\x1b[{};{}H\x1b[0m ", row_index + 1, x + gap + 1)?;
+            let mut blank = Buffer::empty(Rect::new(0, 0, 1, 1));
+            blank.set_style(Rect::new(0, 0, 1, 1), Style::default().bg(self.fill));
+            write_buffer(out, &blank, row_index, x + gap, 1)?;
         }
         if let Some(badge) = &self.supervisory {
             paint_supervisory_overlay(out, badge, row_index, x, cols)?;
@@ -1273,9 +1295,10 @@ impl StatusBarPainter {
         let mut row = self.bar.render(&ctx.as_widget(), cols);
         mark_window_drop(&mut row, self.drop_at);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
-        fill_buffer(&mut buffer, &row, cols);
+        fill_buffer(&mut buffer, &row, cols, self.fill);
         if let Some(gap) = self.badge_gap(cols) {
             buffer[(gap, 0)].reset();
+            buffer[(gap, 0)].set_bg(self.fill);
         }
         // ADR-0033: overlay the supervisory badge into the snapshot buffer so
         // `phux snapshot --rendered` shows the same chip the live paint draws.
@@ -1808,6 +1831,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         assert!(p.set_notice(
             Notice::warn("pane 4: exited 127"),
@@ -2025,6 +2049,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
             WindowInfo {
                 name: "vim".to_owned(),
@@ -2033,6 +2058,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
         ];
         let ctx = StatusBarContext {
@@ -2075,6 +2101,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         let mut buf = Vec::new();
         p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
@@ -2099,6 +2126,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         p.set_attention_color(Color::Rgb(251, 191, 36));
         assert!(p.set_attention(Some("[ ASK ]".to_owned())));
@@ -2131,6 +2159,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         assert!(p.set_supervisory(Some("[ FROZEN ]".to_owned())));
         assert!(p.set_attention(Some("[ ASK ]".to_owned())));
@@ -2164,6 +2193,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         assert!(p.set_attention(Some("[ ASK ]".to_owned())));
         assert!(
@@ -2298,6 +2328,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
             WindowInfo {
                 name: "vim".to_owned(),
@@ -2306,6 +2337,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
         ]);
         // Before the first paint there is no strip to hit.
@@ -2340,6 +2372,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
             WindowInfo {
                 name: "vim".to_owned(),
@@ -2348,6 +2381,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
         ]);
         let ctx = ctx_default("");
@@ -2407,6 +2441,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         let inset = BarInset { left: 20, right: 0 };
         let mut buf = Vec::new();
@@ -2442,6 +2477,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
             WindowInfo {
                 name: "vim".to_owned(),
@@ -2450,6 +2486,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
         ]);
         let mut buf = Vec::new();
@@ -2492,6 +2529,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         p.set_supervisory(Some("[F]".to_owned()));
         let mut buf = Vec::new();
@@ -2527,6 +2565,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         let mut buf = Vec::new();
         p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
@@ -2542,6 +2581,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
             WindowInfo {
                 name: "b".to_owned(),
@@ -2550,6 +2590,7 @@ mod tests {
                 attention: false,
                 branch: None,
                 exited: None,
+                badge: None,
             },
         ]);
         let mut buf = Vec::new();
@@ -2632,5 +2673,40 @@ mod tests {
         let mut buf = Vec::new();
         render_status_bar(&mut buf, &bar, &ctx_default("x"), 0, 0, 0).unwrap();
         assert!(buf.is_empty());
+    }
+
+    /// The bar is one bed with the sidebar: cells a widget leaves without a
+    /// background take the fill, and a tab that brings its own keeps it.
+    #[test]
+    fn the_bar_takes_its_fill_where_widgets_leave_no_background() {
+        let bed = toml::Value::Table(toml::value::Table::from_iter([(
+            "bg".to_owned(),
+            toml::Value::String("#293628".to_owned()),
+        )]));
+        let cfg = StatusCfg {
+            left: vec![spec("windows", &[("active", bed)])],
+            right: vec![spec("session-name", &[])],
+            ..StatusCfg::default()
+        };
+        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
+        p.set_windows(vec![WindowInfo {
+            name: "zsh".to_owned(),
+            active: true,
+            ..WindowInfo::default()
+        }]);
+        let fill = Color::Rgb(0x17, 0x1b, 0x23);
+        p.set_fill(fill);
+        let (buf, _, _) = p
+            .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
+            .expect("composes");
+        assert_eq!(
+            buf[(0, 0)].bg,
+            Color::Rgb(0x29, 0x36, 0x28),
+            "the tab keeps its bed"
+        );
+        assert!(
+            (10..40).all(|x| buf[(x, 0)].bg == fill),
+            "the rest takes the fill"
+        );
     }
 }

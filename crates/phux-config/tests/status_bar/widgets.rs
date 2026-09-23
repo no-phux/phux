@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use phux_config::WidgetSpec;
 use phux_config::widget::{
     CellHit, CellStyle, SessionNameWidget, StatusWidget, TimeWidget, WidgetCells, WidgetContext,
-    WidgetError, WidgetRegistry, WindowInfo,
+    WidgetError, WidgetRegistry, WindowBadge, WindowInfo,
 };
 
 fn opts_with(entries: &[(&str, toml::Value)]) -> BTreeMap<String, toml::Value> {
@@ -58,6 +58,7 @@ fn win(name: &str, active: bool) -> WindowInfo {
         attention: false,
         branch: None,
         exited: None,
+        badge: None,
     }
 }
 
@@ -738,6 +739,90 @@ fn cell_style_is_plain_detects_default() {
         }
         .is_plain()
     );
+}
+
+/// A part's style changes its ink and keeps the segment's bed: colours the
+/// overlay sets win, attributes accumulate.
+#[test]
+fn cell_style_layered_keeps_the_bed_and_changes_the_ink() {
+    let bed = CellStyle {
+        fg: Some("#bef264".to_owned()),
+        bg: Some("#293628".to_owned()),
+        bold: true,
+        ..CellStyle::default()
+    };
+    let ink = CellStyle {
+        fg: Some("#7c8696".to_owned()),
+        italic: true,
+        ..CellStyle::default()
+    };
+    let layered = bed.layered(&ink);
+    assert_eq!(layered.fg.as_deref(), Some("#7c8696"));
+    assert_eq!(layered.bg.as_deref(), Some("#293628"));
+    assert!(layered.bold && layered.italic);
+    assert_eq!(bed.layered(&CellStyle::default()), bed);
+}
+
+/// A window running an agent shows the agent's glyph before its name, in
+/// the badge's own ink on the tab's bed, and the whole tab stays one click
+/// target.
+#[test]
+fn windows_widget_paints_the_badge_before_the_name() {
+    let active = style_table(&[("bg", toml::Value::String("#293628".to_owned()))]);
+    let window = WindowInfo {
+        badge: Some(WindowBadge {
+            glyph: "\u{25d0}".to_owned(),
+            style: CellStyle {
+                fg: Some("#86efac".to_owned()),
+                ..CellStyle::default()
+            },
+        }),
+        ..win("claude", true)
+    };
+    let cells = render_windows(
+        &[
+            ("format", toml::Value::String(" {index} {name} ".to_owned())),
+            ("active", active),
+        ],
+        &[window],
+    );
+    assert_eq!(text_of(&cells), " 0 \u{25d0} claude ");
+    let glyph = &cells.cells[3];
+    let style = glyph.style.as_ref().expect("badge styled");
+    assert_eq!(style.fg.as_deref(), Some("#86efac"));
+    assert_eq!(
+        style.bg.as_deref(),
+        Some("#293628"),
+        "badge sits on the tab's bed"
+    );
+    assert!(
+        cells
+            .cells
+            .iter()
+            .all(|c| c.hit == Some(CellHit::Window(0)))
+    );
+}
+
+/// `index` inks only the selector; the name keeps the segment style.
+#[test]
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "`{index}`/`{name}` are the widget's own template placeholders"
+)]
+fn windows_widget_index_style_touches_only_the_index() {
+    let index = style_table(&[("fg", toml::Value::String("#7c8696".to_owned()))]);
+    let inactive = style_table(&[("fg", toml::Value::String("#9aa4b2".to_owned()))]);
+    let cells = render_windows(
+        &[
+            ("format", toml::Value::String("{index} {name}".to_owned())),
+            ("inactive", inactive),
+            ("index", index),
+        ],
+        &[win("zsh", false), win("nvim", true)],
+    );
+    let fg = |i: usize| cells.cells[i].style.as_ref().and_then(|s| s.fg.clone());
+    assert_eq!(fg(0).as_deref(), Some("#7c8696"), "index");
+    assert_eq!(fg(2).as_deref(), Some("#9aa4b2"), "name");
 }
 
 // ---------------------------------------------------------------------------

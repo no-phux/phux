@@ -92,12 +92,13 @@ Options:
 
 ## `windows`
 
-The tmux-style tab bar: one segment per window, the active one in the `active` style and the rest in `inactive`, joined by `separator`. A zoomed active window gets a ` Z` marker, a window waiting on a human answer a ` !` marker, a window holding a retained (exited) pane a dim ` x` / ` xN` marker, and every tab is a click target committing `select-window` for its index — in any slot, top or bottom bar. Overflow arrows select the nearest hidden window; long active labels keep these arrows when space permits.
+The tmux-style tab bar: one segment per window, the active one in the `active` style and the rest in `inactive`, joined by `separator`. A window whose focused pane runs an agent shows that agent's badge glyph before its name. A zoomed active window gets a ` Z` marker, a window waiting on a human answer a ` !` marker, a window holding a retained (exited) pane a dim ` x` / ` xN` marker, and every tab is a click target committing `select-window` for its index — in any slot, top or bottom bar. Overflow arrows select the nearest hidden window; long active labels keep these arrows when space permits.
 
 Options:
 
 - `active` — style table, default bold reverse-video — style of the active window's segment.
 - `inactive` — style table, default dim — style of inactive windows' segments.
+- `index` — style table, default none — ink layered over the segment's style for the `{index}` part only, so the selector can recede behind the name while keeping the tab's background.
 - `separator` — string, default `" "` — literal text between segments.
 - `format` — string, default `"{index}:{name}"` — per-segment template; `{index}` (0-based position, the `select-window` selector) and `{name}` (the editable label) are substituted.
 

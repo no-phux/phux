@@ -426,7 +426,11 @@ fn build_cells<'p, F>(
     // colour, so the frame reads as disabled chrome (phux-lxov.1).
     let focused_down =
         focused.is_some_and(|id| label_of(id).is_some_and(|label| label.unreachable));
-    let frame = if focused_down {
+    // A lone pane has no neighbour to be told apart from, so its frame stays
+    // in the structural tone: lime is a signal, and a signal that is always
+    // on across the full width says nothing.
+    let alone = layout.rects.values().filter(|r| r.w > 0 && r.h > 0).count() < 2;
+    let frame = if focused_down || alone {
         None
     } else {
         focused.and_then(|id| layout.rects.get(id)).copied()
@@ -1897,5 +1901,20 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A lone pane has nothing to be told apart from: its whole-width rail
+    /// stays in the structural tone instead of a full-width lime stripe.
+    #[test]
+    fn a_lone_pane_rail_is_not_tinted() {
+        let content = railed(80, 24);
+        let state = LayoutState {
+            tree: Some(leaf(1)),
+            focus: Some(t(1)),
+        };
+        let layout = compute_layout_in(&state, content, (80, 24));
+        let s = render(&layout, content, None);
+        assert!(!s.contains(&sgr_fg(theme().divider_focus)), "{s:?}");
+        assert!(s.contains(&sgr_fg(theme().divider)), "{s:?}");
     }
 }

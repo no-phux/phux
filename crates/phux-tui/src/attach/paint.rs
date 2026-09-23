@@ -531,13 +531,17 @@ pub(super) fn paint_empty_session<W: super::RenderSink>(
 ) -> StatusBarPaint {
     let mut block = FrameBlock::begin(out);
     let bar = status_bar.as_ref().map(|p| p.position());
-    let content = content_layout(viewport_dims, bar, sidebar).rect;
+    let ContentLayout {
+        rect: content,
+        rail,
+    } = content_layout(viewport_dims, bar, sidebar);
     let origin = Some((content.x, content.y));
     let _ = block.write_all(b"\x1b[2J\x1b[H");
     write_centered_lines(&mut block, content, lines);
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
         painter.invalidate();
         painter.set_rule(sidebar_rule(res.edge));
+        painter.set_junction(rail);
         let _ = painter.paint(&mut block, sidebar_rect(viewport_dims, res));
     }
     let painted = paint_bar_after_pane(
@@ -683,6 +687,7 @@ fn paint_full_frame_into<W: Write>(
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
         painter.invalidate();
         painter.set_rule(sidebar_rule(res.edge));
+        painter.set_junction(rail);
         let _ = painter.paint(out, sidebar_rect(viewport_dims, res));
     }
     // The ED2 above cleared the bar row, so force a re-emit even if the
@@ -847,6 +852,7 @@ fn paint_chrome_in_place_into<W: Write>(
     );
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
         painter.set_rule(sidebar_rule(res.edge));
+        painter.set_junction(rail);
         let _ = painter.paint(out, sidebar_rect(viewport_dims, res));
     }
     // `bar_row_clobbered = false`: nothing cleared the bar row, so the
@@ -2491,6 +2497,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }]);
         (
             painter,

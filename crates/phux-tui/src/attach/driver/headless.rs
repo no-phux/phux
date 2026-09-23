@@ -325,20 +325,13 @@ impl HeadlessSession {
     fn compose(&mut self) -> phux_core::screen::RenderedFrame {
         use std::time::SystemTime;
 
-        let windows = window_infos(
+        let mut windows = window_infos(
             &self.workspace,
             &self.panes,
             self.zoomed.as_ref(),
             &self.agent_meta.records,
             &mut self.vcs,
         );
-        if let Some(sb) = self.status_bar.as_mut() {
-            sb.set_windows(windows.clone());
-        }
-        // phux-4h5a: feed the same window list into the strip painter so the
-        // composited frame shows the sidebar tabs when `[sidebar]` is enabled.
-        let mut sidebar_painter = SidebarPainter::new(self.sidebar_theme);
-        sidebar_painter.set_windows(windows);
         let local = agent_entries(
             &self.workspace,
             &self.panes,
@@ -346,6 +339,14 @@ impl HeadlessSession {
             &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
             &crate::attach::review::ReviewIndex::new(),
         );
+        super::chrome::badge_windows(&mut windows, &self.workspace, &local, &self.sidebar_theme);
+        if let Some(sb) = self.status_bar.as_mut() {
+            sb.set_windows(windows.clone());
+        }
+        // phux-4h5a: feed the same window list into the strip painter so the
+        // composited frame shows the sidebar tabs when `[sidebar]` is enabled.
+        let mut sidebar_painter = SidebarPainter::new(self.sidebar_theme);
+        sidebar_painter.set_windows(windows);
         let mut session = crate::render::chrome::sidebar::SessionRosterEntry {
             name: self.session_name.clone(),
             host: "this server".to_owned(),
@@ -630,7 +631,7 @@ mod sidebar_tests {
             .collect();
         assert!(rows[1].contains("reviewer"), "{rows:?}");
         assert!(
-            rows[12].contains("work") && rows[12].contains("!1"),
+            rows[12].contains("work") && rows[12].contains("●1"),
             "{rows:?}"
         );
         assert!(rows[13].contains("this server"), "{rows:?}");
