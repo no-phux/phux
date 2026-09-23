@@ -1,0 +1,514 @@
+---
+// Privacy policy for the phux mobile apps (iOS, Android), phux.sh, and the
+// hosted demo. The apps link here from the paywall and account screens
+// (TUIST_PRIVACY_POLICY_URL in phux-mobile). Every statement is derived from
+// code: the site workers (host/, worker/src/), the private analytics worker
+// that host/analytics.ts forwards to, and the phux-mobile sources and ADRs.
+// When any of those change what is collected, change this page in the same
+// release and bump LAST_UPDATED.
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const LAST_UPDATED = "2026-09-23";
+const CONTACT = "privacy@phall.io";
+const title = "phux — privacy policy";
+const description =
+  "What the phux apps, phux.sh, and the hosted demo collect, who processes it, how long it is kept, and how to access or delete it.";
+---
+
+<BaseLayout {title} {description}>
+  <article class="wrap policy">
+    <header class="policy-head">
+      <h1>privacy policy</h1>
+      <p class="updated">
+        Last updated <time datetime={LAST_UPDATED}>{LAST_UPDATED}</time>
+      </p>
+      <p class="lede">
+        This policy covers the phux mobile apps for iOS and Android, the
+        websites at <code>phux.sh</code>, <code>docs.phux.sh</code>, and <code>shell.phux.sh</code>,
+        and the phux software you install and run yourself. "We" means the people who operate phux and these services.
+      </p>
+    </header>
+
+    <section class="summary" aria-labelledby="summary">
+      <h2 id="summary">in short</h2>
+      <ul>
+        <li>
+          Your terminal traffic goes directly between your device and the phux
+          server you run. We never receive, store, or process terminal content.
+        </li>
+        <li>
+          The apps work without an account. If you create one, we store your
+          email address and the settings you choose to sync, never pairing
+          tokens or terminal data.
+        </li>
+        <li>
+          Purchases are handled by Apple or Google. RevenueCat manages
+          subscription status under a random ID, not your email address.
+        </li>
+        <li>
+          The website keeps aggregate traffic counts and a hashed per-day
+          visitor ID. Its analytics never store IP addresses, and it sets no
+          tracking cookie unless you opt in.
+        </li>
+        <li>
+          No advertising, no selling of data, and no tracking across other
+          companies' apps or websites.
+        </li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="terminals">
+      <h2 id="terminals">your terminals</h2>
+      <p>
+        The apps connect to a phux server that you install and run on your own
+        machine. The connection goes directly from your device to that
+        server: over your local network, over an overlay network such as
+        Tailscale or WireGuard, or through a relay you host yourself. We do
+        not operate a relay, and no phux-operated service sits in that path.
+        Terminal output, scrollback, the commands you type, and session titles
+        never reach us.
+      </p>
+      <p>
+        When you pair a device with a server, the pairing token and
+        certificate fingerprint are stored on your device (in the iOS
+        Keychain, or encrypted with the Android Keystore). Pairing tokens are
+        never synced to your account and never leave your device except to
+        authenticate to your own server.
+      </p>
+      <p>
+        The phux command-line tool and server contain no telemetry or usage
+        reporting. They contact GitHub only to download a release, when you
+        run the installer or <code>phux update</code>.
+      </p>
+    </section>
+
+    <section aria-labelledby="device">
+      <h2 id="device">what stays on your device</h2>
+      <p>
+        Saved servers, preferences, and app settings are stored locally. The
+        apps include no analytics or crash-reporting SDK. Specific device
+        features are used only when you invoke them:
+      </p>
+      <ul>
+        <li>
+          <strong>Camera</strong>: to scan a pairing QR code. On Android,
+          scanning uses the Google Play services code scanner, and the app
+          receives only the decoded link.
+        </li>
+        <li>
+          <strong>Microphone and speech recognition</strong> (iOS): to dictate
+          a message. Transcription runs on your device.
+        </li>
+        <li>
+          <strong>Face ID</strong> (iOS): to unlock the app when you turn on
+          the optional app lock.
+        </li>
+        <li>
+          <strong>Local network</strong>: to reach your phux server.
+        </li>
+      </ul>
+      <p>
+        Notifications that a session needs your attention are generated on
+        your device. The apps are not set up to receive push notifications.
+      </p>
+      <p>
+        On iOS, the app keeps Apple's MetricKit performance and hang reports
+        in its own storage, capped at the 60 most recent files and excluded
+        from backups. They contain timing and system diagnostics, not terminal
+        content, and are not uploaded. The app's support report is sent only
+        if you share it yourself. You can read it before you share it, and it
+        excludes server names, tokens, account data, and terminal content.
+      </p>
+      <p>
+        On Android, if you have turned on device backup, Android may include
+        the app's local data in your Google account backup. That backup is
+        between you and Google.
+      </p>
+    </section>
+
+    <section aria-labelledby="account">
+      <h2 id="account">optional account</h2>
+      <p>
+        An account is optional. Its purpose is to sync your settings across
+        devices. It is hosted on Supabase. You can sign in with Apple (iOS) or
+        with a one-time code sent to your email address. There are no
+        passwords.
+      </p>
+      <p>When you have an account, we store:</p>
+      <ul>
+        <li>
+          your email address (with Sign in with Apple, this can be an Apple
+          private relay address) and a random account ID;
+        </li>
+        <li>
+          if you use Sign in with Apple, an Apple-issued refresh token, kept
+          only so that we can revoke Apple's sign-in grant when you delete
+          your account;
+        </li>
+        <li>
+          the settings you sync: server names and addresses, certificate
+          fingerprints, workspace names (and any tailnet name you attach to a
+          workspace), session collection names and the panes they contain,
+          per-server input and font settings, and app preferences such as the
+          key bar layout, font size, and haptics;
+        </li>
+        <li>
+          your commerce ID (see <a href="#purchases">purchases</a>), so that a
+          subscription follows you to a new device.
+        </li>
+      </ul>
+      <p>
+        We do not store pairing tokens, terminal content, or anything you type
+        into a terminal. Signing out only affects the device you sign out on:
+        its local data stays, and syncing stops.
+      </p>
+      <p>
+        <strong>Deleting your account.</strong> In the iOS app, open the
+        account screen and tap "delete account". Deleting your account:
+      </p>
+      <ul>
+        <li>revokes the Apple sign-in grant, if you used Sign in with Apple;</li>
+        <li>deletes your RevenueCat customer record;</li>
+        <li>
+          deletes your account, your email address, and every synced document
+          from our Supabase database;
+        </li>
+        <li>
+          removes the commerce ID from the device and resets its subscription
+          state.
+        </li>
+      </ul>
+      <p>
+        Deleting your account does not cancel an App Store or Google Play
+        subscription. You cancel those in your Apple or Google subscription
+        settings. If your version of the app does not offer in-app deletion,
+        email <a href={`mailto:${CONTACT}`}>{CONTACT}</a> and we will delete
+        your account and associated data.
+      </p>
+    </section>
+
+    <section aria-labelledby="purchases">
+      <h2 id="purchases">purchases</h2>
+      <p>
+        Subscriptions bought in the app are sold by Apple (App Store) or
+        Google (Google Play), who process payment. We never see your card or
+        payment details.
+      </p>
+      <p>
+        We use RevenueCat to track which subscriptions are active. The app
+        creates a random commerce ID on your device and uses it as your
+        RevenueCat customer ID. It is not your email address, a device
+        identifier, or a pairing token. RevenueCat receives:
+      </p>
+      <ul>
+        <li>the commerce ID;</li>
+        <li>
+          your purchase and subscription transactions from Apple or Google;
+        </li>
+        <li>
+          technical details that its SDK sends with each request: platform,
+          operating system version, device model, app version, preferred
+          languages, and store country. On iOS, this also includes Apple's
+          identifier for vendor, an ID that is specific to our apps on your
+          device and cannot be used to link you across other companies' apps.
+        </li>
+      </ul>
+      <p>
+        We do not send RevenueCat your email address, name, server
+        information, or anything from your terminals. Where web purchases are
+        offered, Paddle processes them as merchant of record, and RevenueCat
+        links them to the same commerce ID.
+      </p>
+    </section>
+
+    <section aria-labelledby="website">
+      <h2 id="website">the website</h2>
+      <p>
+        <code>phux.sh</code> and <code>docs.phux.sh</code> run on Cloudflare.
+        The site loads no third-party analytics script and sets no cookies for
+        ordinary visits. Its fonts load from Bunny Fonts, which receives your
+        IP address as part of that request. Two kinds of measurement run on
+        the server side.
+      </p>
+      <p>
+        <strong>Public aggregate counters.</strong> For each request, the site
+        increments hourly counters by user-agent class (for example
+        "browser" or a named AI crawler), country, hostname, response status,
+        and type of request. These counters contain no IP addresses, raw user
+        agents, or cookies. They are published live at <a href="/telemetry">/telemetry</a>.
+      </p>
+      <p>
+        <strong>Private analytics.</strong> Each request is also recorded in a
+        private event store. It stores the hostname and page path (never the
+        query string, except the campaign tags <code>utm_source</code>, <code>utm_medium</code>, and <code>utm_campaign</code>),
+        the referring site's hostname, country, and user-agent class, and for
+        installer downloads the operating system, CPU architecture, and
+        download tool. Visitors are counted
+        with an ID computed from your IP address and user agent under a key
+        that changes every day, so visits cannot be linked from one day to
+        the next. The IP address itself is never stored. To tell people apart
+        from AI agents, crawlers, and scanners, a summary of a visitor's day
+        (user-agent class, country, referrer type, campaign tags, and pages
+        visited; for unrecognized clients, a truncated user-agent string with
+        email addresses removed) can be sent to TypeSafe, an AI
+        classification service. The summary never includes an IP address,
+        email address, or cookie.
+      </p>
+      <p>
+        <strong>The beta list.</strong> If you <a href="/#beta">join the beta</a>,
+        we store your email address, the
+        date you joined, the form you used, your country, and your user-agent
+        class. We use it to email you about the beta. We do not sell or rent
+        it. The beta emails include a personal link. If you choose to open it,
+        it sets a first-party <code>phux_mid</code> cookie for one year, which
+        links your later visits on that browser to your beta membership. This
+        cookie is the only way the site identifies an individual visitor, and
+        only happens if you click that link.
+      </p>
+      <p>
+        <strong>The hosted shell.</strong> The live terminal on the landing
+        page runs on <code>shell.phux.sh</code>. The basic version needs no
+        sign-in. To unlock the full Linux shell, you sign in with GitHub or
+        Google. From GitHub we read your public user ID, username, and account
+        creation date. From Google we read your account ID, name, and verified
+        email address. Your identity is kept in a signed cookie that expires
+        after 8 hours. On our side, only your provider account ID is kept, to
+        enforce usage limits: launch records are deleted after one hour and
+        daily usage totals at the end of the UTC day. Your IP address is used
+        to rate-limit launches. It is stored in keyed-hash form for rate
+        limiting, and in plain form only while a hosted session is running.
+        Hosted sessions are discarded when they end.
+      </p>
+      <p>
+        <strong>Pairing links.</strong> When a <code>phux.sh/connect</code> pairing link opens in a browser instead of the app, the page reads the
+        link on your device and removes the token from the address bar. The
+        page loads no analytics script, and our analytics record only the
+        path, never the token.
+      </p>
+    </section>
+
+    <section aria-labelledby="never">
+      <h2 id="never">what we do not do</h2>
+      <ul>
+        <li>We do not show advertising or use advertising identifiers.</li>
+        <li>We do not sell or rent personal data.</li>
+        <li>
+          We do not track you across other companies' apps or websites. The
+          iOS app's privacy manifest declares no tracking and no tracking
+          domains.
+        </li>
+        <li>We do not use your data to build advertising profiles.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="providers">
+      <h2 id="providers">service providers</h2>
+      <p>
+        These companies process data for us, only for the purposes described
+        above. They may process it in the United States and other countries.
+      </p>
+      <div class="table-region" role="region" tabindex="0" aria-label="Service providers">
+        <table>
+          <thead>
+            <tr><th scope="col">Provider</th><th scope="col">What it does</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Apple, Google</td><td>App distribution, in-app purchases, Sign in with Apple, Google sign-in for the hosted shell</td></tr>
+            <tr><td>RevenueCat</td><td>Subscription status</td></tr>
+            <tr><td>Supabase</td><td>Optional account and settings sync</td></tr>
+            <tr><td>Paddle</td><td>Web purchases, where offered</td></tr>
+            <tr><td>Cloudflare</td><td>Website hosting, hosted shell, website analytics storage</td></tr>
+            <tr><td>GitHub</td><td>Sign-in for the hosted shell, software downloads</td></tr>
+            <tr><td>TypeSafe</td><td>Classifying website traffic</td></tr>
+            <tr><td>Bunny Fonts</td><td>Serving the website's fonts</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="retention">
+      <h2 id="retention">how long we keep it</h2>
+      <div class="table-region" role="region" tabindex="0" aria-label="Retention periods">
+        <table>
+          <thead>
+            <tr><th scope="col">Data</th><th scope="col">Kept for</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Account, email, synced settings</td><td>Until you delete your account</td></tr>
+            <tr><td>Removed servers in the synced roster</td><td>30 days, so the removal reaches your other devices</td></tr>
+            <tr><td>RevenueCat customer record</td><td>Until you delete your account or ask us to delete it</td></tr>
+            <tr><td>Public website counters</td><td>30 days</td></tr>
+            <tr><td>Private website events</td><td>90 days</td></tr>
+            <tr><td>Daily visitor records and traffic classifications</td><td>45 days</td></tr>
+            <tr><td>Beta list</td><td>Until you ask to be removed</td></tr>
+            <tr><td>Hosted shell sign-in cookie</td><td>8 hours</td></tr>
+            <tr><td>Hosted shell launch records and usage totals</td><td>1 hour; until the end of the UTC day</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Apple, Google, and Paddle keep their own purchase records under their
+        own policies.
+      </p>
+    </section>
+
+    <section aria-labelledby="rights">
+      <h2 id="rights">your choices and rights</h2>
+      <ul>
+        <li>
+          <strong>Access and export.</strong> The iOS app can export
+          everything your account holds as a JSON file: open the account
+          screen and tap "export account data". On other platforms, or for
+          other data, email us.
+        </li>
+        <li>
+          <strong>Deletion.</strong> Delete your account in the app as
+          described above, or email us. To leave the beta list, email us.
+        </li>
+        <li>
+          <strong>Correction.</strong> You can change synced settings in the
+          app. For anything else, email us.
+        </li>
+        <li>
+          <strong>No account.</strong> All terminal features work without an
+          account.
+        </li>
+      </ul>
+      <p>
+        Depending on where you live, you may have further rights, such as
+        objecting to or restricting processing, or complaining to a data
+        protection authority. Email us to exercise any of them. We will not
+        treat you differently for doing so.
+      </p>
+    </section>
+
+    <section aria-labelledby="children">
+      <h2 id="children">children</h2>
+      <p>
+        phux is a developer tool. It is not directed at children under 13,
+        and we do not knowingly collect personal data from them. If you
+        believe a child has given us personal data, email us and we will
+        delete it.
+      </p>
+    </section>
+
+    <section aria-labelledby="changes">
+      <h2 id="changes">changes to this policy</h2>
+      <p>
+        When we change this policy, we update the date at the top of this
+        page. If a change affects how we use data you have already given us,
+        we will say so on this page before the change takes effect. The
+        history of this page is public in the <a href="https://github.com/no-phux/phux/commits/main/docs/site/src/pages/privacy.astro" target="_blank" rel="noopener">phux repository</a>.
+      </p>
+    </section>
+
+    <section aria-labelledby="contact">
+      <h2 id="contact">contact</h2>
+      <p>
+        Questions and requests about privacy: <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+      </p>
+    </section>
+  </article>
+</BaseLayout>
+
+<style>
+  .policy {
+    max-width: calc(var(--reading-width) + 2 * var(--page-gutter));
+    padding-block: clamp(32px, 6vw, 72px) 96px;
+  }
+  .policy-head {
+    border-bottom: 1px solid var(--color-rule);
+    padding-bottom: 24px;
+    margin-bottom: 8px;
+  }
+  h1 {
+    font-size: clamp(28px, 4vw, 40px);
+    letter-spacing: -0.02em;
+    margin: 0 0 8px;
+  }
+  .updated {
+    font-family: var(--font-code);
+    font-size: 13px;
+    color: var(--color-muted);
+    margin: 0 0 16px;
+  }
+  .lede {
+    color: var(--color-muted);
+    margin: 0;
+  }
+  section {
+    border-bottom: 1px solid var(--color-rule);
+    padding-block: 24px;
+  }
+  section:last-child {
+    border-bottom: 0;
+  }
+  h2 {
+    font-size: 20px;
+    letter-spacing: -0.01em;
+    margin: 0 0 12px;
+  }
+  p,
+  ul {
+    margin: 0 0 12px;
+  }
+  ul {
+    padding-left: 1.25em;
+  }
+  li + li {
+    margin-top: 6px;
+  }
+  .summary {
+    border: 1px solid var(--color-rule);
+    border-left: 3px solid var(--color-accent);
+    background: var(--color-surface);
+    padding: 20px;
+    margin-block: 24px;
+  }
+  .summary ul {
+    margin: 0;
+  }
+  a {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  a:hover,
+  a:focus-visible {
+    text-decoration-thickness: 2px;
+  }
+  code {
+    font-size: 0.9em;
+  }
+  .table-region {
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--color-rule);
+    background: var(--color-surface);
+    margin: 0 0 12px;
+  }
+  .table-region:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  th,
+  td {
+    text-align: left;
+    vertical-align: top;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--color-rule);
+  }
+  tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  th {
+    background: var(--color-surface-raised);
+    font-weight: 600;
+  }
+</style>
