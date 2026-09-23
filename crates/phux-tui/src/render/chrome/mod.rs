@@ -40,6 +40,8 @@ pub struct AgentBadge {
 pub(crate) const AGENT_BLOCKED_GLYPH: &str = "●";
 /// Half-filled ring: actively working, not waiting.
 pub(crate) const AGENT_WORKING_GLYPH: &str = "◐";
+/// Filled diamond: finished, and nobody has looked yet.
+pub(crate) const AGENT_DONE_GLYPH: &str = "◆";
 
 /// Resolve the badge for one agent pane.
 ///
@@ -67,7 +69,7 @@ pub fn agent_badge(
     let glyph = match state {
         AgentMetaState::Blocked => AGENT_BLOCKED_GLYPH,
         // "look at me": finished, unread.
-        AgentMetaState::Done if !seen => "◆",
+        AgentMetaState::Done if !seen => AGENT_DONE_GLYPH,
         AgentMetaState::Working => AGENT_WORKING_GLYPH,
         AgentMetaState::Done | AgentMetaState::Idle | AgentMetaState::Unknown => "○",
     };

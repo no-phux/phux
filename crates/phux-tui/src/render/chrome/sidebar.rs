@@ -29,6 +29,10 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use crate::layout::Rect;
 use crate::render::Theme;
+use crate::render::chrome::{
+    AGENT_BLOCKED_GLYPH as AGENT_BLOCKED, AGENT_DONE_GLYPH as AGENT_DONE,
+    AGENT_WORKING_GLYPH as AGENT_WORKING,
+};
 use crate::render::overlay::HardcodedBinding;
 use crate::render::{clip_text, display_width};
 use phux_client::agent_meta::AgentMetaState;
@@ -579,6 +583,9 @@ pub struct SidebarPainter {
     /// Window index under a live row drag, painted as the insertion
     /// marker. `None` when no window drag is over this strip.
     drop_at: Option<usize>,
+    /// Strip row where the pane grid's rail meets the separator rule, drawn
+    /// as a tee so the two read as one frame. `None` when no rail is laid.
+    junction: Option<u16>,
 }
 
 /// Open a satellite agent beside the focused pane. `None` when `resource`
@@ -616,7 +623,15 @@ impl SidebarPainter {
             dirty: true,
             rule: SidebarRule::Trailing,
             drop_at: None,
+            junction: None,
         }
+    }
+
+    /// The theme this strip paints with; other chrome resolves badges
+    /// through it so every surface shares one palette.
+    #[must_use]
+    pub const fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     /// Put the separator rule on the pane-facing side. Painters call this
@@ -625,6 +640,16 @@ impl SidebarPainter {
     pub fn set_rule(&mut self, rule: SidebarRule) {
         if self.rule != rule {
             self.rule = rule;
+            self.dirty = true;
+        }
+    }
+
+    /// Tee the separator rule into the pane grid's rail at strip row `row`
+    /// (`None` clears it). Painters call this with the rail row the content
+    /// layout reserved, beside [`Self::set_rule`].
+    pub fn set_junction(&mut self, row: Option<u16>) {
+        if self.junction != row {
+            self.junction = row;
             self.dirty = true;
         }
     }
@@ -743,7 +768,7 @@ impl SidebarPainter {
         if !self.dirty && self.last.as_ref().is_some_and(|(r, _)| *r == rect) {
             return Ok(());
         }
-        let buf = self.compose(rect, self.rule);
+        let buf = self.compose(rect, self.rule, self.junction);
         let previous = self
             .last
             .as_ref()
@@ -760,16 +785,34 @@ impl SidebarPainter {
     /// (phux-l5xa / phux-4h5a). The VT [`Self::paint`] path uses the same
     /// `compose` step internally, so the cells match a live paint.
     #[must_use]
-    pub fn compose_buffer(&self, rect: Rect, rule: SidebarRule) -> Buffer {
-        self.compose(rect, rule)
+    pub fn compose_buffer(&self, rect: Rect, rule: SidebarRule, junction: Option<u16>) -> Buffer {
+        self.compose(rect, rule, junction)
     }
 
-    /// Render a muted section header.
-    fn header_line(&self, label: &str, text_w: u16) -> Line<'static> {
-        Line::from(Span::styled(
-            truncate(label, usize::from(text_w)),
-            Style::default().fg(self.theme.sidebar_section),
-        ))
+    /// Render a section header: the label left, its population right.
+    ///
+    /// The count sits on the same right edge as every row's secondary
+    /// column, so the header reads as the top of a table rather than a
+    /// caption floating over it.
+    fn header_line(&self, label: &str, count: usize, text_w: u16) -> Line<'static> {
+        let right = if count == 0 {
+            Vec::new()
+        } else {
+            vec![Span::styled(
+                count.to_string(),
+                Style::default().fg(self.theme.dim),
+            )]
+        };
+        justify(
+            vec![Span::styled(
+                truncate(label, usize::from(text_w)),
+                Style::default()
+                    .fg(self.theme.sidebar_section)
+                    .add_modifier(Modifier::BOLD),
+            )],
+            right,
+            text_w,
+        )
     }
 
     /// Render a section's empty-state placeholder (phux-foz.13): the label
@@ -785,43 +828,45 @@ impl SidebarPainter {
         ))
     }
 
-    /// Render one window's name row: a status dot + the bold label.
+    /// Render one window's row, nested under its session: the window's
+    /// badge, its label, and its branch right-aligned.
+    ///
+    /// The glyph is the agent badge when the window's focused pane runs an
+    /// agent (the same one its tab and agent row show), otherwise a plain
+    /// dot: filled for the active window, hollow for the rest. A window
+    /// waiting on a human takes the attention dot either way. The active
+    /// row's selection bed is laid by [`Self::compose`] across the whole
+    /// strip, not just the text.
     fn name_line(&self, w: &WindowInfo, text_w: u16) -> Line<'static> {
-        // The dot carries status: filled + accent for the active window,
-        // hollow + dim otherwise, attention amber when the window is
-        // waiting on a human (ADR-0035).
-        let (dot, dot_color) = match (w.attention, w.active) {
-            (true, _) => ("●", self.theme.attention),
-            (false, true) => ("●", self.theme.accent),
-            (false, false) => ("○", self.theme.dim),
-        };
+        let (glyph, glyph_style) = self.window_glyph(w);
         let exited = w.exited_marker();
         let exited_w = exited.as_ref().map_or(0, |marker| display_width(marker));
         // phux-foz.1: reserve 2 cells for the ` !` attention
         // suffix so a long label can't push it off the strip.
         // phux-fpgl.33: same for the retained-exit ` x` / ` xN` marker.
         let label_w = usize::from(text_w)
-            .saturating_sub(4) // nested indent + dot + space
+            .saturating_sub(4) // nested indent + glyph + space
             .saturating_sub(if w.attention { 2 } else { 0 })
             .saturating_sub(exited_w);
         let label = truncate(&w.name, label_w);
-        let branch = fitting_branch(w, label_w.saturating_sub(display_width(&label)));
         let style = if w.active {
-            Style::default().fg(self.theme.accent)
+            Style::default()
+                .fg(self.theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else if w.exited.is_some() {
             Style::default().fg(self.theme.dim)
         } else {
             Style::default().fg(self.theme.text)
         };
-        let mut spans = vec![
+        let mut left = vec![
             Span::raw("  "),
-            Span::styled(format!("{dot} "), Style::default().fg(dot_color)),
-            Span::styled(label, style),
+            Span::styled(format!("{glyph} "), glyph_style),
+            Span::styled(label.clone(), style),
         ];
         // phux-foz.1: a window holding a pane that asked for a
         // human answer (ADR-0035) gets a themed `!` marker.
         if w.attention {
-            spans.push(Span::styled(
+            left.push(Span::styled(
                 " !",
                 Style::default()
                     .fg(self.theme.attention)
@@ -829,15 +874,42 @@ impl SidebarPainter {
             ));
         }
         if let Some(marker) = exited {
-            spans.push(Span::styled(marker, Style::default().fg(self.theme.dim)));
+            left.push(Span::styled(marker, Style::default().fg(self.theme.dim)));
         }
-        if let Some(branch) = branch {
-            spans.push(Span::styled(
-                format!(" {branch}"),
-                Style::default().fg(self.theme.dim),
-            ));
+        let used = 4 + display_width(&label) + if w.attention { 2 } else { 0 } + exited_w;
+        let right = fitting_branch(w, usize::from(text_w).saturating_sub(used))
+            .map(|branch| {
+                vec![Span::styled(
+                    branch.to_owned(),
+                    Style::default().fg(self.theme.dim),
+                )]
+            })
+            .unwrap_or_default();
+        justify(left, right, text_w)
+    }
+
+    /// A window row's glyph and its style.
+    fn window_glyph(&self, w: &WindowInfo) -> (String, Style) {
+        if w.attention {
+            return ("●".to_owned(), Style::default().fg(self.theme.attention));
         }
-        Line::from(spans)
+        if let Some(badge) = &w.badge {
+            let mut style = Style::default().fg(badge
+                .style
+                .fg
+                .as_deref()
+                .and_then(|fg| fg.parse().ok())
+                .unwrap_or(self.theme.dim));
+            if badge.style.bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            return (badge.glyph.clone(), style);
+        }
+        if w.active {
+            ("●".to_owned(), Style::default().fg(self.theme.accent))
+        } else {
+            ("○".to_owned(), Style::default().fg(self.theme.dim))
+        }
     }
 
     /// Host identity is a separate, dim line and is never inferred here.
@@ -849,8 +921,9 @@ impl SidebarPainter {
         ))
     }
 
-    /// Render one agent row (phux-foz.9): lifecycle glyph, locator, then
-    /// the agent name. The glyph carries state; the name is the identity.
+    /// Render one agent row (phux-foz.9): lifecycle glyph and locator on
+    /// the left, the agent's name flush right. The glyph carries state; the
+    /// locator says where to go; the name says who is there.
     ///
     /// The glyph carries the attention ladder ([`attention_rank`]), not just
     /// the state: an UNSEEN `done` agent gets the filled diamond and bold —
@@ -862,8 +935,6 @@ impl SidebarPainter {
         // a pane's own title (`render::chrome::dividers`), so a working
         // agent can never be a `◐` here and something else there.
         let badge = crate::render::chrome::agent_badge(&self.theme, e.state, e.attention, e.seen);
-        let color = badge.color;
-        let glyph = badge.glyph;
         let host_label = e.host.as_deref().unwrap_or("");
         let host_cols = if host_label.is_empty() {
             0
@@ -876,97 +947,109 @@ impl SidebarPainter {
         // A satellite row's locator is already the agent name (there is no
         // attachable session to name). Painting that name again as the
         // suffix would repeat it. The glyph still carries the live state.
-        let state_text = if e.host.is_some() && e.session.as_deref() == Some(e.name.as_str()) {
-            String::new()
+        let name = if e.host.is_some() && e.session.as_deref() == Some(e.name.as_str()) {
+            ""
         } else {
-            e.name.clone()
+            e.name.as_str()
         };
         // A cross-session row is labelled by its SESSION, not its window: the
         // row's job is to say where in the fleet to go, and a window name
         // out of its session's context ("edit") locates nothing.
         let locator = e.session.as_ref().unwrap_or(&e.window_name);
-        // The destination earns at least half the row. Previously the agent
-        // description could reduce a long session name to five characters.
-        let win_budget = avail
-            .saturating_sub(display_width(&state_text) + 1)
-            .max(avail / 2);
-        let win_label = truncate(locator, win_budget);
-        let state_budget = avail
-            .saturating_sub(display_width(&win_label))
-            .saturating_sub(1);
-        let state_label = truncate(
-            if display_width(&state_text) <= state_budget {
-                &state_text
-            } else {
-                &e.name
-            },
-            state_budget,
+        // The destination earns at least half the row; the name gives way.
+        let loc_budget = avail.saturating_sub(display_width(name) + 1).max(avail / 2);
+        let locator = truncate(locator, loc_budget);
+        let name = truncate(
+            name,
+            avail
+                .saturating_sub(display_width(&locator))
+                .saturating_sub(1),
         );
-        let mut glyph_style = Style::default().fg(color);
+        let mut glyph_style = Style::default().fg(badge.color);
         if badge.emphatic {
             glyph_style = glyph_style.add_modifier(Modifier::BOLD);
         }
-        let mut spans = vec![Span::styled(format!("{glyph} "), glyph_style)];
+        let mut left = vec![Span::styled(format!("{} ", badge.glyph), glyph_style)];
         if let Some(host) = &e.host {
-            spans.push(Span::styled(
+            left.push(Span::styled(
                 format!("{host} "),
                 Style::default().fg(self.theme.chord),
             ));
         }
-        spans.push(Span::styled(
-            win_label,
-            Style::default().fg(self.theme.text),
-        ));
-        if !state_label.is_empty() {
-            spans.push(Span::styled(
-                format!(" {state_label}"),
-                Style::default().fg(color),
-            ));
-        }
-        Line::from(spans)
+        left.push(Span::styled(locator, Style::default().fg(self.theme.text)));
+        let right = if name.is_empty() {
+            Vec::new()
+        } else {
+            vec![Span::styled(name, Style::default().fg(self.theme.dim))]
+        };
+        justify(left, right, text_w)
     }
 
     /// Render one roster line (phux-k0cw): a status dot, the session name,
-    /// and a right-aligned state histogram (`!1 *2`).
+    /// and a right-aligned state histogram (`●1 ◐2`).
     ///
     /// The dot takes the session's worst rung via
     /// [`SessionRosterEntry::top_rank`], riding the SAME theme slots the
     /// agent rows use — a roster row and the agent row it summarizes must
-    /// never disagree about colour. A satellite session paints dim with a
-    /// `?` count: its per-Terminal metadata is not subscribable from here
-    /// (`docs/spec/L3.md` §5), and an unknowable session must not render as
-    /// a calm one.
+    /// never disagree about colour. Each histogram count wears its own
+    /// rung's glyph and colour, the same vocabulary as the badges, so `◐2`
+    /// here means what `◐` means on a tab. A satellite session paints dim
+    /// with a `?` count: its per-Terminal metadata is not subscribable from
+    /// here (`docs/spec/L3.md` §5), and an unknowable session must not render
+    /// as a calm one.
     fn roster_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
         let (dot, color) = self.roster_badge(s);
-        let counts = roster_histogram(s);
+        let counts = self.roster_histogram(s);
+        let counts_w: usize = counts.iter().map(|span| display_width(&span.content)).sum();
         let avail = usize::from(text_w).saturating_sub(2);
         // Identity keeps at least half the row even under a large histogram.
         let name_budget = avail
-            .saturating_sub(display_width(&counts) + usize::from(!counts.is_empty()))
+            .saturating_sub(counts_w + usize::from(counts_w > 0))
             .max(avail / 2);
         let name = truncate(&s.name, name_budget);
-        let counts = truncate(&counts, avail.saturating_sub(display_width(&name) + 1));
-        let pad = avail
-            .saturating_sub(display_width(&name))
-            .saturating_sub(display_width(&counts));
         let style = if s.active {
-            Style::default().fg(self.theme.accent)
+            Style::default()
+                .fg(self.theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else if s.selectable {
             Style::default().fg(self.theme.text)
         } else {
             Style::default().fg(self.theme.dim)
         };
-        let mut spans = vec![
-            Span::styled(format!("{dot} "), Style::default().fg(color)),
-            Span::styled(name, style),
+        justify(
+            vec![
+                Span::styled(format!("{dot} "), Style::default().fg(color)),
+                Span::styled(name, style),
+            ],
+            counts,
+            text_w,
+        )
+    }
+
+    /// The per-rung counts, each in its own glyph and colour.
+    fn roster_histogram(&self, s: &SessionRosterEntry) -> Vec<Span<'static>> {
+        if s.satellite {
+            return vec![Span::styled(
+                format!("?{}", s.total()),
+                Style::default().fg(self.theme.dim),
+            )];
+        }
+        let rungs = [
+            (AGENT_BLOCKED, s.blocked, self.theme.agent_blocked),
+            (AGENT_DONE, s.done_unvisited, self.theme.agent_done),
+            (AGENT_WORKING, s.working, self.theme.agent_working),
         ];
-        if !counts.is_empty() {
+        let mut spans = Vec::new();
+        for (glyph, n, color) in rungs.into_iter().filter(|(_, n, _)| *n > 0) {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
+            }
             spans.push(Span::styled(
-                format!("{}{counts}", " ".repeat(pad)),
+                format!("{glyph}{n}"),
                 Style::default().fg(color),
             ));
         }
-        Line::from(spans)
+        spans
     }
 
     const fn roster_badge(&self, s: &SessionRosterEntry) -> (&'static str, ratatui::style::Color) {
@@ -974,9 +1057,9 @@ impl SidebarPainter {
             ("○", self.theme.dim)
         } else {
             match s.top_rank() {
-                4 => ("●", self.theme.agent_blocked),
-                3 => ("◆", self.theme.agent_done),
-                2 => ("◐", self.theme.agent_working),
+                4 => (AGENT_BLOCKED, self.theme.agent_blocked),
+                3 => (AGENT_DONE, self.theme.agent_done),
+                2 => (AGENT_WORKING, self.theme.agent_working),
                 1 => ("○", self.theme.agent_idle),
                 _ => ("○", self.theme.dim),
             }
@@ -1017,7 +1100,7 @@ impl SidebarPainter {
 
     /// Render the sections + affordances + separator into a fresh
     /// `rect`-sized buffer, row-for-row from [`row_model`].
-    fn compose(&self, rect: Rect, rule: SidebarRule) -> Buffer {
+    fn compose(&self, rect: Rect, rule: SidebarRule, junction: Option<u16>) -> Buffer {
         let area = RataRect::new(0, 0, rect.w, rect.h);
         let mut buf = Buffer::empty(area);
         buf.set_style(
@@ -1040,9 +1123,38 @@ impl SidebarPainter {
                 &mut buf,
             );
         }
-        paint_separator(&mut buf, rect, rule, &self.theme);
+        self.paint_selection_bed(&mut buf, rect, rule, &model);
+        paint_separator(&mut buf, rect, rule, &self.theme, junction);
         self.paint_window_drop_marker(&mut buf, rect, rule);
         buf
+    }
+
+    /// Lay the selection bed under the active window's row, edge to edge
+    /// of the strip (gutters included, the rule excluded), so the selected
+    /// row is one band rather than a highlight hugging its glyphs.
+    fn paint_selection_bed(
+        &self,
+        buf: &mut Buffer,
+        rect: Rect,
+        rule: SidebarRule,
+        model: &[SidebarRow],
+    ) {
+        let Some(active) = self.windows.iter().position(|w| w.active) else {
+            return;
+        };
+        let Some(y) = model
+            .iter()
+            .position(|row| *row == SidebarRow::WindowName(active))
+            .and_then(|y| u16::try_from(y).ok())
+        else {
+            return;
+        };
+        let rule_x = rule.column(rect.w);
+        for x in (0..rect.w).filter(|x| *x != rule_x) {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_bg(self.theme.selection_bg);
+            }
+        }
     }
 
     /// Reverse the window row under a live drag so the drop slot is
@@ -1080,8 +1192,10 @@ impl SidebarPainter {
 
     fn row_line(&self, row: SidebarRow, hidden: SidebarCounts, text_w: u16) -> Line<'static> {
         match row {
-            SidebarRow::NeedsYouHeader => self.header_line(NEEDS_YOU_HEADER, text_w),
-            SidebarRow::SpacesHeader => self.header_line(SPACES_HEADER, text_w),
+            SidebarRow::NeedsYouHeader => {
+                self.header_line(NEEDS_YOU_HEADER, self.needs_you.len(), text_w)
+            }
+            SidebarRow::SpacesHeader => self.header_line(SPACES_HEADER, self.roster.len(), text_w),
             SidebarRow::AgentsEmpty => self.empty_line(AGENTS_EMPTY, text_w),
             SidebarRow::SessionsEmpty => self.empty_line(SESSIONS_EMPTY, text_w),
             SidebarRow::WindowName(i) => self
@@ -1122,11 +1236,23 @@ impl SidebarPainter {
     }
 }
 
-fn paint_separator(buf: &mut Buffer, rect: Rect, rule: SidebarRule, theme: &Theme) {
+fn paint_separator(
+    buf: &mut Buffer,
+    rect: Rect,
+    rule: SidebarRule,
+    theme: &Theme,
+    junction: Option<u16>,
+) {
     let sep_x = rule.column(rect.w);
+    // The rail runs away from the strip, into the panes: rightward from a
+    // trailing rule, leftward from a leading one.
+    let tee = match rule {
+        SidebarRule::Trailing => "├",
+        SidebarRule::Leading => "┤",
+    };
     for y in 0..rect.h {
         if let Some(cell) = buf.cell_mut((sep_x, y)) {
-            cell.set_symbol("│");
+            cell.set_symbol(if junction == Some(y) { tee } else { "│" });
             cell.set_style(Style::default().fg(theme.border));
         }
     }
@@ -1138,18 +1264,6 @@ fn paint_separator(buf: &mut Buffer, rect: Rect, rule: SidebarRule, theme: &Them
         cell.set_symbol(COLLAPSE_GLYPH);
         cell.set_style(Style::default().fg(theme.dim));
     }
-}
-
-fn roster_histogram(s: &SessionRosterEntry) -> String {
-    if s.satellite {
-        return format!("?{}", s.total());
-    }
-    [("!", s.blocked), ("◆", s.done_unvisited), ("*", s.working)]
-        .into_iter()
-        .filter(|(_, n)| *n > 0)
-        .map(|(glyph, n)| format!("{glyph}{n}"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Count actual item rows, never host lines or padding, for honest overflow.
@@ -1167,6 +1281,28 @@ fn hidden_counts(counts: SidebarCounts, model: &[SidebarRow]) -> SidebarCounts {
         }
     }
     hidden
+}
+
+/// Lay `left` flush left and `right` flush right on one `text_w`-cell row.
+///
+/// Every sidebar row shares this one right edge, so secondary text (counts,
+/// agent names, branches) lines up down the strip as a column. `right` is
+/// dropped whole rather than cut when it would touch `left`: callers budget
+/// the primary label first, and a secondary label that does not fit is
+/// better absent than clipped into something that reads as a different
+/// word.
+fn justify(left: Vec<Span<'static>>, right: Vec<Span<'static>>, text_w: u16) -> Line<'static> {
+    let width = |spans: &[Span<'_>]| -> usize {
+        spans.iter().map(|span| display_width(&span.content)).sum()
+    };
+    let (lw, rw) = (width(&left), width(&right));
+    let w = usize::from(text_w);
+    let mut spans = left;
+    if rw > 0 && lw + 1 + rw <= w {
+        spans.push(Span::raw(" ".repeat(w - lw - rw)));
+        spans.extend(right);
+    }
+    Line::from(spans)
 }
 
 /// Truncate `s` to `max` cells, marking the cut with `…`.
@@ -1243,6 +1379,7 @@ mod tests {
             attention: false,
             branch: None,
             exited: None,
+            badge: None,
         }
     }
 
@@ -1475,7 +1612,7 @@ mod tests {
             w,
             h: 14,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let painted = paint_to_string(p, rect);
         for row in rows_of(&painted) {
             assert_eq!(display_width(&row), usize::from(w), "w={w}: {row:?}");
@@ -1605,7 +1742,11 @@ mod tests {
         let mut unseen = agent(0, "a", "claude", AgentMetaState::Done);
         unseen.seen = false;
         p.set_needs_you(vec![unseen.clone()]);
-        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing), rect, 1);
+        let row = row_text(
+            &p.compose_buffer(rect, SidebarRule::Trailing, None),
+            rect,
+            1,
+        );
         assert!(row.contains('◆'), "unreviewed done: {row:?}");
 
         let seen = AgentEntry {
@@ -1613,11 +1754,19 @@ mod tests {
             ..unseen
         };
         p.set_needs_you(vec![seen]);
-        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing), rect, 1);
+        let row = row_text(
+            &p.compose_buffer(rect, SidebarRule::Trailing, None),
+            rect,
+            1,
+        );
         assert!(row.contains('○'), "reviewed done relaxes: {row:?}");
 
         p.set_needs_you(vec![agent(0, "a", "claude", AgentMetaState::Working)]);
-        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing), rect, 1);
+        let row = row_text(
+            &p.compose_buffer(rect, SidebarRule::Trailing, None),
+            rect,
+            1,
+        );
         assert!(row.contains('◐'), "working: {row:?}");
     }
 
@@ -1883,18 +2032,22 @@ mod tests {
             w: 36,
             h: 12,
         };
-        let b = p.compose_buffer(rect, SidebarRule::Trailing);
-        for y in [6, 7, 8] {
+        let b = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        for y in [6, 7] {
             assert_eq!(b[(0, y)].bg, p.theme.surface);
             assert_eq!(b[(34, y)].bg, p.theme.surface);
             assert_eq!(b[(35, y)].bg, p.theme.surface);
         }
+        // The active window's bed spans both gutters, never the rule.
+        assert_eq!(b[(0, 8)].bg, p.theme.selection_bg);
+        assert_eq!(b[(34, 8)].bg, p.theme.selection_bg);
+        assert_eq!(b[(35, 8)].bg, p.theme.surface);
         assert_eq!(b[(3, 7)].fg, p.theme.dim);
         for name in ["构建工具", "cafe\u{301}", "build"] {
             let line = p.roster_line(&roster(name, 1, 2, 0), 30);
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert_eq!(display_width(&text), 30);
-            assert!(text.ends_with("!1 *2"));
+            assert!(text.ends_with("●1 ◐2"), "{text:?}");
         }
     }
 
@@ -2024,7 +2177,7 @@ mod tests {
             w: 20,
             h: 18,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(row_text(&buf, rect, 8).contains(SPACES_HEADER));
         assert!(row_text(&buf, rect, 9).contains("development"));
         assert!(row_text(&buf, rect, 10).contains("mini"));
@@ -2051,14 +2204,14 @@ mod tests {
         let model = row_model(p.counts(), rect.h);
         let y0 = window_row_y(&model, 0);
         let y1 = window_row_y(&model, 1);
-        let unmarked = p.compose_buffer(rect, SidebarRule::Trailing);
+        let unmarked = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             !row_reversed(&unmarked, rect, y0) && !row_reversed(&unmarked, rect, y1),
             "no drag, no marker"
         );
         assert!(p.set_drop_index(Some(1)));
         assert!(!p.set_drop_index(Some(1)));
-        let marked = p.compose_buffer(rect, SidebarRule::Trailing);
+        let marked = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             row_reversed(&marked, rect, y1),
             "drop index 1 must reverse that window row"
@@ -2068,7 +2221,7 @@ mod tests {
             "the other window row stays unmarked"
         );
         assert!(p.set_drop_index(None));
-        let cleared = p.compose_buffer(rect, SidebarRule::Trailing);
+        let cleared = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             !row_reversed(&cleared, rect, y1),
             "clearing the index must drop the marker"
@@ -2102,7 +2255,7 @@ mod tests {
             w: 36,
             h: 14,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
             "the queue tops the strip: {:?}",
@@ -2131,7 +2284,7 @@ mod tests {
             agent(0, "phux", "claude", AgentMetaState::Done),
             agent(1, "scratch", "merge-queue-w5", AgentMetaState::Blocked),
         ]);
-        let changed = p.compose_buffer(rect, SidebarRule::Trailing);
+        let changed = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(row_text(&changed, rect, 1).contains("claude"));
         assert!(row_text(&changed, rect, 2).contains("merge-queue-w5"));
         assert_eq!(row_text(&buf, rect, 6), row_text(&changed, rect, 6));
@@ -2155,7 +2308,7 @@ mod tests {
             w: 36,
             h: 14,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let row = row_text(&buf, rect, 1);
         assert!(
             row.contains("phux-feat-auth"),
@@ -2185,7 +2338,11 @@ mod tests {
             w: 36,
             h: 14,
         };
-        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing), rect, 1);
+        let row = row_text(
+            &p.compose_buffer(rect, SidebarRule::Trailing, None),
+            rect,
+            1,
+        );
         assert!(row.contains("gpubox"), "host badge: {row:?}");
         assert!(row.contains("reviewer"), "agent name: {row:?}");
         let action = satellite_open_action(&resource).expect("satellite click opens");
@@ -2256,7 +2413,7 @@ mod tests {
             w: 24,
             h: 12,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
             "Agents tops a calm strip: {:?}",
@@ -2286,7 +2443,7 @@ mod tests {
             w: 24,
             h: 12,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             row_text(&buf, rect, 5).contains(SPACES_HEADER),
             "Sessions header stays at midpoint: {:?}",
@@ -2324,7 +2481,7 @@ mod tests {
             w: 26,
             h: 16,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let model = row_model(p.counts(), rect.h);
         let first = model
             .iter()
@@ -2333,7 +2490,7 @@ mod tests {
         let busy = row_text(&buf, rect, u16::try_from(first).unwrap());
         assert!(busy.contains("feat-auth"), "session name: {busy:?}");
         assert!(
-            busy.contains("!1") && busy.contains("*2"),
+            busy.contains("●1") && busy.contains("◐2"),
             "histogram carries how much, not just what: {busy:?}"
         );
         assert!(row_text(&buf, rect, u16::try_from(first + 1).unwrap()).contains("mini"));
@@ -2347,7 +2504,7 @@ mod tests {
     }
 
     fn strip_text(p: &SidebarPainter, rect: Rect) -> String {
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let mut out = String::new();
         for y in 0..rect.h {
             let mut row: String = (0..rect.w)
@@ -2459,7 +2616,7 @@ mod tests {
             w: 28,
             h: 8,
         };
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             row_text(&buf, rect, 7).contains(NEW_LABEL),
             "row 7 should hold the new affordance: {:?}",
@@ -2518,7 +2675,7 @@ mod tests {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_windows(vec![win("build", true)]);
         let local = Rect { x: 0, ..rect };
-        let buf = p.compose_buffer(local, SidebarRule::Leading);
+        let buf = p.compose_buffer(local, SidebarRule::Leading, None);
         assert_eq!(
             buf.cell((0, 0)).map(ratatui::buffer::Cell::symbol),
             Some("│")
@@ -2914,7 +3071,7 @@ mod tests {
         p.set_windows(windows.clone());
         p.set_needs_you(agents.clone());
         p.set_roster(peers.clone());
-        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let c = p.counts();
         for (y, row) in row_model(c, rect.h).iter().enumerate() {
             let y16 = u16::try_from(y).expect("row fits u16");
@@ -2967,5 +3124,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The rail tees into the separator on the pane-facing side, so the
+    /// grid and the strip read as one frame.
+    #[test]
+    fn the_rail_junction_tees_into_the_panes() {
+        let p = SidebarPainter::new(Theme::default());
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 10,
+        };
+        let left = p.compose_buffer(rect, SidebarRule::Trailing, Some(1));
+        assert_eq!(left[(19, 1)].symbol(), "├");
+        assert_eq!(left[(19, 2)].symbol(), "│");
+        let right = p.compose_buffer(rect, SidebarRule::Leading, Some(1));
+        assert_eq!(right[(0, 1)].symbol(), "┤");
+        let none = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        assert_eq!(none[(19, 1)].symbol(), "│");
+    }
+
+    /// Headers carry their count and every row's secondary text lands on
+    /// the same right edge, so the strip reads as a table.
+    #[test]
+    fn headers_count_and_secondary_text_share_one_right_edge() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_needs_you(vec![
+            agent(0, "editor", "claude", AgentMetaState::Working),
+            agent(1, "build", "codex", AgentMetaState::Idle),
+        ]);
+        p.set_roster(vec![active_roster()]);
+        p.set_windows(vec![win_branch("editor", true, "main")]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 30,
+            h: 16,
+        };
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let rows: Vec<String> = (0..rect.h).map(|y| row_text(&buf, rect, y)).collect();
+        assert!(
+            rows[0].starts_with(" Agents") && rows[0].ends_with("2 "),
+            "{rows:?}"
+        );
+        assert!(rows[1].ends_with("claude "), "{rows:?}");
+        assert!(rows[2].ends_with("codex "), "{rows:?}");
+        let window = rows
+            .iter()
+            .find(|row| row.contains("editor") && row.contains("main"))
+            .expect("window row");
+        assert!(window.ends_with("main "), "branch flush right: {window:?}");
     }
 }

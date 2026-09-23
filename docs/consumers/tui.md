@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-21
+last-reviewed: 2026-09-23
 ---
 
 # The phux reference TUI
@@ -424,7 +424,9 @@ as the create affordance. Commands and Settings stay on the palette
 A viewport is **compact** on an axis at or below 64 columns or 18 rows,
 judged independently. Overlays go full-bleed on the starved axis (still
 stopping at a docked sidebar). List rows yield their secondary column
-before the label, then clip with `…`. The sidebar is not reserved below
+before the label, then clip with `…`; a short secondary such as a bound
+chord (at most a third of the row) stays whole and the label clips
+instead. The sidebar is not reserved below
 resolved sidebar width + 40 columns; `C-a b` rings the bell at those
 widths rather than flipping a flag with no visible effect. Turning the
 strip off is always allowed.
@@ -583,7 +585,8 @@ phux report new "note"   # logs-and-version only, when the TUI itself is down
 a filterable overlay of every pane of the attached session, grouped
 under session headers, plus every satellite agent grouped by agent name
 rather than by machine. Each row carries the agent's name and kind, a
-state glyph (`!` blocked, `*` working, `-` idle, `.` done, `?` unknown),
+state glyph from the same badge vocabulary as the tabs and sidebar
+(`●` blocked, `◐` working, `◆` done, `○` idle or unknown),
 an attention highlight when the pane has a pending question, and branch
 or cwd in the dim right column. A satellite row badges its host and
 opens that pane beside the focused one.

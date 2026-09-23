@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-23
 ---
 # phux Experience and Visual Design System
 
@@ -269,7 +269,11 @@ implementation tokens live in `render/theme.rs` and the sidebar composer.
 | Icon column | 1 glyph + 1 space | Align window, agent, roster, and action labels. Use portable text glyphs, no font-specific icons. |
 | Window block | 2 rows | Primary label and aligned branch context; a branchless row supplies breathing room. |
 | Section gap | 1 row when affordable | Separate attention, local work, and other sessions without stealing the last local window. |
-| Selected surface | `#293628` | A quiet full-row selection bed; lime marker and bold label carry focus even without color. |
+| Selected surface | `#293628` | A quiet full-row selection bed, gutters included; lime marker and bold label carry focus even without color. |
+| Chrome surface | `surface` | The top bar and the sidebar share one bed, so the chrome reads as one frame around the panes. The pane rail tees into the sidebar rule. |
+| Window tab | ` {index} {badge} {name} ` | One cell of padding either side. The active tab is lime on the selection bed; the index recedes a step behind the name. |
+| Right column | flush right | Section counts, agent names, branches, and session histograms share one right edge, so the sidebar reads as a table. |
+| Badge vocabulary | `●` `◆` `◐` `○` | Blocked, done and unread, working, idle. One vocabulary on tabs, sidebar rows, histograms, pane titles, and the fleet. |
 | TUI structural ink | `#7c8696` | Terminal-cell rules need stronger contrast than pixel borders; all text and rules clear 4.5:1 on the elevated surface. |
 
 The TUI uses the dark palette above: lime focus, mint key chords, slate

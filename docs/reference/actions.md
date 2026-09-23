@@ -44,7 +44,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `toggle-zoom` | Pane |  | Zoom the focused pane to fill the window (toggle) |
 | `toggle-sidebar` | View |  | Show or hide the window sidebar (toggle) |
 | `command-palette` | — |  | Open the fuzzy commands and help finder |
-| `context-menu` | Pane |  | Open the context menu for the focused pane (ADR-0058) |
+| `context-menu` | Pane |  | Open the context menu for the focused pane |
 | `window-picker` | Window |  | Pick a window from all sessions (grouped) |
 | `session-picker` | Session |  | Browse sessions and live host availability |
 | `agent-fleet` | View |  | Agent fleet: every pane's agent, state, and attention |
@@ -53,10 +53,10 @@ The **Palette** column is the command-palette section the action is offered unde
 | `return-from-attention` | Pane |  | Return to where attention navigation started |
 | `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window); `host?` (a satellite of this hub: opens that session's active pane here through the relay instead of re-attaching) | Re-attach this client to another session |
 | `new-session` | Session | `name?` (bare opens an interactive prompt) | Create a new session and switch to it |
-| `take-input` | Pane |  | Take the wheel: seize exclusive input over the focused pane (ADR-0033) |
-| `give-input` | Pane |  | Give back the wheel: release the focused pane's input lease (ADR-0033) |
-| `signal-terminal` | Pane | `signal` = `interrupt` \| `freeze` \| `resume` \| `terminate` \| `kill` | Signal the focused pane's process group (freeze/resume/kill, ADR-0033) |
-| `set-pane` | Pane | `mouse` = `on` \| `off` \| `toggle` | Toggle per-pane mouse opt-out for the focused pane (ADR-0048) |
+| `take-input` | Pane |  | Take the wheel: seize exclusive input over the focused pane |
+| `give-input` | Pane |  | Give back the wheel: release the focused pane's input lease |
+| `signal-terminal` | Pane | `signal` = `interrupt` \| `freeze` \| `resume` \| `terminate` \| `kill` | Signal the focused pane's process group (freeze, resume, kill) |
+| `set-pane` | Pane | `mouse` = `on` \| `off` \| `toggle` | Toggle mouse capture for the focused pane |
 | `plugin-action` | — | `plugin`, `action` | Run an enabled plugin's manifest action |
 | `plugin-pane` | — | `plugin`, `pane` | Open an enabled plugin's manifest pane |
 | `reload-config` | View |  | Reload the config file (keybindings, theme, status bar) |

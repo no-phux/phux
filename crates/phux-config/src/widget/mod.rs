@@ -76,6 +76,23 @@ impl CellStyle {
     pub fn is_plain(&self) -> bool {
         *self == Self::default()
     }
+
+    /// `over` layered onto `self`: colours `over` sets replace, and each
+    /// attribute is on when either side turns it on. Lets one part of a
+    /// segment (a tab's index, its badge) change its ink while keeping the
+    /// segment's bed.
+    #[must_use]
+    pub fn layered(&self, over: &Self) -> Self {
+        Self {
+            fg: over.fg.clone().or_else(|| self.fg.clone()),
+            bg: over.bg.clone().or_else(|| self.bg.clone()),
+            bold: self.bold || over.bold,
+            dim: self.dim || over.dim,
+            italic: self.italic || over.italic,
+            underline: self.underline || over.underline,
+            reverse: self.reverse || over.reverse,
+        }
+    }
 }
 
 /// phux-foz.12: the interactive target a composed cell carries.
@@ -155,6 +172,22 @@ pub struct WindowInfo {
     /// live. The sidebar and `windows` widget append a dim `x` marker so a
     /// retained pane is visible without focusing it.
     pub exited: Option<String>,
+    /// The agent badge of the window's focused pane: one glyph and its
+    /// style, resolved by the host from the same vocabulary its other
+    /// agent surfaces use (phux-config carries no theme, ADR-0020). `None`
+    /// for a window whose focused pane runs no declared agent. The
+    /// `windows` widget paints it ahead of the name, so a tab reads
+    /// `◐ claude` rather than `claude (working)`.
+    pub badge: Option<WindowBadge>,
+}
+
+/// A pre-resolved agent badge for a [`WindowInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowBadge {
+    /// The single-cell glyph (`●`, `◆`, `◐`, `○`).
+    pub glyph: String,
+    /// Its style, layered over the tab segment's own style.
+    pub style: CellStyle,
 }
 
 impl WindowInfo {

@@ -51,17 +51,17 @@
 //!
 //! ```text
 //! work (current)                       <- session header
-//!   ! 0:main.0 reviewer [claude]  blocked - main   <- pane row
-//!   * 0:main.1 builder            working - main
-//!   ? 1:logs.0 tail -f                       logs
+//!   ● 0:main.0 reviewer [claude]  blocked - main   <- pane row
+//!   ◐ 0:main.1 builder            working - main
+//!   ○ 1:logs.0 tail -f                       logs
 //! scratch                              <- foreign session header
-//!   * 0:main.0 packer [codex]     working         <- foreign pane row
-//!   ? 1:logs.0 no agent
+//!   ◐ 0:main.0 packer [codex]     working         <- foreign pane row
+//!   ○ 1:logs.0 no agent
 //! ```
 //!
-//! The state glyph is `!` blocked, `*` working, `-` idle, `.` done,
-//! `?` unknown. A pane with no `phux.agent/v1` record also renders `?`
-//! (its state is unknown) and falls back to its OSC title for the display
+//! The state glyph is the chrome's badge vocabulary: `●` blocked, `◐`
+//! working, `◆` done, `○` idle or unknown. A pane with no `phux.agent/v1`
+//! record renders `○` (its state is unknown) and falls back to its OSC title for the display
 //! name (the record outranks the title when both exist, ADR-0040 decision
 //! 3). Attention rows (a pending ADR-0035 question, or a declared/derived
 //! high attention) paint in the theme's `attention` slot.
@@ -340,7 +340,7 @@ fn current_session_pane_rows(
 /// or the provider alone. Otherwise the `phux.agent/v1` record, when
 /// present, supplies the display name (`name [kind]`) and the state
 /// glyph/word; absent, the OSC title is the compatibility fallback
-/// (ADR-0040 decision 3) with the `?` unknown glyph and no state word. The
+/// (ADR-0040 decision 3) with the `○` unknown glyph and no state word. The
 /// secondary column is `state - place` where place is the branch
 /// (preferred) or the cwd's last path component. Attention = the ADR-0035
 /// asked flag OR a blocked stream OR the record's effective high attention;
@@ -375,7 +375,7 @@ fn pane_row(
             (state_glyph(r.state), who, Some(r.state.as_str()))
         }
         (None, None) => (
-            '?',
+            AGENT_IDLE_GLYPH,
             meta.title.clone().unwrap_or_else(|| "no agent".to_owned()),
             None,
         ),
@@ -490,7 +490,7 @@ fn foreign_session_pane_rows(
 /// with the declared state word as its dimmed secondary, committing
 /// `switch-session { name, window = w, pane = p }`. The `phux.agent/v1`
 /// record supplies the name (`name [kind]`) and glyph/state; absent, the
-/// row is `?` "no agent" (a foreign pane has no local mirror, so there is
+/// row is `○` "no agent" (a foreign pane has no local mirror, so there is
 /// no OSC-title fallback the way the attached session has). High effective
 /// attention highlights the row.
 fn foreign_pane_row(
@@ -501,7 +501,7 @@ fn foreign_pane_row(
     record: Option<&AgentRecord>,
 ) -> SelectItem {
     let (glyph, who, state_word) = record.map_or_else(
-        || ('?', "no agent".to_owned(), None),
+        || (AGENT_IDLE_GLYPH, "no agent".to_owned(), None),
         |r| {
             let who = r
                 .kind
@@ -545,17 +545,22 @@ fn foreign_pane_row(
     item
 }
 
-/// The one-character lifecycle glyph for a declared agent state:
-/// `!` blocked, `*` working, `-` idle, `.` done, `?` unknown.
-const fn state_glyph(state: AgentMetaState) -> char {
+/// The lifecycle glyph for a declared agent state, from the chrome's one
+/// badge vocabulary: `●` blocked, `◐` working, `◆` done, `○` idle or
+/// unknown. The same glyph a tab, a sidebar row, and a pane title show for
+/// the same state, so the fleet is not a fourth dialect.
+const fn state_glyph(state: AgentMetaState) -> &'static str {
+    use crate::render::chrome::{AGENT_BLOCKED_GLYPH, AGENT_DONE_GLYPH, AGENT_WORKING_GLYPH};
     match state {
-        AgentMetaState::Blocked => '!',
-        AgentMetaState::Working => '*',
-        AgentMetaState::Idle => '-',
-        AgentMetaState::Done => '.',
-        AgentMetaState::Unknown => '?',
+        AgentMetaState::Blocked => AGENT_BLOCKED_GLYPH,
+        AgentMetaState::Working => AGENT_WORKING_GLYPH,
+        AgentMetaState::Done => AGENT_DONE_GLYPH,
+        AgentMetaState::Idle | AgentMetaState::Unknown => AGENT_IDLE_GLYPH,
     }
 }
+
+/// The hollow ring: idle, reviewed, or unknown.
+const AGENT_IDLE_GLYPH: &str = "\u{25cb}";
 
 /// Shorten a cwd to its last path component for the secondary column
 /// (a full path would push the state word off a narrow modal).
@@ -719,10 +724,10 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(items[0].label, "* 0:main.0 reviewer [claude]");
+        assert_eq!(items[0].label, "◐ 0:main.0 reviewer [claude]");
         assert_eq!(items[0].secondary.as_deref(), Some("working"));
         assert!(!items[0].attention, "working is not high attention");
-        assert_eq!(items[1].label, "! 0:main.1 builder");
+        assert_eq!(items[1].label, "● 0:main.1 builder");
         assert_eq!(items[1].secondary.as_deref(), Some("blocked"));
         assert!(
             items[1].attention,
@@ -769,10 +774,10 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].label, "! 0:1.0 reviewer [claude]");
+        assert_eq!(items[0].label, "● 0:1.0 reviewer [claude]");
         assert_eq!(items[0].secondary.as_deref(), Some("blocked"));
         assert!(items[0].attention, "a blocked stream highlights");
-        assert_eq!(items[1].label, "* 0:1.0 reviewer");
+        assert_eq!(items[1].label, "◐ 0:1.0 reviewer");
         assert_eq!(items[1].secondary.as_deref(), Some("working"));
         assert!(!items[1].attention);
         assert!(
@@ -808,17 +813,17 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(items[0].label, ". 0:1.0 codex");
+        assert_eq!(items[0].label, "◆ 0:1.0 codex");
         assert_eq!(items[0].secondary.as_deref(), Some("done"));
     }
 
     #[test]
     fn state_glyphs_cover_the_v1_vocabulary() {
-        assert_eq!(state_glyph(AgentMetaState::Blocked), '!');
-        assert_eq!(state_glyph(AgentMetaState::Working), '*');
-        assert_eq!(state_glyph(AgentMetaState::Idle), '-');
-        assert_eq!(state_glyph(AgentMetaState::Done), '.');
-        assert_eq!(state_glyph(AgentMetaState::Unknown), '?');
+        assert_eq!(state_glyph(AgentMetaState::Blocked), "●");
+        assert_eq!(state_glyph(AgentMetaState::Working), "◐");
+        assert_eq!(state_glyph(AgentMetaState::Idle), "○");
+        assert_eq!(state_glyph(AgentMetaState::Done), "◆");
+        assert_eq!(state_glyph(AgentMetaState::Unknown), "○");
     }
 
     #[test]
@@ -842,7 +847,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(items[0].label, "? 0:1.0 vim src/main.rs");
+        assert_eq!(items[0].label, "○ 0:1.0 vim src/main.rs");
         assert_eq!(items[0].secondary, None, "no record => no state word");
         // Without a title: the placeholder.
         let items = fleet_items(
@@ -854,7 +859,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(items[0].label, "? 0:1.0 no agent");
+        assert_eq!(items[0].label, "○ 0:1.0 no agent");
     }
 
     #[test]
@@ -906,7 +911,7 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(
-            items[0].label, "- 0:1.0 reviewer",
+            items[0].label, "○ 0:1.0 reviewer",
             "ADR-0040 decision 3: the record must outrank the OSC title"
         );
     }
@@ -1024,7 +1029,7 @@ mod tests {
             assert!(r.action.args.contains_key("pane"));
         }
         // First row addresses window 0 pane 0 and shows the codex agent.
-        assert_eq!(rows[0].label, "* 0:main.0 packer [codex]");
+        assert_eq!(rows[0].label, "◐ 0:main.0 packer [codex]");
         assert_eq!(rows[0].secondary.as_deref(), Some("working"));
         assert_eq!(
             rows[0].action.args.get("window"),
@@ -1035,10 +1040,10 @@ mod tests {
             Some(&toml::Value::Integer(0))
         );
         // Blocked pane highlights (effective high attention).
-        assert_eq!(rows[1].label, "! 0:main.1 linter");
+        assert_eq!(rows[1].label, "● 0:main.1 linter");
         assert!(rows[1].attention, "blocked foreign pane must highlight");
-        // Window 1 pane 0 has no record: `?` + placeholder, no state word.
-        assert_eq!(rows[2].label, "? 1:logs.0 no agent");
+        // Window 1 pane 0 has no record: `○` + placeholder, no state word.
+        assert_eq!(rows[2].label, "○ 1:logs.0 no agent");
         assert_eq!(rows[2].secondary, None);
         assert_eq!(
             rows[2].action.args.get("window"),
@@ -1109,7 +1114,7 @@ mod tests {
         assert_eq!(items.len(), 3, "one header, two hosts: {items:?}");
         assert_eq!(items[0].label, "reviewer");
         assert!(items[0].is_header());
-        assert_eq!(items[1].label, "! edge");
+        assert_eq!(items[1].label, "● edge");
         assert!(items[1].attention, "the asked flag highlights the row");
         assert_eq!(items[1].action.action, "split-pane");
         assert_eq!(
@@ -1120,7 +1125,7 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("edge/@9")
         );
-        assert_eq!(items[2].label, "* gpubox");
+        assert_eq!(items[2].label, "◐ gpubox");
         assert!(!items[2].attention);
         assert_eq!(items[2].secondary.as_deref(), Some("working"));
     }

@@ -24,7 +24,7 @@ use phux_protocol::input::key::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::widgets::{ChordRow, ChordSection, KeyChordTable, Modal, centered_panel};
+use super::widgets::{Modal, centered_panel, is_compact};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -75,25 +75,46 @@ impl WhichKeyOverlay {
     }
 }
 
+/// A binding's label as a person reads it: `split right`, `resize pane
+/// left 5`, `detach`.
+///
+/// Derived by rule rather than looked up, so a new or plugin action is
+/// never unlabelled: the action's name with its dashes spaced out, then
+/// its argument values. The few actions whose raw arguments read
+/// backwards get a phrase instead — `split-pane`'s `direction` names the
+/// divider, not where the new pane goes, and `move-window`'s `delta` is a
+/// signed number where a direction is meant.
 fn action_label(action: &Action) -> String {
-    match action {
-        Action::Bare(name) => name.clone(),
-        Action::Parameterized(p) if p.args.is_empty() => p.action.clone(),
-        Action::Parameterized(p) => {
-            let args = p
-                .args
-                .iter()
-                .map(|(key, value)| {
-                    let value = value
-                        .as_str()
-                        .map_or_else(|| value.to_string(), str::to_owned);
-                    format!("{key}={value}")
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{}({args})", p.action)
-        }
+    let (name, args) = match action {
+        Action::Bare(name) => return name.replace('-', " "),
+        Action::Parameterized(p) => (p.action.as_str(), &p.args),
+    };
+    let arg = |key: &str| {
+        args.get(key)
+            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+    };
+    match (name, arg("direction").as_deref(), arg("delta").as_deref()) {
+        ("split-pane", Some("vertical"), _) => return "split right".to_owned(),
+        ("split-pane", Some("horizontal"), _) => return "split below".to_owned(),
+        ("move-window", _, Some("-1")) => return "move window left".to_owned(),
+        ("move-window", _, Some("1")) => return "move window right".to_owned(),
+        ("resize-pane", Some(direction), _) => return format!("resize {direction}"),
+        ("focus-direction", Some(direction), _) => return format!("focus {direction}"),
+        _ => {}
     }
+    if let ("signal-terminal", Some(signal)) = (name, arg("signal")) {
+        return format!("{signal} pane");
+    }
+    let mut label = name.replace('-', " ");
+    for value in args.values() {
+        label.push(' ');
+        label.push_str(
+            &value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_owned),
+        );
+    }
+    label
 }
 
 fn is_indexed_select_window(action: &Action) -> bool {
@@ -114,29 +135,149 @@ fn compact_window_jump_keys(keys: &[String]) -> Option<(String, String)> {
     } else {
         format!("{first}-{last}")
     };
-    Some((key, "select window by number".to_owned()))
+    Some((key, "select window".to_owned()))
+}
+
+/// Cells between two columns of the grid.
+const COLUMN_GAP: usize = 4;
+/// The longest label a cell shows before it is clipped.
+const LABEL_MAX: usize = 22;
+/// Shown in place of the grid when the prefix table is empty.
+const EMPTY_NOTICE: &str = "No prefix bindings configured.";
+
+/// The grid the bindings flow into: how many columns, how many rows, and
+/// how wide each cell is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Grid {
+    columns: usize,
+    rows: usize,
+    key_w: usize,
+    label_w: usize,
+}
+
+impl Grid {
+    const fn cell_w(self) -> usize {
+        self.key_w + 2 + self.label_w
+    }
+
+    /// Interior width the grid needs.
+    const fn width(self) -> usize {
+        self.columns * self.cell_w() + (self.columns.saturating_sub(1)) * COLUMN_GAP
+    }
+}
+
+impl WhichKeyOverlay {
+    /// Fit the rows into the fewest rows that the viewport's width allows,
+    /// column-major so the keys read down each column in order.
+    fn grid(&self, area: Rect) -> Grid {
+        let key_w = self
+            .rows
+            .iter()
+            .map(|(key, _)| crate::render::display_width(key))
+            .max()
+            .unwrap_or(1);
+        let label_w = self
+            .rows
+            .iter()
+            .map(|(_, label)| crate::render::display_width(label).min(LABEL_MAX))
+            .max()
+            .unwrap_or(1);
+        // Leave the viewport a margin so the panel floats over the work.
+        let room = usize::from(area.width)
+            .saturating_mul(9)
+            .saturating_div(10)
+            .saturating_sub(usize::from(2 + super::widgets::MODAL_PAD * 2));
+        let one = Grid {
+            columns: 1,
+            rows: self.rows.len().max(1),
+            key_w,
+            label_w,
+        };
+        let columns = (room + COLUMN_GAP) / (one.cell_w() + COLUMN_GAP);
+        let columns = columns.clamp(1, self.rows.len().max(1));
+        Grid {
+            columns,
+            rows: self.rows.len().div_ceil(columns).max(1),
+            ..one
+        }
+    }
+
+    fn grid_lines(&self, grid: Grid) -> Vec<ratatui::text::Line<'static>> {
+        use ratatui::style::{Modifier, Style};
+        use ratatui::text::{Line, Span};
+        if self.rows.is_empty() {
+            return vec![Line::from(Span::styled(
+                EMPTY_NOTICE,
+                Style::default().fg(self.theme.dim),
+            ))];
+        }
+        (0..grid.rows)
+            .map(|r| {
+                let mut spans = Vec::new();
+                for c in 0..grid.columns {
+                    let Some((key, label)) = self.rows.get(c * grid.rows + r) else {
+                        break;
+                    };
+                    if c > 0 {
+                        spans.push(Span::raw(" ".repeat(COLUMN_GAP)));
+                    }
+                    let key_pad = grid.key_w.saturating_sub(crate::render::display_width(key));
+                    let label = crate::render::clip_text(label, grid.label_w);
+                    let label_pad = grid
+                        .label_w
+                        .saturating_sub(crate::render::display_width(&label));
+                    spans.push(Span::raw(" ".repeat(key_pad)));
+                    spans.push(Span::styled(
+                        key.clone(),
+                        Style::default()
+                            .fg(self.theme.chord)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(label, Style::default().fg(self.theme.text)));
+                    spans.push(Span::raw(" ".repeat(label_pad)));
+                }
+                Line::from(spans)
+            })
+            .collect()
+    }
 }
 
 impl RenderOverlay for WhichKeyOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = self.bounds(area).unwrap_or(area);
-        let rows = self
-            .rows
-            .iter()
-            .map(|(key, action)| ChordRow::new(key.clone(), action.clone()))
-            .collect::<Vec<_>>();
-        let body = KeyChordTable::new(&self.theme, vec![ChordSection::new(String::new(), rows)])
-            .empty_notice("No prefix bindings configured.")
-            .body_lines();
-        Modal::new(&self.theme, self.prefix.clone(), body)
-            .wrap(true)
-            .render_into(modal_area, buf);
+        let body = self.grid_lines(self.grid(area));
+        Modal::new(&self.theme, self.prefix.clone(), body).render_into(modal_area, buf);
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        // Same floating-modal shape as the command palette: 50% of the
-        // viewport, min 36x8, clamped to the outer rect.
-        Some(centered_panel(area, 5, 36, 8, self.breakpoints))
+        // Sized to its content rather than to a fraction of the screen:
+        // a which-key panel is a legend, and a legend with a ragged empty
+        // half reads as unfinished. Anchored to the bottom, above the
+        // work the prefix is about to act on, never over its top rows.
+        let grid = self.grid(area);
+        let chrome = 2 + super::widgets::MODAL_PAD * 2;
+        let content_w = if self.rows.is_empty() {
+            crate::render::display_width(EMPTY_NOTICE)
+        } else {
+            grid.width()
+        };
+        let w = u16::try_from(content_w)
+            .unwrap_or(u16::MAX)
+            .saturating_add(chrome)
+            .min(area.width);
+        let h = u16::try_from(grid.rows)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .min(area.height);
+        let x = area.x + (area.width - w) / 2;
+        let y = area.y + area.height.saturating_sub(h + 1);
+        let rect = Rect::new(x, y, w, h);
+        Some(if is_compact(area, self.breakpoints) {
+            centered_panel(area, 5, 36, 8, self.breakpoints)
+        } else {
+            rect
+        })
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
@@ -249,7 +390,7 @@ mod tests {
         assert!(
             overlay
                 .rows
-                .contains(&("%".to_owned(), "split-pane(direction=vertical)".to_owned())),
+                .contains(&("%".to_owned(), "split right".to_owned())),
             "rows: {:?}",
             overlay.rows
         );
@@ -273,7 +414,7 @@ mod tests {
         let collapsed = overlay
             .rows
             .iter()
-            .filter(|(_, a)| a == "select window by number")
+            .filter(|(_, a)| a == "select window")
             .count();
         assert_eq!(collapsed, 1);
         assert!(overlay.rows.iter().any(|(k, _)| k == "0-9"));
@@ -309,5 +450,70 @@ mod tests {
             text.contains("No prefix bindings configured."),
             "empty notice:\n{text}"
         );
+    }
+
+    fn param(action: &str, args: &[(&str, toml::Value)]) -> Action {
+        Action::Parameterized(ParamAction {
+            action: action.to_owned(),
+            args: args
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                .collect(),
+        })
+    }
+
+    /// Labels read as phrases a person says, not as call syntax.
+    #[test]
+    fn labels_read_as_phrases() {
+        let s = |v: &str| toml::Value::String(v.to_owned());
+        assert_eq!(
+            action_label(&Action::Bare("kill-pane".to_owned())),
+            "kill pane"
+        );
+        assert_eq!(
+            action_label(&param(
+                "resize-pane",
+                &[
+                    ("direction", s("left")),
+                    ("amount", toml::Value::Integer(5))
+                ]
+            )),
+            "resize left"
+        );
+        assert_eq!(
+            action_label(&param(
+                "move-window",
+                &[("delta", toml::Value::Integer(-1))]
+            )),
+            "move window left"
+        );
+        assert_eq!(
+            action_label(&param("signal-terminal", &[("signal", s("freeze"))])),
+            "freeze pane"
+        );
+        assert_eq!(
+            action_label(&param("plugin-action", &[("id", s("summarize"))])),
+            "plugin action summarize"
+        );
+    }
+
+    /// On a roomy screen the grid shows every binding: nothing is cut off
+    /// the bottom of a single column.
+    #[test]
+    fn every_binding_fits_on_a_roomy_screen() {
+        let entries: Vec<(String, String)> = (b'a'..=b'z')
+            .chain(b'A'..=b'P')
+            .map(|c| ((c as char).to_string(), format!("action-{}", c as char)))
+            .collect();
+        let refs: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let overlay = WhichKeyOverlay::from_config(&cfg_with("C-a", &refs), &Theme::default());
+        let text = render_to_string(&overlay, 160, 40);
+        for (_, action) in &entries {
+            let label = action.replace('-', " ");
+            assert!(text.contains(&label), "{label} missing:\n{text}");
+        }
     }
 }

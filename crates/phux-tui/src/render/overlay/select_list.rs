@@ -563,10 +563,21 @@ impl SelectList {
         // The secondary gets whatever the full label does not need, less
         // one mandatory blank column: `label` and `secondary` are two
         // different facts and must never run together into one word.
-        let secondary = clip_text(
-            &secondary_full,
-            width.saturating_sub(crate::render::display_width(&label_full) + GAP),
-        );
+        //
+        // A SHORT secondary — a chord like `C-a z`, no wider than a third
+        // of the row — is kept whole and the label clips instead. It is
+        // the column the eye runs down, and a chord cut to `C-a…` is not
+        // a shorter chord but a wrong one; the label keeps two thirds of
+        // the row either way.
+        let secondary_w = crate::render::display_width(&secondary_full);
+        let secondary = if secondary_w > 0 && secondary_w + GAP <= width / 3 {
+            secondary_full
+        } else {
+            clip_text(
+                &secondary_full,
+                width.saturating_sub(crate::render::display_width(&label_full) + GAP),
+            )
+        };
         let sec_w = crate::render::display_width(&secondary);
         // The label then takes the rest, reserving the gap only if a
         // secondary actually survived.
@@ -1717,5 +1728,26 @@ mod tests {
         }
         assert!(text.contains("command palette"), "{text}");
         assert!(text.contains("split-pane"), "{text}");
+    }
+
+    /// A short secondary is the column the eye runs down: a chord survives
+    /// whole and the long label clips instead.
+    #[test]
+    fn a_short_chord_survives_a_long_label() {
+        let item = SelectItem::new(
+            "Zoom the focused pane to fill the whole window",
+            action("zoom-pane"),
+        )
+        .secondary("C-a z");
+        let sl = SelectList::new("t", vec![item], &Theme::default());
+        let painted: String = sl
+            .item_line(&sl.items[0], false, 40)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(painted.ends_with("C-a z"), "{painted:?}");
+        assert!(painted.contains(crate::render::ELLIPSIS), "{painted:?}");
+        assert_eq!(crate::render::display_width(&painted), 40);
     }
 }
