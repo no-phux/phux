@@ -2817,7 +2817,6 @@ fn classify_attach_id(
 /// without killing an otherwise valid connection, and never pass its bytes to
 /// the PTY.
 async fn dispatch_terminal_reply(
-    state: &SharedState,
     client_id: ClientId,
     selection: NegotiatedConnection,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -2834,7 +2833,7 @@ async fn dispatch_terminal_reply(
             .await;
         return;
     }
-    handle_terminal_reply(state, client_id, terminal_id, bytes);
+    handle_terminal_reply(client_id, terminal_id, &bytes);
 }
 
 /// Why one connection must end, and what the peer is owed on the way out
@@ -3995,7 +3994,6 @@ where
                     continue;
                 };
                 dispatch_terminal_reply(
-                    &state,
                     client_id,
                     *selection,
                     &terminal_id,

@@ -3788,12 +3788,12 @@ mod tests {
         });
     }
 
-    /// Input authority routes opaque emulator replies byte-for-byte while
-    /// rejecting an unsubscribed client. The same gate still fires the
+    /// A client's emulator reply never reaches the PTY: the canonical
+    /// terminal already answered. The input authority gate still fires the
     /// focus-changed hook only for an authorized focus-gained event.
     #[allow(clippy::too_many_lines)]
     #[test]
-    fn input_authority_routes_terminal_replies_and_focus_hooks() {
+    fn terminal_replies_are_discarded_and_focus_hooks_fire() {
         use phux_protocol::input::focus::FocusEvent;
         use tokio::sync::{broadcast, mpsc};
 
@@ -3858,22 +3858,16 @@ mod tests {
             state
                 .with_mut(|s| s.attach_default_caps(client_id, "focus", tx))
                 .expect("attach");
-            let reply = bytes::Bytes::from_static(b"\0\x1b[?1;2c\xff");
-            handle_terminal_reply(&state, client_id, &wire_terminal_id, reply.clone());
-            let routed = encoded_rx
-                .try_recv()
-                .expect("authorized terminal reply reaches the PTY byte lane");
-            assert_eq!(
-                routed.bytes, reply,
-                "opaque bytes, including NUL, are exact"
-            );
-
-            let stranger = ClientId(4242);
-            handle_terminal_reply(&state, stranger, &wire_terminal_id, reply);
+            // The canonical terminal answers queries itself; a client
+            // replica's copy of the same answer must never reach the PTY,
+            // or the child reads a second, unrequested reply as input.
+            let reply = bytes::Bytes::from_static(b"\x1b[5;1R");
+            handle_terminal_reply(client_id, &wire_terminal_id, &reply);
             assert!(
                 encoded_rx.try_recv().is_err(),
-                "an unsubscribed client cannot inject a terminal reply"
+                "a client terminal reply is discarded, not written to the PTY"
             );
+            let stranger = ClientId(4242);
 
             // Focus gained → hook fires.
             handle_terminal_input(

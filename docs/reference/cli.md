@@ -893,9 +893,7 @@ Attach role:
                                   into none. The server refuses this attach's
                                   input, and widening it takes a fresh attach
                                   without the flag, which every watcher sees.
-                                  Your viewport still sizes the panes, and an
-                                  app waiting on a terminal-query reply times
-                                  out.
+                                  Your viewport still sizes the panes.
       --take                      Attach and take the wheel: seize the input
                                   lease of every pane this attach opens, in the
                                   same step as the attach. The previous holder

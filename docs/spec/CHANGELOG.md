@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-21
+last-reviewed: 2026-09-23
 ---
 
 # Wire-protocol changelog
@@ -18,6 +18,7 @@ must equal `PROTOCOL_VERSION` in `crates/phux-protocol/src/lib.rs`;
 
 | Version | Date       | Notes                                        |
 |---------|------------|----------------------------------------------|
+| 0.9.0-draft.29 | 2026-09-23 | The canonical terminal is the one authority for terminal query replies. **No wire bytes change:** no tag, field, frame, verb, or capability is added or removed, and `PROTOCOL_VERSION` stays `0.9.0`. [input.md](./input.md) §6 previously had the server enqueue `INPUT_TERMINAL_REPLY` bytes on the PTY lane, but the server's canonical terminal already answers every query (DSR, DA, DECRQM, XTWINOPS, OSC 10/11) as it parses the child's output, so an attached client's replica answered each one a second time. A prompt library reads the unrequested second answer as typed input: `gh auth login` inside the TUI showed `1R` in its filter box after a cursor-position query. The server now MUST discard the frame's bytes without an `ERROR` and never write them to the PTY; `TERMINAL_REPLY = 0x80` stays advertised so earlier clients keep negotiating, and new clients SHOULD NOT send the frame. A `VIEWER` attach ([L1.md](./L1.md) §5.1) no longer leaves queries unanswered, because no client answers them. |
 | 0.9.0-draft.28 | 2026-09-21 | phux-lxov.2 ([ADR-0136](../adr/0136-hub-mirrors-satellite-agent-metadata.md)): a hub mirrors `phux.agent/v1` and `phux.agent.asked/v1` per satellite terminal. **No wire bytes change:** no tag, field, frame, verb, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. The asked key is the owning server's projection of a pending `AgentEvent::Asked` (value `1`, tombstone when clear) and is server-owned. The hub retags `Local` to `Satellite` and does not chain. Every other L3 key, and those two keys on a server that does not route the host, keep the `UNSUPPORTED_SATELLITE_ROUTE` refusal. Client `SET`/`DELETE` of a satellite Terminal scope is ignored. [L3.md](./L3.md) §1.3. |
 | 0.9.0-draft.27 | 2026-09-21 | phux-fpgl.32: hub-relayed `SPAWN_RESOURCE` carries field 16 `retain_secs`. **No wire bytes change:** no tag, field, frame, verb, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. A hub forwards the field unchanged when the satellite advertises `RETAIN_ON_EXIT`, and refuses with `SPAWN_FAILED` without touching the link when it does not, so an older satellite never silently skips retention. [L1.md](./L1.md) §3.1 and §9.1 record that; the §3.1 status marker no longer says a satellite-relayed spawn omits the field. |
 | 0.9.0-draft.26 | 2026-09-21 | phux-fpgl.29: SSH-stdio under `paired` is owner UDS, not unavailable. **No wire bytes change:** no tag, field, frame, verb, or capability is added, and `PROTOCOL_VERSION` stays `0.9.0`. [workload-auth.md](./workload-auth.md) §8 and [proto.md](./proto.md) §4 / §10 drop the claim that closed policy modes admit no SSH-stdio. `phux stdio-bridge` is an owner-UDS peer, so a bridged connection keeps owner authority; an SSH peer that can run the bridge already owns the host. The §8 status marker no longer lists that as a gap. |
