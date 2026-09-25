@@ -90,6 +90,8 @@ class RoutingTests(unittest.TestCase):
             ([".github/workflows/native-setup.yml"], set()),
             ([".github/actions/setup-rust-lane/action.yml"], set()),
             (["scripts/ci/classify-changes.sh"], set()),
+            (["scripts/ci/release_metadata.py"], set()),
+            (["scripts/ci/test_release_metadata.py"], set()),
             (["scripts/ci/validation_receipt.py"], set()),
             (["scripts/ci/publish_plan.py"], set()),
             (["scripts/ci/dispatch_integration_publishes.py"], set()),
