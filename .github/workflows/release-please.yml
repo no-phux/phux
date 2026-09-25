@@ -156,6 +156,9 @@ jobs:
           # The standalone browser lock also records the root path crates'
           # versions; its locked CI must advance those in the same release PR.
           (cd clients/phux-web && cargo update --workspace)
+          # The desktop host lock records them too, but its GPUIX path deps
+          # are bootstrapped, not committed, so cargo cannot resolve it here.
+          python3 scripts/sync-path-lock-versions.py Cargo.lock clients/desktop/native/Cargo.lock
 
       - name: Commit Cargo.lock
         shell: bash
@@ -163,12 +166,12 @@ jobs:
           PR_BRANCH: ${{ needs.release-please.outputs.pr_branch }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- Cargo.lock clients/phux-web/Cargo.lock; then
+          if git diff --quiet -- Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock; then
             echo "Cargo lockfiles already in sync."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock clients/phux-web/Cargo.lock
+          git add Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock
           git commit -m "chore: sync Cargo lockfiles with the release version"
           git push origin "HEAD:${PR_BRANCH}"
