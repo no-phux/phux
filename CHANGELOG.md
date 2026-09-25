@@ -9,6 +9,20 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.45.0](https://github.com/no-phux/phux/compare/v0.44.0...v0.45.0) (2026-09-25)
+
+
+### Features
+
+* **desktop:** land the Solid native terminal on Apple silicon ([4248754](https://github.com/no-phux/phux/commit/4248754a47cff676bfb315b97de69386bec3ce5f))
+* **desktop:** show agent badges, settings, IME preedit, and a second window ([82a9722](https://github.com/no-phux/phux/commit/82a97227689149b4647da23c1d99d39116e9f382))
+
+
+### Bug Fixes
+
+* **site:** pin hosted native to 0.44.0 ([#852](https://github.com/no-phux/phux/issues/852)) ([1fab89c](https://github.com/no-phux/phux/commit/1fab89cb8b8b599ffb60ae98d554e8e22df24df6))
+* unblock main CI after the Solid native and desktop landings ([#854](https://github.com/no-phux/phux/issues/854)) ([aa3d4d6](https://github.com/no-phux/phux/commit/aa3d4d6e9ede1a1d676f1ad1bdff149fea539d7c))
+
 ## [0.44.0](https://github.com/no-phux/phux/compare/v0.43.0...v0.44.0) (2026-09-23)
 
 
