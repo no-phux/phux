@@ -33,9 +33,11 @@ impl ControlPlane {
         for event in &events {
             self.note_engine_event(event);
         }
+        let geometry = super::geometry::bootstrap_changes(&events);
         let outcomes = engine
             .apply_batch(events)
             .map_err(|error| ControlError::Protocol(error.to_string()))?;
+        self.note_geometry_bootstraps(geometry, &outcomes);
         self.process_engine_outcomes(outcomes)
     }
 

@@ -58,6 +58,8 @@ pub mod byte_adapter;
 mod owner;
 #[cfg(feature = "engine")]
 mod predict;
+#[cfg(feature = "engine")]
+mod views;
 
 use owner::Owner;
 
@@ -382,6 +384,10 @@ pub enum EngineError {
     Engine(String),
 }
 
+/// The complete result of a bounded selection copy.
+#[cfg(feature = "engine")]
+pub use phux_client_core::engine::BoundedSelectionText;
+
 /// What the owner thread needs to build its kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineConfig {
@@ -407,9 +413,12 @@ impl EngineConfig {
 }
 
 enum Command {
+    Stop(Sender<()>),
     ApplyBatch(Vec<EngineEvent>, Sender<Vec<EngineOutcome>>),
     Lifecycle(Lifecycle),
     Query(Query),
+    #[cfg(feature = "engine")]
+    View(views::ViewCommand),
 }
 
 enum Lifecycle {
@@ -426,6 +435,12 @@ enum Query {
     IsClosed(ResourceId, Sender<bool>),
     InputEligibility(ResourceId, Sender<InputEligibility>),
     InputReady(ResourceId, Sender<bool>),
+    #[cfg(feature = "engine")]
+    SelectionTextBounded(
+        ResourceId,
+        usize,
+        Sender<Result<BoundedSelectionText, EngineError>>,
+    ),
     #[cfg(feature = "engine")]
     Scroll(
         ResourceId,
@@ -551,6 +566,12 @@ impl EngineHandle {
     /// Release every connection-scoped replica and projection.
     pub(crate) fn reset_connection(&self) {
         let _ = self.request(|reply| Command::Lifecycle(Lifecycle::Reset(reply)));
+    }
+
+    /// Retire publications synchronously and reject future requests, including
+    /// requests through retained clones of a superseded owner handle.
+    pub(crate) fn stop(&self) {
+        let _ = self.request(Command::Stop);
     }
 
     /// Whether the terminal has a live (or explicitly retained) replica.
@@ -744,7 +765,8 @@ impl EngineHandle {
         self.request(|reply| Command::Query(Query::SelectionText(terminal_id.clone(), reply)))?
     }
 
-    /// Search loaded history and return owner-thread anchor handles.
+    /// Search loaded history and replace the default view's search handles.
+    /// Endpoints used by its active selection remain valid until released.
     #[cfg(feature = "engine")]
     pub fn search(
         &self,

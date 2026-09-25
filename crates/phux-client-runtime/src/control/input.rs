@@ -157,6 +157,38 @@ impl ControlPlane {
     /// This is the only evidence that may clear an unknown-delivery fence.
     pub fn acknowledge_projection(&mut self, terminal_id: &ResourceId) {
         self.input_replay.clear_delivery_fence(terminal_id);
+        self.delivery_fences.remove(terminal_id);
+    }
+
+    /// The token an authoritative projection must carry to safely clear this
+    /// terminal's current unknown-delivery fence. Reconnect changes the epoch
+    /// even when the underlying ambiguity survives it.
+    #[must_use]
+    pub fn projection_fence(&self, terminal_id: &ResourceId) -> Option<super::ProjectionFence> {
+        if !self.delivery_fenced(terminal_id) {
+            return None;
+        }
+        self.delivery_fences
+            .get(terminal_id)
+            .map(|delivery_id| super::ProjectionFence {
+                connection_epoch: self.connection_epoch,
+                delivery_id: *delivery_id,
+            })
+    }
+
+    /// Atomically validate and clear exactly the fence associated with the
+    /// user's presented projection. A stale epoch or delivery is rejected.
+    #[must_use]
+    pub fn acknowledge_projection_if(
+        &mut self,
+        terminal_id: &ResourceId,
+        expected: super::ProjectionFence,
+    ) -> bool {
+        if self.projection_fence(terminal_id) != Some(expected) {
+            return false;
+        }
+        self.acknowledge_projection(terminal_id);
+        true
     }
 
     /// When the earliest queued acknowledged input crosses the retry
@@ -292,6 +324,7 @@ impl ControlPlane {
                     // Damage that predates this ambiguity cannot prove what
                     // the server rendered after it.
                     self.damaged.retain(|id| id != &terminal_id);
+                    self.record_delivery_fence(&terminal_id, delivery_id);
                     DeliveryOutcome::Unknown
                 }
             };
@@ -307,6 +340,17 @@ impl ControlPlane {
     pub(super) fn strand_durable(&mut self, message: &str) {
         let reports = self.input_replay.drain_unresolved(message);
         self.publish_replay_reports(reports, None);
+    }
+
+    fn record_delivery_fence(&mut self, terminal_id: &ResourceId, delivery_id: u64) {
+        if self.delivery_fenced(terminal_id) {
+            self.delivery_fences
+                .insert(terminal_id.clone(), delivery_id);
+        } else {
+            // Retiring a terminal can report an attempted operation Unknown
+            // after the journal has already removed its obsolete fence.
+            self.delivery_fences.remove(terminal_id);
+        }
     }
 }
 

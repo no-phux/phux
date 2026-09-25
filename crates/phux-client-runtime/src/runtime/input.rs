@@ -99,6 +99,28 @@ impl Client {
             .with(|control| control.acknowledge_projection(terminal_id));
     }
 
+    /// Capture the exact delivery fence to associate with an authoritative
+    /// projection. For an atomic projection snapshot use `with_control`.
+    #[must_use]
+    pub fn projection_fence(
+        &self,
+        terminal_id: &ResourceId,
+    ) -> Option<crate::control::ProjectionFence> {
+        lock(&self.inner.control).projection_fence(terminal_id)
+    }
+
+    /// Validate and clear the captured fence under the control-owner lock.
+    /// This never clears a newer Unknown, even within the same connection.
+    #[must_use]
+    pub fn acknowledge_projection_if(
+        &self,
+        terminal_id: &ResourceId,
+        expected: crate::control::ProjectionFence,
+    ) -> bool {
+        self.inner
+            .with(|control| control.acknowledge_projection_if(terminal_id, expected))
+    }
+
     // ----- events subscription and extension points --------------------
 
     /// Subscribe to the server-wide event stream from a journal cursor.

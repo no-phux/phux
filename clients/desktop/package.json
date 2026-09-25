@@ -1,0 +1,33 @@
+{
+  "name": "@phux/desktop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint -c oxlint.config.ts --type-aware --deny-warnings --report-unused-disable-directives-severity error --ignore-pattern 'tests/tooling/negative/**' .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:tooling": "bun test tests/tooling/tooling.test.ts tests/framework/process.test.ts",
+    "test:rules": "node tools/oxlint/anti-slop/rules/no-chained-type-assertions.test.ts && node tools/oxlint/anti-slop/rules/no-module-mocking.test.ts && node tools/oxlint/anti-slop/rules/require-safety-comment-for-type-assertion.test.ts",
+    "check:tooling": "bun run format:check && bun run typecheck && bun run lint && bun run test:rules && bun run test:tooling"
+  },
+  "dependencies": {
+    "@gpuix/native": "0.10.0",
+    "@gpuix/solid": "0.10.0",
+    "solid-js": "1.9.15"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.85.0",
+    "@types/bun": "1.4.0",
+    "eslint-plugin-solid": "0.18.0",
+    "oxfmt": "0.70.0",
+    "oxlint": "1.85.0",
+    "oxlint-tsgolint": "7.0.2002",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "bun": "1.4.0",
+    "node": "24.x"
+  },
+  "packageManager": "bun@1.4.0"
+}

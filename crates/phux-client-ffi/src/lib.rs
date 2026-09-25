@@ -14,8 +14,10 @@
 //! - `uniffi` is `crate::uniffi`: the `RemoteClient` object, the local
 //!   playground engine, the keymap and the predictor that `UniFFI` turns into
 //!   Swift and Kotlin for the native mobile clients.
+//! - `napi` is `crate::napi`: the optional desktop encoder and same-binary
+//!   native client registry. Grid frames stay in Rust.
 //!
-//! Both lanes build from the same crate and the same lockfile, so a runtime
+//! All lanes build from the same crate and the same lockfile, so a runtime
 //! value cannot mean one thing to Cockpit and another to the phone.
 
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -24,6 +26,10 @@
 compile_error!("phux-client-ffi is a native-only libghostty bridge");
 
 pub mod projection;
+
+/// Optional desktop encoder and same-binary native client registry.
+#[cfg(feature = "napi")]
+pub mod napi;
 
 #[cfg(feature = "c-abi")]
 mod c;

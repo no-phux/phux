@@ -183,6 +183,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0136](./0136-hub-mirrors-satellite-agent-metadata.md) | A hub mirrors two satellite agent metadata keys | Accepted (amends [0108](./0108-a-hub-relays-host-queries-per-request.md)) |
 | [0137](./0137-server-feature-word-extends.md) | The ServerFeature u32 is closed; the next bit is a trailing word | Accepted (forward-compat; builds on [0061](./0061-capabilities-add-versions-break.md)) |
 | [0138](./0138-cockpit-rides-the-next-channel.md) | Cockpit rides the next channel, and next queues instead of cancelling | Accepted (builds on [0113](./0113-next-release-channel.md)) |
+| [0139](./0139-solid-desktop-over-native-runtime-views.md) | Solid desktop over native runtime views | Accepted (extends [0135](./0135-one-binding-crate.md)) |
 
 ## When to write an ADR
 

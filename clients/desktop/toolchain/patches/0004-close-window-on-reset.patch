@@ -1,0 +1,53 @@
+diff --git a/.changeset/close-window-on-reset.md b/.changeset/close-window-on-reset.md
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/.changeset/close-window-on-reset.md
+@@ -0,0 +1,5 @@
++---
++"@gpuix/solid": patch
++---
++
++Close a live macOS window from resetRender so process exit does not drop it during thread-local teardown.
+diff --git a/README.md b/README.md
+index bdcc74d..c0ffee1 100644
+--- a/README.md
++++ b/README.md
+@@ -75,6 +75,11 @@ query still require explicit JS registration but cannot prove native availability.
+ Initialize the renderer before mounting; use the same installed addon for both
+ the host and framework. Custom props, events and instance lifetimes then use the
+ normal Solid mutation path, including reactive updates and unmount/remount.
++
++`resetRender()` unmounts the Solid root and closes a live macOS window before
++the process exits. GPUI records that close in a profiler thread-local. Dropping
++an open window during process-exit thread-local teardown panics. Call
++`resetRender()` or `closeWindow()` before `process.exit`.
+ 
+ ## Multiple native windows on macOS
+ 
+diff --git a/packages/native/js/host.ts b/packages/native/js/host.ts
+index 1bb5cc9..a1b2c3d 100644
+--- a/packages/native/js/host.ts
++++ b/packages/native/js/host.ts
+@@ -635,6 +635,8 @@ export type MutationHost = Pick<GpuixRenderer, "applyBatch"> & {
+   isWindowOpen?(): boolean
+   /** Query an already-initialized native registry without creating an instance. */
+   hasCustomElementType?(type: string): boolean
++  /** macOS: close this renderer's window. Absent on hosts that do not own one. */
++  closeWindow?(): void
+ }
+ export type WindowSizeHost = Pick<GpuixRenderer, "getWindowSize">
+ export type WindowInsetsHost = Pick<GpuixRenderer, "getWindowInsets">
+diff --git a/packages/solid/src/renderer.ts b/packages/solid/src/renderer.ts
+index 7c0e6a1..8d1f7b2 100644
+--- a/packages/solid/src/renderer.ts
++++ b/packages/solid/src/renderer.ts
+@@ -93,5 +93,8 @@ export function resetRender(): void {
+   const host = global[RENDER_HOST]
+   host?.loop?.stop()
+   host?.root?.unmount()
++  // GPUI's profiler journal is a thread-local. Dropping an open window while
++  // that local is already destroyed aborts process exit. Close it first.
++  if (host?.renderer?.isWindowOpen?.() !== false) host?.renderer?.closeWindow?.()
+   delete global[RENDER_HOST]
+ }

@@ -1,0 +1,4 @@
+{
+  "binaryName": "phux-desktop-native",
+  "targets": ["aarch64-apple-darwin"]
+}

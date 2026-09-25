@@ -5,6 +5,72 @@ use super::{Arc, GridFrame, Publication, Scroll, TerminalPublication};
 use super::{Client, ResourceId, lock};
 
 impl Client {
+    /// Create an independent tail-following presentation at canonical PTY size.
+    #[cfg(feature = "engine")]
+    pub fn create_view(
+        &self,
+        terminal: &ResourceId,
+    ) -> Result<crate::ViewId, crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .create_view(terminal)
+    }
+
+    /// Release only a view's presentation resources, preserving its terminal.
+    #[cfg(feature = "engine")]
+    pub fn destroy_view(&self, view: crate::ViewId) -> Result<(), crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .destroy_view(view)
+    }
+
+    /// Acquire the immutable current frame for an independent view.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn acquire_view(&self, view: crate::ViewId) -> Option<Arc<GridFrame>> {
+        self.inner.publication.acquire_view(view)
+    }
+
+    /// Poll the independent view's frame generation.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn view_generation(&self, view: crate::ViewId) -> Option<u64> {
+        self.inner.publication.view_generation(view)
+    }
+
+    /// Retain a one-load polling handle for an independent view.
+    #[cfg(feature = "engine")]
+    #[must_use]
+    pub fn view_slot(&self, view: crate::ViewId) -> Option<TerminalPublication> {
+        self.inner.publication.view_slot(view)
+    }
+
+    /// Scroll only this view while preserving control-plane history routing.
+    #[cfg(feature = "engine")]
+    pub fn scroll_view(
+        &self,
+        view: crate::ViewId,
+        scroll: Scroll,
+    ) -> Result<(), crate::engine::EngineError> {
+        self.inner.with(|control| control.scroll_view(view, scroll))
+    }
+
+    /// Pin this view to one of its own document anchors.
+    #[cfg(feature = "engine")]
+    pub fn pin_viewport_view(
+        &self,
+        view: crate::ViewId,
+        anchor: u64,
+    ) -> Result<(), crate::engine::EngineError> {
+        self.inner
+            .with(|control| control.pin_viewport_view(view, anchor))
+    }
+
+    /// Resume following the live tail in this view only.
+    #[cfg(feature = "engine")]
+    pub fn follow_live_view(&self, view: crate::ViewId) -> Result<(), crate::engine::EngineError> {
+        self.scroll_view(view, Scroll::Bottom)
+    }
     // ----- the grid ----------------------------------------------------
 
     /// The published frames, for a consumer that polls generations itself.
@@ -70,7 +136,8 @@ impl Client {
         terminal_id: &ResourceId,
         scroll: Scroll,
     ) -> Result<(), crate::engine::EngineError> {
-        lock(&self.inner.control).scroll(terminal_id, scroll)
+        self.inner
+            .with(|control| control.scroll(terminal_id, scroll))
     }
 
     /// Keep the final replica after the terminal closes.

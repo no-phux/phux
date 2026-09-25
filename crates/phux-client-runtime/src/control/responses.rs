@@ -59,6 +59,11 @@ impl ControlPlane {
         self.publish_replay_reports(reports, None);
         if self.options.automatic_lifecycle {
             self.queue_post_handshake();
+            // A session selected after startup also queues an attach. Wait for
+            // its inventory before replaying subscriptions outside that session.
+            if self.active_attach_id.is_none() {
+                self.replay_preserving_subscriptions();
+            }
         }
         self.queue_durable_frames();
         self.queue_next_upload();
@@ -86,7 +91,9 @@ impl ControlPlane {
             Arc::clone(&self.publication),
         )
         .map_err(|error| ControlError::Protocol(error.to_string()))?;
-        self.engine = Some(engine);
+        if let Some(previous) = self.engine.replace(engine) {
+            previous.stop();
+        }
         self.engine_config = Some(config);
         Ok(())
     }
@@ -224,6 +231,7 @@ impl ControlPlane {
         self.error = None;
         self.set_status(Status::Attached);
         self.push_event(Event::Attached { attach_id });
+        self.replay_preserving_subscriptions();
         Ok(())
     }
 

@@ -28,6 +28,13 @@ use libghostty_vt::selection::gesture::{
 use libghostty_vt::terminal::{Point, PointCoordinate, PointSpace};
 
 #[cfg(feature = "engine")]
+mod render;
+#[cfg(feature = "engine")]
+mod views;
+#[cfg(feature = "engine")]
+use views::{Presentation, View};
+
+#[cfg(feature = "engine")]
 struct PointerGesture {
     token: u128,
     handle: u64,
@@ -38,9 +45,6 @@ struct PointerGesture {
 struct ProjectorSlot {
     token: u128,
     projector: GridProjector,
-    predictor: Predictor,
-    /// The buffer recycled from the frame the last publish replaced.
-    spare: Option<GridBuffer>,
 }
 
 pub(super) struct Owner {
@@ -57,21 +61,23 @@ pub(super) struct Owner {
     #[cfg(feature = "engine")]
     pending_releases: HashSet<ResourceId>,
     #[cfg(feature = "engine")]
-    anchors: HashMap<u64, (ResourceId, DocumentAnchorId)>,
+    anchors: HashMap<u64, (ResourceId, Option<crate::ViewId>, DocumentAnchorId)>,
     #[cfg(feature = "engine")]
-    next_anchor: u64,
+    presentations: HashMap<ResourceId, Presentation>,
     #[cfg(feature = "engine")]
-    selections: HashMap<ResourceId, EngineDocumentSelection>,
+    views: HashMap<crate::ViewId, View>,
     #[cfg(feature = "engine")]
-    gestures: HashMap<ResourceId, PointerGesture>,
-    #[cfg(feature = "engine")]
-    next_gesture: u64,
-    #[cfg(feature = "engine")]
-    viewport_anchors: HashMap<ResourceId, DocumentAnchorId>,
+    active_view: Option<crate::ViewId>,
     #[cfg(feature = "engine")]
     document_revisions: HashMap<ResourceId, u64>,
     #[cfg(feature = "engine")]
     next_document_revision: u64,
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        self.retire_publications();
+    }
 }
 
 impl Owner {
@@ -94,15 +100,11 @@ impl Owner {
             #[cfg(feature = "engine")]
             anchors: HashMap::new(),
             #[cfg(feature = "engine")]
-            next_anchor: 1,
+            presentations: HashMap::new(),
             #[cfg(feature = "engine")]
-            selections: HashMap::new(),
+            views: HashMap::new(),
             #[cfg(feature = "engine")]
-            gestures: HashMap::new(),
-            #[cfg(feature = "engine")]
-            next_gesture: 1,
-            #[cfg(feature = "engine")]
-            viewport_anchors: HashMap::new(),
+            active_view: None,
             #[cfg(feature = "engine")]
             document_revisions: HashMap::new(),
             #[cfg(feature = "engine")]
@@ -113,12 +115,34 @@ impl Owner {
     pub(super) fn run(mut self, commands: &mpsc::Receiver<Command>) {
         while let Ok(command) = commands.recv() {
             match command {
+                Command::Stop(reply) => {
+                    self.retire_publications();
+                    let _ = reply.send(());
+                    break;
+                }
                 Command::ApplyBatch(events, reply) => {
                     let _ = reply.send(self.apply_batch(events));
                 }
                 Command::Lifecycle(lifecycle) => self.lifecycle(lifecycle),
                 Command::Query(query) => self.query(query),
+                #[cfg(feature = "engine")]
+                Command::View(command) => self.view_command(command),
             }
+        }
+    }
+
+    fn retire_publications(&mut self) {
+        self.visible.clear();
+        #[cfg(feature = "engine")]
+        {
+            for view in self.views.keys() {
+                self.publication.remove_view(*view);
+            }
+            self.views.clear();
+            for id in self.presentations.keys() {
+                self.publication.remove(id);
+            }
+            self.presentations.clear();
         }
     }
 
@@ -162,6 +186,10 @@ impl Owner {
                     self.release_closed(&id);
                     self.projectors.remove(&id);
                     self.publication.remove(&id);
+                    self.forget_views(&id);
+                    self.invalidate_handles(&id);
+                    self.presentations.remove(&id);
+                    self.document_revisions.remove(&id);
                 }
             }
         }
@@ -176,6 +204,8 @@ impl Owner {
             self.projectors.remove(id);
             self.publication.remove(id);
             self.invalidate_handles(id);
+            self.forget_views(id);
+            self.presentations.remove(id);
             self.document_revisions.remove(id);
         }
     }
@@ -256,7 +286,7 @@ impl Owner {
                 let _ = reply.send(result);
             }
             Query::ClearPredictions(id, reply) => {
-                if let Some(slot) = self.projectors.get_mut(&id) {
+                if let Some(slot) = self.presentations.get_mut(&id) {
                     slot.predictor.clear();
                 }
                 let _ = reply.send(self.render_and_publish(&id));
@@ -301,6 +331,9 @@ impl Owner {
             }
             Query::SelectionText(id, reply) => {
                 let _ = reply.send(self.selection_text(&id));
+            }
+            Query::SelectionTextBounded(id, max_bytes, reply) => {
+                let _ = reply.send(self.selection_text_bounded(&id, max_bytes));
             }
             Query::Search(id, query, case_sensitive, reply) => {
                 let _ = reply.send(self.search(&id, &query, case_sensitive));
@@ -355,7 +388,18 @@ impl Owner {
             EngineEvent::Closed { terminal_id, .. } => Some(terminal_id.clone()),
             _ => None,
         };
+        #[cfg(feature = "engine")]
+        let output = match &event {
+            EngineEvent::Output { terminal_id, .. } => Some(terminal_id.clone()),
+            _ => None,
+        };
         let result = apply_event(&mut self.kernel, event, &mut self.effects);
+        #[cfg(feature = "engine")]
+        if result.is_ok()
+            && let Some(id) = output
+        {
+            self.note_view_output(&id);
+        }
         let effects = self.effects.take();
         // A retained close moves the final replica aside before the damage
         // walk sees the kernel's `Removed`, so the walk re-publishes it
@@ -375,7 +419,7 @@ impl Owner {
     fn publish_damaged(&mut self, damaged: Vec<ResourceId>) {
         self.release_pending();
         for id in damaged {
-            if let Err(error) = self.render_and_publish(&id) {
+            if let Err(error) = self.render_views(&id) {
                 tracing::warn!(terminal = %id, %error, "grid projection failed");
             }
         }
@@ -385,6 +429,8 @@ impl Owner {
     /// deduplicating across the whole owner-thread batch.
     fn note_damage(&mut self, effects: &[KernelEffect], damaged: &mut Vec<ResourceId>) {
         for effect in effects {
+            #[cfg(feature = "engine")]
+            self.note_history_damage(effect, damaged);
             let KernelEffect::Damage(damage) = effect else {
                 continue;
             };
@@ -400,6 +446,9 @@ impl Owner {
                 } else {
                     self.projectors.remove(id);
                     self.publication.remove(id);
+                    self.forget_views(id);
+                    self.invalidate_handles(id);
+                    self.presentations.remove(id);
                 }
             } else {
                 self.visible.insert(id.clone());
@@ -539,107 +588,12 @@ impl Owner {
             );
             (cursor, alternate)
         };
-        let Some(slot) = self.projectors.get_mut(id) else {
+        let Some(slot) = self.presentations.get_mut(id) else {
             return Ok(());
         };
         slot.predictor
             .predict_text(text, cursor, alternate, monotonic_ms());
         Ok(())
-    }
-
-    /// Project `id`'s replica into the back buffer and publish it. `Ok(false)`
-    /// means there is nothing renderable yet (a native replica before READY).
-    #[cfg(feature = "engine")]
-    fn render_and_publish(&mut self, id: &ResourceId) -> Result<bool, EngineError> {
-        let Some((token, geometry, stream_id, bootstrap_id, last_seq)) = self.replica_identity(id)
-        else {
-            return Ok(false);
-        };
-        self.ensure_projector(id, token, geometry)?;
-        let Some(mut slot) = self.projectors.remove(id) else {
-            return Ok(false);
-        };
-        let Some(terminal) = self.replica(id).and_then(GhosttyReplica::terminal) else {
-            self.projectors.insert(id.clone(), slot);
-            return Ok(false);
-        };
-        let defaults = terminal_defaults(terminal)?;
-        let alternate = matches!(
-            terminal.active_screen(),
-            Ok(libghostty_vt::screen::Screen::Alternate)
-        );
-        let token = slot.token;
-        let projected = slot
-            .projector
-            .project(terminal, token)
-            .map(|snapshot| {
-                let mut colors = frame_colors(&snapshot.colors);
-                colors.has_foreground = defaults.0.is_some();
-                colors.has_background = defaults.1.is_some();
-                colors.reversed = defaults.2;
-                if let Some(foreground) = defaults.0 {
-                    colors.foreground = foreground;
-                }
-                if let Some(background) = defaults.1 {
-                    colors.background = background;
-                }
-                let damage = match snapshot.damage {
-                    // Publication has no separate metadata-damage channel.
-                    // Mode-only updates (for example DECSCNM) must therefore
-                    // conservatively repaint instead of disappearing as Clean.
-                    GridDamage::Clean => GridDamage::Full,
-                    damage => damage,
-                };
-                (
-                    snapshot.cols,
-                    snapshot.rows,
-                    snapshot.cursor,
-                    colors,
-                    damage,
-                )
-            })
-            .map_err(|error| EngineError::Engine(error.to_string()));
-        let scrollbar = terminal.scrollbar().map(|bar| Scrollbar {
-            total: bar.total,
-            offset: bar.offset,
-            len: bar.len,
-        });
-        let outcome = projected.and_then(|(cols, rows, mut cursor, colors, damage)| {
-            let scrollbar =
-                scrollbar.map_err(|error| EngineError::Engine(format!("scrollbar: {error}")))?;
-            let mut buffer = slot.spare.take().unwrap_or_default();
-            slot.projector.swap_buffer(&mut buffer);
-            slot.predictor.apply(
-                cols,
-                rows,
-                alternate,
-                &mut cursor,
-                &mut buffer,
-                monotonic_ms(),
-            );
-            let frame = GridFrame {
-                terminal_id: id.clone(),
-                generation: 0,
-                stream_id,
-                bootstrap_id,
-                last_seq,
-                cols,
-                rows,
-                cursor,
-                scrollbar,
-                colors,
-                damage,
-                buffer,
-            };
-            if let Some(previous) = self.publication.publish(id, frame)
-                && let Ok(previous) = Arc::try_unwrap(previous)
-            {
-                slot.spare = Some(previous.buffer);
-            }
-            Ok(true)
-        });
-        self.projectors.insert(id.clone(), slot);
-        outcome
     }
 
     #[cfg(feature = "engine")]
@@ -659,15 +613,9 @@ impl Owner {
         let projector = GridProjector::new().map_err(|error| {
             EngineError::Engine(format!("render state allocation failed: {error}"))
         })?;
-        self.projectors.insert(
-            id.clone(),
-            ProjectorSlot {
-                token,
-                projector,
-                predictor: Predictor::new(geometry.cols, geometry.rows),
-                spare: None,
-            },
-        );
+        self.reset_generation_presentations(id, geometry);
+        self.projectors
+            .insert(id.clone(), ProjectorSlot { token, projector });
         Ok(())
     }
 
@@ -683,10 +631,14 @@ impl Owner {
             stream_id: key.stream_id.get(),
             bootstrap_id: key.bootstrap_id.get(),
             last_seq: replica.last_seq(),
-            history: self
-                .kernel
-                .history_cache(id)
-                .map(phux_client_core::history::HistoryCache::status),
+            history: self.kernel.history_cache(id).map(|cache| {
+                let mut status = cache.status();
+                status.unread_rows = self
+                    .presentations
+                    .get(id)
+                    .map_or(0, |state| state.unread_rows);
+                status
+            }),
             document_revision: self.document_revisions.get(id).copied().unwrap_or(0),
         })
     }
@@ -735,11 +687,10 @@ impl Owner {
         id: &ResourceId,
         anchor: DocumentAnchorId,
     ) -> Result<u64, EngineError> {
-        let handle = self.next_anchor;
-        self.next_anchor = handle
-            .checked_add(1)
+        let handle = crate::view::allocate_handle()
             .ok_or_else(|| engine_error("document anchor handle space exhausted"))?;
-        self.anchors.insert(handle, (id.clone(), anchor));
+        self.anchors
+            .insert(handle, (id.clone(), self.active_view, anchor));
         Ok(handle)
     }
 
@@ -749,22 +700,31 @@ impl Owner {
         id: &ResourceId,
         handle: u64,
     ) -> Result<DocumentAnchorId, EngineError> {
-        let (owner, anchor) = self
+        let anchor = self.owned_anchor(id, handle)?;
+        if self.anchor_point(id, anchor)?.is_none() {
+            return Err(engine_error("document anchor was pruned or invalidated"));
+        }
+        Ok(anchor)
+    }
+
+    #[cfg(feature = "engine")]
+    fn owned_anchor(&self, id: &ResourceId, handle: u64) -> Result<DocumentAnchorId, EngineError> {
+        let (owner, view, anchor) = self
             .anchors
             .get(&handle)
             .ok_or_else(|| engine_error("document anchor is stale or unknown"))?;
-        if owner != id {
-            return Err(engine_error("document anchor belongs to another terminal"));
+        if owner != id || *view != self.active_view {
+            return Err(engine_error("document anchor belongs to another view"));
         }
         Ok(*anchor)
     }
 
     #[cfg(feature = "engine")]
     fn release_anchor(&mut self, id: &ResourceId, handle: u64) -> Result<(), EngineError> {
-        let anchor = self.resolve_anchor(id, handle)?;
-        self.kernel
-            .release_document_anchor(id, anchor)
-            .map_err(|error| engine_error(error.to_string()))?;
+        // Pruning invalidates the location, not the owner's obligation to
+        // release its budget registration. Unknown/cross-view handles fail.
+        let anchor = self.owned_anchor(id, handle)?;
+        self.release_tracked_anchor(id, anchor)?;
         self.anchors.remove(&handle);
         Ok(())
     }
@@ -784,8 +744,11 @@ impl Owner {
             .clear_presentation(id)
             .map_err(|error| engine_error(error.to_string()))?;
         self.invalidate_handles(id);
+        if let Some((_, geometry, ..)) = self.replica_identity(id) {
+            self.reset_generation_presentations(id, geometry);
+        }
         self.bump_document_revision(id)?;
-        self.render_and_publish(id).map(|_| ())
+        self.render_views(id).map(|_| ())
     }
 
     #[cfg(feature = "engine")]
@@ -823,14 +786,11 @@ impl Owner {
             .document_anchor_point(id, end, DocumentSpace::History)
             .map_err(|error| engine_error(error.to_string()))?;
         apply_terminal_selection(self.terminal(id)?, start_point, end_point, rectangle)?;
-        self.selections.insert(
-            id.clone(),
-            EngineDocumentSelection {
-                start,
-                end,
-                rectangle,
-            },
-        );
+        self.presentation_mut(id)?.selection = Some(EngineDocumentSelection {
+            start,
+            end,
+            rectangle,
+        });
         self.render_and_publish(id).map(|_| ())
     }
 
@@ -840,20 +800,34 @@ impl Owner {
         self.terminal(id)?
             .set_selection(None)
             .map_err(|error| engine_error(error.to_string()))?;
-        self.selections.remove(id);
+        self.presentation_mut(id)?.selection = None;
         self.render_and_publish(id).map(|_| ())
     }
 
     #[cfg(feature = "engine")]
     fn selection_text(&self, id: &ResourceId) -> Result<Vec<u8>, EngineError> {
         let selection = self
-            .selections
+            .presentations
             .get(id)
-            .copied()
+            .and_then(|state| state.selection)
             .ok_or_else(|| engine_error("terminal has no active selection"))?;
         self.kernel
             .format_document_selection(id, selection)
             .map(|text| text.unwrap_or_default().into_bytes())
+            .map_err(|error| engine_error(error.to_string()))
+    }
+
+    #[cfg(feature = "engine")]
+    fn selection_text_bounded(
+        &self,
+        id: &ResourceId,
+        max_bytes: usize,
+    ) -> Result<super::BoundedSelectionText, EngineError> {
+        let Some(selection) = self.presentations.get(id).and_then(|state| state.selection) else {
+            return Ok(super::BoundedSelectionText::Unavailable);
+        };
+        self.kernel
+            .format_document_selection_bounded(id, selection, max_bytes)
             .map_err(|error| engine_error(error.to_string()))
     }
 
@@ -867,6 +841,7 @@ impl Owner {
         if query.is_empty() {
             return Err(engine_error("search query is empty"));
         }
+        self.clear_search_handles(id)?;
         self.kernel
             .adapter_mut()
             .set_search_case_sensitive(case_sensitive);
@@ -884,6 +859,7 @@ impl Owner {
                 }
             };
             found.push(SearchMatch { start, end });
+            self.presentation_mut(id)?.search.extend([start, end]);
         }
         Ok(found)
     }
@@ -914,9 +890,7 @@ impl Owner {
     ) -> Result<PointerGesture, EngineError> {
         if event.phase == 0 {
             self.clear_selection(id)?;
-            let handle = self.next_gesture;
-            self.next_gesture = handle
-                .checked_add(1)
+            let handle = crate::view::allocate_handle()
                 .ok_or_else(|| engine_error("gesture handles exhausted"))?;
             return Ok(PointerGesture {
                 token,
@@ -925,14 +899,16 @@ impl Owner {
             });
         }
         let valid = self
-            .gestures
+            .presentations
             .get(id)
+            .and_then(|state| state.gesture.as_ref())
             .is_some_and(|state| state.token == token && state.handle == event.handle);
         if !valid {
             return Err(engine_error("stale selection gesture"));
         }
-        self.gestures
-            .remove(id)
+        self.presentation_mut(id)?
+            .gesture
+            .take()
             .ok_or_else(|| engine_error("missing selection gesture"))
     }
 
@@ -948,8 +924,8 @@ impl Owner {
             if let Ok(terminal) = self.terminal(id) {
                 state.gesture.reset(terminal);
             }
-        } else {
-            self.gestures.insert(id.clone(), state);
+        } else if let Some(presentation) = self.presentations.get_mut(id) {
+            presentation.gesture = Some(state);
         }
     }
 
@@ -1006,6 +982,13 @@ impl Owner {
             let _ = self.release_anchor(id, end);
             return Err(error);
         }
+        let old = std::mem::replace(
+            &mut self.presentation_mut(id)?.gesture_anchors,
+            vec![start, end],
+        );
+        for handle in old {
+            self.drop_anchor_handle(id, handle);
+        }
         Ok((start, end))
     }
 
@@ -1021,7 +1004,11 @@ impl Owner {
 
     #[cfg(feature = "engine")]
     fn reset_gesture(&mut self, id: &ResourceId) {
-        let Some(mut state) = self.gestures.remove(id) else {
+        let Some(mut state) = self
+            .presentations
+            .get_mut(id)
+            .and_then(|state| state.gesture.take())
+        else {
             return;
         };
         let current = self.replica_identity(id).map(|identity| identity.0);
@@ -1035,9 +1022,14 @@ impl Owner {
     #[cfg(feature = "engine")]
     fn invalidate_handles(&mut self, id: &ResourceId) {
         self.reset_gesture(id);
-        self.anchors.retain(|_, (owner, _)| owner != id);
-        self.selections.remove(id);
-        self.viewport_anchors.remove(id);
+        self.anchors
+            .retain(|_, (owner, view, _)| owner != id || *view != self.active_view);
+        if let Some(state) = self.presentations.get_mut(id) {
+            state.selection = None;
+            state.viewport = None;
+            state.search.clear();
+            state.gesture_anchors.clear();
+        }
     }
 
     #[cfg(feature = "engine")]
@@ -1052,18 +1044,12 @@ impl Owner {
 
     #[cfg(feature = "engine")]
     fn scroll(&mut self, id: &ResourceId, scroll: Scroll) -> Result<EngineOutcome, EngineError> {
-        let viewport = viewport_scroll(scroll)?;
         let active = self.kernel.published_engine_mut(id).is_some();
-        let scrolled = if let Some(replica) = self.kernel.published_engine_mut(id) {
-            replica.scroll_viewport(viewport)
-        } else if let Some(replica) = self.closed.get_mut(id) {
-            replica.engine_mut().scroll_viewport(viewport)
-        } else {
-            return Err(engine_error("terminal has no scrollable replica"));
-        };
-        scrolled.map_err(|error| engine_error(error.to_string()))?;
+        self.scroll_replica(id, scroll)?;
         if active {
             self.update_history_viewport(id)?;
+        } else {
+            self.remember_closed_scroll(id)?;
         }
         self.render_and_publish(id)?;
         Ok(EngineOutcome {
@@ -1094,19 +1080,19 @@ impl Owner {
 
     #[cfg(feature = "engine")]
     fn follow_history_tail(&mut self, id: &ResourceId) -> Result<(), EngineError> {
-        self.kernel
-            .follow_history_tail(id)
-            .map_err(|error| engine_error(error.to_string()))?;
-        if let Some(old) = self.viewport_anchors.remove(id) {
-            self.kernel
-                .release_document_anchor(id, old)
-                .map_err(|error| engine_error(error.to_string()))?;
+        if let Some(old) = self.presentation_mut(id)?.viewport.take() {
+            self.release_tracked_anchor(id, old)?;
         }
-        Ok(())
+        self.reset_unread(id)
     }
 
     #[cfg(feature = "engine")]
     fn pin_history_viewport(&mut self, id: &ResourceId) -> Result<(), EngineError> {
+        // The kernel cache still owns page budgets, cursor continuity, anchor
+        // accounting, and prefetch. Its singleton viewport stays at Tail:
+        // pinning it here would make pruning one view clear every view's
+        // document anchors in SessionKernel::reconcile_pinned_anchor.
+        // Presentation pinning belongs exclusively to this view record.
         let anchor = self
             .kernel
             .track_document_anchor(
@@ -1118,15 +1104,10 @@ impl Owner {
                 },
             )
             .map_err(|error| engine_error(error.to_string()))?;
-        self.kernel
-            .pin_history_viewport(id, anchor)
-            .map_err(|error| engine_error(error.to_string()))?;
-        if let Some(old) = self.viewport_anchors.insert(id.clone(), anchor) {
-            self.kernel
-                .release_document_anchor(id, old)
-                .map_err(|error| engine_error(error.to_string()))?;
+        if let Some(old) = self.presentation_mut(id)?.viewport.replace(anchor) {
+            self.release_tracked_anchor(id, old)?;
         }
-        Ok(())
+        self.reset_unread(id)
     }
 }
 
@@ -1169,6 +1150,22 @@ fn terminal_defaults(
         std::mem::swap(&mut foreground, &mut background);
     }
     Ok((foreground, background, reversed))
+}
+
+#[cfg(feature = "engine")]
+const fn apply_default_colors(
+    colors: &mut super::FrameColors,
+    defaults: (Option<Rgb>, Option<Rgb>, bool),
+) {
+    colors.has_foreground = defaults.0.is_some();
+    colors.has_background = defaults.1.is_some();
+    colors.reversed = defaults.2;
+    if let Some(foreground) = defaults.0 {
+        colors.foreground = foreground;
+    }
+    if let Some(background) = defaults.1 {
+        colors.background = background;
+    }
 }
 
 #[cfg(feature = "engine")]

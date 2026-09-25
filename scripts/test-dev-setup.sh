@@ -10,7 +10,9 @@ bin="$scratch/bin"
 mkdir -p "$repo/scripts/lib" "$repo/.config" "$bin"
 cp "$root"/scripts/{doctor,setup-rust,install-zig}.sh "$repo/scripts/"
 cp "$root/scripts/lib/dev-toolchain.sh" "$repo/scripts/lib/"
+cp "$root/scripts/lib/apple-toolchain-env.sh" "$repo/scripts/lib/"
 cp "$root/rust-toolchain.toml" "$repo/"
+cp "$root/mise.toml" "$repo/"
 cp "$root/.config/zig-toolchain.json" "$repo/.config/"
 source "$root/scripts/lib/dev-toolchain.sh"
 bash_bin="$BASH"
@@ -159,6 +161,27 @@ test "$1" = --show-sdk-path
 SH
 chmod +x "$bin/xcrun"
 expect_fail 'macOS SDK/nmedit' "$repo/scripts/doctor.sh" native
+
+# Xcode being present is insufficient for GPUI: execute the Metal compiler.
+cat >"$bin/xcrun" <<'SH'
+#!/bin/sh
+test "$1" != metal
+SH
+cp "$bin/npm" "$bin/python3"
+bun_version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' "$root/mise.toml")"
+cat >"$bin/bun" <<SH
+#!/bin/sh
+echo '$bun_version'
+SH
+chmod +x "$bin/bun"
+expect_fail 'Metal compiler unavailable' "$repo/scripts/doctor.sh" desktop
+cp "$bin/npm" "$bin/xcrun"
+expect_pass "$repo/scripts/doctor.sh" desktop
+cat >"$bin/bun" <<'SH'
+#!/bin/sh
+echo 0.0.0
+SH
+expect_fail "Bun $bun_version (found: 0.0.0)" "$repo/scripts/doctor.sh" desktop
 
 # Opt-in rustup components must not leak into a core contributor's install.
 export SETUP_TEST_LOG="$scratch/rustup-log"

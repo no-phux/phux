@@ -162,7 +162,8 @@ impl ControlPlane {
     }
 
     /// The client's viewport changed: the attached session's terminals and
-    /// every per-terminal subscription are resized.
+    /// every default-policy per-terminal subscription are resized. Explicit
+    /// preserving subscriptions and viewers skip per-terminal resize fanout.
     pub fn resize_viewport(&mut self, cols: u16, rows: u16) {
         let viewport = (cols.max(1), rows.max(1));
         if self.options.viewport == viewport {
@@ -177,7 +178,12 @@ impl ControlPlane {
         });
         // VIEWPORT_RESIZE reaches only the ATTACHed session's terminals; a
         // per-terminal subscription keeps its geometry without the verb.
-        let foreign: Vec<ResourceId> = self.terminal_attached.iter().cloned().collect();
+        let foreign: Vec<ResourceId> = self
+            .terminal_attached
+            .iter()
+            .filter(|id| self.follows_global_geometry(id))
+            .cloned()
+            .collect();
         for terminal_id in foreign {
             self.queue_frame(&FrameKind::ResizeTerminal {
                 terminal_id,
@@ -216,11 +222,13 @@ impl ControlPlane {
         });
         // ATTACH_RESOURCE does not resize; reflow the terminal to this
         // viewport as a session ATTACH would have.
-        self.queue_frame(&FrameKind::ResizeTerminal {
-            terminal_id: terminal_id.clone(),
-            cols,
-            rows,
-        });
+        if self.follows_global_geometry(terminal_id) {
+            self.queue_frame(&FrameKind::ResizeTerminal {
+                terminal_id: terminal_id.clone(),
+                cols,
+                rows,
+            });
+        }
         request_id
     }
 
@@ -228,6 +236,8 @@ impl ControlPlane {
     /// reply is [`Event::TerminalDetached`]. Never for a terminal of the
     /// attached session: its stream rides the session pumps.
     pub fn detach_terminal(&mut self, terminal_id: &ResourceId) -> u32 {
+        self.preserve_terminal_geometry.remove(terminal_id);
+        self.geometry_bootstrapped.remove(terminal_id);
         let request_id = self.next_request_id();
         self.pending
             .insert(request_id, Pending::DetachTerminal(terminal_id.clone()));
@@ -269,7 +279,7 @@ impl ControlPlane {
         StreamRecovery::Reconnect
     }
 
-    fn attach_request_for_terminal(&self, terminal_id: &ResourceId) -> Option<u32> {
+    pub(super) fn attach_request_for_terminal(&self, terminal_id: &ResourceId) -> Option<u32> {
         self.pending.iter().find_map(|(request_id, pending)| {
             matches!(pending, Pending::AttachTerminal(id) if id == terminal_id)
                 .then_some(*request_id)

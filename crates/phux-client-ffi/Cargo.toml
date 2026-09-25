@@ -1,6 +1,6 @@
 [package]
 name = "phux-client-ffi"
-description = "The phux binding crate: one runtime projection, a C ABI and a UniFFI encoder."
+description = "The phux binding crate: one runtime projection, C ABI, UniFFI and optional NAPI encoders."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -32,6 +32,15 @@ required-features = ["uniffi"]
 name = "rig_seed"
 required-features = ["uniffi"]
 
+[[example]]
+name = "napi_smoke"
+required-features = ["napi"]
+
+[[example]]
+name = "napi_host"
+crate-type = ["cdylib"]
+required-features = ["napi"]
+
 [features]
 # Cockpit's lane and the shipped default: the `extern "C"` surface
 # `include/phux/client.h` declares. `cargo build -p phux-client-ffi` links no
@@ -55,6 +64,9 @@ uniffi = [
     "dep:unicode-segmentation",
     "libghostty-vt/kitty-graphics",
 ]
+# Desktop's in-process Node encoder. Match the pinned GPUIX host's napi
+# runtime so the wrapper and this rlib register into ONE export registry.
+napi = ["dep:napi", "dep:napi-derive"]
 
 [dependencies]
 libghostty-vt.workspace = true
@@ -110,6 +122,12 @@ thiserror = { workspace = true, optional = true }
 # Grapheme segmentation for the mobile text-commit path into the shared
 # predictor.
 unicode-segmentation = { workspace = true, optional = true }
+
+# NAPI is the host ABI, not a second client runtime. Dynamic symbol lookup
+# lets ordinary Rust test executables link without pretending to be Node;
+# the final desktop cdylib calls napi_build::setup() in its own build script.
+napi = { version = "=3.12.7", default-features = false, features = ["napi4", "dyn-symbols"], optional = true }
+napi-derive = { version = "=3.6.8", optional = true }
 
 [dev-dependencies]
 # The connected lane's e2e test runs the real server the TUI runs.

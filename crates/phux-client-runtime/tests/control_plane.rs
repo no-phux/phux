@@ -29,6 +29,55 @@ const fn terminal() -> ResourceId {
     ResourceId::local(7)
 }
 
+#[path = "support/geometry.rs"]
+mod geometry;
+
+#[cfg(feature = "engine")]
+#[test]
+fn replacing_an_engine_synchronously_retires_all_outgoing_view_slots() {
+    let client = embedded_with_history(None);
+    let old_owner = client.engine().unwrap();
+    let view = client.create_view(&terminal()).unwrap();
+    let slot = client.view_slot(view).unwrap();
+    let default_slot = client.slot(&terminal()).unwrap();
+    let held = slot.acquire().unwrap();
+    let text = held.text();
+    client.with_control(ControlPlane::connection_opened);
+    let _ = client.take_outbound();
+    let mut hello = hello_ok(PROTOCOL_VERSION.patch);
+    if let FrameKind::HelloOk {
+        bootstrap_limits, ..
+    } = &mut hello
+    {
+        *bootstrap_limits = BootstrapLimits::new(1024, 1024).unwrap();
+    }
+    client.feed(hello).unwrap();
+    assert!(client.acquire_view(view).is_none());
+    assert!(slot.acquire().is_none());
+    assert!(default_slot.acquire().is_none());
+    assert!(client.destroy_view(view).is_err());
+    assert!(old_owner.republish_view(view).is_err());
+    assert_eq!(held.text(), text);
+    client.close();
+    drop(client);
+    assert!(slot.acquire().is_none());
+    assert_eq!(held.text(), text);
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn dropping_client_retires_views_even_with_an_external_owner_clone() {
+    let client = embedded_with_history(None);
+    let owner = client.engine().unwrap();
+    let view = client.create_view(&terminal()).unwrap();
+    let slot = client.view_slot(view).unwrap();
+    let held = slot.acquire().unwrap();
+    drop(client);
+    assert!(slot.acquire().is_none());
+    assert!(owner.republish_view(view).is_err());
+    assert_eq!(held.row_text(0), "two");
+}
+
 fn hello_ok(patch: u16) -> FrameKind {
     FrameKind::HelloOk {
         protocol_major: PROTOCOL_VERSION.major,
@@ -153,6 +202,15 @@ fn negotiated() -> (ControlPlane, u32) {
 }
 
 fn attach(plane: &mut ControlPlane, attach_id: u32, bytes: &[u8]) {
+    attach_with_history(plane, attach_id, bytes, None);
+}
+
+fn attach_with_history(
+    plane: &mut ControlPlane,
+    attach_id: u32,
+    bytes: &[u8],
+    history_cursor: Option<Vec<u8>>,
+) {
     plane
         .feed(FrameKind::Attached {
             attach_id,
@@ -187,12 +245,100 @@ fn attach(plane: &mut ControlPlane, attach_id: u32, bytes: &[u8]) {
             terminal_id: terminal(),
             stream_id,
             bootstrap_id,
-            history_cursor: None,
+            history_cursor: history_cursor.map(Into::into),
         })
         .expect("BOOTSTRAP_READY");
     plane
         .feed(FrameKind::AttachReady { attach_id })
         .expect("ATTACH_READY");
+}
+
+#[cfg(feature = "engine")]
+fn embedded_with_history(history_cursor: Option<Vec<u8>>) -> phux_client_runtime::Client {
+    let client = phux_client_runtime::Runtime::embedded(ControlOptions {
+        attach: Some(AttachTarget::ByName("main".into())),
+        viewport: (20, 4),
+        ..ControlOptions::default()
+    });
+    client.with_control(ControlPlane::connection_opened);
+    let _ = client.take_outbound();
+    client.feed(hello_ok(PROTOCOL_VERSION.patch)).unwrap();
+    let attach_id = client
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match decode(bytes) {
+            FrameKind::Attach { attach_id, .. } => Some(attach_id),
+            _ => None,
+        })
+        .unwrap();
+    client.with_control(|plane| {
+        attach_with_history(
+            plane,
+            attach_id,
+            b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive",
+            history_cursor,
+        );
+    });
+    let _ = client.take_outbound();
+    client
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn client_clones_share_the_default_but_explicit_views_are_local_without_wire_operations() {
+    use phux_client_runtime::engine::Scroll;
+    let client = embedded_with_history(None);
+    let clone = client.clone();
+    let a = client.create_view(&terminal()).unwrap();
+    let b = clone.create_view(&terminal()).unwrap();
+    assert!(
+        client.take_outbound().is_empty(),
+        "creating views cannot attach, resize, or spawn"
+    );
+    client.scroll(&terminal(), Scroll::Top).unwrap();
+    assert_eq!(clone.acquire(&terminal()).unwrap().row_text(0), "zero");
+    assert!(clone.acquire_view(a).unwrap().scrollbar.at_tail());
+    let b_generation = clone.view_generation(b);
+    clone.scroll_view(a, Scroll::Top).unwrap();
+    assert_eq!(client.acquire_view(a).unwrap().row_text(0), "zero");
+    assert_eq!(clone.view_generation(b), b_generation);
+    clone.destroy_view(a).unwrap();
+    assert!(client.has_projection(&terminal()));
+    assert!(
+        client.take_outbound().is_empty(),
+        "local view operations cannot detach or resize"
+    );
+    assert_eq!(client.with_control(|plane| plane.viewport()), (20, 4));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn view_scrolling_routes_history_requests_through_control_plane() {
+    use phux_client_runtime::engine::Scroll;
+    use phux_protocol::wire::frame::HistoryRejectionReason;
+    let client = embedded_with_history(Some(b"older".to_vec()));
+    client
+        .feed(FrameKind::HistoryRejected {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            cursor: b"older".to_vec().into(),
+            reason: HistoryRejectionReason::ZeroLimit,
+            required_bytes: 0,
+            required_rows: 0,
+        })
+        .unwrap();
+    let _ = client.take_outbound();
+    let view = client.create_view(&terminal()).unwrap();
+    assert!(client.take_outbound().is_empty());
+    client.scroll_view(view, Scroll::Top).unwrap();
+    let requests = client.take_outbound();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        matches!(decode(&requests[0]), FrameKind::HistoryRequest { cursor, terminal_id, .. }
+        if cursor.as_ref() == b"older" && terminal_id == terminal())
+    );
+    assert!(client.acquire(&terminal()).unwrap().scrollbar.at_tail());
 }
 
 fn refresh_to(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
@@ -217,6 +363,63 @@ fn output(plane: &mut ControlPlane, seq: u64, bytes: &[u8]) {
             bytes: bytes.to_vec().into(),
         })
         .expect("RESOURCE_OUTPUT");
+}
+
+fn unknown_input_delivery(plane: &mut ControlPlane) -> u64 {
+    let delivery = plane.apply_line(&terminal(), "command");
+    let request = plane
+        .take_outbound()
+        .iter()
+        .find_map(|bytes| match decode(bytes) {
+            FrameKind::Command {
+                request_id,
+                command: Command::ApplyInput { .. },
+            } => Some(request_id),
+            _ => None,
+        })
+        .expect("APPLY_INPUT attempt");
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id: request,
+            result: CommandResult::Error {
+                code: ErrorCode::InputDeliveryUnknown,
+                message: "ambiguous test delivery".into(),
+            },
+        })
+        .unwrap();
+    assert!(plane.delivery_fenced(&terminal()));
+    delivery
+}
+
+#[test]
+fn conditional_projection_ack_rejects_a_newer_fence_without_reconnecting() {
+    let mut plane = ControlPlane::new(ControlOptions::default());
+    plane.connection_opened();
+    plane.take_outbound();
+    plane
+        .feed(hello_ok_with(&[ServerFeature::AcknowledgedInput]))
+        .unwrap();
+    plane.take_outbound();
+    let first_delivery = unknown_input_delivery(&mut plane);
+    let first = plane.projection_fence(&terminal()).unwrap();
+    assert_eq!(first.delivery_id, first_delivery);
+    assert!(plane.acknowledge_projection_if(&terminal(), first));
+    let second_delivery = unknown_input_delivery(&mut plane);
+    let second = plane.projection_fence(&terminal()).unwrap();
+    assert_eq!(second.delivery_id, second_delivery);
+    assert_eq!(first.connection_epoch, second.connection_epoch);
+    assert_ne!(first.delivery_id, second.delivery_id);
+    assert!(!plane.acknowledge_projection_if(&terminal(), first));
+    assert!(plane.delivery_fenced(&terminal()));
+    assert!(!plane.acknowledge_projection_if(&ResourceId::local(99), second));
+    assert!(plane.acknowledge_projection_if(&terminal(), second));
+    assert!(!plane.delivery_fenced(&terminal()));
+    assert!(!plane.acknowledge_projection_if(&terminal(), second));
+    unknown_input_delivery(&mut plane);
+    let before_reconnect = plane.projection_fence(&terminal()).unwrap();
+    plane.connection_opened();
+    assert!(!plane.acknowledge_projection_if(&terminal(), before_reconnect));
+    assert!(plane.delivery_fenced(&terminal()));
 }
 
 #[cfg(feature = "engine")]

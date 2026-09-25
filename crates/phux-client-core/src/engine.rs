@@ -330,6 +330,22 @@ pub trait EnginePresentationAdapter: EngineAdapter {
     fn clear_presentation(&mut self, replica: &mut Self::Replica) -> Result<(), Self::Error>;
 }
 
+/// Complete bounded copy or an explicit refusal, never a truncated selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundedSelectionText {
+    /// Complete UTF-8, with the same trim/unwrap semantics as ordinary copy.
+    Text(Vec<u8>),
+    /// The selection or one of its anchors is no longer available.
+    Unavailable,
+    /// Complete output would exceed the caller's byte budget. No partial text.
+    ByteLimitExceeded,
+    /// The range exceeds the adapter's documented formatting-work budget.
+    /// This is conservative: trimming could have produced fewer output bytes.
+    WorkLimitExceeded,
+    /// This adapter does not implement bounded copy. No allocating fallback.
+    Unsupported,
+}
+
 /// Optional semantic document operations for adapters with an engine-owned grid.
 pub trait EngineDocumentAdapter: EngineAdapter {
     /// Cooperatively project imported history without resizing canonical PTY state.
@@ -373,4 +389,16 @@ pub trait EngineDocumentAdapter: EngineAdapter {
         replica: &Self::Replica,
         selection: EngineDocumentSelection,
     ) -> Result<Option<String>, Self::Error>;
+
+    /// Copy complete UTF-8 within `max_bytes`, without materializing an
+    /// unbounded selection first. Adapters must document their work bound;
+    /// adapters without a bounded implementation return `Unsupported`.
+    fn format_selection_bounded(
+        &self,
+        _replica: &Self::Replica,
+        _selection: EngineDocumentSelection,
+        _max_bytes: usize,
+    ) -> Result<BoundedSelectionText, Self::Error> {
+        Ok(BoundedSelectionText::Unsupported)
+    }
 }

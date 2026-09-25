@@ -22,6 +22,8 @@ consumer docs are). What you read to understand how phux is built.
 | [process-model.md](./process-model.md) | Per-user server, single process, current-thread runtime; supervision (ADR-0003, ADR-0014) |
 | [threading.md](./threading.md) | `!Send`/`!Sync` constraints, one LocalSet task per resource engine, the std mutex discipline |
 | [client-runtime.md](./client-runtime.md) | The one layer below every client binding (ADR-0133): sans-IO control plane, engine owner thread, published grid frames, reconnecting driver |
+| [desktop.md](./desktop.md) | Accepted Solid/native desktop seams, runtime views, identity, geometry, and tooling boundaries (ADR-0139); implementation gaps explicit |
+| [desktop-verification.md](./desktop-verification.md) | Desktop dependency order and native, independent-view, fidelity, performance, and package acceptance evidence |
 | [transport.md](./transport.md) | The frame seam and the five byte streams: UDS, WebSocket, QUIC, WebTransport, SSH-stdio; `phux-dial` (ADR-0007) |
 | [crate-graph.md](./crate-graph.md) | Crate dependency edges, the protocol-core independence (ADR-0011), and how the crates map onto L1/L3 |
 | [data-model.md](./data-model.md) | Sessions, windows, resources (kinds, facets, parent bindings), layouts as in-process types — distinct from wire shape |

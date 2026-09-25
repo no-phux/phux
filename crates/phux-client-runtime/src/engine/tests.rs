@@ -1,5 +1,9 @@
 use super::*;
 #[cfg(feature = "engine")]
+mod bounded_selection;
+#[cfg(feature = "engine")]
+mod views;
+#[cfg(feature = "engine")]
 use crate::publication::GridDamage;
 #[cfg(feature = "engine")]
 use phux_client_core::session::KernelSend;
@@ -57,6 +61,23 @@ fn attach(owner: &EngineHandle, terminal_id: &ResourceId, bytes: &[u8]) {
 }
 
 fn attach_many(owner: &EngineHandle, terminals: &[(&ResourceId, &[u8])]) {
+    attach_many_sized(owner, terminals, (20, 4));
+}
+
+fn attach_many_sized(
+    owner: &EngineHandle,
+    terminals: &[(&ResourceId, &[u8])],
+    geometry: (u16, u16),
+) {
+    attach_many_history(owner, terminals, geometry, None);
+}
+
+fn attach_many_history(
+    owner: &EngineHandle,
+    terminals: &[(&ResourceId, &[u8])],
+    geometry: (u16, u16),
+    history_cursor: Option<&[u8]>,
+) {
     apply_ok(
         owner,
         EngineEvent::AttachStarted {
@@ -72,8 +93,8 @@ fn attach_many(owner: &EngineHandle, terminals: &[(&ResourceId, &[u8])]) {
                 stream_id: stream(1),
                 bootstrap_id: bootstrap(1),
                 profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                cols: 20,
-                rows: 4,
+                cols: geometry.0,
+                rows: geometry.1,
                 base_seq: 0,
             },
         );
@@ -93,7 +114,7 @@ fn attach_many(owner: &EngineHandle, terminals: &[(&ResourceId, &[u8])]) {
                 terminal_id: (*terminal_id).clone(),
                 stream_id: stream(1),
                 bootstrap_id: bootstrap(1),
-                history_cursor: None,
+                history_cursor: history_cursor.map(<[u8]>::to_vec),
             },
         );
     }

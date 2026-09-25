@@ -34,6 +34,8 @@ use crate::history::DocumentAnchorId;
 const SYNTH_SCROLLBACK_ROWS: usize = 10_000;
 const CONTINUATION_LIMIT: usize = 64 * 1024 * 1024;
 
+mod selection;
+
 /// Return the client bootstrap capabilities supported by the linked engine.
 ///
 /// Official snapshot v1 is advertised when the linked codec can encode a
@@ -833,6 +835,15 @@ impl EngineDocumentAdapter for GhosttyAdapter {
                 .with_trim(true),
         )?;
         Ok(formatted.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    fn format_selection_bounded(
+        &self,
+        replica: &Self::Replica,
+        selection: EngineDocumentSelection,
+        max_bytes: usize,
+    ) -> Result<super::BoundedSelectionText, Self::Error> {
+        selection::format_bounded(replica, selection, max_bytes)
     }
 }
 

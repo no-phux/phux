@@ -5,8 +5,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 scope="${1:-native}"
 case "$scope" in
-    docs|core|native|integrations|web|cockpit|ci) ;;
-    *) echo "usage: bash scripts/doctor.sh [docs|core|native|integrations|web|cockpit|ci]" >&2; exit 2 ;;
+    docs|core|native|integrations|web|cockpit|desktop|ci) ;;
+    *) echo "usage: bash scripts/doctor.sh [docs|core|native|integrations|web|cockpit|desktop|ci]" >&2; exit 2 ;;
 esac
 [[ $# -le 1 ]] || exit 2
 cd "$DEV_ROOT"
@@ -95,6 +95,28 @@ node_tools() {
     need npm 'Install npm with Node 24; see docs/SETUP.md'
 }
 
+desktop_tools() {
+    # Match the desktop build's existing Apple-toolchain normalization.
+    # shellcheck source=scripts/lib/apple-toolchain-env.sh
+    source "$DEV_ROOT/scripts/lib/apple-toolchain-env.sh"
+    native_tools
+    node_tools
+    need python3 'mise install; or: nix develop'
+    local expected actual
+    expected="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' mise.toml)"
+    actual="$(bun --version 2>/dev/null || true)"
+    if [[ "$actual" == "$expected" ]]; then ok "Bun $actual"; else
+        fail "Bun $expected (found: ${actual:-none})" 'mise install; use the repository Bun pin'
+    fi
+    if [[ "$(uname -s)/$(uname -m)" != Darwin/arm64 ]]; then
+        fail 'Desktop first platform requires Apple-silicon macOS' 'Use an Apple-silicon Mac; Linux follows in phux-d4x9.19'
+        return
+    fi
+    if xcrun metal --version >/dev/null 2>&1; then ok 'Metal compiler executes'; else
+        fail 'Metal compiler unavailable in this environment' 'xcodebuild -downloadComponent MetalToolchain; verify xcrun metal --version; see clients/desktop/toolchain/README.md for inherited Nix SDK environments'
+    fi
+}
+
 need git 'Install Git with your platform package manager'
 case "$scope" in
     docs)
@@ -102,6 +124,7 @@ case "$scope" in
         ;;
     core) rust_tools core ;;
     native) native_tools ;;
+    desktop) desktop_tools ;;
     integrations) node_tools ;;
     web)
         rust_tools web

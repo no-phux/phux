@@ -1,0 +1,202 @@
+diff --git a/.changeset/native-extension-host.md b/.changeset/native-extension-host.md
+new file mode 100644
+index 0000000..a1b0aff
+--- /dev/null
++++ b/.changeset/native-extension-host.md
+@@ -0,0 +1,6 @@
++---
++'@gpuix/native': minor
++---
++
++Expose a startup-only Rust native-extension facade for statically linked hosts,
++using the renderer's exact GPUI types and existing custom-element lifecycle.
+diff --git a/README.md b/README.md
+index d527ed5..78d02ef 100644
+--- a/README.md
++++ b/README.md
+@@ -11,6 +11,27 @@ Write a React or Solid tree in TypeScript. GPUIX paints it with Metal, DirectX,
+ Everything above is GPUIX: the glass window, the cards, the schedule,
+ and native text.
+ 
++## Embedding native extensions in one addon
++
++Rust hosts can link `gpuix-native` as an rlib and call
++`native_extensions::install(fn(&mut CustomElementRegistry))` once, before any
++view or registry is created. Default registries invoke this installer after
++built-in factories. Duplicate or late installation returns an error. An empty
++registry also seals startup, but intentionally does not install defaults.
++
++The facade re-exports `CustomElement`, `CustomElementFactory`,
++`CustomRenderContext`, `CustomElementRegistry`, `custom_surface`, `EventCallback`,
++the opaque `GpuixView`, and the exact `gpui` crate used by the renderer. Factories
++and elements are created on the rendering thread; they are not required to be
++`Send`. Give surfaces stable host-derived named IDs, call `custom_surface` for
++style/event/bounds instrumentation, and paint text through `ctx.text` or
++`ctx.chrome_text`. The host owns explicit startup order, not static constructors.
++
++Build the host addon in release mode and set `NAPI_RS_NATIVE_LIBRARY_PATH` to its
++absolute canonical path before importing `@gpuix/native`. Application bindings
++must load that same file. Loading a second addon creates separate native state.
++This extension API does not add multi-window support.
++
+ ## Quickstart
+ 
+ Create an app from the official example. The command downloads only
+diff --git a/packages/native/src/custom_elements/mod.rs b/packages/native/src/custom_elements/mod.rs
+index fc78124..3706db3 100644
+--- a/packages/native/src/custom_elements/mod.rs
++++ b/packages/native/src/custom_elements/mod.rs
+@@ -107,7 +107,7 @@ impl CustomRenderContext<'_> {
+ ///
+ /// The caller must have given `el` a host-derived id already: gpui keys both the
+ /// pseudo-style state and the accessibility node off that id.
+-pub(crate) fn custom_surface(
++pub fn custom_surface(
+     mut el: gpui::Stateful<gpui::Div>,
+     ctx: &CustomRenderContext,
+ ) -> gpui::Stateful<gpui::Div> {
+@@ -304,6 +304,7 @@ pub struct CustomElementRegistry {
+ 
+ impl CustomElementRegistry {
+     pub fn new() -> Self {
++        crate::native_extensions::seal_installation();
+         Self {
+             factories: HashMap::new(),
+             instances: HashMap::new(),
+@@ -321,6 +322,7 @@ impl CustomElementRegistry {
+         registry.register(Box::new(code::CodeFactory));
+         registry.register(Box::new(diff::DiffFactory));
+         registry.register(Box::new(markdown::MarkdownFactory));
++        crate::native_extensions::install_into(&mut registry);
+         registry
+     }
+ 
+diff --git a/packages/native/src/lib.rs b/packages/native/src/lib.rs
+index c5f4fa1..013d1ba 100644
+--- a/packages/native/src/lib.rs
++++ b/packages/native/src/lib.rs
+@@ -21,6 +21,7 @@ mod diff;
+ mod element_tree;
+ mod markdown;
+ mod motion;
++pub mod native_extensions;
+ mod renderer;
+ // The data model is public so `examples/bench_serde.rs` measures the real
+ // types instead of a copy that silently drifts from them.
+diff --git a/packages/native/src/native_extensions.rs b/packages/native/src/native_extensions.rs
+new file mode 100644
+index 0000000..3584051
+--- /dev/null
++++ b/packages/native/src/native_extensions.rs
+@@ -0,0 +1,86 @@
++//! Startup-only native extensions linked into the same host as GPUIX.
++//!
++//! Install before creating any registry or view. Only a function pointer
++//! crosses threads; factories and their GPUI objects are created on the renderer
++//! thread. This API does not make GPUI entities `Send`.
++
++pub use crate::custom_elements::{
++    custom_surface, CustomElement, CustomElementFactory, CustomElementRegistry, CustomRenderContext,
++};
++pub use crate::renderer::{EventCallback, GpuixView};
++pub use gpui;
++
++use std::sync::Mutex;
++
++pub type Installer = fn(&mut CustomElementRegistry);
++
++#[derive(Default)]
++struct Installation {
++    installer: Option<Installer>,
++    sealed: bool,
++}
++
++impl Installation {
++    fn install(&mut self, installer: Installer) -> Result<(), &'static str> {
++        if self.sealed {
++            return Err("native extensions must be installed before creating a registry");
++        }
++        if self.installer.is_some() {
++            return Err("native extensions already installed");
++        }
++        self.installer = Some(installer);
++        Ok(())
++    }
++}
++
++static INSTALLATION: Mutex<Installation> = Mutex::new(Installation {
++    installer: None,
++    sealed: false,
++});
++
++/// Install once, explicitly, before creating any view/registry. Called after
++/// built-in factories for each default registry; never from a NAPI constructor.
++pub fn install(installer: Installer) -> Result<(), &'static str> {
++    INSTALLATION.lock().unwrap().install(installer)
++}
++
++pub(crate) fn seal_installation() {
++    INSTALLATION.lock().unwrap().sealed = true;
++}
++
++pub(crate) fn install_into(registry: &mut CustomElementRegistry) {
++    let installer = INSTALLATION.lock().unwrap().installer;
++    // Do not hold the startup lock while executing application code.
++    if let Some(installer) = installer {
++        installer(registry);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn empty_installer(_: &mut CustomElementRegistry) {}
++
++    #[test]
++    fn installation_is_once_only() {
++        let mut state = Installation::default();
++        assert!(state.install(empty_installer).is_ok());
++        assert_eq!(
++            state.install(empty_installer),
++            Err("native extensions already installed")
++        );
++    }
++
++    #[test]
++    fn even_an_empty_registry_seals_startup() {
++        let mut state = Installation {
++            sealed: true,
++            ..Installation::default()
++        };
++        assert_eq!(
++            state.install(empty_installer),
++            Err("native extensions must be installed before creating a registry")
++        );
++    }
++}
+diff --git a/packages/native/src/renderer.rs b/packages/native/src/renderer.rs
+index b1710c3..151be2c 100644
+--- a/packages/native/src/renderer.rs
++++ b/packages/native/src/renderer.rs
+@@ -92,9 +92,9 @@ pub(crate) fn parse_font_weight(value: &crate::style::FontWeightValue) -> gpui::
+ 
+ /// Abstracted event callback shared by desktop, browser, and test renderers.
+ #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+-pub(crate) type EventCallback = Arc<dyn Fn(EventPayload) + Send + Sync>;
++pub type EventCallback = Arc<dyn Fn(EventPayload) + Send + Sync>;
+ #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+-pub(crate) type EventCallback = Rc<dyn Fn(EventPayload)>;
++pub type EventCallback = Rc<dyn Fn(EventPayload)>;
+ 
+ fn raw_dimension_u32(value: f64, label: &str) -> std::result::Result<u32, String> {
+     if !value.is_finite() || value <= 0.0 || value.fract() != 0.0 || value > u32::MAX as f64 {
+@@ -3384,7 +3384,7 @@ impl Drop for GpuixRenderer {
+ 
+ // ── GPUI View ────────────────────────────────────────────────────────
+ 
+-pub(crate) struct GpuixView {
++pub struct GpuixView {
+     pub(crate) tree: Arc<Mutex<RetainedTree>>,
+     pub(crate) event_callback: Option<EventCallback>,
+     pub(crate) window_title: String,

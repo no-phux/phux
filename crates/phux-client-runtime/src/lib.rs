@@ -53,3 +53,5 @@ pub use runtime::{
     Client, ClientOptions, ConnectOptions, ControlGuard, Lane, Listener, PumpError, Runtime,
     Target, Transport,
 };
+mod view;
+pub use view::ViewId;

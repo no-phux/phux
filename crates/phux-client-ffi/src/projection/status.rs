@@ -3,6 +3,20 @@
 use phux_client_runtime::control::{ServerInfo, Status};
 use phux_protocol::caps::ServerFeature;
 
+/// Lossless, opaque server-incarnation identity. This is encoding, not a hash
+/// or a UTF-8 interpretation; even empty/non-UTF-8 identities retain every byte.
+#[must_use]
+pub fn server_id(server: &ServerInfo) -> String {
+    use std::fmt::Write as _;
+    server.id.iter().fold(
+        String::with_capacity(server.id.len() * 2),
+        |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        },
+    )
+}
+
 /// What a consumer shows for the connection.
 ///
 /// The runtime distinguishes `Idle`, `Connecting` and `Negotiated`; a product

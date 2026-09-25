@@ -7,7 +7,7 @@
 //! publish swaps a new frame in and never touches the one already handed
 //! out. There is no "valid until the next call" contract anywhere.
 //!
-//! Every frame carries a per-terminal generation that increases by one per
+//! Every frame carries a per-presentation generation that increases by one per
 //! publish, so a consumer that remembers the generation it last painted
 //! skips unchanged terminals for the cost of one atomic load
 //! ([`TerminalPublication::generation`]), and the rows libghostty reported
@@ -18,10 +18,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
+use crate::ViewId;
 pub use phux_client_core::grid::{
     Cell, CellMetadata, Cursor, CursorStyle, CursorWidth, GridBuffer, GridDamage,
 };
 use phux_protocol::ResourceId;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FrameKey {
+    Default(ResourceId),
+    View(ViewId),
+}
 
 /// The scrollable area behind a published viewport, in rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -93,7 +100,7 @@ impl Default for FrameColors {
 pub struct GridFrame {
     /// The terminal this frame projects.
     pub terminal_id: ResourceId,
-    /// Increases by one per publish of this terminal, starting at one.
+    /// Increases by one per publish of this presentation, starting at one.
     pub generation: u64,
     /// The logical subscription of the projected replica generation.
     pub stream_id: u64,
@@ -239,13 +246,15 @@ impl TerminalPublication {
     }
 }
 
-/// The table of published frames, one slot per terminal.
+/// The table of published frames: one default slot per terminal and one slot
+/// per explicitly created view. Existing terminal-keyed methods address the
+/// default presentation only.
 ///
 /// Shared between the owner thread that publishes and every consumer that
 /// acquires; both sides hold it through an `Arc`.
 #[derive(Debug, Default)]
 pub struct Publication {
-    slots: RwLock<HashMap<ResourceId, Arc<Slot>>>,
+    slots: RwLock<HashMap<FrameKey, Arc<Slot>>>,
 }
 
 impl Publication {
@@ -272,10 +281,32 @@ impl Publication {
     /// published for it.
     #[must_use]
     pub fn slot(&self, terminal: &ResourceId) -> Option<TerminalPublication> {
+        self.slot_key(&FrameKey::Default(terminal.clone()))
+    }
+
+    /// The frame for an independent view, if it still exists.
+    #[must_use]
+    pub fn acquire_view(&self, view: ViewId) -> Option<Arc<GridFrame>> {
+        self.view_slot(view).and_then(|slot| slot.acquire())
+    }
+
+    /// The independent view's publication generation.
+    #[must_use]
+    pub fn view_generation(&self, view: ViewId) -> Option<u64> {
+        self.view_slot(view).map(|slot| slot.generation())
+    }
+
+    /// A polling handle that is cleared when the view is destroyed.
+    #[must_use]
+    pub fn view_slot(&self, view: ViewId) -> Option<TerminalPublication> {
+        self.slot_key(&FrameKey::View(view))
+    }
+
+    fn slot_key(&self, key: &FrameKey) -> Option<TerminalPublication> {
         self.slots
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(terminal)
+            .get(key)
             .map(|slot| TerminalPublication {
                 slot: Arc::clone(slot),
             })
@@ -289,7 +320,10 @@ impl Publication {
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .filter(|(_, slot)| slot.generation.load(Ordering::Acquire) != 0)
-            .map(|(id, _)| id.clone())
+            .filter_map(|(key, _)| match key {
+                FrameKey::Default(id) => Some(id.clone()),
+                FrameKey::View(_) => None,
+            })
             .collect()
     }
 
@@ -299,11 +333,19 @@ impl Publication {
     pub(crate) fn publish(
         &self,
         terminal: &ResourceId,
-        mut frame: GridFrame,
+        frame: GridFrame,
     ) -> Option<Arc<GridFrame>> {
+        self.publish_key(FrameKey::Default(terminal.clone()), frame)
+    }
+
+    pub(crate) fn publish_view(&self, view: ViewId, frame: GridFrame) -> Option<Arc<GridFrame>> {
+        self.publish_key(FrameKey::View(view), frame)
+    }
+
+    fn publish_key(&self, key: FrameKey, mut frame: GridFrame) -> Option<Arc<GridFrame>> {
         let slot = {
             let mut slots = self.slots.write().unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(slots.entry(terminal.clone()).or_default())
+            Arc::clone(slots.entry(key).or_default())
         };
         let generation = slot.generation.load(Ordering::Acquire) + 1;
         frame.generation = generation;
@@ -318,11 +360,19 @@ impl Publication {
     /// Drop `terminal`'s slot. Consumers holding a frame keep it; a handle
     /// they hold keeps reporting the last generation and acquires `None`.
     pub(crate) fn remove(&self, terminal: &ResourceId) {
+        self.remove_key(&FrameKey::Default(terminal.clone()));
+    }
+
+    pub(crate) fn remove_view(&self, view: ViewId) {
+        self.remove_key(&FrameKey::View(view));
+    }
+
+    fn remove_key(&self, key: &FrameKey) {
         let slot = self
             .slots
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(terminal);
+            .remove(key);
         if let Some(slot) = slot {
             slot.frame
                 .write()

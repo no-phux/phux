@@ -82,6 +82,7 @@ the shell, Cargo, and npm commands below also work directly.
 | Agent integrations | Node/npm | `just integration-check pi` (or `opencode`, `claude`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
 | Cockpit app | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test` |
+| GPUIX desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-source-build` |
 | Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
 
 `bash scripts/doctor.sh <area>` works before installing `just`. It checks tool
@@ -220,6 +221,20 @@ For browser rendering/e2e tests, start `cargo run --locked -p phux-server
 `clients/phux-vt-web/vendor/ghostty-vt.wasm` is committed; rebuild it with
 `bash scripts/build-vt-wasm.sh` (or `--check`). `GHOSTTY_SRC=...` selects local
 source and bypasses archive verification but still runs ABI tests.
+
+## GPUIX desktop
+
+The separate `clients/desktop` application is under development. Its matched
+GPUIX/Solid source build is available through `just desktop-source-build`;
+this is a framework build, not a completed terminal application. Run
+`just doctor desktop` first. This scope verifies that the Metal compiler
+executes, not merely that Xcode exists. Install the separate component with
+`xcodebuild -downloadComponent MetalToolchain` if needed.
+
+See [desktop source toolchain](../clients/desktop/toolchain/README.md) for
+source pins, frozen installs, and the inherited Nix SDK caveat. The desktop
+build reuses the repository's Apple-toolchain environment helper, so it can
+select host Xcode/Metal without mixing in Nix's linker wrappers.
 
 ## Cockpit
 

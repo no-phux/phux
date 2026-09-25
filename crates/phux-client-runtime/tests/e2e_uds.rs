@@ -24,6 +24,14 @@ use tokio::net::{UnixListener, UnixStream};
 /// parallel test run, and a genuine hang still fails.
 const DEADLINE: Duration = Duration::from_secs(20);
 
+#[cfg(feature = "engine")]
+#[path = "support/idle_history.rs"]
+mod idle_history;
+
+#[cfg(feature = "engine")]
+#[path = "support/geometry_e2e.rs"]
+mod geometry_e2e;
+
 fn options() -> ClientOptions {
     ClientOptions {
         control: ControlOptions {

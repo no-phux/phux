@@ -138,6 +138,8 @@ impl ControlPlane {
                 .as_ref()
                 .is_some_and(|topology| topology.pane(terminal_id).is_some());
         self.terminal_attached.remove(terminal_id);
+        self.preserve_terminal_geometry.remove(terminal_id);
+        self.geometry_bootstrapped.remove(terminal_id);
         self.stream_recoveries.remove(terminal_id);
         self.own_spawns.remove(terminal_id);
         self.agent_streams.remove(terminal_id);
@@ -150,6 +152,7 @@ impl ControlPlane {
             .input_replay
             .retire_terminal(terminal_id, "terminal closed");
         self.publish_replay_reports(reports, None);
+        self.delivery_fences.remove(terminal_id);
         if was_known {
             self.push_event(Event::TerminalClosed {
                 terminal_id: terminal_id.clone(),

@@ -69,6 +69,7 @@ mod commands;
 mod events;
 mod extensions;
 mod frames;
+mod geometry;
 mod input;
 mod kernel;
 pub mod keys;
@@ -81,6 +82,7 @@ pub use extensions::{
     DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,
     TranscribeOutcome, TranscribeReceipt,
 };
+pub use geometry::TerminalResizeOutcome;
 pub use topology::{
     AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology, WindowDescriptor,
 };
@@ -313,6 +315,18 @@ pub enum StreamRecovery {
     Noop,
 }
 
+/// Identifies the exact unknown-delivery fence a presentation can acknowledge.
+///
+/// Capture this with the authoritative projection being handed to the user;
+/// acknowledging an older token cannot clear a newer ambiguity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectionFence {
+    /// Connection epoch of the presented projection.
+    pub connection_epoch: u64,
+    /// Correlation of the latest unknown-delivery receipt for this terminal.
+    pub delivery_id: u64,
+}
+
 /// What one outstanding `COMMAND` asked for, so its reply resolves to the
 /// right event.
 #[derive(Debug, Clone)]
@@ -368,6 +382,10 @@ pub struct ControlPlane {
     selected_session: Option<u32>,
     /// Terminals subscribed with a per-terminal attach on this connection.
     terminal_attached: HashSet<ResourceId>,
+    /// Opt-in subscription intent retained across transport reconnects.
+    preserve_terminal_geometry: HashSet<ResourceId>,
+    /// Resources bootstrapped on this connection, excluding retained old frames.
+    geometry_bootstrapped: HashSet<ResourceId>,
     /// Terminals whose replacement snapshot is requested but not published.
     stream_recoveries: HashSet<ResourceId>,
     /// Terminals this client's own spawns created on this connection.
@@ -377,6 +395,7 @@ pub struct ControlPlane {
     pending: HashMap<u32, Pending>,
     request_seq: u32,
     input_replay: InputReplayJournal,
+    delivery_fences: HashMap<ResourceId, u64>,
     input_delivery_ids: HashMap<String, (u64, ResourceId)>,
     input_deadlines: HashMap<String, Instant>,
     input_delivery_seq: u64,
@@ -416,12 +435,15 @@ impl ControlPlane {
             attached_session: None,
             selected_session: None,
             terminal_attached: HashSet::new(),
+            preserve_terminal_geometry: HashSet::new(),
+            geometry_bootstrapped: HashSet::new(),
             stream_recoveries: HashSet::new(),
             own_spawns: HashSet::new(),
             agent_streams: HashSet::new(),
             pending: HashMap::new(),
             request_seq: 1,
             input_replay: InputReplayJournal::new(),
+            delivery_fences: HashMap::new(),
             input_delivery_ids: HashMap::new(),
             input_deadlines: HashMap::new(),
             input_delivery_seq: 1,
@@ -535,6 +557,28 @@ impl ControlPlane {
             .map_err(|error| EngineError::Engine(error.to_string()))
     }
 
+    /// Scroll an independent presentation and route its history requests.
+    #[cfg(feature = "engine")]
+    pub fn scroll_view(&mut self, view: crate::ViewId, scroll: Scroll) -> Result<(), EngineError> {
+        let engine = self.engine.clone().ok_or(EngineError::Stopped)?;
+        let outcome = engine.scroll_view(view, scroll)?;
+        self.process_outcome(outcome, true)
+            .map_err(|error| EngineError::Engine(error.to_string()))
+    }
+
+    /// Pin an independent presentation and route its history requests.
+    #[cfg(feature = "engine")]
+    pub fn pin_viewport_view(
+        &mut self,
+        view: crate::ViewId,
+        anchor: u64,
+    ) -> Result<(), EngineError> {
+        let engine = self.engine.clone().ok_or(EngineError::Stopped)?;
+        let outcome = engine.pin_view(view, anchor)?;
+        self.process_outcome(outcome, true)
+            .map_err(|error| EngineError::Engine(error.to_string()))
+    }
+
     /// Pin the viewport at a tracked anchor and route history prefetch.
     #[cfg(feature = "engine")]
     pub fn pin_viewport(
@@ -636,6 +680,8 @@ impl ControlPlane {
     /// Release one explicitly withdrawn terminal from both the attach
     /// inventory and the engine owner.
     pub fn release_terminal(&mut self, terminal_id: &ResourceId) -> bool {
+        self.preserve_terminal_geometry.remove(terminal_id);
+        self.geometry_bootstrapped.remove(terminal_id);
         let known = self.attach_terminals.remove(terminal_id)
             | self.terminal_attached.remove(terminal_id)
             | self.own_spawns.remove(terminal_id)
@@ -656,6 +702,7 @@ impl ControlPlane {
     /// `HELLO`. Frames still queued from the previous connection are
     /// discarded, as they were built against per-connection state.
     pub fn connection_opened(&mut self) {
+        self.geometry_bootstrapped.clear();
         self.connection_epoch = self.connection_epoch.saturating_add(1);
         self.outbound.clear();
         // Anything the consumer has not drained belongs to the connection
@@ -723,7 +770,17 @@ impl ControlPlane {
         self.selected_session = None;
         self.terminal_attached.clear();
         self.agent_streams.clear();
+        self.preserve_terminal_geometry.clear();
+        self.geometry_bootstrapped.clear();
         self.set_status(Status::Closed);
+    }
+}
+
+impl Drop for ControlPlane {
+    fn drop(&mut self) {
+        if let Some(engine) = &self.engine {
+            engine.stop();
+        }
     }
 }
 
