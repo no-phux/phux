@@ -844,6 +844,8 @@ export declare class DesktopClient {
    */
   takeEvents(): Array<DesktopEvent>
   refreshTopology(): number | null
+  /** Subscribe to this terminal's agent badge. Empty name means no declared agent. */
+  watchAgent(terminal: string): void
   /** Attach an existing named server session; does not create it implicitly. */
   attachSession(name: string): void
   /**
@@ -909,6 +911,7 @@ export type DesktopEvent =
   | { kind: 'StatusChanged'; status: DesktopStatus }
   | { kind: 'TopologyChanged' }
   | { kind: 'TerminalChanged'; terminalId: string }
+  | { kind: 'AgentBadge'; terminalId: string; name: string; agentKind?: string; state: string; attention: string }
   | { kind: 'PaneSpawned'; terminalId: string }
   | { kind: 'SpawnAnswered'; requestId: number; terminalId?: string; error?: string }
   | { kind: 'AttachAnswered'; requestId: number; terminalId: string; error?: string }

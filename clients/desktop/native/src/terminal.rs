@@ -106,6 +106,9 @@ impl Terminal {
             )
         });
         cx.observe(&entity, |_, _, cx| cx.notify()).detach();
+        entity.update(cx, |state, _| {
+            state.set_option_as_alt(self.settings.option_as_alt)
+        });
         self.input = Some(BoundInput {
             handle,
             view,
@@ -133,6 +136,9 @@ impl CustomElement for Terminal {
         let mut surface =
             custom_surface(gpui::div().id(self.element_id.clone()), &ctx).overflow_hidden();
         if let Some(input) = input.clone() {
+            input.update(cx, |state, _| {
+                state.set_option_as_alt(self.settings.option_as_alt);
+            });
             let focus = input.read(cx).focus_handle().clone();
             let down = input.clone();
             let up = input.clone();
@@ -181,6 +187,12 @@ impl CustomElement for Terminal {
                         let report = prepared.paint(_bounds, window, cx);
                         if let Some(input) = &painted {
                             input_host::present(input, &report, &rebind, window, cx);
+                            input_host::paint_preedit(
+                                input,
+                                report.geometry.bounds.origin,
+                                window,
+                                cx,
+                            );
                         }
                         if let Some(observation) = observation.upgrade() {
                             *observation
@@ -205,6 +217,7 @@ impl CustomElement for Terminal {
             "viewId",
             "font",
             "theme",
+            "optionAsAlt",
             "focused",
             "cursorVisible",
             "blinkVisible",

@@ -95,6 +95,37 @@ fn shortcut(event: &gpui::KeyDownEvent, key: &str) -> bool {
         && event.keystroke.key == key
 }
 
+pub(super) fn paint_preedit(
+    input: &gpui::Entity<TerminalInput>,
+    origin: gpui::Point<gpui::Pixels>,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    let (text, _) = input.read(cx).preedit();
+    if text.is_empty() {
+        return;
+    }
+    let line = window.text_system().shape_line(
+        text.to_owned().into(),
+        gpui::px(14.),
+        &[gpui::TextRun {
+            len: text.len(),
+            font: gpui::font("Menlo"),
+            color: gpui::rgb(0xffe08a).into(),
+            ..Default::default()
+        }],
+        None,
+    );
+    let _ = line.paint(
+        origin,
+        gpui::px(14.),
+        gpui::TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+}
+
 pub(super) fn note_rebind(flag: &Arc<AtomicBool>) -> bool {
     flag.swap(false, Ordering::AcqRel)
 }

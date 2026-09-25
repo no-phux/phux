@@ -38,6 +38,9 @@ function DesktopApp(props: AppProps): JSX.Element {
   const [fenced, setFenced] = createSignal(false);
   const [identity, setIdentity] = createSignal<DesktopServerInfo | undefined>();
   const [palette, setPalette] = createSignal(false);
+  const [badges, setBadges] = createSignal<Record<string, string>>({});
+  const [fontSize, setFontSize] = createSignal(14);
+  const [optionAsAlt, setOptionAsAlt] = createSignal(false);
   let owner: DesktopClient | undefined;
   const [generation, setGeneration] = createSignal(0);
   let closed = false;
@@ -73,6 +76,10 @@ function DesktopApp(props: AppProps): JSX.Element {
       if (event.kind === "ServerError") setDetail(event.message);
       if (event.kind === "InputDelivery" && event.outcome === "Unknown") setFenced(true);
       if (event.kind === "Closed") removeTerminal(event.terminalId);
+      if (event.kind === "AgentBadge") {
+        setBadges((current) => ({ ...current, [event.terminalId]: event.name }));
+      }
+      if (event.kind === "TopologyChanged" || event.kind === "TerminalChanged") watchBadges();
     }
   }
 
@@ -103,6 +110,32 @@ function DesktopApp(props: AppProps): JSX.Element {
     accept(session().takeEvents());
     refresh();
     ensureTerminal();
+  }
+
+  function dragToWindow(terminalId: string): void {
+    const tab = selectedTab();
+    const placement = tab?.placements.find((item) => item.terminalId === terminalId);
+    const opener = globalThis.phuxOpenWindow;
+    if (!tab || !placement || !opener) return;
+    setTabs((current) =>
+      current
+        .map((item) =>
+          item.id === tab.id
+            ? { ...item, placements: item.placements.filter((item) => item.id !== placement.id) }
+            : item,
+        )
+        .filter((item) => item.placements.length > 0),
+    );
+    opener({
+      clientHandle: session().handle,
+      terminalId: placement.terminalId,
+      viewId: placement.viewId,
+      title: placement.terminalId,
+    });
+  }
+
+  function watchBadges(): void {
+    for (const pane of session().topology()?.panes ?? []) session().watchAgent(pane.terminalId);
   }
 
   function connect(): void {
@@ -251,8 +284,14 @@ function DesktopApp(props: AppProps): JSX.Element {
         <text>{detail() || props.socketPath}</text>
         <For each={panes()}>
           {(pane): JSX.Element => (
-            <div style={{ padding: 8, cursor: "pointer" }} onClick={() => openTerminal(pane)}>
-              <text>{pane.title ?? pane.terminalId}</text>
+            <div
+              style={{ padding: 8, cursor: "pointer" }}
+              onClick={() => openTerminal(pane)}
+              onMouseUp={(event) => {
+                if ((event.x ?? 0) > 240) dragToWindow(pane.terminalId);
+              }}
+            >
+              <text>{`${badges()[pane.terminalId] ? `${badges()[pane.terminalId]} · ` : ""}${pane.title ?? pane.terminalId}`}</text>
               <text>{pane.cwd ?? pane.sessionName}</text>
             </div>
           )}
@@ -267,6 +306,9 @@ function DesktopApp(props: AppProps): JSX.Element {
           <Command label="Terminate" run={terminate} />
           <Command label="Follow live" run={follow} />
           <Command label="Commands" run={() => setPalette((open) => !open)} />
+          <Command label="Smaller" run={() => setFontSize((size) => Math.max(10, size - 1))} />
+          <Command label="Larger" run={() => setFontSize((size) => Math.min(28, size + 1))} />
+          <Command label="Option as Alt" run={() => setOptionAsAlt((enabled) => !enabled)} />
         </div>
         <Show when={palette()}>
           <text>Close drops the view and leaves the process. Terminate kills that terminal only. Unknown delivery is never resent.</text>
@@ -294,6 +336,8 @@ function DesktopApp(props: AppProps): JSX.Element {
                     viewId={placement.viewId}
                     paintRevision={revision()}
                     focused={placement.id === tab().focusedId}
+                    optionAsAlt={optionAsAlt()}
+                    font={{ family: "Menlo", size: fontSize(), lineHeight: 1.25 }}
                     style={{ width: 640, height: 480, flexGrow: 1 }}
                   />
                 )}

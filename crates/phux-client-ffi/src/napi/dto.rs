@@ -132,6 +132,13 @@ pub enum DesktopEvent {
     TerminalChanged {
         terminal_id: String,
     },
+    AgentBadge {
+        terminal_id: String,
+        name: String,
+        agent_kind: Option<String>,
+        state: String,
+        attention: String,
+    },
     PaneSpawned {
         terminal_id: String,
     },
@@ -265,6 +272,33 @@ pub(super) fn encode_event(value: Event) -> Option<DesktopEvent> {
     encode_activity(value)
 }
 
+fn encode_agent_frame(frame: phux_protocol::wire::frame::FrameKind) -> Option<DesktopEvent> {
+    use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
+    match frame {
+        FrameKind::MetadataChanged {
+            scope: Scope::Resource(id),
+            key,
+            value,
+            ..
+        } if key == RESOURCE_AGENT_KEY => Some(agent_badge(&id, value.as_deref())),
+        FrameKind::MetadataValue { request_id, value } => {
+            super::take_agent_watch(request_id).map(|id| agent_badge(&id, value.as_deref()))
+        }
+        _ => None,
+    }
+}
+
+fn agent_badge(id: &phux_protocol::ResourceId, bytes: Option<&[u8]>) -> DesktopEvent {
+    let badge = crate::projection::agent::badge(id, bytes);
+    DesktopEvent::AgentBadge {
+        terminal_id: id::encode(&badge.terminal_id),
+        name: badge.name,
+        agent_kind: badge.kind,
+        state: format!("{:?}", badge.state).to_lowercase(),
+        attention: format!("{:?}", badge.attention).to_lowercase(),
+    }
+}
+
 fn encode_activity(value: Event) -> Option<DesktopEvent> {
     match value {
         Event::TerminalKilled {
@@ -283,6 +317,7 @@ fn encode_activity(value: Event) -> Option<DesktopEvent> {
         Event::TerminalChanged { terminal_id } => Some(DesktopEvent::TerminalChanged {
             terminal_id: id::encode(&terminal_id),
         }),
+        Event::Frame(frame) => encode_agent_frame(*frame),
         Event::InputDelivery {
             delivery_id,
             outcome: value,
@@ -294,9 +329,7 @@ fn encode_activity(value: Event) -> Option<DesktopEvent> {
             code,
             message,
         }),
-        // This initial encoder has no terminal signals, file transfer, agent
-        // metadata, or arbitrary wire-frame surface. It does not reinterpret
-        // those facts, and it never serializes terminal output or grid cells.
+        // No terminal output, grid cells, or unrelated wire frames cross JS.
         _ => None,
     }
 }

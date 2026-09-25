@@ -17,6 +17,7 @@ pub(super) struct Settings {
     pub focused: bool,
     pub cursor_visible: bool,
     pub blink_visible: bool,
+    pub option_as_alt: bool,
 }
 
 impl Default for Settings {
@@ -36,6 +37,7 @@ impl Default for Settings {
             focused: true,
             cursor_visible: true,
             blink_visible: true,
+            option_as_alt: false,
         }
     }
 }
@@ -48,6 +50,7 @@ impl Settings {
             "viewId" => self.view_id = value.as_str().and_then(parse_view),
             "font" => self.set_font(value),
             "theme" => self.set_theme(value),
+            "optionAsAlt" => self.option_as_alt = value.as_bool().unwrap_or(false),
             _ => self.set_visibility(key, value),
         }
     }
