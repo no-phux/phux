@@ -85,6 +85,7 @@ WORKFLOWS = (
     ".github/actions/*", ".github/actionlint.yaml", ".github/dependabot.yml",
     "scripts/ci/classify-changes*", "scripts/ci/check-classify-changes.sh",
     "scripts/ci/detect-changes.py",
+    "scripts/ci/release_metadata.py", "scripts/ci/test_release_metadata.py",
     "scripts/ci/validation_receipt.py", "scripts/ci/test_validation_receipt.py",
     "scripts/ci/publish_plan.py", "scripts/ci/test_publish_plan.py",
     "scripts/ci/dispatch_integration_publishes.py",
