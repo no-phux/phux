@@ -1,7 +1,7 @@
 //! Runs the JS encoder against an isolated real PTY-backed phux server.
 //! Build the NAPI library first, then pass its .node copy as argv[1].
 //! `--production-host` runs the main smoke against a production wrapper without
-//! the fixture-only NativeClientLease export; fault tests use the fixture host.
+//! the fixture-only `NativeClientLease` export; fault tests use the fixture host.
 
 #![allow(
     clippy::expect_used,

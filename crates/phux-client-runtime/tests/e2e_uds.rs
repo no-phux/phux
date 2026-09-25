@@ -29,8 +29,8 @@ const DEADLINE: Duration = Duration::from_secs(20);
 mod idle_history;
 
 #[cfg(feature = "engine")]
-#[path = "support/geometry_e2e.rs"]
-mod geometry_e2e;
+#[path = "support/geometry_live.rs"]
+mod geometry_live;
 
 fn options() -> ClientOptions {
     ClientOptions {

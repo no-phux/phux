@@ -1,6 +1,11 @@
 import { createSignal, For, onCleanup, onMount, Show, type Accessor, type JSX } from "solid-js";
 import { render, resetRender } from "@gpuix/solid";
-import type { DesktopClient, DesktopEvent, DesktopPane, DesktopServerInfo } from "../native/generated/index";
+import type {
+  DesktopClient,
+  DesktopEvent,
+  DesktopPane,
+  DesktopServerInfo,
+} from "../native/generated/index";
 import {
   focusedPlacement,
   newId,
@@ -156,7 +161,8 @@ function DesktopApp(props: AppProps): JSX.Element {
   }
 
   function ensureTerminal(): void {
-    if (session().status() !== "Attached" || tabs().some((tab) => tab.placements.length > 0)) return;
+    if (session().status() !== "Attached" || tabs().some((tab) => tab.placements.length > 0))
+      return;
     const saved = parseLayout(props.layouts.read());
     const server = session().serverInfo();
     if (saved && server && saved.serverId === server.serverId) {
@@ -251,7 +257,9 @@ function DesktopApp(props: AppProps): JSX.Element {
     const live = new Set((session().topology()?.panes ?? []).map((pane) => pane.terminalId));
     const restored = layout.tabs.flatMap((tab) => {
       const placements = tab.terminals.flatMap((terminalId) =>
-        live.has(terminalId) && session().inputReadiness(terminalId).ready ? [place(terminalId)] : [],
+        live.has(terminalId) && session().inputReadiness(terminalId).ready
+          ? [place(terminalId)]
+          : [],
       );
       const focused = placements.find((placement) => placement.terminalId === tab.focusedTerminal);
       const first = placements[0];
@@ -311,10 +319,15 @@ function DesktopApp(props: AppProps): JSX.Element {
           <Command label="Option as Alt" run={() => setOptionAsAlt((enabled) => !enabled)} />
         </div>
         <Show when={palette()}>
-          <text>Close drops the view and leaves the process. Terminate kills that terminal only. Unknown delivery is never resent.</text>
+          <text>
+            Close drops the view and leaves the process. Terminate kills that terminal only. Unknown
+            delivery is never resent.
+          </text>
         </Show>
         <Show when={fenced()}>
-          <text>Delivery unknown. Wait for a fresh presented frame before trusting another command.</text>
+          <text>
+            Delivery unknown. Wait for a fresh presented frame before trusting another command.
+          </text>
         </Show>
         <div style={{ display: "flex", gap: 8 }}>
           <input
@@ -352,23 +365,36 @@ function DesktopApp(props: AppProps): JSX.Element {
 
 function Command(props: { label: string; run: () => void }): JSX.Element {
   return (
-    <div onClick={() => props.run()} style={{ padding: 8, backgroundColor: "#28374d", cursor: "pointer" }}>
+    <div
+      onClick={() => props.run()}
+      style={{ padding: 8, backgroundColor: "#28374d", cursor: "pointer" }}
+    >
       <text>{props.label}</text>
     </div>
   );
 }
 
-export function mount(host: Host, socketPath: string, sessionName: string, layouts: LayoutStore): void {
-  render((): JSX.Element => <DesktopApp host={host} socketPath={socketPath} sessionName={sessionName} layouts={layouts} />, {
-    title: "phux",
-    width: 1280,
-    height: 800,
-    focus: false,
-    onUncaughtError: (error) => {
-      resetRender();
-      throw error;
+export function mount(
+  host: Host,
+  socketPath: string,
+  sessionName: string,
+  layouts: LayoutStore,
+): void {
+  render(
+    (): JSX.Element => (
+      <DesktopApp host={host} socketPath={socketPath} sessionName={sessionName} layouts={layouts} />
+    ),
+    {
+      title: "phux",
+      width: 1280,
+      height: 800,
+      focus: false,
+      onUncaughtError: (error) => {
+        resetRender();
+        throw error;
+      },
     },
-  });
+  );
   process.once("SIGTERM", () => {
     resetRender();
     process.exit(0);

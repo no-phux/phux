@@ -5,7 +5,7 @@
   "scripts": {
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "lint": "oxlint -c oxlint.config.ts --type-aware --deny-warnings --report-unused-disable-directives-severity error --ignore-pattern 'tests/tooling/negative/**' .",
+    "lint": "oxlint -c oxlint.config.ts --type-aware --deny-warnings --report-unused-disable-directives-severity error --ignore-pattern 'tests/tooling/negative/**' --ignore-pattern 'tests/native/**' .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:tooling": "bun test tests/tooling/tooling.test.ts tests/framework/process.test.ts",
     "test:rules": "node tools/oxlint/anti-slop/rules/no-chained-type-assertions.test.ts && node tools/oxlint/anti-slop/rules/no-module-mocking.test.ts && node tools/oxlint/anti-slop/rules/require-safety-comment-for-type-assertion.test.ts",
