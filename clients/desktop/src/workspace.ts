@@ -42,12 +42,15 @@ export function saveLayout(serverId: string, tabs: DeskTab[]): SavedLayout {
 }
 
 export function parseLayout(value: unknown): SavedLayout | undefined {
-  if (!isRecord(value) || value.version !== 1 || typeof value.serverId !== "string") return undefined;
+  if (!isRecord(value) || value.version !== 1 || typeof value.serverId !== "string")
+    return undefined;
   if (!Array.isArray(value.tabs)) return undefined;
   const tabs = value.tabs.flatMap((tab) => {
     if (!isRecord(tab) || typeof tab.id !== "string" || typeof tab.title !== "string") return [];
     if (!Array.isArray(tab.terminals) || typeof tab.focusedTerminal !== "string") return [];
-    const terminals = tab.terminals.filter((terminal): terminal is string => typeof terminal === "string");
+    const terminals = tab.terminals.filter(
+      (terminal): terminal is string => typeof terminal === "string",
+    );
     return [{ id: tab.id, title: tab.title, terminals, focusedTerminal: tab.focusedTerminal }];
   });
   return { version: 1, serverId: value.serverId, tabs };

@@ -11,7 +11,9 @@ export const desktopFrameworkPlugin: BunPlugin = {
   name: "phux-verified-framework",
   setup(build) {
     build.onResolve({ filter: /^@gpuix\/(native|solid)(\/|$)/ }, ({ path }) => ({
-      path: fileURLToPath(import.meta.resolve(path, resolve(source, "packages/solid/package.json"))),
+      path: fileURLToPath(
+        import.meta.resolve(path, resolve(source, "packages/solid/package.json")),
+      ),
     }));
     // Keep application and source-workspace imports on the same reactive owner.
     build.onResolve({ filter: /^solid-js(\/|$)/ }, ({ path }) => ({

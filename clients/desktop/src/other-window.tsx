@@ -9,9 +9,7 @@ interface MovedView {
 }
 
 export function openOtherWindow(
-  Renderer: new (
-    callback: (error: Error | null, event: EventPayload) => void,
-  ) => GpuixRenderer,
+  Renderer: new (callback: (error: Error | null, event: EventPayload) => void) => GpuixRenderer,
   placement: MovedView,
 ): void {
   let root: ReturnType<typeof createRoot> | undefined;
