@@ -3,7 +3,7 @@ name: using-phux-mcp
 description: Drives persistent terminals and terminal-hosted agents through the phux MCP server. Use when phux MCP tools are available for interactive programs, durable shell state, bounded observation, or agent supervision; use using-phux for direct CLI work.
 compatibility: Requires an MCP host configured to launch the installed phux mcp stdio server.
 metadata:
-  version: "0.44.0" # x-release-please-version
+  version: "0.45.0" # x-release-please-version
 ---
 
 # Using phux through MCP
