@@ -561,10 +561,25 @@ fn checked_lines(install: &Install, plan: &Plan) -> Vec<String> {
                 .lines()
                 .map(|line| format!("  {line}")),
         );
-    } else if plan.update_available {
-        lines.push("run `phux update` to install it".to_owned());
+    } else {
+        if plan.update_available {
+            lines.push("run `phux update` to install it".to_owned());
+        }
+        lines.push(switch_line());
     }
     lines
+}
+
+/// The check report is where a reader decides which rail to follow, so name
+/// both switches there rather than making them open `--help`.
+///
+/// A legend, not a per-rail hint on purpose: `--check --channel next` runs on
+/// a stable install and reports `channel: next`, where naming only the *other*
+/// rail would point the wrong way.
+fn switch_line() -> String {
+    "switch:   `phux channel next` follows green main; \
+     `phux channel latest` returns to numbered releases"
+        .to_owned()
 }
 
 fn installed_lines(outcome: &Outcome) -> Vec<String> {
@@ -1410,6 +1425,73 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("brew upgrade no-phux/tap/phux")),
             "the prose view must print the command too: {:?}",
+            outcome.lines()
+        );
+    }
+
+    /// The check report is where someone decides to change rails, so it names
+    /// both switches; `--help` must not be the only door to them.
+    #[test]
+    fn check_names_both_rail_switches() {
+        let fake = FakeReleases::new("v0.13.0");
+        let install = install_at(
+            Path::new("/home/u/.local/bin/phux"),
+            InstallSource::DirectRelease,
+        );
+        let handoff = || Handoff::Skipped;
+        let env = UpdateEnv {
+            releases: &fake,
+            handoff: &handoff,
+            install,
+        };
+        let outcome = execute(
+            &UpdateOpts {
+                check: true,
+                ..opts()
+            },
+            &env,
+        )
+        .unwrap();
+
+        let switch = outcome
+            .lines()
+            .into_iter()
+            .find(|line| line.starts_with("switch:"))
+            .expect("the check report must name the rail switches");
+        assert!(switch.contains("phux channel next"), "{switch}");
+        assert!(switch.contains("phux channel latest"), "{switch}");
+    }
+
+    /// A refused install is not phux's to move, so it is offered the native
+    /// command instead of a switch that would be rejected.
+    #[test]
+    fn a_refused_install_is_not_offered_a_switch() {
+        let fake = FakeReleases::new("v0.13.0");
+        let install = install_at(
+            Path::new("/opt/homebrew/Cellar/phux/0.12.1/bin/phux"),
+            InstallSource::Homebrew,
+        );
+        let handoff = || Handoff::Skipped;
+        let env = UpdateEnv {
+            releases: &fake,
+            handoff: &handoff,
+            install,
+        };
+        let outcome = execute(
+            &UpdateOpts {
+                check: true,
+                ..opts()
+            },
+            &env,
+        )
+        .unwrap();
+
+        assert!(
+            outcome
+                .lines()
+                .iter()
+                .all(|line| !line.starts_with("switch:")),
+            "a refused install must not be told to switch: {:?}",
             outcome.lines()
         );
     }
