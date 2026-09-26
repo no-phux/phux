@@ -25,6 +25,12 @@ const COLOR_QUERY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
 /// `VMIN=0`/`VTIME=1` shape charged 100 ms per read and up to three reads.
 const PROBE_BUDGET: Duration = Duration::from_millis(25);
 
+/// Extra wait, only after the budget misses, to swallow a late reply.
+///
+/// A reply that arrives after echo is restored is printed on the cooked
+/// terminal as `^[]10;rgb:...`. The success path does not pay this.
+const LATE_REPLY_BUDGET: Duration = Duration::from_millis(40);
+
 /// Cap on bytes read while looking for the two OSC replies.
 ///
 /// The tty is shared with the user, so a keystroke or a paste landing during
@@ -59,11 +65,27 @@ pub(super) fn default_colors() -> Option<TerminalDefaultColors> {
     tty.write_all(COLOR_QUERY).ok()?;
     tty.flush().ok()?;
 
-    let deadline = Instant::now() + PROBE_BUDGET;
     let mut response = Vec::with_capacity(128);
+    let colors = read_replies(&mut tty, &mut response, Instant::now() + PROBE_BUDGET);
+    let colors = if colors.is_some() {
+        colors
+    } else {
+        read_replies(&mut tty, &mut response, Instant::now() + LATE_REPLY_BUDGET)
+    };
+    discard_pending(&tty);
+    colors
+}
+
+/// Read until both OSC replies are parsed, the deadline passes, or the
+/// exchange cannot continue.
+fn read_replies(
+    tty: &mut File,
+    response: &mut Vec<u8>,
+    deadline: Instant,
+) -> Option<TerminalDefaultColors> {
     let mut chunk = [0_u8; 128];
     loop {
-        if !wait_readable(&tty, deadline)? {
+        if !wait_readable(tty, deadline)? {
             return None;
         }
         let n = tty.read(&mut chunk).ok()?;
@@ -71,7 +93,7 @@ pub(super) fn default_colors() -> Option<TerminalDefaultColors> {
             return None;
         }
         response.extend_from_slice(&chunk[..n]);
-        let (foreground, background) = parse_responses(&response);
+        let (foreground, background) = parse_responses(response);
         if let (Some(foreground), Some(background)) = (foreground, background) {
             return Some(TerminalDefaultColors {
                 foreground,
@@ -82,6 +104,28 @@ pub(super) fn default_colors() -> Option<TerminalDefaultColors> {
             return None;
         }
     }
+}
+
+/// Drop bytes already queued on `fd` without echoing them.
+///
+/// Restores the previous file-status flags. A leftover `NONBLOCK` would
+/// make the shell's next read fail with `EAGAIN`.
+pub(super) fn discard_pending(fd: impl AsFd) {
+    let fd = fd.as_fd();
+    let Ok(flags) = rustix::fs::fcntl_getfl(fd) else {
+        return;
+    };
+    if rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK).is_err() {
+        return;
+    }
+    let mut buf = [0_u8; 256];
+    loop {
+        match rustix::io::read(fd, &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    let _ = rustix::fs::fcntl_setfl(fd, flags);
 }
 
 /// Block until `tty` has input or `deadline` passes.
@@ -135,6 +179,9 @@ struct TermiosRestore {
 
 impl Drop for TermiosRestore {
     fn drop(&mut self) {
+        // Swallow a reply that landed after the read loop gave up. Restoring
+        // echo first prints it as `^[]10;rgb:...` on the cooked terminal.
+        discard_pending(&self.tty);
         let _ = rustix::termios::tcsetattr(self.tty.as_fd(), OptionalActions::Now, &self.original);
     }
 }
@@ -326,6 +373,19 @@ mod tests {
         drop(writer);
         let waited = wait_readable(&reader, Instant::now() + Duration::from_secs(5));
         assert_eq!(waited, Some(true));
+    }
+
+    /// Queued OSC replies must not survive for the shell to echo.
+    #[test]
+    fn discard_pending_swallows_queued_bytes() {
+        let (mut reader, mut writer) = std::io::pipe().expect("pipe");
+        writer
+            .write_all(b"\x1b]10;rgb:c5c5/d0d0/cdcd\x1b\\")
+            .expect("write reply");
+        drop(writer);
+        discard_pending(&reader);
+        let mut buf = [0_u8; 8];
+        assert_eq!(reader.read(&mut buf).expect("read after discard"), 0);
     }
 
     /// An expired deadline never enters `poll`.

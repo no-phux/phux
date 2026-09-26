@@ -656,6 +656,10 @@ async fn attach_with_reconnect(
                 match wait_with_countdown(dial, policy).await {
                     ReconnectOutcome::Connectable(connection) => {
                         eprintln!("phux: server is back; re-attaching…");
+                        // Those two lines live on the primary screen. The alt
+                        // screen hides them until quit, which is when they
+                        // reappear under the prompt.
+                        erase_reconnect_banner();
                         initial_notice = Some(Notice::info(RECONNECT_NOTICE_TEXT));
                         reconnect_connection = connection;
                     }
@@ -739,6 +743,30 @@ enum ProbeAttempt {
     Refused(AttachError),
 }
 
+/// Clear the "lost the server connection" / "server is back" pair before
+/// the next attach enters the alt screen.
+fn erase_reconnect_banner() {
+    eprint!("\x1b[2A\x1b[J");
+}
+
+/// Ctrl-C during the cooked countdown. The line already says this is how
+/// to give up; dying inside the next color probe is what leaves
+/// `^[]10;rgb:...` and a `%` on the prompt.
+#[allow(
+    clippy::exit,
+    reason = "SIGINT during the cooked reconnect window must exit now, matching the TUI signal path"
+)]
+fn give_up_reconnect() -> ! {
+    eprint!("\r\x1b[K\x1b[A\x1b[K");
+    std::process::exit(130);
+}
+
+async fn interrupt_reconnect() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
 /// One line of `\r`-overwritten countdown, pure so tests can pin the
 /// format. `remaining` is rounded UP to whole seconds so the countdown
 /// starts at the full deadline and never shows `0s` while still waiting.
@@ -806,6 +834,7 @@ async fn wait_with_countdown(dial: &Dial, policy: ReconnectPolicy) -> ReconnectO
                 let remaining = end.saturating_duration_since(Instant::now());
                 eprint!("\r\x1b[K{}", reconnect_progress_line(remaining));
             }
+            () = interrupt_reconnect() => give_up_reconnect(),
         }
     }
 }

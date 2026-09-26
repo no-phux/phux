@@ -140,6 +140,7 @@ impl Drop for RawModeGuard {
         // `install_with_stdout` errors out before reaching the save.
         let _ = take_termios_snapshot();
         let stdin = io::stdin();
+        crate::attach::terminal_probe::discard_pending(stdin.as_fd());
         let _ =
             rustix::termios::tcsetattr(stdin.as_fd(), OptionalActions::Now, &self.original_termios);
         let mut out = io::stdout().lock();
@@ -389,6 +390,9 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
 fn restore_terminal_termios() {
     let stdin = io::stdin();
     let fd = stdin.as_fd();
+    // A color-probe reply still sitting in the input queue is what the shell
+    // prints as `^[]10;rgb:...` once echo comes back.
+    crate::attach::terminal_probe::discard_pending(fd);
     if let Some(saved) = take_termios_snapshot() {
         // True restore: the snapshot is exactly what `tcgetattr`
         // returned before we flipped into raw mode.
