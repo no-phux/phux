@@ -36,12 +36,12 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.18.30"
+    "@opencode-ai/plugin": "1.18.32"
   },
   "devDependencies": {
-    "@types/node": "26.5.0",
+    "@types/node": "26.6.3",
     "tsup": "8.5.1",
-    "typescript": "6.0.3"
+    "typescript": "^6.0.3"
   },
   "engines": {
     "node": ">=22"

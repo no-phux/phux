@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
-FROM --platform=linux/amd64 rust:1.98.1-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa AS phux-build
+FROM --platform=linux/amd64 rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS phux-build
 
 # PHUX_VERSION must match workspace.package.version. The image RUN below
 # asserts `phux --version`, and `just toolchain-check` rejects a stale pin.
@@ -55,7 +55,7 @@ RUN RUSTFLAGS="-C target-cpu=x86-64" cargo \
       --config 'patch."https://github.com/phall1/libghostty-rs.git".libghostty-vt.path="/libghostty/crates/libghostty-vt"' \
       build --locked --release --bin phux
 
-FROM --platform=linux/amd64 oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6 AS phui-build
+FROM --platform=linux/amd64 oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS phui-build
 
 ARG PHUI_REVISION=81ddf0a00b73e522394181278ec78cce133b57d0
 ARG PHUI_SOURCE_SHA256=09600d6fa6a8069df3564cd94a4a5d6b75471df2017721f7cd221c83e8fe4682
@@ -73,7 +73,7 @@ RUN bun install --frozen-lockfile \
     && bun build --compile --bytecode --format=esm --target=bun-linux-x64-baseline \
       --outfile=/tmp/phui src/standalone.ts
 
-FROM --platform=linux/amd64 debian:bookworm-slim@sha256:1def178129dfb5f24db43afbf2fcac04530012e3264ba4ff81c71184e17a9ee4
+FROM --platform=linux/amd64 debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \

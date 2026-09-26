@@ -73,6 +73,11 @@
             x86_64-linux = "sha256-LQP7X7g6yLVnrKCigbLOGhoZ1Ij1bClo2Iw/Jekv5FI=";
             aarch64-linux = "sha256-SxozLuhhmD65O8/m93D/+U4+MbLDiL2uo8jtNeWO7Q4=";
           };
+          "1.4.2" = {
+            aarch64-darwin = "sha256-kJh6OhbX21VtiGrD1VHnttPt8KHPQ6yu1iLoZ2vh0S8=";
+            x86_64-linux = "sha256-NjaPrvdSeHXV/6UuU81IAhdB8qg+tiCKjdZAaNQiqRM=";
+            aarch64-linux = "sha256-VDKLvC2cjgyfiSxUTWbFeoO4QTnjSQnl7oF1jxrI/ac=";
+          };
         };
         bunPinned =
           if pkgs.bun.version == bunVersion then
@@ -114,6 +119,12 @@
             x86_64-darwin = "sha256-nlMVFJ1aCNfRuGO06UcpqjYkA1PyhHUp0GrCH6x8bAE=";
             x86_64-linux = "sha256-hpPIrev6w2IR6acGbTlMoLCKEK5XlECOh5G/MsEu7OA=";
             aarch64-linux = "sha256-beGIs56Fy9tIcoGBLCuzsVjYUrxLEiYPGbWpJri3vfc=";
+          };
+          "6.11.1" = {
+            aarch64-darwin = "sha256-46ILlI8mZYYty63fxQ1irHQWVOPN2BUTCm+uALPQiP8=";
+            x86_64-darwin = "sha256-46ILlI8mZYYty63fxQ1irHQWVOPN2BUTCm+uALPQiP8=";
+            x86_64-linux = "sha256-ezfR02sxCFeQjlCIAttsa2cFVc8lzQuZDwnuQMsRJHs=";
+            aarch64-linux = "sha256-uJA+2wrMt2V2qaRUkAOI1inf+aNRhuZTxOW0jmIuYsA=";
           };
         };
         usagePinned =

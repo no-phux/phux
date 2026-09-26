@@ -70,7 +70,7 @@ portable-pty-adopt = { path = "crates/portable-pty-adopt" }
 # 0.22.1 already resolved rather than adding a third version, and replaces
 # a hand-rolled encoder/decoder in `phux-core`/`phux-server`/`phux` with
 # the one already paid for (D9, `GET_SCREEN --format vt`'s base64 payload).
-base64 = "0.22"
+base64 = "0.23"
 thiserror = "2"
 tracing = "0.1"
 tracing-core = "0.1"
@@ -90,7 +90,7 @@ tracing-appender = "0.2"
 # the binary. Completions replace clap_complete; validation covers portable
 # `validate=` rules that used to be clap `value_parser` closures; `test`
 # is the in-crate parse/help assertion helpers.
-usage = { package = "usage-rs", version = "6.9", features = ["completions", "validation", "test"] }
+usage = { package = "usage-rs", version = "6.11", features = ["completions", "validation", "test"] }
 bytes = "1"
 slotmap = "1"
 smallvec = "1.16"

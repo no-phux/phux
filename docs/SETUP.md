@@ -99,7 +99,7 @@ is a mirror for shell setup, not the source of truth for everything in it.
 `.config/zig-toolchain.json` remains the verified Zig release-and-digest input.
 Bun and the usage CLI are the exceptions in the other direction: `flake.nix`
 reads those pins from `mise.toml` directly and fetches the GitHub release
-until nixpkgs matches. The usage CLI is the same 6.9.x train as the
+until nixpkgs matches. The usage CLI is the same 6.11.x train as the
 `usage-rs` crate the phux binary parses with.
 
 These are dependency boundaries, not arbitrary directories: `phux-protocol`'s
@@ -194,7 +194,7 @@ shell already has them.
 
 ```sh
 cargo install --locked wasm-pack --version 0.15.0
-cargo install --locked wasm-bindgen-cli --version 0.2.128
+cargo install --locked wasm-bindgen-cli --version 0.2.129
 # macOS; Linux equivalent: sudo apt-get install -y binaryen
 brew install binaryen
 ```

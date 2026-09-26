@@ -21,7 +21,7 @@ phux-vt-web = { path = "../phux-vt-web" }
 phux-protocol = { path = "../../crates/phux-protocol" }
 phux-client-core = { path = "../../crates/phux-client-core" }
 bytes = "1"
-wasm-bindgen = "=0.2.128"
+wasm-bindgen = "=0.2.129"
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
 futures-channel = "0.3"

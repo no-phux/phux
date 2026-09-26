@@ -111,12 +111,10 @@ tracing-subscriber = { workspace = true, optional = true }
 # stack (uniffi_bindgen/uniffi_meta/uniffi_macros plus askama, weedle2,
 # camino, clap and cargo_metadata) is compiled only for the mobile artifact
 # jobs. In the library it adds a small lowering/lifting runtime over `bytes`
-# and `once_cell`, both already locked here. 0.28 is the exact version the
-# mobile artifact has always shipped, kept so merging the two shims changes
-# ownership and not generated output. The `cli` feature is what lets the
+# and `once_cell`, both already locked here. The `cli` feature is what lets the
 # in-crate `uniffi-bindgen` bin drive generation from the built library, which
 # is how the artifact's Swift is guaranteed to come from this revision.
-uniffi = { version = "0.28", features = ["cli"], optional = true }
+uniffi = { version = "0.32", features = ["cli"], optional = true }
 # Error-derive for the UniFFI-facing error enums.
 thiserror = { workspace = true, optional = true }
 # Grapheme segmentation for the mobile text-commit path into the shared
