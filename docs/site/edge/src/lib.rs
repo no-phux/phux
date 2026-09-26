@@ -16,9 +16,9 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
 };
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
-use phux_protocol::wire::frame::{FrameKind, TYPE_FRAME_COMPRESSED};
 #[cfg(test)]
 use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
+use phux_protocol::wire::frame::{FrameKind, TYPE_FRAME_COMPRESSED};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -274,6 +274,7 @@ fn smoke_attach() -> FrameKind {
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: true,
         scrollback_limit_lines: 5_000,
+        role_policy: None,
     }
 }
 

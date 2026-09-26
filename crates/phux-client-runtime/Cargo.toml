@@ -65,7 +65,7 @@ thiserror.workspace = true
 uuid.workspace = true
 # Runtime-owned file upload hashes complete payloads before chunking so every
 # binding shares the same reconnect-safe transfer state machine.
-sha2 = "0.10"
+sha2 = "0.11"
 # TRANSCRIBE returns the protocol's open-shaped JSON command value.
 serde_json.workspace = true
 # Predictive text commits are segmented by grapheme before entering the

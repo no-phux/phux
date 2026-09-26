@@ -23,7 +23,7 @@ every change. GPU/window checks remain a separate macOS qualification step.
 
 ## TypeScript tooling
 
-From `clients/desktop`, with repository-pinned Bun 1.4.0 and Node 24 on `PATH`:
+From `clients/desktop`, with repository-pinned Bun 1.4.2 and Node 24 on `PATH`:
 
 ```sh
 export BUN_INSTALL_CACHE_DIR="$PWD/.cache/bun"
@@ -49,7 +49,7 @@ or `bunx` download is involved.
 | Reactive correctness        | `eslint-plugin-solid@0.18.0`                  |
 | Solid runtime               | `solid-js@1.9.15`                             |
 | Native renderer / JSX types | `@gpuix/solid@0.10.0`, `@gpuix/native@0.10.0` |
-| Bun types                   | `@types/bun@1.4.0`                            |
+| Bun types                   | `@types/bun@1.4.2`                            |
 
 All versions were verified against the registry on 2026-09-23. GPUIX Solid and
 native 0.10.0 were published that day, after earlier research found Solid
@@ -78,7 +78,7 @@ ranges do not yet include TS7; Bun reports that peer mismatch. The exercised
 Oxlint JS-plugin path and Node RuleTester suites pass with these exact versions;
 there is no separate ESLint parser or JS `tsc` gate. RuleTester runs under Node
 24 because its native raw-transfer parser rejects Bun; the integration suite
-and JSX build run under Bun 1.4.0.
+and JSX build run under Bun 1.4.2.
 
 ### Boundaries enforced by the gate
 
