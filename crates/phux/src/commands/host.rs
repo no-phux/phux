@@ -54,6 +54,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use toml_edit::{Item, value};
 use usage::{Args, Subcommands, ValueEnum};
 
 use super::JsonOpt;
@@ -236,6 +237,51 @@ pub(crate) enum HostAction {
         #[usage(flatten)]
         json: JsonOpt,
     },
+
+    /// Show a registered machine, including its route and credential references.
+    Show {
+        /// Registered name.
+        name: String,
+        /// Disambiguate a name present in both registries.
+        #[usage(long, value_enum)]
+        role: Option<HostRole>,
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
+    /// Rename a registered machine without changing its route or credentials.
+    Rename {
+        /// Current registered name.
+        name: String,
+        /// New local label (does not rename the machine over the network).
+        new_name: String,
+        #[usage(long, value_enum)]
+        role: Option<HostRole>,
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
+    /// Attach to a registered remote host (same as `phux attach NAME`).
+    Attach {
+        /// Registered remote name.
+        name: String,
+    },
+
+    /// Enable a satellite for the local hub on its next start.
+    Enable {
+        /// Registered satellite name.
+        name: String,
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
+    /// Disable a satellite on the hub's next start without forgetting it.
+    Disable {
+        /// Registered satellite name.
+        name: String,
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
 }
 
 /// The old spelling's deprecation row, whose `note` is the one line the
@@ -268,6 +314,16 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
         }
         HostAction::List { role, json } => run_list(*role, json.json),
         HostAction::Remove { name, role, json } => run_remove(name, *role, json.json),
+        HostAction::Show { name, role, json } => run_show(name, *role, json.json),
+        HostAction::Rename {
+            name,
+            new_name,
+            role,
+            json,
+        } => run_rename(name, new_name, *role, json.json),
+        HostAction::Attach { name } => run_attach(name),
+        HostAction::Enable { name, json } => run_enabled(name, true, json.json),
+        HostAction::Disable { name, json } => run_enabled(name, false, json.json),
     }
 }
 
@@ -1170,6 +1226,16 @@ fn resolve_rm_role(
     in_remote: bool,
     in_satellite: bool,
 ) -> Result<HostRole, (CliError, u8)> {
+    resolve_host_role(name, requested, in_remote, in_satellite, "rm")
+}
+
+fn resolve_host_role(
+    name: &str,
+    requested: Option<HostRole>,
+    in_remote: bool,
+    in_satellite: bool,
+    verb: &str,
+) -> Result<HostRole, (CliError, u8)> {
     let found = |role| match role {
         HostRole::Remote => in_remote,
         HostRole::Satellite => in_satellite,
@@ -1178,14 +1244,18 @@ fn resolve_rm_role(
         Some(role) if found(role) => Ok(role),
         Some(role) if found(role.other()) => {
             let other = role.other().as_str();
+            let remedy = if matches!(verb, "enable" | "disable") {
+                "only satellites have an enabled state; remotes are always attachable".to_owned()
+            } else {
+                format!(
+                    "it is registered as a {other}; run `phux host {verb} --role {other} {name}`"
+                )
+            };
             Err((
                 CliError::new(
                     codes::REGISTRY,
                     format!("{name:?} is not registered as a {}", role.as_str()),
-                    format!(
-                        "it is registered as a {other}; run \
-                         `phux host rm --role {other} {name}`"
-                    ),
+                    remedy,
                 ),
                 1,
             ))
@@ -1196,8 +1266,8 @@ fn resolve_rm_role(
                 format!("{name:?} is registered as both a remote and a satellite"),
                 format!(
                     "name the registry to remove from: \
-                     `phux host rm --role remote {name}` or \
-                     `phux host rm --role satellite {name}`"
+                      `phux host {verb} --role remote {name}` or \
+                      `phux host {verb} --role satellite {name}`"
                 ),
             ),
             2,
@@ -1213,6 +1283,225 @@ fn resolve_rm_role(
             1,
         )),
     }
+}
+
+fn find_host(name: &str, role: Option<HostRole>, verb: &str) -> Result<HostRow, (CliError, u8)> {
+    let remotes = remote::load_registry().map_err(|err| (registry_failure(err), 1))?;
+    let satellites =
+        satellite_registry::load_registry().map_err(|err| (registry_failure(err), 1))?;
+    let remote = remotes.into_iter().find(|entry| entry.name == name);
+    let satellite = satellites.into_iter().find(|entry| entry.name == name);
+    let resolved = resolve_host_role(name, role, remote.is_some(), satellite.is_some(), verb)?;
+    match resolved {
+        HostRole::Remote => remote.map(HostRow::from_remote),
+        HostRole::Satellite => satellite.map(HostRow::from_satellite),
+    }
+    .ok_or_else(|| {
+        (
+            registry_failure("host disappeared during lookup".to_owned()),
+            1,
+        )
+    })
+}
+
+fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
+    let row = match find_host(name, role, "show") {
+        Ok(row) => row,
+        Err((err, code)) => return json_err::emit(json, &err, code),
+    };
+    if json {
+        return print_doc(&serde_json::json!({"schema_version": 1, "host": row_json(&row)}));
+    }
+    outln!("{} ({})", row.name, row.role.as_str());
+    outln!("  Endpoint: {}", row.endpoint);
+    if let Some(enabled) = row.enabled {
+        outln!("  State: {}", if enabled { "enabled" } else { "disabled" });
+    }
+    outln!(
+        "  Auth: {}",
+        auth_display(
+            &row.endpoint,
+            row.token_file.is_some(),
+            row.cert_fingerprint.is_some()
+        )
+    );
+    if let Some(path) = row.token_file {
+        outln!("  Token file: {}", path.display());
+    }
+    if let Some(fingerprint) = row.cert_fingerprint {
+        outln!("  Certificate fingerprint: {fingerprint}");
+    }
+    if let Some(session) = row.session {
+        outln!("  Session: {session}");
+    }
+    if let Some(ssh) = row.ssh {
+        outln!("  SSH: {ssh}");
+    }
+    if let Some(direct) = row.direct {
+        outln!("  Direct fallback: {direct}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_attach(name: &str) -> ExitCode {
+    let entries = match remote::load_registry() {
+        Ok(entries) => entries,
+        Err(err) => return json_err::emit(false, &registry_failure(err), 1),
+    };
+    if let Some(entry) = entries.into_iter().find(|entry| entry.name == name) {
+        return super::remote_target::run_registered(name, entry, None);
+    }
+    let satellites = match satellite_registry::load_registry() {
+        Ok(entries) => entries,
+        Err(err) => return json_err::emit(false, &registry_failure(err), 1),
+    };
+    let remedy = if satellites.iter().any(|entry| entry.name == name) {
+        "satellites are hub-dialed, not directly attachable; register a remote with `phux host add`"
+    } else {
+        "`phux host ls --role remote` lists attachable hosts"
+    };
+    json_err::emit(
+        false,
+        &CliError::new(
+            codes::REGISTRY,
+            format!("no remote host named {name:?}"),
+            remedy,
+        ),
+        1,
+    )
+}
+
+/// Change only the named field on the exact root entry, under the shared
+/// registry lock. Inherited entries cannot be modified through this file.
+fn edit_host_field(
+    row: &HostRow,
+    field: &str,
+    replacement: toml_edit::Value,
+) -> Result<(), String> {
+    let path = phux_config::loader::config_path();
+    edit_host_field_at(&path, row, field, replacement)
+}
+
+fn edit_host_field_at(
+    path: &Path,
+    row: &HostRow,
+    field: &str,
+    replacement: toml_edit::Value,
+) -> Result<(), String> {
+    let mut doc = super::toml_registry::edit_document(path)?;
+    let key = match row.role {
+        HostRole::Remote => "remote",
+        HostRole::Satellite => "satellites",
+    };
+    let tables = super::toml_registry::tables_mut(&mut doc, key)?;
+    let matches: Vec<_> = tables
+        .iter()
+        .enumerate()
+        .filter_map(|(index, table)| {
+            (table.get("name").and_then(Item::as_str) == Some(row.name.as_str())
+                && table.get("endpoint").and_then(Item::as_str) == Some(row.endpoint.as_str()))
+            .then_some(index)
+        })
+        .collect();
+    let [index] = matches.as_slice() else {
+        return Err("host is ambiguous or inherited; edit its source configuration".to_owned());
+    };
+    if field == "name"
+        && tables
+            .iter()
+            .any(|table| table.get("name").and_then(Item::as_str) == replacement.as_str())
+    {
+        return Err("new host name is already registered in this role".to_owned());
+    }
+    let table = tables
+        .get_mut(*index)
+        .ok_or_else(|| "host disappeared during edit".to_owned())?;
+    table.insert(field, Item::Value(replacement));
+    // A direct remote without an explicit SSH address formerly fell back to
+    // its label for repair. Preserve that destination when changing the label.
+    if field == "name"
+        && row.role == HostRole::Remote
+        && row.ssh.is_none()
+        && !row.endpoint.starts_with("ssh://")
+    {
+        table.insert("ssh", value(&row.name));
+    }
+    doc.commit()
+}
+
+fn run_rename(name: &str, new_name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
+    let row = match find_host(name, role, "rename") {
+        Ok(row) => row,
+        Err((err, code)) => return json_err::emit(json, &err, code),
+    };
+    let validated = match row.role {
+        HostRole::Remote => remote::validate_name(new_name),
+        HostRole::Satellite => satellite_registry::registry_name(new_name),
+    };
+    let new_name = match validated {
+        Ok(name) => name,
+        Err(err) => return json_err::emit(json, &reject_entry(err), 2),
+    };
+    if new_name == row.name {
+        return json_err::emit(
+            json,
+            &reject_entry("new name is the same as the current name".to_owned()),
+            2,
+        );
+    }
+    let exists = match row.role {
+        HostRole::Remote => remote::load_registry()
+            .map(|entries| entries.iter().any(|entry| entry.name == new_name)),
+        HostRole::Satellite => satellite_registry::load_registry()
+            .map(|entries| entries.iter().any(|entry| entry.name == new_name)),
+    };
+    match exists {
+        Ok(true) => {
+            return json_err::emit(
+                json,
+                &reject_entry(format!("{new_name:?} is already registered in this role")),
+                2,
+            );
+        }
+        Err(err) => return json_err::emit(json, &registry_failure(err), 1),
+        Ok(false) => {}
+    }
+    if let Err(err) = edit_host_field(&row, "name", new_name.clone().into()) {
+        return json_err::emit(json, &registry_failure(err), 1);
+    }
+    if json {
+        return print_doc(
+            &serde_json::json!({"schema_version": 1, "renamed": {"from": name, "to": new_name, "role": row.role.as_str()}, "requires_restart": row.role == HostRole::Satellite}),
+        );
+    }
+    outln!("Renamed {} {name:?} to {new_name:?}.", row.role.as_str());
+    if row.role == HostRole::Satellite {
+        outln!("Restart the hub for this to take effect.");
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_enabled(name: &str, enabled: bool, json: bool) -> ExitCode {
+    let mut row = match find_host(
+        name,
+        Some(HostRole::Satellite),
+        if enabled { "enable" } else { "disable" },
+    ) {
+        Ok(row) => row,
+        Err((err, code)) => return json_err::emit(json, &err, code),
+    };
+    if let Err(err) = edit_host_field(&row, "enabled", enabled.into()) {
+        return json_err::emit(json, &registry_failure(err), 1);
+    }
+    row.enabled = Some(enabled);
+    let state = if enabled { "enabled" } else { "disabled" };
+    if json {
+        return print_doc(
+            &serde_json::json!({"schema_version": 1, "host": row_json(&row), "requires_restart": true}),
+        );
+    }
+    outln!("Satellite {name:?} {state} in config. Restart the hub for this to take effect.");
+    ExitCode::SUCCESS
 }
 
 /// `phux host rm`.
@@ -1279,9 +1568,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AddMode, AddOpts, HostRole, HostRow, add_failure_error, auth_display, empty_state,
-        endpoint_host, finish_enroll_in, keeps_credentials, render_table, resolve_rm_role,
-        role_flag_mismatch, sort_rows,
+        AddMode, AddOpts, HostRole, HostRow, add_failure_error, auth_display, edit_host_field_at,
+        empty_state, endpoint_host, finish_enroll_in, keeps_credentials, render_table,
+        resolve_host_role, resolve_rm_role, role_flag_mismatch, sort_rows,
     };
     use crate::commands::JsonOpt;
     use crate::commands::enroll::EnrollFailure;
@@ -1299,6 +1588,51 @@ mod tests {
             ssh: None,
             direct: None,
         }
+    }
+
+    #[test]
+    fn host_edits_preserve_other_fields_and_refuse_inherited_or_colliding_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let original = "# keep this\n[[remote]]\nname = 'mini'\nendpoint = 'quic://example:8788'\ntoken-file = '/some/token'\n[[remote]]\nname = 'other'\nendpoint = 'ssh://other'\n[[satellites]]\nname = 'edge'\nendpoint = 'ssh://example'\nenabled = true\n";
+        std::fs::write(&path, original).expect("seed");
+        let mut mini = row("mini", HostRole::Remote);
+        mini.endpoint = "quic://example:8788".to_owned();
+        assert!(edit_host_field_at(&path, &mini, "name", "other".into()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).expect("unchanged"), original);
+        edit_host_field_at(&path, &mini, "name", "desk".into()).expect("rename");
+        edit_host_field_at(
+            &path,
+            &row("edge", HostRole::Satellite),
+            "enabled",
+            false.into(),
+        )
+        .expect("disable");
+        let changed = std::fs::read_to_string(&path).expect("read");
+        assert!(changed.starts_with("# keep this"));
+        assert!(changed.contains("token-file = '/some/token'"));
+        assert!(
+            changed.contains("ssh = \"mini\""),
+            "old repair destination survives rename: {changed}"
+        );
+        assert!(changed.contains("enabled = false"));
+        assert!(
+            edit_host_field_at(
+                &path,
+                &row("missing", HostRole::Remote),
+                "name",
+                "new".into()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn non_destructive_host_lookup_still_refuses_ambiguous_names() {
+        let (err, code) =
+            resolve_host_role("mini", None, true, true, "rename").expect_err("ambiguous");
+        assert_eq!(code, 2);
+        assert!(err.remedy.contains("host rename --role remote mini"));
     }
 
     fn opts() -> AddOpts {

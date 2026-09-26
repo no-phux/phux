@@ -130,9 +130,14 @@ phux gen-reference-docs
 phux give
 phux host
 phux host add
+phux host attach
+phux host disable
+phux host enable
 phux host enroll
 phux host ls
+phux host rename
 phux host rm
+phux host show
 phux insert-pane
 phux kill
 phux launch

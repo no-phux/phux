@@ -106,7 +106,7 @@ fn entry_from_config(index: usize, satellite: SatelliteConfigEntry) -> Satellite
     }
 }
 
-fn registry_name(name: &str) -> Result<String, String> {
+pub(crate) fn registry_name(name: &str) -> Result<String, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains(':') {
         Err("satellite name must be non-empty and must not contain '/' or ':'".to_owned())
