@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-18
+last-reviewed: 2026-09-26
 ---
 
 # Remote access
@@ -62,6 +62,28 @@ Each step prints one line as it happens; each failure names the next command.
 
 Running it again on a registered host is safe: if the saved route answers it
 says so and changes nothing; if not, it sets the host up again.
+
+### Managing many hosts
+
+```sh
+phux host ls                         # remotes and satellites together
+phux host show mini                  # inspect its route and auth references
+phux host attach mini                # same repair-aware path as phux attach mini
+phux host rename mini desk           # rename the local label, keep credentials
+phux host disable edge               # pause a satellite without forgetting it
+phux host enable edge                # resume it
+phux host rm desk                    # forget the entry; token file stays put
+```
+
+`ls`, `show`, `rename`, `enable`, `disable`, and `rm` accept `--json` for
+scripts (except `attach`, which is interactive). `show`, `rename`, and `rm`
+accept `--role remote|satellite` when the same name exists in both registries;
+without it they refuse to guess. Enable/disable apply only to satellites.
+Renaming changes the local registry label, not the machine's hostname, service,
+session names, or the path to its token file. The original SSH destination is
+kept so attach repair still reaches the same machine.
+The hub reads satellite entries at startup: after enabling, disabling, or
+renaming a satellite, restart the hub for the change to affect live routes.
 
 `--role satellite` uses the same steps to register a peer this hub dials for
 its users instead of a server you attach to. `--ssh-only` registers an

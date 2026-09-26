@@ -1316,11 +1316,18 @@ directions; this verb absorbs the split into a flag.
 Usage: phux host <SUBCOMMAND>
 
 Commands:
-  add   Add a machine so `phux attach NAME` reaches it.
-  ls    List registered machines from both registries. [aliases: list]
-  rm    Remove a registered machine. Its token file is left in place. [aliases:
-        remove]
-  help  Print this message or the help of the given subcommand(s)
+  add      Add a machine so `phux attach NAME` reaches it.
+  attach   Attach to a registered remote host (same as `phux attach NAME`).
+  disable  Disable a satellite on the hub's next start without forgetting it.
+  enable   Enable a satellite for the local hub on its next start.
+  ls       List registered machines from both registries. [aliases: list]
+  rename   Rename a registered machine without changing its route or
+           credentials.
+  rm       Remove a registered machine. Its token file is left in place.
+           [aliases: remove]
+  show     Show a registered machine, including its route and credential
+           references.
+  help     Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -1397,6 +1404,63 @@ Global flags:
       --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux host attach`
+
+```text
+Attach to a registered remote host (same as `phux attach NAME`).
+
+Usage: phux host attach <NAME>
+
+Arguments:
+  <NAME>  Registered remote name.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host disable`
+
+```text
+Disable a satellite on the hub's next start without forgetting it.
+
+Usage: phux host disable [--json] <NAME>
+
+Arguments:
+  <NAME>  Registered satellite name.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host enable`
+
+```text
+Enable a satellite for the local hub on its next start.
+
+Usage: phux host enable [--json] <NAME>
+
+Arguments:
+  <NAME>  Registered satellite name.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux host ls`
 
 ```text
@@ -1409,6 +1473,29 @@ Usage: phux host ls [--role <ROLE>] [--json]
 
 Flags:
       --role <ROLE>    Show only this registry.
+                       [possible values: remote, satellite]
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host rename`
+
+```text
+Rename a registered machine without changing its route or credentials.
+
+Usage: phux host rename [--role <ROLE>] [--json] <NAME> <NEW_NAME>
+
+Arguments:
+  <NAME>      Current registered name.
+  <NEW_NAME>  New local label (does not rename the machine over the network).
+
+Flags:
+      --role <ROLE>
                        [possible values: remote, satellite]
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
@@ -1435,6 +1522,28 @@ Arguments:
 Flags:
       --role <ROLE>    Which registry to remove from. Omitted: both are
                        searched.
+                       [possible values: remote, satellite]
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host show`
+
+```text
+Show a registered machine, including its route and credential references.
+
+Usage: phux host show [--role <ROLE>] [--json] <NAME>
+
+Arguments:
+  <NAME>  Registered name.
+
+Flags:
+      --role <ROLE>    Disambiguate a name present in both registries.
                        [possible values: remote, satellite]
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr

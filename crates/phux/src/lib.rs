@@ -541,14 +541,17 @@ pub(crate) const BANNER: &str = concat!("phux ", env!("PHUX_VERSION_LABEL"));
 /// Whether this invocation will enter the interactive TUI (raw mode +
 /// alt screen) and therefore MUST keep logs off stderr.
 ///
-/// The alt-screen-entering paths are: `phux attach`, naked `phux` (attach
-/// fallback), `phux new` *without* `--json`, and worktree new/open with
-/// `--attach`. Headless creation stays on the stderr path like every other
-/// one-shot verb.
+/// The alt-screen-entering paths are: `phux attach` and `phux host attach`,
+/// naked `phux` (attach fallback), `phux new` *without* `--json`, and worktree
+/// new/open with `--attach`. Headless creation stays on the stderr path like
+/// every other one-shot verb.
 const fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
         Some(
             Command::Attach { .. }
+            | Command::Host {
+                action: commands::host::HostAction::Attach { .. },
+            }
             | Command::Worktree {
                 action:
                     commands::WorktreeAction::New { attach: true, .. }
@@ -2567,15 +2570,63 @@ mod tests {
             }
         ));
 
-        // `host` is socketless: a provided --socket must be refused.
+        // `host` does not use a local server socket, including remote attach.
         let cli = crate::parse_cli(["phux", "host", "ls", "--socket", "/tmp/x.sock"])
             .expect("the global --socket always parses");
         let command = cli.command.as_ref().expect("a verb was given");
         assert_eq!(
             crate::commands::socketless_verb(command),
             Some("host"),
-            "host never dials a server"
+            "host never uses a local server socket"
         );
+    }
+
+    #[test]
+    fn host_everyday_actions_parse_and_only_attach_is_interactive() {
+        use crate::commands::host::{HostAction, HostRole};
+        type HostCase<'a> = (&'a [&'a str], fn(&HostAction) -> bool);
+        let cases: &[HostCase<'_>] = &[
+            (&["phux", "host", "show", "mini", "--json"], |action| {
+                matches!(action, HostAction::Show { .. })
+            }),
+            (
+                &[
+                    "phux",
+                    "host",
+                    "rename",
+                    "mini",
+                    "desk",
+                    "--role",
+                    "satellite",
+                ],
+                |action| {
+                    matches!(
+                        action,
+                        HostAction::Rename {
+                            role: Some(HostRole::Satellite),
+                            ..
+                        }
+                    )
+                },
+            ),
+            (&["phux", "host", "enable", "edge"], |action| {
+                matches!(action, HostAction::Enable { .. })
+            }),
+            (&["phux", "host", "disable", "edge"], |action| {
+                matches!(action, HostAction::Disable { .. })
+            }),
+            (&["phux", "host", "attach", "mini"], |action| {
+                matches!(action, HostAction::Attach { .. })
+            }),
+        ];
+        for (argv, expected) in cases {
+            let cli = crate::parse_cli(argv.iter().copied()).expect("valid host command");
+            let Some(Command::Host { action }) = &cli.command else {
+                panic!("expected host action: {argv:?}")
+            };
+            assert!(expected(action), "wrong host action: {argv:?}");
+            assert_eq!(super::is_interactive_client(&cli), argv[2] == "attach");
+        }
     }
 
     /// `phux host add HOST` (ADR-0122) is the ssh form: one positional, no
