@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -303,7 +304,7 @@ app_instance_stop() { printf '%s\\n' "$1" >> "$STOP_LOG"; }
                     result = subprocess.run(["bash", str(journey), "--no-build"], env=env,
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                    self.assertIn("dev-run pipeline exited 23/0", result.stderr)
+                    self.assertIn("dev-run exited 23", result.stderr)
                     actual = stop_log.read_text().splitlines() if stop_log.exists() else []
                     self.assertEqual(actual, expected_stops)
                     stop_log.unlink(missing_ok=True)
@@ -321,11 +322,17 @@ while :; do sleep 1; done
                     process = subprocess.Popen(["bash", str(journey), "--no-build"], env=env,
                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                                text=True, start_new_session=True)
-                    first_line = process.stdout.readline()
-                    self.assertEqual(first_line, "pid 4242, log fixture\n")
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        launch_logs = list(root.glob("cockpit-presentation.*/dev-run.log"))
+                        if launch_logs and "pid 4242, log fixture" in launch_logs[-1].read_text():
+                            break
+                        time.sleep(0.05)
+                    else:
+                        self.fail("fixture launcher did not publish its pid")
                     os.killpg(process.pid, sent_signal)
                     stdout, stderr = process.communicate(timeout=10)
-                    self.assertEqual(process.returncode, expected_status, first_line + stdout + stderr)
+                    self.assertEqual(process.returncode, expected_status, stdout + stderr)
                     self.assertEqual(stop_log.read_text().splitlines(), ["4242"])
                     stop_log.unlink()
 
