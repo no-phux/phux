@@ -5,7 +5,7 @@ FROM --platform=linux/amd64 rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f
 # asserts `phux --version`, and `just toolchain-check` rejects a stale pin.
 # release-please extra-files rewrites the annotated version literals.
 # x-release-please-start-version
-ARG PHUX_VERSION=0.45.0
+ARG PHUX_VERSION=0.46.0
 # x-release-please-end
 ARG PHUX_REVISION=19a68e97a32cf44f0943feff93f6c47d5760b924
 ARG PHUX_SOURCE_SHA256=fc101926fa86bb6279073325643324c3825cf01b2293c15980ce1b139a299efe
@@ -27,7 +27,7 @@ ADD --checksum=sha256:cc1abdcc119e6dc7620547ba710fa9d54b4ec224db384ed9af9ddfb409
 ADD --checksum=sha256:3d5ca7cc063c993d16ddb00c5635e99e48767861ff9a1ba33f0b5ff2764ad7a5 \
     https://github.com/phall1/ghostty/archive/03c6f818eaeadf76e66dda99ab5529c9b47fa15c.tar.gz /tmp/ghostty.tar.gz
 # x-release-please-start-version
-RUN test "$PHUX_VERSION" = "0.45.0"
+RUN test "$PHUX_VERSION" = "0.46.0"
 # x-release-please-end
 RUN test "$PHUX_REVISION" = "19a68e97a32cf44f0943feff93f6c47d5760b924" \
     && test "$PHUX_SOURCE_SHA256" = "fc101926fa86bb6279073325643324c3825cf01b2293c15980ce1b139a299efe" \
@@ -118,7 +118,7 @@ COPY --chmod=0644 container/bashrc /etc/phux/bashrc
 COPY --chmod=0644 container/profile /etc/profile
 
 # x-release-please-start-version
-ARG PHUX_VERSION=0.45.0
+ARG PHUX_VERSION=0.46.0
 # x-release-please-end
 RUN test "$(/usr/local/bin/phux --version)" = "phux $PHUX_VERSION" \
     && cp /usr/bin/socat /opt/internal/socat \
