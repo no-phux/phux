@@ -345,6 +345,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     else if (chord === "w") closeView();
     else if (chord === "d") anotherView();
     else if (chord === "f") search();
+    else if (chord === "l") follow();
     else if (chord === "g") stepHit(1);
     else if (chord === "shift+g") stepHit(-1);
     else if (chord === "=" || chord === "+") changeFont(1);
@@ -423,7 +424,11 @@ function DesktopApp(props: AppProps): JSX.Element {
         <For each={panes()}>
           {(pane): JSX.Element => (
             <div
-              style={{ padding: 8, cursor: "pointer" }}
+              style={{
+                padding: 8,
+                cursor: "pointer",
+                backgroundColor: selectedPlacement()?.terminalId === pane.terminalId ? "#28374d" : "#101218",
+              }}
               onClick={() => focusTerminal(pane)}
               onMouseDown={(event) => beginPaneDrag(pane.terminalId, event)}
               onMouseUp={(event) => {
@@ -450,7 +455,7 @@ function DesktopApp(props: AppProps): JSX.Element {
           <Command label="Larger" run={() => changeFont(1)} />
           <Command label="Option as Alt" run={toggleOptionAsAlt} />
         </div>
-        <text>⌘T new · ⌘W close · ⌘D split view · ⌘F search · ⌘G next · ⌘R reconnect · ⌘1–9 jump</text>
+        <text>⌘T new · ⌘W close · ⌘D split view · ⌘F search · ⌘G next · ⌘L follow · ⌘R reconnect · ⌘1–9 jump</text>
         <Show when={palette()}>
           <text>
             ⌘T new terminal. ⌘W close view. ⌘D another view. ⌘F search. ⌘G next. ⌘1–9 focus a
