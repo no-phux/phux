@@ -9,11 +9,8 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "typeRoots": ["./opencode/node_modules/@types"],
-    "declaration": true,
-    "emitDeclarationOnly": true,
-    "noEmit": false
+    "types": ["bun"],
+    "noEmit": true
   },
-  "include": ["opencode/src/**/*.ts", "runtime/src/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }

@@ -119,6 +119,8 @@ SETUP_TEST_LINK_FAIL=1 expect_fail 'unknown architecture' "$repo/scripts/doctor.
 expect_fail 'Node 24+' "$repo/scripts/doctor.sh" integrations
 sed 's/echo 22/echo 24/' "$bin/node" >"$scratch/node"
 cp "$scratch/node" "$bin/node"
+expect_fail 'bun' "$repo/scripts/doctor.sh" integrations
+cp "$bin/npm" "$bin/bun"
 expect_pass "$repo/scripts/doctor.sh" integrations
 expect_fail "Zig $ZIG_VERSION" "$repo/scripts/doctor.sh" native
 cat >"$bin/zig" <<'SH'

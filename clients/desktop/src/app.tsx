@@ -4,6 +4,7 @@ import type {
   DesktopClient,
   DesktopEvent,
   DesktopPane,
+  DesktopSearchMatch,
   DesktopServerInfo,
 } from "../native/generated/index";
 import {
@@ -11,6 +12,7 @@ import {
   newId,
   parseLayout,
   saveLayout,
+  type DisplayPrefs,
   type DeskTab,
   type Placement,
 } from "./workspace";
@@ -39,6 +41,8 @@ function DesktopApp(props: AppProps): JSX.Element {
   const [tabId, setTabId] = createSignal("");
   const [revision, setRevision] = createSignal(0);
   const [query, setQuery] = createSignal("");
+  const [hits, setHits] = createSignal<DesktopSearchMatch[]>([]);
+  const [hit, setHit] = createSignal(0);
   const [matches, setMatches] = createSignal("search idle");
   const [fenced, setFenced] = createSignal(false);
   const [identity, setIdentity] = createSignal<DesktopServerInfo | undefined>();
@@ -73,7 +77,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   function persist(): void {
     const server = identity();
     if (!server) return;
-    props.layouts.write(saveLayout(server.serverId, tabs()));
+    props.layouts.write(saveLayout(server.serverId, tabs(), displayPrefs()));
   }
 
   function accept(batch: DesktopEvent[]): void {
@@ -115,6 +119,20 @@ function DesktopApp(props: AppProps): JSX.Element {
     accept(session().takeEvents());
     refresh();
     ensureTerminal();
+  }
+
+  function changeFont(delta: number): void {
+    setFontSize((size) => Math.min(28, Math.max(10, size + delta)));
+    persist();
+  }
+
+  function toggleOptionAsAlt(): void {
+    setOptionAsAlt((enabled) => !enabled);
+    persist();
+  }
+
+  function displayPrefs(): DisplayPrefs {
+    return { fontSize: fontSize(), optionAsAlt: optionAsAlt() };
   }
 
   function dragToWindow(terminalId: string): void {
@@ -247,9 +265,31 @@ function DesktopApp(props: AppProps): JSX.Element {
     const focused = selectedPlacement();
     if (!focused) return;
     const found = session().searchView(focused.viewId, query(), false);
-    setMatches(`${found.length} matches`);
-    const first = found[0];
-    if (first) session().setViewSelection(focused.viewId, first.start, first.end, false);
+    setHits(found);
+    setHit(0);
+    showHit(found, 0);
+  }
+
+  function showHit(found: DesktopSearchMatch[], index: number): void {
+    const focused = selectedPlacement();
+    const match = found[index];
+    if (!focused || !match) {
+      setMatches(found.length === 0 ? "0 matches" : "search idle");
+      return;
+    }
+    session().setViewSelection(focused.viewId, match.start, match.end, false);
+    setMatches(`${index + 1} of ${found.length}`);
+  }
+
+  function stepHit(delta: number): void {
+    const found = hits();
+    if (found.length === 0) {
+      search();
+      return;
+    }
+    const index = (hit() + delta + found.length) % found.length;
+    setHit(index);
+    showHit(found, index);
   }
 
   function restore(layout: ReturnType<typeof parseLayout>): void {
@@ -273,6 +313,11 @@ function DesktopApp(props: AppProps): JSX.Element {
   }
 
   onMount(() => {
+    const saved = parseLayout(props.layouts.read());
+    if (saved) {
+      setFontSize(saved.display.fontSize);
+      setOptionAsAlt(saved.display.optionAsAlt);
+    }
     replace();
     connect();
   });
@@ -295,8 +340,10 @@ function DesktopApp(props: AppProps): JSX.Element {
             <div
               style={{ padding: 8, cursor: "pointer" }}
               onClick={() => openTerminal(pane)}
+              onMouseDown={(event) => beginPaneDrag(pane.terminalId, event)}
               onMouseUp={(event) => {
-                if ((event.x ?? 0) > 240) dragToWindow(pane.terminalId);
+                const dragged = endPaneDrag(event);
+                if (dragged) dragToWindow(dragged.terminalId);
               }}
             >
               <text>{`${badges()[pane.terminalId] ? `${badges()[pane.terminalId]} · ` : ""}${pane.title ?? pane.terminalId}`}</text>
@@ -314,9 +361,9 @@ function DesktopApp(props: AppProps): JSX.Element {
           <Command label="Terminate" run={terminate} />
           <Command label="Follow live" run={follow} />
           <Command label="Commands" run={() => setPalette((open) => !open)} />
-          <Command label="Smaller" run={() => setFontSize((size) => Math.max(10, size - 1))} />
-          <Command label="Larger" run={() => setFontSize((size) => Math.min(28, size + 1))} />
-          <Command label="Option as Alt" run={() => setOptionAsAlt((enabled) => !enabled)} />
+          <Command label="Smaller" run={() => changeFont(-1)} />
+          <Command label="Larger" run={() => changeFont(1)} />
+          <Command label="Option as Alt" run={toggleOptionAsAlt} />
         </div>
         <Show when={palette()}>
           <text>
@@ -336,6 +383,8 @@ function DesktopApp(props: AppProps): JSX.Element {
             style={{ height: 32, width: 240 }}
           />
           <Command label="Search" run={search} />
+          <Command label="Next" run={() => stepHit(1)} />
+          <Command label="Previous" run={() => stepHit(-1)} />
           <text>{matches()}</text>
         </div>
         <Show when={selectedTab()}>
@@ -361,6 +410,24 @@ function DesktopApp(props: AppProps): JSX.Element {
       </div>
     </div>
   );
+}
+
+let paneDrag: { terminalId: string; x: number; y: number } | undefined;
+
+function beginPaneDrag(terminalId: string, event: { x?: number; y?: number }): void {
+  paneDrag = { terminalId, x: event.x ?? 0, y: event.y ?? 0 };
+}
+
+function endPaneDrag(event: { x?: number; y?: number }): { terminalId: string } | undefined {
+  const start = paneDrag;
+  paneDrag = undefined;
+  if (!start) return undefined;
+  const x = event.x ?? 0;
+  const y = event.y ?? 0;
+  const moved = Math.hypot(x - start.x, y - start.y);
+  // The rail is 220px. A click stays in the rail; a drag into the terminal opens a window.
+  if (moved < 48 || x < 280) return undefined;
+  return { terminalId: start.terminalId };
 }
 
 function Command(props: { label: string; run: () => void }): JSX.Element {

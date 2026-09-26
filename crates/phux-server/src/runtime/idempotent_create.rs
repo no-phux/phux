@@ -50,6 +50,7 @@ pub(crate) async fn handle_spawn_resource(
     root_token: &CancellationToken,
     connection_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
+    defer_subscription: bool,
 ) {
     let claim = match admit_keyed_spawn(state, &request, REPEAT_WAIT).await {
         SpawnAdmission::Unkeyed => None,
@@ -75,6 +76,7 @@ pub(crate) async fn handle_spawn_resource(
         root_token,
         connection_token,
         output_pumps,
+        defer_subscription,
     )
     .await;
     // The spawn bound its key when it registered the resource, or bound

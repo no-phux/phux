@@ -20,7 +20,14 @@ npm --prefix integrations/runtime ci
 npm --prefix integrations/runtime run gates
 git diff --exit-code -- integrations/runtime/dist
 
-for package in opencode pi claude; do
+(
+    cd integrations/opencode-v2
+    bun install --frozen-lockfile
+    bun run gates
+)
+git diff --exit-code -- integrations/opencode-v2/index.js
+
+for package in pi claude; do
     npm --prefix "integrations/$package" ci
     npm --prefix "integrations/$package" run gates
 done

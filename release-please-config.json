@@ -31,7 +31,7 @@
       "exclude-paths": [
         "clients/cockpit",
         "integrations/runtime",
-        "integrations/opencode",
+        "integrations/opencode-v2",
         "integrations/pi",
         "integrations/claude",
         ".claude-plugin"
@@ -67,14 +67,6 @@
         { "type": "generic", "path": "app.zon" },
         { "type": "generic", "path": "build.zig.zon" }
       ]
-    },
-    "integrations/opencode": {
-      "release-type": "node",
-      "component": "opencode-plugin",
-      "include-component-in-tag": true,
-      "include-v-in-tag": true,
-      "tag-separator": "-",
-      "changelog-path": "CHANGELOG.md"
     },
     "integrations/pi": {
       "release-type": "node",

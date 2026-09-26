@@ -276,7 +276,6 @@ brew trust --tap no-phux/tap # Homebrew 6+
 brew tap no-phux/tap
 brew fetch --formula no-phux/tap/phux
 cargo search phux-protocol --limit 1
-npm view @phux/opencode version
 npm view @phux/pi version
 claude plugin marketplace list
 ```
@@ -291,7 +290,6 @@ Linux x86_64, and Linux arm64.
 |---|---|---|
 | `phux`, `phux-mcp` binaries | Homebrew + GitHub release | [`release.yml`](../.github/workflows/release.yml), called by [`publish.yml`](../.github/workflows/publish.yml) |
 | `phux-protocol` crate | crates.io | [`publish-crate.yml`](../.github/workflows/publish-crate.yml), manual dispatch only |
-| `@phux/opencode` | npm + GitHub release | `opencode-plugin-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
 | `@phux/pi` | npm + GitHub release | `pi-extension-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
 | Claude Code plugin | repository marketplace + GitHub release | `claude-plugin-vX.Y.Z`, [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) |
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
@@ -300,7 +298,7 @@ Linux x86_64, and Linux arm64.
 | `PhuxMobileFFI-<tag>.android.zip` (same UniFFI surface: Kotlin + arm64-v8a/x86_64 `.so`) | GitHub Actions artifact / release asset | [`ffi-android.yml`](../.github/workflows/ffi-android.yml); phux-mobile fetches at `PHUX_REV` |
 
 `@phux/integration-runtime` is a private implementation module bundled into
-the public Pi artifact and inlined into OpenCode. It has no tag or independent
+the public Pi artifact and bundled into the in-repo OpenCode plugin. It has no tag or independent
 publication lane.
 
 Every other crate (`phux`, `phux-core`, `phux-server`, `phux-client`,

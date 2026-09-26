@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const releaseManifest = await json(".release-please-manifest.json");
 
-for (const directory of ["integrations/opencode", "integrations/pi", "integrations/claude"]) {
+for (const directory of ["integrations/pi", "integrations/claude"]) {
   const manifest = await json(join(directory, "package.json"));
   const lock = await json(join(directory, "package-lock.json"));
   assert.equal(manifest.version, releaseManifest[directory], `${directory} package version must match release-please`);
@@ -25,10 +25,9 @@ assert.equal(claudeManifest.version, claudePackage.version, "Claude plugin manif
 assert.equal(marketplaceEntry.version, claudePackage.version, "Claude marketplace version must match package.json");
 assert.equal(marketplaceEntry.source, "./integrations/claude", "Claude marketplace source must remain repository-relative");
 
-const opencode = await json("integrations/opencode/package.json");
-assert.match(opencode.dependencies?.["@opencode-ai/plugin"] ?? "", /^\d+\.\d+\.\d+$/, "OpenCode plugin API must be pinned exactly");
-assert.equal(opencode.publishConfig?.access, "public");
-assert.equal(opencode.publishConfig?.provenance, true);
+const opencode = await json("integrations/opencode-v2/package.json");
+assert.equal(opencode.private, true, "the OpenCode V2 plugin stays in-repo until it is the published contract");
+assert.match(opencode.dependencies?.["@opencode/plugin"] ?? "", /^\d+\.\d+\.\d+$/, "OpenCode V2 plugin API must be pinned exactly");
 
 const pi = await json("integrations/pi/package.json");
 assert.equal(pi.private, undefined, "Pi extension must remain publishable");
@@ -46,9 +45,9 @@ assert.equal(runtime.private, true, "the shared runtime is an implementation mod
 assert.equal(runtimeLock.version, runtime.version);
 assert.equal(runtimeLock.packages?.[""]?.version, runtime.version);
 
-const openCodeSource = await readdir(join(root, "integrations/opencode/src"), { recursive: true });
+const openCodeSource = await readdir(join(root, "integrations/opencode-v2/src"), { recursive: true });
 for (const relative of openCodeSource.filter((path) => path.endsWith(".ts"))) {
-  const source = await readFile(join(root, "integrations/opencode/src", relative), "utf8");
+  const source = await readFile(join(root, "integrations/opencode-v2/src", relative), "utf8");
   assert.doesNotMatch(
     source,
     /(?:@phux\/pi|integrations\/pi|\.\.\/\.\.\/pi\/)/,

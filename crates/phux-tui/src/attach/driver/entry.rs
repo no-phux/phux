@@ -59,6 +59,10 @@ async fn run_from_start(
     // Cloned BEFORE any wrap: the resync flag belongs to the StdoutSink, not
     // to whatever is layered on top of it.
     let resync = Arc::clone(&sink.needs_resync);
+    // A reconnect already probed once. Querying OSC 10/11 again on the cooked
+    // screen is what prints `^[]10;rgb:...` beside the reconnect banner.
+    // Palette-less HELLO leaves the server's defaults unchanged.
+    let probe_colors = initial_notice.is_none();
     if let Some(rec) = rec {
         let mut tee = TeeSink {
             inner: &mut sink,
@@ -71,7 +75,7 @@ async fn run_from_start(
             predict,
             Some(resync.as_ref()),
             Some(writer),
-            true,
+            probe_colors,
             initial_notice,
             Some(rec),
             input_replay,
@@ -85,7 +89,7 @@ async fn run_from_start(
             predict,
             Some(resync.as_ref()),
             Some(writer),
-            true,
+            probe_colors,
             initial_notice,
             None,
             input_replay,
@@ -361,11 +365,12 @@ async fn handshake(
 ///
 /// Reconnect probes use this entry point so transferring their successful
 /// connection into [`run_with_predict_connection`] cannot silently downgrade
-/// native/L3/color/compression or QUIC-stream capabilities. Default colors are
-/// probed while the outer terminal is still cooked, exactly as for an initial
-/// production attach.
+/// native/L3/compression or QUIC-stream capabilities. Colors are not probed
+/// again: a second OSC 10/11 query on the cooked terminal prints
+/// `^[]10;rgb:...` when the reply misses the echo-off window, and a
+/// palette-less HELLO leaves the server's defaults unchanged.
 pub async fn connect_for_attach(dial: &Dial) -> Result<Connection, AttachError> {
-    connect_attach_dial(dial, true).await
+    connect_attach_dial(dial, false).await
 }
 
 async fn connect_attach_dial(

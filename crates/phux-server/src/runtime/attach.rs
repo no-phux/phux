@@ -2058,6 +2058,7 @@ pub(crate) async fn handle_spawn_terminal(
     root_token: &CancellationToken,
     connection_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
+    defer_subscription: bool,
 ) {
     let Some(profile) = bootstrap_stream_profile(bootstrap_profile) else {
         let _ = out_tx
@@ -2248,7 +2249,7 @@ pub(crate) async fn handle_spawn_terminal(
         bind_instance,
         idempotency_key: attribution.operation_id,
     }
-    .publish(output_pumps, connection_token)
+    .publish(output_pumps, connection_token, defer_subscription)
     .await;
 }
 
@@ -2769,7 +2770,25 @@ impl SpawnPublication<'_> {
     /// exec and the client's first read are queued on the broadcast
     /// channel (broadcasts buffer per subscriber). Mirrors the
     /// subscribe-before-snapshot ordering in `handle_attach`.
-    async fn publish(self, output_pumps: &mut JoinSet<()>, connection_token: &CancellationToken) {
+    ///
+    /// Under QUIC multi-stream (`defer_subscription`) nothing is published
+    /// here: every L1 §4 frame rides the pane's own Terminal stream (L1
+    /// §4.9), so the reply alone goes out on control and the pump and first
+    /// generation start at the client's `STREAM_BIND`, exactly as for
+    /// `ATTACH_RESOURCE`. The spawner is already subscribed, so the bind is
+    /// authorized.
+    async fn publish(
+        self,
+        output_pumps: &mut JoinSet<()>,
+        connection_token: &CancellationToken,
+        defer_subscription: bool,
+    ) {
+        if defer_subscription {
+            if !self.queue_spawned_ok().await {
+                self.reap();
+            }
+            return;
+        }
         let output_rx = self.handle.output.subscribe();
         let gate_tx = spawn_terminal_output_pump(
             OutputPumpContext {
