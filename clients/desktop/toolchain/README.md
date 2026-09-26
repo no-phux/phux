@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-23
+last-reviewed: 2026-09-26
 ---
 
 # Desktop source toolchain
@@ -13,10 +13,11 @@ checkout is local build state; the source manifest is the reproducible input.
 
 ## Bootstrap
 
-From the repository root, run `just desktop-source`. It clones the source and
-initializes its pinned Zed submodule, then verifies the revisions, versions and
-lockfile checksums before a frozen Bun install. Existing mismatched checkouts
-are rejected and preserved for inspection, never reset or overwritten.
+From the repository root, `just desktop-app` is the from-source run. It calls
+`just desktop-source`, which clones the source and initializes its pinned Zed
+submodule, then verifies the revisions, versions and lockfile checksums before
+a frozen Bun install. Existing mismatched checkouts are rejected and preserved
+for inspection, never reset or overwritten.
 
 The ordered `patches` hashes in `source.json` identify the reviewed host
 extension patches. A pristine checkout receives them after source verification.

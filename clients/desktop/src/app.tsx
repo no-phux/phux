@@ -1,10 +1,20 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show, type Accessor, type JSX } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+  type Accessor,
+  type JSX,
+} from "solid-js";
 import { render, resetRender, useGpuix } from "@gpuix/solid";
 import type {
   DesktopClient,
   DesktopEvent,
   DesktopPane,
   DesktopSearchMatch,
+  DesktopSession,
   DesktopServerInfo,
 } from "../native/generated/index";
 import {
@@ -198,6 +208,12 @@ function DesktopApp(props: AppProps): JSX.Element {
     connect();
   }
 
+  function homeSession(): DesktopSession | undefined {
+    return session()
+      .topology()
+      ?.sessions.find((item) => item.name === props.sessionName);
+  }
+
   function ensureTerminal(): void {
     if (session().status() !== "Attached" || tabs().some((tab) => tab.placements.length > 0))
       return;
@@ -207,10 +223,15 @@ function DesktopApp(props: AppProps): JSX.Element {
       restore(saved);
       if (tabs().length > 0) return;
     }
-    const pane = session().topology()?.panes[0];
+    const pane = session()
+      .topology()
+      ?.panes.find((item) => item.sessionName === props.sessionName);
     if (!pane) {
-      const home = session().topology()?.sessions[0];
-      if (home) session().spawnTerminal(home.id);
+      const home = homeSession();
+      if (home) {
+        pendingNew = true;
+        session().spawnTerminal(home.id);
+      }
       return;
     }
     if (session().inputReadiness(pane.terminalId).ready) openTerminal(pane);
@@ -218,7 +239,7 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   function newTerminal(): void {
     if (session().status() !== "Attached") return;
-    const home = session().topology()?.sessions[0];
+    const home = homeSession();
     if (!home) return;
     pendingNew = true;
     session().spawnTerminal(home.id);
@@ -328,10 +349,12 @@ function DesktopApp(props: AppProps): JSX.Element {
   }
 
   function runShortcut(chord: string): void {
-    if (chord === "t") newTerminal();
+    if (chord === "t" || chord === "n") newTerminal();
+    else if (chord === "r") retry();
     else if (chord === "w") closeView();
     else if (chord === "d") anotherView();
     else if (chord === "f") search();
+    else if (chord === "l") follow();
     else if (chord === "g") stepHit(1);
     else if (chord === "shift+g") stepHit(-1);
     else if (chord === "=" || chord === "+") changeFont(1);
@@ -410,7 +433,12 @@ function DesktopApp(props: AppProps): JSX.Element {
         <For each={panes()}>
           {(pane): JSX.Element => (
             <div
-              style={{ padding: 8, cursor: "pointer" }}
+              style={{
+                padding: 8,
+                cursor: "pointer",
+                backgroundColor:
+                  selectedPlacement()?.terminalId === pane.terminalId ? "#28374d" : "#101218",
+              }}
               onClick={() => focusTerminal(pane)}
               onMouseDown={(event) => beginPaneDrag(pane.terminalId, event)}
               onMouseUp={(event) => {
@@ -437,10 +465,14 @@ function DesktopApp(props: AppProps): JSX.Element {
           <Command label="Larger" run={() => changeFont(1)} />
           <Command label="Option as Alt" run={toggleOptionAsAlt} />
         </div>
+        <text>
+          ⌘T new · ⌘W close · ⌘D split view · ⌘F search · ⌘G next · ⌘L follow · ⌘R reconnect · ⌘1–9
+          jump
+        </text>
         <Show when={palette()}>
           <text>
-            ⌘T new terminal. ⌘W close view. ⌘D another view. ⌘F search. ⌘G next. ⌘1–9 focus a
-            pane. Close leaves the process. Terminate kills that terminal only.
+            ⌘T new terminal. ⌘W close view. ⌘D another view. ⌘F search. ⌘G next. ⌘1–9 focus a pane.
+            Close leaves the process. Terminate kills that terminal only.
           </text>
         </Show>
         <Show when={fenced()}>
@@ -507,7 +539,8 @@ function chordFrom(event: {
   key?: string;
   modifiers?: { cmd: boolean; alt: boolean; ctrl: boolean; shift: boolean };
 }): string {
-  if (event.isHeld || !event.modifiers?.cmd || event.modifiers.alt || event.modifiers.ctrl) return "";
+  if (event.isHeld || !event.modifiers?.cmd || event.modifiers.alt || event.modifiers.ctrl)
+    return "";
   const key = event.key;
   if (!key) return "";
   return event.modifiers.shift ? `shift+${key}` : key;

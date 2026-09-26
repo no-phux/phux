@@ -1,5 +1,17 @@
 # phux desktop
 
+Build and run from this checkout on an Apple-silicon Mac:
+
+```sh
+just doctor desktop
+just desktop-app
+```
+
+That clones the pinned GPUIX source, applies the reviewed patches, builds the
+native host, builds `phux` from this tree, starts a server if one is not
+already running, and opens the desktop. Set `PHUX_SOCKET` only when you want a
+server other than the one this checkout just ensured.
+
 ## Native framework verification
 
 From the repository root:

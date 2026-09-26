@@ -25,9 +25,14 @@ desktop-source-test:
     cd clients/desktop/toolchain/gpuix/packages/solid && bun run test
 
 [group('desktop')]
-[doc('Launch the Solid desktop against the running server, or $PHUX_SOCKET')]
-desktop-app: desktop-native-build
-    cd clients/desktop && PHUX_DESKTOP_ADDON="$PWD/.cache/host/phux-desktop-native.darwin-arm64.node" bun scripts/launch-desktop.ts
+[doc('Build the phux CLI from this checkout for the desktop launcher')]
+desktop-cli:
+    cargo build -p phux
+
+[group('desktop')]
+[doc('Build the desktop from pinned GPUIX source and launch it')]
+desktop-app: desktop-install desktop-native-build desktop-cli
+    cd clients/desktop && PHUX_BIN="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux" PHUX_DESKTOP_ADDON="$PWD/.cache/host/phux-desktop-native.darwin-arm64.node" bun scripts/launch-desktop.ts
 
 [group('desktop')]
 [doc('Build and drive a production Solid framework window using the source-built addon')]

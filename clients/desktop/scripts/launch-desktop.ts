@@ -1,24 +1,49 @@
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { buildDesktopBundle, prepareDesktopFramework } from "./desktop-bundle";
 
 const root = resolve(import.meta.dir, "..");
+const repo = resolve(root, "../..");
 const output = resolve(root, "dist/desktop");
 const addon =
   process.env.PHUX_DESKTOP_ADDON ??
   resolve(root, ".cache/host/phux-desktop-native.darwin-arm64.node");
+const phux = phuxBinary();
+ensureServer();
 const socketPath = process.env.PHUX_SOCKET || runningServerSocket();
 const sessionName = process.env.PHUX_SESSION ?? "desktop";
 ensureSession(socketPath, sessionName);
 
-// Without PHUX_SOCKET, attach to the server the installed `phux` reports, so
-// socket resolution (runtime dir, profile) stays owned by phux itself.
+// `phux server --ensure` owns the socket. Status only reads it back.
+function phuxBinary(): string {
+  if (process.env.PHUX_BIN) return process.env.PHUX_BIN;
+  const built = resolve(repo, "target/debug/phux");
+  if (existsSync(built)) return built;
+  return "phux";
+}
+
+function ensureServer(): void {
+  const args = process.env.PHUX_SOCKET
+    ? ["--socket", process.env.PHUX_SOCKET, "server", "--ensure"]
+    : ["server", "--ensure"];
+  const run = spawnSync(phux, args, { encoding: "utf8", stdio: "inherit" });
+  if (run.error) {
+    throw new Error(
+      `Build phux from this checkout with \`just desktop-app\`: ${run.error.message}`,
+    );
+  }
+  if (run.status !== 0) {
+    throw new Error("Could not start a phux server from this checkout");
+  }
+}
+
 function runningServerSocket(): string {
   const status = phuxJson(["status", "--json"]);
   const socket = status && "socket" in status ? status.socket : undefined;
   if (typeof socket !== "string") {
-    throw new Error("No running phux server; start one with `phux` or set PHUX_SOCKET");
+    throw new Error("No running phux server after `phux server --ensure`");
   }
   return socket;
 }
@@ -41,9 +66,11 @@ function ensureSession(socket: string, name: string): void {
 }
 
 function phuxJson(args: string[]): object | undefined {
-  const run = spawnSync("phux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+  const run = spawnSync(phux, args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   if (run.error) {
-    throw new Error(`Set PHUX_SOCKET, or put phux on PATH: ${run.error.message}`);
+    throw new Error(
+      `Build phux from this checkout with \`just desktop-app\`: ${run.error.message}`,
+    );
   }
   if (run.status !== 0 || !run.stdout) return undefined;
   const parsed: unknown = JSON.parse(run.stdout);
