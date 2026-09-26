@@ -26,7 +26,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsup src/index.ts --format esm --platform node --dts --external @opencode-ai/plugin",
+    "build": "npm run clean && tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs",
     "gates": "npm run typecheck && npm run build && npm test && npm run pack:check && node ../../scripts/npm-audit-gate.mjs --audit-level=high",
@@ -40,8 +40,8 @@
   },
   "devDependencies": {
     "@types/node": "26.6.3",
-    "tsup": "8.5.1",
-    "typescript": "^6.0.3"
+    "tsdown": "0.23.0",
+    "typescript": "7.0.2"
   },
   "engines": {
     "node": ">=22"

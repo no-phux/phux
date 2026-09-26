@@ -109,6 +109,11 @@ const HOST_INVENTORY_DEADLINE: std::time::Duration = std::time::Duration::from_s
 /// anchored so a busy output stream cannot postpone the replay forever.
 const SATELLITE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 
+/// phux-8n4w: how many 1 s bar ticks to keep reading the background update
+/// check's cache before giving up for this attach. The check usually answers
+/// within a second or two; past this, the next attach picks it up.
+const UPDATE_POLL_TICKS: u8 = 8;
+
 /// Rename the matching cached session in place. Identity (`SessionId`) is
 /// unchanged; only the display label moves.
 fn apply_graph_rename(
@@ -656,6 +661,12 @@ pub(super) struct SessionLoop {
     /// The receiving half of the same channel; the `plugin_rx` select arm
     /// toasts failures.
     plugin_rx: tokio::sync::mpsc::UnboundedReceiver<PluginRunResult>,
+    /// phux-8n4w: bar ticks left to surface a background update check. The
+    /// production entry kicks `attach::update_notice::spawn_background_refresh`
+    /// before the loop; this poll reads its cache for a handful of ticks so a
+    /// check that lands mid-session still reaches the user, without a second
+    /// channel or a network call on the input loop.
+    update_poll_ticks: u8,
     /// The window-strip painter, themed like the status bar. Fed
     /// `window_infos` from the same snapshot that drives the tab strip;
     /// caches so an unchanged repaint emits nothing.
@@ -915,6 +926,7 @@ impl SessionLoop {
             sidebar_painter: SidebarPainter::new(settings.theme),
             plugin_tx,
             plugin_rx,
+            update_poll_ticks: UPDATE_POLL_TICKS,
             overlays,
             attention_navigation: AttentionNavigation::default(),
             drag: None,
@@ -4389,6 +4401,8 @@ impl SessionLoop {
         // everything held — nothing arrived to explain any of it. The bar
         // paint below carries them.
         self.expire_overdue_host_inventory();
+        // phux-8n4w: surface a background update check once it lands.
+        self.poll_update_notice(out, sidebar);
         // phux-5ke.4: an overlay above the bar would get
         // partially overwritten by the bar paint; skip ticks
         // while a modal is up.
@@ -4479,5 +4493,34 @@ impl SessionLoop {
             )));
             self.paint_overlay(out, sidebar);
         }
+    }
+
+    /// phux-8n4w: show a background update check once, if it found one.
+    ///
+    /// The production attach entry kicks the check before this loop
+    /// ([`crate::attach::update_notice::spawn_background_refresh`]); this reads
+    /// its cache on the bar's own tick for [`UPDATE_POLL_TICKS`] ticks, so an
+    /// answer that lands mid-session is surfaced without a dedicated channel or
+    /// a network call on the input loop. A modal already on screen is left
+    /// alone and the poll resumes after it is dismissed.
+    fn poll_update_notice<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+    ) {
+        if self.update_poll_ticks == 0 || self.overlays.is_active() {
+            return;
+        }
+        self.update_poll_ticks -= 1;
+        let Some(notice) = crate::attach::update_notice::take_pending_notice() else {
+            return;
+        };
+        self.update_poll_ticks = 0;
+        self.overlays.push(Box::new(ToastOverlay::new(
+            notice.title(),
+            notice.body(),
+            &self.settings.theme,
+        )));
+        self.paint_overlay(out, sidebar);
     }
 }

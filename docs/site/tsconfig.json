@@ -6,5 +6,11 @@
     "jsx": "react-jsx",
     "jsxImportSource": "react"
   },
-  "exclude": ["dist", "worker"]
+  "exclude": ["dist", "worker", "node_modules"],
+  "contentMappers": [
+    {
+      "package": "@astrojs/ts-content-mapper",
+      "extensions": [".astro"]
+    }
+  ]
 }

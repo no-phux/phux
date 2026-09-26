@@ -453,7 +453,7 @@ require_fixed .github/workflows/publish-crate.yml 'cargo publish --locked -p phu
 require_fixed .github/workflows/agent-integration-release.yml 'GH_REPO: ${{ github.repository }}'
 
 # `npm pack` runs `prepack`, whose stdout shares the fd with the JSON. opencode's
-# prepack is tsup, which prints a colourised banner, so the parse died on an
+# prepack prints a colourised banner, so the parse died on an
 # escape sequence. Pack to a directory and glob; never read npm's stdout.
 require_fixed .github/workflows/agent-integration-release.yml 'npm pack --pack-destination'
 forbid_fixed .github/workflows/agent-integration-release.yml 'npm pack --json'
