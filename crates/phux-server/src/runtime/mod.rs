@@ -2060,26 +2060,7 @@ async fn build_ws_listener(
 
     let tokens_path = std::env::var_os("PHUX_WS_TOKENS")
         .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
-    let store = match crate::auth::ReloadingTokenStore::load(tokens_path.clone()) {
-        Ok(store) => store,
-        Err(err) => {
-            error!(error = %err, path = %tokens_path.display(), "failed to load token store; WebSocket disabled");
-            return (
-                None,
-                RemoteListenerSlot::disabled(
-                    RemoteListenerTransport::Wss,
-                    Some(addr_s),
-                    ListenerDisabledReason::TokenStoreLoadFailed,
-                ),
-            );
-        }
-    };
-    if store.is_empty() {
-        warn!(
-            path = %tokens_path.display(),
-            "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart"
-        );
-    }
+    let store = remote_token_store(&tokens_path, "wss");
     let token_count = store.len();
 
     let workload_mtls = workload.is_some();
@@ -2115,6 +2096,32 @@ async fn build_ws_listener(
             )
         }
     }
+}
+
+/// The credential store a secure remote listener gates admission on.
+///
+/// Loaded leniently on purpose ([`crate::auth::ReloadingTokenStore::load_deferred`]):
+/// a store that will not load at boot must not take the whole remote surface
+/// down until someone restarts the server. The listener binds against a store
+/// that admits nobody, exactly as it does before the first `phux pair`, and
+/// the store's own reload then adopts the file on the next authentication
+/// once it loads — no restart. `transport` names the listener in the warning.
+fn remote_token_store(tokens_path: &Path, transport: &str) -> crate::auth::ReloadingTokenStore {
+    let (store, error) = crate::auth::ReloadingTokenStore::load_deferred(tokens_path.to_path_buf());
+    if let Some(error) = error {
+        warn!(
+            error = %error,
+            path = %tokens_path.display(),
+            "credential store does not load; {transport} listens anyway and refuses every \
+             authentication until it does -- run `phux doctor` for the remedy"
+        );
+    } else if store.is_empty() {
+        warn!(
+            path = %tokens_path.display(),
+            "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart"
+        );
+    }
+    store
 }
 
 /// Log, do not fail, when the persisted certificate does not name the address
@@ -2230,16 +2237,7 @@ fn build_quic_listener_for(
         );
     };
 
-    let Ok(tokens) = quic_tokens(secure) else {
-        return (
-            None,
-            RemoteListenerSlot::disabled(
-                RemoteListenerTransport::Quic,
-                Some(addr_s),
-                ListenerDisabledReason::TokenStoreLoadFailed,
-            ),
-        );
-    };
+    let tokens = quic_tokens(secure);
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
 
     let workload_auth = match workload_auth::WorkloadAuth::for_posture(workload_mtls) {
@@ -2294,21 +2292,13 @@ fn build_quic_listener_for(
     }
 }
 
-fn quic_tokens(
-    secure: bool,
-) -> Result<Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>, crate::auth::AuthError> {
+fn quic_tokens(secure: bool) -> Option<std::sync::Arc<crate::auth::ReloadingTokenStore>> {
     if !secure {
-        return Ok(None);
+        return None;
     }
     let path = std::env::var_os("PHUX_WS_TOKENS")
         .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
-    let store = crate::auth::ReloadingTokenStore::load(path.clone()).inspect_err(|err| {
-        error!(error = %err, path = %path.display(), "failed to load token store; QUIC disabled");
-    })?;
-    if store.is_empty() {
-        warn!(path = %path.display(), "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart");
-    }
-    Ok(Some(std::sync::Arc::new(store)))
+    Some(std::sync::Arc::new(remote_token_store(&path, "quic")))
 }
 
 /// Build the optional WebTransport listener for `addr` (phux-0wmf). Returns
@@ -2366,27 +2356,10 @@ fn build_wt_listener(
     let tokens = if secure {
         let tokens_path = std::env::var_os("PHUX_WS_TOKENS")
             .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
-        let store = match crate::auth::ReloadingTokenStore::load(tokens_path.clone()) {
-            Ok(store) => store,
-            Err(err) => {
-                error!(error = %err, path = %tokens_path.display(), "failed to load token store; WebTransport disabled");
-                return (
-                    None,
-                    RemoteListenerSlot::disabled(
-                        RemoteListenerTransport::Wt,
-                        Some(addr_s),
-                        ListenerDisabledReason::TokenStoreLoadFailed,
-                    ),
-                );
-            }
-        };
-        if store.is_empty() {
-            warn!(
-                path = %tokens_path.display(),
-                "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart"
-            );
-        }
-        Some(std::sync::Arc::new(store))
+        Some(std::sync::Arc::new(remote_token_store(
+            &tokens_path,
+            "webtransport",
+        )))
     } else {
         None
     };
@@ -2449,6 +2422,27 @@ mod tests {
     use phux_protocol::caps::ClientCapabilities;
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
     use tokio::task::JoinSet;
+
+    /// A credential store that will not load at boot no longer takes the
+    /// remote surface down with it: the listener binds against a store that
+    /// admits nobody — exactly like the empty store before the first
+    /// `phux pair` — and the store adopts the file once it loads.
+    #[test]
+    fn a_legacy_store_still_yields_a_bindable_listener_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("remote-tokens");
+        std::fs::write(&path, format!("# old\n{}\n", "ab".repeat(32))).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let store = remote_token_store(&path, "wss");
+        assert!(
+            store.is_empty(),
+            "a store that will not load still binds, admitting nobody"
+        );
+    }
 
     /// ADR-0124 §6: a pane retained after its process exited crosses a
     /// graceful upgrade with no PTY, marked retained, and the resumed image

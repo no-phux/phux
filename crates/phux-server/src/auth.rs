@@ -755,6 +755,31 @@ impl ReloadingTokenStore {
         Self::load_observed(path, |_| {})
     }
 
+    /// Load the current snapshot, or — when it will not load yet — start
+    /// empty and adopt the file on the first read after it loads.
+    ///
+    /// Remote *listeners* use this. A listener's job is to be reachable, and
+    /// the store already gates who gets in by failing closed at
+    /// authentication time, exactly as it does for an empty store
+    /// ([`TokenStore::load`] on a missing file yields no credentials). A
+    /// store that will not load at boot — a pre-versioned file awaiting
+    /// `phux pair --migrate-legacy`, a file mid-repair, the wrong mode on a
+    /// file about to be fixed — must not strand the whole remote surface
+    /// until someone restarts the server. So the listener binds, refuses
+    /// every authentication until the file loads, and then picks it up on
+    /// its next read. The boot-time error is returned so the caller can say
+    /// what is wrong.
+    #[must_use]
+    pub fn load_deferred(path: PathBuf) -> (Self, Option<AuthError>) {
+        match Self::load_observed(path.clone(), |_| {}) {
+            Ok(store) => (store, None),
+            Err(error) => (
+                Self::from_snapshot(path, None, TokenStore::default()),
+                Some(error),
+            ),
+        }
+    }
+
     fn load_observed(path: PathBuf, after_load: impl FnMut(usize)) -> Result<Self, AuthError> {
         let (stamp, store) = stable_load_observed(&path, after_load)?;
         Ok(Self::from_snapshot(path, stamp, store))
@@ -1735,6 +1760,37 @@ mod tests {
         let secret = hex::decode(token).unwrap();
         let authenticated = store.authenticate(&secret).unwrap();
         assert_eq!(authenticated.id, legacy_peer_id(&secret));
+    }
+
+    /// The remote listeners bind through `load_deferred`, so a store that will
+    /// not load at boot must not leave the whole remote surface down until a
+    /// restart: the store starts empty — admitting nobody, exactly like the
+    /// empty store before the first `phux pair` — and adopts the file on its
+    /// next read once it loads.
+    #[test]
+    fn deferred_store_admits_nobody_until_the_file_loads_then_adopts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials");
+        let token = "ab".repeat(TOKEN_LEN);
+        fs::write(&path, format!("# old\n{token}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let bearer = hex::decode(&token).unwrap();
+
+        let (store, error) = ReloadingTokenStore::load_deferred(path.clone());
+        assert!(
+            matches!(error, Some(AuthError::LegacyMigrationRequired)),
+            "the boot-time error comes back so the caller can report it"
+        );
+        assert!(store.is_empty());
+        assert!(!store.verify(&bearer), "a deferred store admits nobody");
+
+        // The operator runs `phux pair --migrate-legacy`; no restart follows.
+        migrate_legacy_store(&path).unwrap();
+        assert!(
+            store.verify(&bearer),
+            "the store adopts the migrated file on its next read"
+        );
+        assert_eq!(store.reloads(), 1);
     }
 
     #[test]
