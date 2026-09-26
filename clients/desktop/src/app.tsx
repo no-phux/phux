@@ -437,6 +437,7 @@ function DesktopApp(props: AppProps): JSX.Element {
           <Command label="Larger" run={() => changeFont(1)} />
           <Command label="Option as Alt" run={toggleOptionAsAlt} />
         </div>
+        <text>⌘T new · ⌘W close · ⌘D split view · ⌘F search · ⌘G next · ⌘1–9 jump</text>
         <Show when={palette()}>
           <text>
             ⌘T new terminal. ⌘W close view. ⌘D another view. ⌘F search. ⌘G next. ⌘1–9 focus a
