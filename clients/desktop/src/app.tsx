@@ -5,6 +5,7 @@ import type {
   DesktopEvent,
   DesktopPane,
   DesktopSearchMatch,
+  DesktopSession,
   DesktopServerInfo,
 } from "../native/generated/index";
 import {
@@ -198,6 +199,12 @@ function DesktopApp(props: AppProps): JSX.Element {
     connect();
   }
 
+  function homeSession(): DesktopSession | undefined {
+    return session()
+      .topology()
+      ?.sessions.find((item) => item.name === props.sessionName);
+  }
+
   function ensureTerminal(): void {
     if (session().status() !== "Attached" || tabs().some((tab) => tab.placements.length > 0))
       return;
@@ -207,10 +214,15 @@ function DesktopApp(props: AppProps): JSX.Element {
       restore(saved);
       if (tabs().length > 0) return;
     }
-    const pane = session().topology()?.panes[0];
+    const pane = session()
+      .topology()
+      ?.panes.find((item) => item.sessionName === props.sessionName);
     if (!pane) {
-      const home = session().topology()?.sessions[0];
-      if (home) session().spawnTerminal(home.id);
+      const home = homeSession();
+      if (home) {
+        pendingNew = true;
+        session().spawnTerminal(home.id);
+      }
       return;
     }
     if (session().inputReadiness(pane.terminalId).ready) openTerminal(pane);
@@ -218,7 +230,7 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   function newTerminal(): void {
     if (session().status() !== "Attached") return;
-    const home = session().topology()?.sessions[0];
+    const home = homeSession();
     if (!home) return;
     pendingNew = true;
     session().spawnTerminal(home.id);
@@ -328,7 +340,8 @@ function DesktopApp(props: AppProps): JSX.Element {
   }
 
   function runShortcut(chord: string): void {
-    if (chord === "t") newTerminal();
+    if (chord === "t" || chord === "n") newTerminal();
+    else if (chord === "r") retry();
     else if (chord === "w") closeView();
     else if (chord === "d") anotherView();
     else if (chord === "f") search();
@@ -437,7 +450,7 @@ function DesktopApp(props: AppProps): JSX.Element {
           <Command label="Larger" run={() => changeFont(1)} />
           <Command label="Option as Alt" run={toggleOptionAsAlt} />
         </div>
-        <text>⌘T new · ⌘W close · ⌘D split view · ⌘F search · ⌘G next · ⌘1–9 jump</text>
+        <text>⌘T new · ⌘W close · ⌘D split view · ⌘F search · ⌘G next · ⌘R reconnect · ⌘1–9 jump</text>
         <Show when={palette()}>
           <text>
             ⌘T new terminal. ⌘W close view. ⌘D another view. ⌘F search. ⌘G next. ⌘1–9 focus a

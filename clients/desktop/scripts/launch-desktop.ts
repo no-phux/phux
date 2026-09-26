@@ -16,8 +16,7 @@ const socketPath = process.env.PHUX_SOCKET || runningServerSocket();
 const sessionName = process.env.PHUX_SESSION ?? "desktop";
 ensureSession(socketPath, sessionName);
 
-// Without PHUX_SOCKET, attach to the server the installed `phux` reports, so
-// socket resolution (runtime dir, profile) stays owned by phux itself.
+// `phux server --ensure` owns the socket. Status only reads it back.
 function phuxBinary(): string {
   if (process.env.PHUX_BIN) return process.env.PHUX_BIN;
   const built = resolve(repo, "target/debug/phux");
