@@ -6,4 +6,7 @@ types.custom: molecule,convoy,message,event,gate,merge-request,agent,role,rig,se
 gc.endpoint_origin: inherited_city
 gc.endpoint_status: verified
 sync:
-    remote: "https://github.com/phall1/phux.git"
+    remote: "git+https://github.com/no-phux/phux.git"
+
+agent:
+    profile: team-maintainer
