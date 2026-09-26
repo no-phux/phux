@@ -1471,10 +1471,13 @@ fn run_rename(name: &str, new_name: &str, role: Option<HostRole>, json: bool) ->
     }
     if json {
         return print_doc(
-            &serde_json::json!({"schema_version": 1, "renamed": {"from": name, "to": new_name, "role": row.role.as_str()}}),
+            &serde_json::json!({"schema_version": 1, "renamed": {"from": name, "to": new_name, "role": row.role.as_str()}, "requires_restart": row.role == HostRole::Satellite}),
         );
     }
     outln!("Renamed {} {name:?} to {new_name:?}.", row.role.as_str());
+    if row.role == HostRole::Satellite {
+        outln!("Restart the hub for this to take effect.");
+    }
     ExitCode::SUCCESS
 }
 
