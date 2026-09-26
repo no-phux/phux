@@ -70,11 +70,7 @@ pub(super) fn default_colors() -> Option<TerminalDefaultColors> {
     let colors = if colors.is_some() {
         colors
     } else {
-        read_replies(
-            &mut tty,
-            &mut response,
-            Instant::now() + LATE_REPLY_BUDGET,
-        )
+        read_replies(&mut tty, &mut response, Instant::now() + LATE_REPLY_BUDGET)
     };
     discard_pending(&tty);
     colors
