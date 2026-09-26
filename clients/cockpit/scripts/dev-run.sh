@@ -296,7 +296,7 @@ cleanup() {
         wait "$DEV_APP_PID" 2>/dev/null || true
         DEV_APP_OWNED=0
     fi
-    return "$status"
+    exit "$status"
 }
 trap cleanup EXIT
 
@@ -336,7 +336,7 @@ if [[ "$AUTOMATION" == "1" && "$BUILD" == "1" ]]; then
     printf '\nautomation is on. The dropbox is resolved against the app CWD, which\n'
     printf 'is the dev home, so drive it from there:\n\n'
     printf '  eval "$(%s/scripts/build-automation-cli.sh --export)"\n' "$ROOT"
-    printf '  (cd %s && "$NATIVE" automate wait && "$NATIVE" automate assert '"'"'ready=true'"'"')\n\n' "$DEV_HOME"
+    printf '  (cd %s && "$NATIVE" automate wait && "$NATIVE" automate assert '\''ready=true'\'')\n\n' "$DEV_HOME"
 fi
 
 if [[ "$DETACH" == "1" ]]; then
