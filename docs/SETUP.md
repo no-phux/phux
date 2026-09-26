@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-26
 ---
 
 # Contributor setup
@@ -82,7 +82,7 @@ the shell, Cargo, and npm commands below also work directly.
 | Agent integrations | Node/npm | `just integration-check pi` (or `opencode`, `claude`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
 | Cockpit app | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test` |
-| GPUIX desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-source-build` |
+| GPUIX desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
 | Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
 
 `bash scripts/doctor.sh <area>` works before installing `just`. It checks tool
@@ -224,12 +224,20 @@ source and bypasses archive verification but still runs ABI tests.
 
 ## GPUIX desktop
 
-The separate `clients/desktop` application is under development. Its matched
-GPUIX/Solid source build is available through `just desktop-source-build`;
-this is a framework build, not a completed terminal application. Run
-`just doctor desktop` first. This scope verifies that the Metal compiler
-executes, not merely that Xcode exists. Install the separate component with
-`xcodebuild -downloadComponent MetalToolchain` if needed.
+Apple-silicon Mac. The app builds from the pinned GPUIX/Zed source in this
+checkout, not from a published addon. One command clones that source, applies
+the reviewed patches, builds the native host, builds `phux` from this tree,
+starts a local server if needed, and opens the desktop:
+
+```sh
+just doctor desktop
+just desktop-app
+```
+
+`just doctor desktop` verifies that the Metal compiler executes, not merely
+that Xcode exists. Install the separate component with
+`xcodebuild -downloadComponent MetalToolchain` if needed. The first run is a
+from-source native build; later runs reuse it.
 
 See [desktop source toolchain](../clients/desktop/toolchain/README.md) for
 source pins, frozen installs, and the inherited Nix SDK caveat. The desktop
