@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-26
 ---
 
 # OpenCode integration
@@ -11,7 +11,8 @@ fleet awareness while an external local phux server owns the terminals. Targets
 resolve from an explicit argument, the latest created pane, then `PHUX_TARGET`.
 The plugin uses public OpenCode hooks, declares identity only, and emits
 AgentSession lifecycle when the server supports it. It does not embed a TUI,
-paste, or connect to remote phux transports.
+paste, or connect to remote phux transports. OpenCode V2 uses
+[`opencode-v2.md`](./opencode-v2.md); this page is the 1.x adapter.
 
 ---
 
