@@ -1,4 +1,13 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show, type Accessor, type JSX } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+  type Accessor,
+  type JSX,
+} from "solid-js";
 import { render, resetRender, useGpuix } from "@gpuix/solid";
 import type {
   DesktopClient,
@@ -427,7 +436,8 @@ function DesktopApp(props: AppProps): JSX.Element {
               style={{
                 padding: 8,
                 cursor: "pointer",
-                backgroundColor: selectedPlacement()?.terminalId === pane.terminalId ? "#28374d" : "#101218",
+                backgroundColor:
+                  selectedPlacement()?.terminalId === pane.terminalId ? "#28374d" : "#101218",
               }}
               onClick={() => focusTerminal(pane)}
               onMouseDown={(event) => beginPaneDrag(pane.terminalId, event)}
@@ -455,11 +465,14 @@ function DesktopApp(props: AppProps): JSX.Element {
           <Command label="Larger" run={() => changeFont(1)} />
           <Command label="Option as Alt" run={toggleOptionAsAlt} />
         </div>
-        <text>⌘T new · ⌘W close · ⌘D split view · ⌘F search · ⌘G next · ⌘L follow · ⌘R reconnect · ⌘1–9 jump</text>
+        <text>
+          ⌘T new · ⌘W close · ⌘D split view · ⌘F search · ⌘G next · ⌘L follow · ⌘R reconnect · ⌘1–9
+          jump
+        </text>
         <Show when={palette()}>
           <text>
-            ⌘T new terminal. ⌘W close view. ⌘D another view. ⌘F search. ⌘G next. ⌘1–9 focus a
-            pane. Close leaves the process. Terminate kills that terminal only.
+            ⌘T new terminal. ⌘W close view. ⌘D another view. ⌘F search. ⌘G next. ⌘1–9 focus a pane.
+            Close leaves the process. Terminate kills that terminal only.
           </text>
         </Show>
         <Show when={fenced()}>
@@ -526,7 +539,8 @@ function chordFrom(event: {
   key?: string;
   modifiers?: { cmd: boolean; alt: boolean; ctrl: boolean; shift: boolean };
 }): string {
-  if (event.isHeld || !event.modifiers?.cmd || event.modifiers.alt || event.modifiers.ctrl) return "";
+  if (event.isHeld || !event.modifiers?.cmd || event.modifiers.alt || event.modifiers.ctrl)
+    return "";
   const key = event.key;
   if (!key) return "";
   return event.modifiers.shift ? `shift+${key}` : key;
