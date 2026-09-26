@@ -23,7 +23,11 @@ RELEASE_PATHS = (
 )
 
 
-def bump(text, old="0.45.0", new="0.46.0"):
+# The current root version, so the test holds on a release branch too.
+CURRENT = json.loads((ROOT / ".release-please-manifest.json").read_text())["."]
+
+
+def bump(text, old=CURRENT, new="999.0.0"):
     return text.replace(old, new)
 
 
