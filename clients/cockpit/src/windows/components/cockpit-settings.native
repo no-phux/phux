@@ -1,19 +1,18 @@
 <template name="cockpit-settings" args="settingsopen themes configexists confignotice">
   <stack>
     <if test="{settingsopen}">
-      <row main="end" padding="16" background="scrim">
-        <panel grow="1" max-width="640" padding="16">
-          <column gap="16">
+      <sheet width="640" padding="16" on-dismiss="settings_close">
+          <column gap="16" grow="1">
             <row cross="center" gap="8">
               <text grow="1" size="heading">Settings</text>
-              <button size="sm" variant="ghost" icon="x" label="Cancel settings" on-press="settings_close" />
+              <button size="sm" variant="ghost" icon="x" label="Cancel settings" disabled="{appearanceClosing}" on-press="settings_close" />
             </row>
-            <search-field text="{settingsQuery}" placeholder="Search settings" on-input="settings_query" label="Search settings" />
-            <tabs gap="8" label="Settings groups">
+            <input text="{settingsQuery}" placeholder="Search settings" autofocus="true" on-input="settings_query" label="Search settings" />
+            <toggle-group label="Settings groups">
               <for each="settingsSections" key="index" as="section">
-                <button size="sm" variant="ghost" selected="{settingsSection == section.index}" on-press="settings_section:{section.index}">{section.label}</button>
+                <toggle-button size="sm" selected="{settingsSection == section.index}" disabled="{appearanceBusy}" on-toggle="settings_section:{section.index}">{section.label}</toggle-button>
               </for>
-            </tabs>
+            </toggle-group>
             <if test="{configEditorConfirm}">
               <panel padding="16">
                 <column gap="8">
@@ -28,39 +27,57 @@
             </if>
             <scroll grow="1">
               <column gap="16">
-                <if test="{settingsSection == 2}">
+                <if test="{showBindingRows}">
                   <column gap="16">
-                    <text wrap="true" foreground="text_muted">Use a chord such as Cmd+Shift+p. Enter none to remove a shortcut.</text>
+                    <text wrap="true" foreground="text_muted">Use chords such as super+shift+p. Enter none to remove a shortcut.</text>
                     <if test="{noBindingRows}"><text foreground="text_muted">No matching keyboard shortcuts</text></if>
                     <for each="bindingRows" key="index" as="binding">
                       <column gap="8">
                         <row gap="8" cross="center">
-                          <text grow="1">{binding.label}</text>
-                          <text foreground="text_muted">{binding.binding}</text>
-                          <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="binding_select:{binding.index}">Edit</button>
-                          <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="binding_reset:{binding.index}">Reset</button>
+                          <column grow="1" gap="4">
+                            <text>{binding.label}</text>
+                            <text foreground="text_muted">{binding.binding}</text>
+                          </column>
+                          <if test="{settingsFooterSave}">
+                            <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="binding_select:{binding.index}">Edit</button>
+                            <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="binding_reset:{binding.index}">Reset</button>
+                          </if>
                         </row>
-                        <text foreground="text_muted">Default: {binding.defaultBinding}</text>
-                        <if test="{bindingEditIndex == binding.index}">
-                          <row gap="8">
-                            <input grow="1" text="{bindingEditValue}" label="Keyboard shortcut" on-input="binding_edit" on-submit="binding_apply" />
-                            <button size="sm" disabled="{appearanceBusy}" on-press="binding_apply">Preview</button>
-                          </row>
+                        <accordion text="Details" label="{binding.label}" selected="{bindingDetailIndex == binding.index}" on-toggle="binding_detail:{binding.index}">
+                          <column gap="8">
+                            <text foreground="text_muted">Default: {binding.defaultBinding}</text>
+                          </column>
+                        </accordion>
+                        <if test="{settingsFooterSave}">
+                          <if test="{bindingEditIndex == binding.index}">
+                            <row gap="8">
+                              <input grow="1" text="{bindingEditValue}" label="Keyboard shortcut" on-input="binding_edit" on-submit="binding_apply" />
+                              <button size="sm" disabled="{appearanceBusy}" on-press="binding_apply">Preview</button>
+                            </row>
+                          </if>
                         </if>
                         <separator />
                       </column>
                     </for>
                   </column>
                 </if>
-                <else><if test="{noSettingRows}"><text foreground="text_muted">No matching settings</text></if></else>
+                <else><if test="{noSettingRows}"><text foreground="text_muted">No matching settings in this group</text></if></else>
                 <for each="settingRows" key="id" as="setting">
-                  <if test="{setting.editable}">
-                    <column gap="8">
-                      <row gap="8" cross="center">
-                        <text grow="1">{setting.label}</text>
-                        <if test="{setting.control == 0}"><button size="sm" variant="outline" disabled="{appearanceBusy or setting.available == false}" on-press="settings_select:{setting.id}">Edit</button></if>
-                        <button size="sm" variant="ghost" disabled="{appearanceBusy or setting.available == false}" on-press="settings_reset:{setting.id}">Reset</button>
-                      </row>
+                  <column gap="8">
+                    <row gap="8" cross="center">
+                      <column grow="1" gap="4">
+                        <text>{setting.label}</text>
+                        <text wrap="true">{setting.effectiveValue}</text>
+                        <text foreground="text_muted">{setting.timing}</text>
+                      </column>
+                      <if test="{settingsFooterSave}">
+                        <if test="{setting.editable}">
+                          <if test="{setting.control == 0}"><button size="sm" variant="outline" disabled="{appearanceBusy or setting.available == false}" on-press="settings_select:{setting.id}">Edit</button></if>
+                          <button size="sm" variant="ghost" disabled="{appearanceBusy or setting.available == false}" on-press="settings_reset:{setting.id}">Reset</button>
+                        </if>
+                      </if>
+                    </row>
+                    <if test="{settingsFooterSave}"><if test="{setting.editable}">
                       <if test="{setting.control == 1}">
                         <!-- Explicit values keep native replies authoritative; switch reconciliation is tracked in phux-3gpg.3. -->
                         <if test="{setting.available}">
@@ -73,10 +90,9 @@
                       </if>
                       <if test="{setting.control == 2}">
                         <if test="{setting.available}">
-                        <radio-group gap="8" label="Font family">
-                          <for each="fontChoices" key="index" as="choice"><radio checked="{choice.selected}" disabled="{appearanceBusy}" on-change="settings_font_family:{choice.index}">{choice.label}</radio></for>
-                        </radio-group>
-                        <text wrap="true" foreground="text_muted">{setting.effectiveValue}</text>
+                          <radio-group gap="8" label="Font family">
+                            <for each="fontChoices" key="index" as="choice"><radio checked="{choice.selected}" disabled="{appearanceBusy}" on-change="settings_font_family:{choice.index}">{choice.label}</radio></for>
+                          </radio-group>
                         </if>
                         <else><text foreground="text_muted">Current font family unavailable</text></else>
                       </if>
@@ -102,11 +118,18 @@
                           <input grow="1" text="{settingEditValue}" disabled="{appearanceBusy or setting.available == false}" label="Setting value" on-input="settings_value" on-submit="settings_apply" />
                           <button size="sm" disabled="{appearanceBusy or setting.available == false}" on-press="settings_apply">Preview</button>
                         </row>
-                      </if><else><text wrap="true" foreground="text_muted">{setting.effectiveValue}</text></else></if>
-                      <text wrap="true" foreground="text_muted">{setting.applicability} · {setting.timing}</text>
-                      <separator />
-                    </column>
-                  </if>
+                      </if></if>
+                    </if></if>
+                    <accordion text="Details" label="{setting.label}" selected="{settingsDetailId == setting.id}" on-toggle="settings_detail:{setting.id}">
+                      <column gap="8">
+                        <row gap="8"><text foreground="text_muted">Default</text><text wrap="true">{setting.defaultLabel}</text></row>
+                        <text wrap="true" foreground="text_muted">{setting.applicability}</text>
+                        <text foreground="text_muted">{setting.timing}</text>
+                        <row gap="8"><text foreground="text_muted">Configured</text><text wrap="true">{setting.value}</text></row>
+                      </column>
+                    </accordion>
+                    <separator />
+                  </column>
                 </for>
                 <if test="{settingsSection == 0}">
                   <text>Theme presets</text>
@@ -130,7 +153,7 @@
                   <text wrap="true" foreground="text_muted">Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.</text>
                 </if>
                 <if test="{settingsSection == 5}">
-                  <text>phux Cockpit</text>
+                  <text>Phux Cockpit</text>
                   <row gap="8"><text foreground="text_muted">Installed</text><text>{updateCurrent}</text></row>
                   <row gap="8"><text foreground="text_muted">Latest</text><text>{updateLatest}</text></row>
                   <text wrap="true">{updateStatus}</text>
@@ -150,17 +173,16 @@
                 <if test="{appearance.dirty}"><text foreground="text_muted">Unsaved preview</text></if>
                 <else><text foreground="text_muted">{appearance.contrastLabel}</text></else>
                 <spacer grow="1" />
-                <button size="sm" variant="ghost" on-press="settings_close">Cancel</button>
+                <button size="sm" variant="ghost" disabled="{appearanceClosing}" on-press="settings_close">Cancel</button>
                 <button size="sm" disabled="{appearanceBusy}" on-press="settings_commit">Save changes</button>
               </if>
               <else>
                 <spacer grow="1" />
-                <button size="sm" variant="ghost" on-press="settings_close">Done</button>
+                <button size="sm" variant="ghost" disabled="{appearanceClosing}" on-press="settings_close">Done</button>
               </else>
             </row>
           </column>
-        </panel>
-      </row>
+      </sheet>
     </if>
   </stack>
 </template>

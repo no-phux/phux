@@ -13,9 +13,11 @@ cockpit-build: cockpit-artifacts
 [group('cockpit')]
 [doc('Cockpit TypeScript graph, native engine regressions, and contract checks.')]
 [working-directory('clients/cockpit')]
-cockpit-test: cockpit-ffi cockpit-build-contracts
+cockpit-test: cockpit-ffi cockpit-build-contracts cockpit-node-test
     ./scripts/check-release-version.sh
     ./scripts/check-sdk-pin.sh
+    ./scripts/check-sdk-pin_test.sh
+    ./scripts/dev-run_test.sh
     ./scripts/lib/zon_test.sh
     ./scripts/lib/measure_test.sh
     ./scripts/generate-operation-fixtures_test.sh
@@ -31,13 +33,13 @@ cockpit-test-no-phux: cockpit-ffi
     ./scripts/zig-build.sh test -Dplatform=null -Dphux-client-ffi-profile=ffi-dev --summary all
 
 
-# Node TypeScript tests. The loader strips @native-sdk/core's published .ts
-# (plain `node --test` on Node 24 will not). Needs clients/cockpit/node_modules.
+# Node's default TypeScript stripping cannot load @native-sdk/core from
+# node_modules. Keep install and the loader in the canonical shared helper.
 [group('cockpit')]
 [doc('Cockpit Node TypeScript tests via navigation-loader.')]
 [working-directory('clients/cockpit')]
 cockpit-node-test:
-    node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs
+    ./scripts/cockpit-node-test.sh
 
 
 # Split out of cockpit-test only because it is the one step that runs from the

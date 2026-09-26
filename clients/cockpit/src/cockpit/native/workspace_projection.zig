@@ -11,6 +11,7 @@ const scene = @import("scene.zig");
 const config_module = @import("../../config/config.zig");
 const theme_module = @import("../../config/theme.zig");
 const fonts = @import("../../terminal/fonts.zig");
+pub const semantic_theme = @import("semantic_theme.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -46,16 +47,16 @@ pub fn windowPadding(model: *const Model) f32 {
 /// here — `metrics.control_height` is 40, `control_height_sm` is 32, and
 /// `spacing.xs` is 4. See docs/DESIGN_SYSTEM.md for the derivations and the
 /// sources.
-pub const chrome_band_height: f32 = 40;
-pub const chrome_band_inset: f32 = 4;
-pub const chrome_control_extent: f32 = 32;
+pub const chrome_band_height: f32 = semantic_theme.geometry.control;
+pub const chrome_band_inset: f32 = semantic_theme.geometry.space_xs;
+pub const chrome_control_extent: f32 = semantic_theme.geometry.control_sm;
 /// Every inline icon in the chrome, from three derivations that agree: the
 /// SDK's own `label_size + icon_text_step` (13 + 2 = 15), the cap-height recipe
 /// (1.65 x cap = 1.163 x size = 15.1), and Carbon's shipped 16px-against-14px
 /// pairing. 15.1 rounds to the artboard every icon system ships, and 16 centres
 /// on whole device pixels at 1x and 2x where 15 does not.
 pub const chrome_icon_extent: f32 = 16;
-pub const chrome_gap: f32 = 8;
+pub const chrome_gap: f32 = semantic_theme.geometry.space_sm;
 
 /// The floor for anything the pointer has to hit. WCAG 2.2 SC 2.5.8 asks 24x24
 /// for AA; Apple's macOS guidance is a 28pt default over a 20pt minimum, which
@@ -71,7 +72,7 @@ pub const chrome_hit_target: f32 = 24;
 /// underline indicator down into the terminal's first row. The Geist pack
 /// computes 50 at the default control size (`metrics.tabs_trigger_height`),
 /// and `headerHeightCoversTriggers` pins the two together.
-pub const header_height: f32 = 50;
+pub const header_height: f32 = semantic_theme.geometry.tab;
 /// Tab geometry. Lives here rather than in the view because the visible-window
 /// derivation below is the thing tests pin, and it needs the same numbers the
 /// strip lays out with.
@@ -132,7 +133,7 @@ pub fn tabLabelWidth(extent: f32) f32 {
 /// The selected tab's accent bar — the Geist pack's own
 /// `metrics.tabs_indicator_thickness`, which is the vocabulary its underline
 /// tab register already speaks.
-pub const tab_indicator_thickness: f32 = 2;
+pub const tab_indicator_thickness: f32 = semantic_theme.geometry.indicator;
 /// The trailing status's slot, by the kind of status it is.
 ///
 /// MEASURED, not chosen, through the same seam layout and paint use —
@@ -452,21 +453,7 @@ const widget_command_reserve: usize = canvas.terminal_grid.widget_command_reserv
 pub const chrome_command_envelope: usize = native_sdk.runtime.max_canvas_commands_per_view - widget_command_reserve;
 
 pub fn baseTokens() canvas.DesignTokens {
-    var tokens = canvas.DesignTokens.themeWithOverrides(
-        .{ .color_scheme = .dark, .pack = .geist },
-        canvas.accentOverrides(canvas.Color.rgb8(190, 242, 100), .dark),
-    );
-    tokens.colors.background = canvas.Color.rgb8(9, 11, 15);
-    tokens.colors.surface = canvas.Color.rgb8(17, 20, 27);
-    tokens.colors.surface_subtle = canvas.Color.rgb8(23, 27, 35);
-    tokens.colors.surface_pressed = canvas.Color.rgb8(35, 41, 52);
-    tokens.colors.text = canvas.Color.rgb8(244, 247, 251);
-    tokens.colors.text_muted = canvas.Color.rgb8(154, 164, 178);
-    tokens.colors.border = canvas.Color.rgb8(52, 58, 70);
-    tokens.colors.accent = canvas.Color.rgb8(190, 242, 100);
-    tokens.colors.accent_text = canvas.Color.rgb8(9, 11, 15);
-    tokens.colors.warning = canvas.Color.rgb8(253, 224, 71);
-    tokens.colors.destructive = canvas.Color.rgb8(248, 113, 113);
+    var tokens = semantic_theme.designTokens();
     tokens.typography.mono_font_id = scene.terminal_font_id;
     // Naming the companions is what turns a carried `bold`/`italic` flag into
     // a different glyph. Left unset, the renderers synthesize instead — which

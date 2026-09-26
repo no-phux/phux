@@ -9,6 +9,20 @@ import { type KeybindingPage, type KeybindingRow, initialKeybindings, keybinding
 import { type Setting, type SettingChoice, settingsRows, selectedSettingChoices, settingRequest, resetSettingRequest, reloadSettingsRequest } from "./settings.ts";
 import { type SelfUpdate, initialSelfUpdate, selfUpdateRequest, selfUpdateResponse } from "./self-update.ts";
 import { windowTarget, windowCommand, windowReceipt } from "./window-navigation.ts";
+import {
+  type PresentationIntent,
+  type PresentationLifecycle,
+  initialPresentation,
+  presentationAcceptsReply,
+  presentationContinuation,
+  presentationLifecycleValid,
+  presentationOwnedBy,
+  projectPresentation,
+  reconcilePresentation,
+  retirePresentationWindow,
+  syncPresentationSnapshot,
+  windowIsDeclared,
+} from "./presentation.ts";
 import { newSessionRequest, newSessionReply } from "./new-session.ts";
 import { localToolRequest, localToolReply } from "./local-tools.ts";
 import { type MachineState, type MachineRow, initialMachines, requestMachines, machineRequest, machineStatusRequest, receiveMachines, filterMachines, moveMachine, capturedMachine } from "./machines.ts";
@@ -59,6 +73,7 @@ import {
   directoryNotice,
   directoryTitle,
   DIR_OPEN_HERE_UNAVAILABLE_NOTICE,
+  type DirectoryRow,
 } from "./directory.ts";
 import {
   ENGINE_CHANNEL_KEY,
@@ -81,6 +96,7 @@ import {
   navigationHostFilter,
   sameBytes,
   type SnapshotAgentRow,
+  type EngineSnapshot,
 } from "./protocol.ts";
 
 /// One agent session drawn under the terminal tab it runs in. It is not a
@@ -201,6 +217,10 @@ export interface WindowChromeContext {
 }
 
 export interface Model {
+  /// The only constructible modal presentation. The legacy scalar fields
+  /// below remain public `.native` bindings and transaction gates; their
+  /// per-window visibility is derived from this window-owned lifecycle.
+  readonly presentation: PresentationLifecycle;
   readonly tabs: readonly Tab[];
   /// The run the band has room for, always holding the selected tab. The
   /// toolkit cannot bound a run by itself, and the core cannot measure a
@@ -252,6 +272,9 @@ export interface Model {
   readonly navigatorTitle: Uint8Array;
   readonly actionRows: readonly ActionRow[];
   readonly bindings: KeybindingPage;
+  readonly bindingsLoaded: boolean;
+  readonly bindingsPending: boolean;
+  readonly bindingsOwnsBusy: boolean;
   readonly pendingSessionAction: DeferredAction | null;
   readonly pendingSettingsAction: DeferredAction | null;
   readonly retiredSessionToken: Uint8Array;
@@ -366,6 +389,12 @@ export interface Model {
   readonly renameNotice: Uint8Array;
   readonly renameBusy: boolean;
   readonly renameAwaiting: boolean;
+  /// The presentation generation that issued the current session request.
+  /// The effect runtime makes `cockpit-session` single-flight; this second
+  /// gate prevents a terminal from being interpreted by another surface.
+  readonly renameContinuation: number;
+  /// 1 describe, 2 rename/status. A terminal valid for another stage is stale.
+  readonly renameRequestStage: number;
   /// The Empty session state (ADR-0105, empty_session.zig): the windows the
   /// snapshot says show it, as a mask, and per window whether it is drawn
   /// (it gives way to every modal). A keep-empty session with no windows is
@@ -405,12 +434,16 @@ export interface Model {
   readonly settingsFocus: number;
   readonly settingRows: readonly Setting[];
   readonly settingEditId: number;
+  /// Open Settings accordion id, or 65535 when every row is collapsed.
+  readonly settingsDetailId: number;
+  readonly bindingDetailIndex: number;
   readonly settingEditValue: Uint8Array;
   readonly settingAnchor: number;
   readonly settingFocus: number;
   readonly settingsReloadStage: number;
   readonly settingsNotice: Uint8Array;
   readonly bindingRows: readonly KeybindingRow[];
+  readonly showBindingRows: boolean;
   readonly noBindingRows: boolean;
   readonly noSettingRows: boolean;
   readonly bindingEditIndex: number;
@@ -598,12 +631,14 @@ export type Msg =
   | { readonly kind: "settings_open" }
   | { readonly kind: "settings_query"; readonly edit: TextInputEvent }
   | { readonly kind: "settings_select"; readonly id: number }
+  | { readonly kind: "settings_detail"; readonly id: number }
   | { readonly kind: "settings_value"; readonly edit: TextInputEvent }
   | { readonly kind: "settings_apply" }
   | { readonly kind: "settings_reset"; readonly id: number }
   | { readonly kind: "settings_reload" }
   | { readonly kind: "settings_edit_configuration" }
   | { readonly kind: "binding_select"; readonly index: number }
+  | { readonly kind: "binding_detail"; readonly index: number }
   | { readonly kind: "binding_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "binding_apply" }
   | { readonly kind: "binding_reset"; readonly index: number }
@@ -642,6 +677,7 @@ export type Msg =
     };
 
 export const viewUnbound = [
+  "presentation",
   "pendingSessionAction", "pendingSettingsAction", "retiredSessionToken", "new_session_cancelled", "new_session_cancel_failed", "context_refused",
   "select_tab",
   "settingsAnchor",
@@ -753,6 +789,8 @@ export const viewUnbound = [
   "renameFocus",
   "renameBusy",
   "renameAwaiting",
+  "renameContinuation",
+  "renameRequestStage",
   "renameRow",
   "rename_open",
   "session_loaded",
@@ -1133,6 +1171,13 @@ function highlightNavigation(model: Model, next: number): Model {
   return revealNavigator({ ...model, paletteCursor: cursor, paletteRows: rows, paletteSelection: rows[cursor].target }, cursor * 40, 40);
 }
 
+function highlightedSwitcherRow(row: SwitcherRow, highlighted: boolean): SwitcherRow {
+  return { id: row.id, index: row.index, label: row.label, target: row.target, highlighted,
+    current: row.current, detail: row.detail, kind: row.kind, host: row.host,
+    selectable: row.selectable, disabled: row.disabled, renamable: row.renamable,
+    resource: row.resource, parent: row.parent, nativeId: row.nativeId, evidence: row.evidence };
+}
+
 function editNavigation(model: Model, edit: TextInputEvent): Model {
   if (!model.paletteOpen) return model;
   const next = applyTextInputEvent(paletteState(model), edit, 64);
@@ -1231,7 +1276,7 @@ function pageDirectory(model: Model, offset: number): DirectoryDecision {
 function openDirectory(model: Model): DirectoryDecision {
   if (model.dirOpen) return unchangedDirectory(model);
   const base = model.paletteOpen ? closePalette(model) : model;
-  const next = scopeOverlays({ ...base, dirOpen: true, hostOpen: false, hostAwaiting: false, settingsOpen: false,
+  const next = scopeOverlays({ ...base, dirOpen: true, hostOpen: false, hostAwaiting: false, settingsOpen: false, renameOpen: false,
     dirQuery: NO_BYTES, dirAnchor: 0, dirFocus: 0, dirRequest: NO_DIRECTORY_REQUEST, dirStarting: true,
     dirAwaiting: false, dirClosing: false, dirBusy: true, dirRows: NO_DIR_ROWS, dirCursor: 0, dirOffset: 0,
     dirPrevious: false, dirNext: false, dirPath: NO_BYTES, dirNotice: asciiBytes("Listing..."),
@@ -1247,7 +1292,7 @@ function closeDirectory(model: Model): DirectoryDecision {
 /// Another modal opening while the picker is up takes its slot.
 function displaceDirectory(model: Model, msg: Msg): Model {
   if (!model.dirOpen) return model;
-  if (msg.kind !== "palette_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "rename_open") return model;
+  if (msg.kind !== "palette_open" && msg.kind !== "agents_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "rename_open") return model;
   return closeDirectory(model).model;
 }
 
@@ -1278,9 +1323,12 @@ function renameState(model: Model): TextEditState {
 function openRename(model: Model): RenameDecision {
   if (model.renameOpen || model.settingsOpen) return renameDecision(model, NO_BYTES, false);
   const base = model.paletteOpen ? closePalette(model) : model;
-  const next = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: NO_BYTES,
+  const opened = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: NO_BYTES,
     renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, renameBusy: true, renameAwaiting: false,
     renameTitle: asciiBytes("Rename Session"), renameNotice: asciiBytes("Looking for the session on screen...") });
+  const rawContinuation = presentationContinuation(opened.presentation, "rename");
+  const continuation = rawContinuation >= 0 && rawContinuation <= 9007199254740991 ? Math.trunc(rawContinuation) : 0;
+  const next = { ...opened, renameContinuation: continuation, renameRequestStage: 1 };
   return renameDecision(next, sessionRequest(SESSION_KIND_DESCRIBE, NO_BYTES), true);
 }
 
@@ -1291,20 +1339,24 @@ function openRenameRow(model: Model, target: Uint8Array): RenameDecision {
   if (model.renameOpen || model.settingsOpen || !sessionRowTarget(target)) return renameDecision(model, NO_BYTES, false);
   const row = target.slice();
   const base = model.paletteOpen ? closePalette(model) : model;
-  const next = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: row,
+  const opened = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: row,
     renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, renameBusy: true, renameAwaiting: false,
     renameTitle: asciiBytes("Rename Session"), renameNotice: asciiBytes("Looking for the session...") });
+  const rawContinuation = presentationContinuation(opened.presentation, "rename");
+  const continuation = rawContinuation >= 0 && rawContinuation <= 9007199254740991 ? Math.trunc(rawContinuation) : 0;
+  const next = { ...opened, renameContinuation: continuation, renameRequestStage: 1 };
   return renameDecision(next, sessionRowRequest(SESSION_KIND_DESCRIBE_ROW, NO_BYTES, row), true);
 }
 
 function closeRename(model: Model): RenameDecision {
-  return renameDecision(scopeOverlays({ ...model, renameOpen: false, renameBusy: false, renameAwaiting: false }), NO_BYTES, true);
+  return renameDecision(scopeOverlays({ ...model, renameOpen: false, renameBusy: false, renameAwaiting: false,
+    renameContinuation: 0, renameRequestStage: 0 }), NO_BYTES, true);
 }
 
 /// Another modal opening while Rename Session is up takes its slot.
 function displaceRename(model: Model, msg: Msg): Model {
   if (!model.renameOpen) return model;
-  if (msg.kind !== "palette_open" && msg.kind !== "host_open" && msg.kind !== "settings_open") return model;
+  if (msg.kind !== "palette_open" && msg.kind !== "agents_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "dir_open") return model;
   return closeRename(model).model;
 }
 
@@ -1318,13 +1370,14 @@ function editRename(model: Model, edit: TextInputEvent): Model {
 
 function submitRename(model: Model): RenameDecision {
   if (model.renameBusy) return renameDecision(model, NO_BYTES, false);
+  if (!presentationAcceptsReply(model.presentation, "rename", model.renameContinuation)) return closeRename(model);
   if (model.renameQuery.length === 0) {
     return renameDecision({ ...model, renameNotice: asciiBytes("Enter a new name for this session.") }, NO_BYTES, false);
   }
   const request = model.renameRow.length > 0
     ? sessionRowRequest(SESSION_KIND_RENAME_ROW, model.renameQuery, model.renameRow)
     : sessionRequest(SESSION_KIND_RENAME, model.renameQuery);
-  return renameDecision({ ...model, renameBusy: true, renameNotice: asciiBytes("Renaming...") }, request, false);
+  return renameDecision({ ...model, renameBusy: true, renameRequestStage: 2, renameNotice: asciiBytes("Renaming...") }, request, false);
 }
 
 function renameHeading(name: Uint8Array, host: Uint8Array): Uint8Array {
@@ -1332,16 +1385,29 @@ function renameHeading(name: Uint8Array, host: Uint8Array): Uint8Array {
   return joinBytes(joinBytes(asciiBytes("Rename "), name, asciiBytes(" on ")), host, NO_BYTES);
 }
 
+function currentRenameRequest(model: Model): boolean {
+  if (model.renameRequestStage !== 1 && model.renameRequestStage !== 2) return false;
+  return presentationAcceptsReply(model.presentation, "rename", model.renameContinuation);
+}
+
+function renameStageAccepts(model: Model, phase: number): boolean {
+  if (model.renameRequestStage === 1) return phase !== SESSION_PHASE_PENDING && phase !== SESSION_PHASE_RENAMED;
+  if (model.renameRequestStage === 2) return phase !== SESSION_PHASE_READY;
+  return false;
+}
+
 /// Apply one engine answer. The first names the session and seeds the field
 /// with its name; a refusal keeps the panel and says why; a rename the
 /// coordinator applied closes it.
 function receiveSession(model: Model, body: Uint8Array): RenameDecision {
   if (!model.renameOpen) return renameDecision(model, NO_BYTES, false);
+  if (!currentRenameRequest(model)) return renameDecision(model, NO_BYTES, false);
   const reply = sessionReply(body);
   if (reply === null) {
     return renameDecision({ ...model, renameBusy: false, renameAwaiting: false,
       renameNotice: asciiBytes("Rename unavailable. Try again.") }, NO_BYTES, false);
   }
+  if (!renameStageAccepts(model, reply.phase)) return renameDecision(model, NO_BYTES, false);
   if (reply.phase === SESSION_PHASE_RENAMED) return closeRename(model);
   if (reply.phase === SESSION_PHASE_PENDING) {
     return renameDecision({ ...model, renameBusy: true, renameAwaiting: true, renameNotice: asciiBytes("Renaming...") }, NO_BYTES, false);
@@ -1351,6 +1417,7 @@ function receiveSession(model: Model, body: Uint8Array): RenameDecision {
     const length = seeded.length;
     const end = length >= 0 && length <= 255 ? Math.trunc(length) : 0;
     return renameDecision({ ...model, renameBusy: false, renameAwaiting: false, renameQuery: seeded,
+      renameRequestStage: 0,
       renameAnchor: 0, renameFocus: end, renameTitle: renameHeading(reply.name, reply.host),
       renameNotice: asciiBytes("Enter a new name for this session.") }, NO_BYTES, false);
   }
@@ -1380,14 +1447,9 @@ function renameReplyTransition(model: Model, msg: Msg): RenameDecision | null {
   if (msg.kind === "session_loaded") return receiveSession(model, msg.body);
   if (msg.kind !== "session_failed") return null;
   if (!model.renameOpen) return renameDecision(model, NO_BYTES, false);
+  if (!currentRenameRequest(model)) return renameDecision(model, NO_BYTES, false);
   return renameDecision({ ...model, renameBusy: false, renameAwaiting: false,
     renameNotice: asciiBytes("Rename unavailable. Try again.") }, NO_BYTES, false);
-}
-
-/// The Empty session state gives way to every modal.
-function emptyShown(model: Model, bit: number): boolean {
-  if (model.paletteOpen || model.hostOpen || model.dirOpen || model.renameOpen || model.settingsOpen) return false;
-  return (model.emptyWindows & bit) !== 0;
 }
 
 /// The engine's answer to New Tab or Dismiss. A refusal says why and lets
@@ -1775,25 +1837,43 @@ function withdrawAgentRows(model: Model): Model {
     window3Tabs: stampSlots(model.window3Tabs, 3, NO_AGENTS, 2), window4Tabs: stampSlots(model.window4Tabs, 4, NO_AGENTS, 2) };
 }
 
-/// Only the active native window presents the global core-owned modal. The
-/// booleans are flattened because `.native` template arguments bind fields,
-/// not comparisons; `paletteOpen`/`settingsOpen` remain the keyboard gate.
+function settingsPresentationIntent(model: Model): PresentationIntent {
+  if (model.appearanceClosing) return { kind: "settings", phase: "closing" };
+  return { kind: "settings", phase: model.appearanceBusy ? "opening" : "presented" };
+}
+
+function directoryPresentationIntent(model: Model): PresentationIntent {
+  if (model.dirStarting) return { kind: "directory", phase: "opening" };
+  return { kind: "directory", phase: model.dirClosing ? "closing" : "presented" };
+}
+
+function presentationIntent(model: Model): PresentationIntent {
+  if (model.settingsOpen) return settingsPresentationIntent(model);
+  if (model.hostOpen) return { kind: "host", phase: model.hostBusy ? "opening" : "presented" };
+  if (model.dirOpen) return directoryPresentationIntent(model);
+  if (model.renameOpen) return { kind: "rename", creation: model.creatingSession, phase: model.renameBusy ? "opening" : "presented" };
+  if (model.paletteOpen) return { kind: "navigator", view: model.navigatorView, inspector: model.agentsMode, phase: "presented" };
+  return { kind: "none" };
+}
+
+/// `.native` keeps its stable scalar bindings, but every visible value comes
+/// from one typed surface with a captured owner. Ambient focus can therefore
+/// move while a dialog is open without moving that dialog between windows.
 function scopeOverlays(model: Model): Model {
-  const active = model.activeWindow >= 0 && model.activeWindow <= 4 ? Math.trunc(model.activeWindow) : 0;
-  const scoped = {
+  let openWindows = 1;
+  if (model.window1Open) openWindows |= 2;
+  if (model.window2Open) openWindows |= 4;
+  if (model.window3Open) openWindows |= 8;
+  if (model.window4Open) openWindows |= 16;
+  const lifecycle = reconcilePresentation(model.presentation, presentationIntent(model), model.activeWindow, openWindows);
+  const projected = projectPresentation(lifecycle);
+  return scopeHeaderMenu({
     ...model,
+    ...projected,
+    presentation: lifecycle,
     creatingSession: model.renameOpen && model.creatingSession,
     newSessionAwaiting: model.renameOpen && model.newSessionAwaiting,
-    mainEmptyOpen: emptyShown(model, 1),
-    window1EmptyOpen: emptyShown(model, 2),
-    window2EmptyOpen: emptyShown(model, 4),
-    window3EmptyOpen: emptyShown(model, 8),
-    window4EmptyOpen: emptyShown(model, 16),
-  };
-  const navigation = scopePaletteOverlays(scopeHeaderMenu(scoped), active);
-  const settings = scopeSettingsOverlays(navigation, active);
-  const host = scopeHostOverlays(settings, active);
-  return scopeDirectoryOverlays(scopeRenameOverlays(host, active), active);
+  });
 }
 
 function setHeaderMenu(model: Model, rawWindow: number): Model {
@@ -1835,68 +1915,6 @@ function headerMenuTransition(model: Model, msg: Msg): NavigatorDecision | null 
   if (msg.kind !== "header_menu_toggle") return null;
   const window = model.headerMenuWindow === model.activeWindow ? -1 : model.activeWindow;
   return navigatorDecision(scopeHeaderMenu(setHeaderMenu(model, window)), 1, NO_BYTES);
-}
-
-function scopeRenameOverlays(model: Model, active: number): Model {
-  return {
-    ...model,
-    mainRenameOpen: model.renameOpen && active === 0,
-    window1RenameOpen: model.renameOpen && active === 1,
-    window2RenameOpen: model.renameOpen && active === 2,
-    window3RenameOpen: model.renameOpen && active === 3,
-    window4RenameOpen: model.renameOpen && active === 4,
-  };
-}
-
-function scopeDirectoryOverlays(model: Model, active: number): Model {
-  return {
-    ...model,
-    mainDirOpen: model.dirOpen && active === 0,
-    window1DirOpen: model.dirOpen && active === 1,
-    window2DirOpen: model.dirOpen && active === 2,
-    window3DirOpen: model.dirOpen && active === 3,
-    window4DirOpen: model.dirOpen && active === 4,
-  };
-}
-
-function scopePaletteOverlays(model: Model, active: number): Model {
-  const palette = model.paletteOpen && !model.agentsMode;
-  const agents = model.paletteOpen && model.agentsMode;
-  return {
-    ...model,
-    mainPaletteOpen: palette && active === 0,
-    window1PaletteOpen: palette && active === 1,
-    window2PaletteOpen: palette && active === 2,
-    window3PaletteOpen: palette && active === 3,
-    window4PaletteOpen: palette && active === 4,
-    mainAgentsOpen: agents && active === 0,
-    window1AgentsOpen: agents && active === 1,
-    window2AgentsOpen: agents && active === 2,
-    window3AgentsOpen: agents && active === 3,
-    window4AgentsOpen: agents && active === 4,
-  };
-}
-
-function scopeSettingsOverlays(model: Model, active: number): Model {
-  return {
-    ...model,
-    mainSettingsOpen: model.settingsOpen && active === 0,
-    window1SettingsOpen: model.settingsOpen && active === 1,
-    window2SettingsOpen: model.settingsOpen && active === 2,
-    window3SettingsOpen: model.settingsOpen && active === 3,
-    window4SettingsOpen: model.settingsOpen && active === 4,
-  };
-}
-
-function scopeHostOverlays(model: Model, active: number): Model {
-  return {
-    ...model,
-    mainHostOpen: model.hostOpen && active === 0,
-    window1HostOpen: model.hostOpen && active === 1,
-    window2HostOpen: model.hostOpen && active === 2,
-    window3HostOpen: model.hostOpen && active === 3,
-    window4HostOpen: model.hostOpen && active === 4,
-  };
 }
 
 const IN_EFFECT = asciiBytes("  (in effect)");
@@ -2153,26 +2171,37 @@ function describeWindow4(): WindowDescriptor {
 /// requires an array literal of descriptor calls per return, so every
 /// combination of open slots is spelled out.
 export function windows(model: Model): readonly WindowDescriptor[] {
-  const a = model.window1Open;
-  const b = model.window2Open;
-  const c = model.window3Open;
-  const d = model.window4Open;
-  if (a && b && c && d) return [describeWindow1(), describeWindow2(), describeWindow3(), describeWindow4()];
-  if (a && b && c && !d) return [describeWindow1(), describeWindow2(), describeWindow3()];
-  if (a && b && !c && d) return [describeWindow1(), describeWindow2(), describeWindow4()];
-  if (a && b && !c && !d) return [describeWindow1(), describeWindow2()];
-  if (a && !b && c && d) return [describeWindow1(), describeWindow3(), describeWindow4()];
-  if (a && !b && c && !d) return [describeWindow1(), describeWindow3()];
-  if (a && !b && !c && d) return [describeWindow1(), describeWindow4()];
-  if (a && !b && !c && !d) return [describeWindow1()];
-  if (!a && b && c && d) return [describeWindow2(), describeWindow3(), describeWindow4()];
-  if (!a && b && c && !d) return [describeWindow2(), describeWindow3()];
-  if (!a && b && !c && d) return [describeWindow2(), describeWindow4()];
-  if (!a && b && !c && !d) return [describeWindow2()];
-  if (!a && !b && c && d) return [describeWindow3(), describeWindow4()];
-  if (!a && !b && c && !d) return [describeWindow3()];
-  if (!a && !b && !c && d) return [describeWindow4()];
-  return [];
+  if (!presentationLifecycleValid(model.presentation)) return [];
+  if (model.window1Open) return windowsWithFirst(model);
+  return windowsWithoutFirst(model);
+}
+
+function windowsWithFirst(model: Model): readonly WindowDescriptor[] {
+  const mask = (model.window2Open ? 4 : 0) | (model.window3Open ? 2 : 0) | (model.window4Open ? 1 : 0);
+  switch (mask) {
+    case 7: return [describeWindow1(), describeWindow2(), describeWindow3(), describeWindow4()];
+    case 6: return [describeWindow1(), describeWindow2(), describeWindow3()];
+    case 5: return [describeWindow1(), describeWindow2(), describeWindow4()];
+    case 4: return [describeWindow1(), describeWindow2()];
+    case 3: return [describeWindow1(), describeWindow3(), describeWindow4()];
+    case 2: return [describeWindow1(), describeWindow3()];
+    case 1: return [describeWindow1(), describeWindow4()];
+    default: return [describeWindow1()];
+  }
+}
+
+function windowsWithoutFirst(model: Model): readonly WindowDescriptor[] {
+  const mask = (model.window2Open ? 4 : 0) | (model.window3Open ? 2 : 0) | (model.window4Open ? 1 : 0);
+  switch (mask) {
+    case 7: return [describeWindow2(), describeWindow3(), describeWindow4()];
+    case 6: return [describeWindow2(), describeWindow3()];
+    case 5: return [describeWindow2(), describeWindow4()];
+    case 4: return [describeWindow2()];
+    case 3: return [describeWindow3(), describeWindow4()];
+    case 2: return [describeWindow3()];
+    case 1: return [describeWindow4()];
+    default: return [];
+  }
 }
 
 /// The OS closed a window. Native retirement already matched the incarnation;
@@ -2291,6 +2320,7 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
+      presentation: initialPresentation(),
       tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
       visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
       tabWidth: 168,
@@ -2336,6 +2366,9 @@ export function initialModel(): [Model, Cmd<Msg>] {
       navigatorTitle: asciiBytes("Go to Terminal"),
       actionRows: NO_ACTION_ROWS,
       bindings: initialKeybindings(),
+      bindingsLoaded: false,
+      bindingsPending: false,
+      bindingsOwnsBusy: false,
       commandContextTarget: NO_BYTES,
       commandContextWindow: 0,
       machines: initialMachines(),
@@ -2425,6 +2458,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
       renameNotice: new Uint8Array(0),
       renameBusy: false,
       renameAwaiting: false,
+      renameContinuation: 0,
+      renameRequestStage: 0,
       emptyWindows: 0,
       mainEmptyOpen: false,
       window1EmptyOpen: false,
@@ -2460,12 +2495,15 @@ export function initialModel(): [Model, Cmd<Msg>] {
       settingsFocus: 0,
       settingRows: NO_SETTING_ROWS,
       settingEditId: 65535,
+      settingsDetailId: 65535,
+      bindingDetailIndex: 65535,
       settingEditValue: NO_BYTES,
       settingAnchor: 0,
       settingFocus: 0,
       settingsReloadStage: 0,
       settingsNotice: NO_BYTES,
       bindingRows: NO_BINDING_ROWS,
+      showBindingRows: false,
       pendingSessionAction: null,
       pendingSettingsAction: null,
       retiredSessionToken: NO_BYTES,
@@ -2681,6 +2719,7 @@ interface AppearanceDecision {
   readonly opening: boolean;
   readonly closed: boolean;
   readonly navigate: boolean;
+  readonly loadBindings: boolean;
 }
 
 interface UpdateDecision {
@@ -2697,6 +2736,12 @@ function applyUpdateState(model: Model, report: SelfUpdate): Model {
 
 function updateDecision(model: Model): UpdateDecision {
   return { model, request: NO_BYTES, appearanceRequest: NO_BYTES, opening: false };
+}
+
+function showUpdateInSettings(model: Model, status: Uint8Array): Model {
+  const about = { ...model, settingsSection: 5, settingEditId: 65535, settingsDetailId: 65535,
+    bindingDetailIndex: 65535, updateBusy: true, updateStatus: status };
+  return applySettingsChrome(withVisibleSettings(withVisibleBindings(about, model.bindings)));
 }
 
 function handleSelfUpdate(model: Model, msg: Msg): UpdateDecision | null {
@@ -2721,32 +2766,30 @@ function handleSelfUpdate(model: Model, msg: Msg): UpdateDecision | null {
   if (model.updateBusy) return updateDecision(model);
   const checking = asciiBytes("Checking for updates...");
   if (model.settingsOpen) {
-    return { model: applySettingsChrome({ ...model, settingsSection: 5, settingEditId: 65535,
-      settingRows: settingsRows(model.appearance, model.settingsQuery, 5), updateBusy: true, updateStatus: checking }),
+    return { model: showUpdateInSettings(model, checking),
       request: selfUpdateRequest(false), appearanceRequest: NO_BYTES, opening: false };
   }
   const opened = openAppearance(model);
-  return { model: applySettingsChrome({ ...opened.model, settingsSection: 5, settingEditId: 65535,
-    settingRows: settingsRows(opened.model.appearance, opened.model.settingsQuery, 5),
-    updateBusy: true, updateStatus: checking }),
+  return { model: showUpdateInSettings(opened.model, checking),
     request: selfUpdateRequest(false), appearanceRequest: opened.request, opening: true };
 }
 
 function appearanceDecision(model: Model): AppearanceDecision {
-  return { model, request: NO_BYTES, opening: false, closed: false, navigate: false };
+  return { model, request: NO_BYTES, opening: false, closed: false, navigate: false, loadBindings: false };
 }
 
 function requestAppearance(model: Model, action: number, argument: number): AppearanceDecision {
-  return { ...appearanceDecision({ ...model, appearanceBusy: true }), request: appearanceRequest(action, argument) };
+  return { ...appearanceDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }), request: appearanceRequest(action, argument) };
 }
 
 function openAppearance(model: Model): AppearanceDecision {
   if (model.settingsOpen) return appearanceDecision(model);
-  const next = applySettingsChrome(scopeOverlays({ ...model, settingsOpen: true, paletteOpen: false, hostOpen: false, hostAwaiting: false, settingsSection: 0,
+  const opening = { ...model, settingsOpen: true, paletteOpen: false, hostOpen: false, hostAwaiting: false, settingsSection: 0,
      navigationAfterSettings: false, surfaceAfterSettings: 0, pendingToolOpen: false, configEditorConfirm: false,
      appearanceClosing: false, appearance: initialAppearance(), appearanceBusy: true,
-    settingEditId: 65535, settingsQuery: NO_BYTES, settingsNotice: NO_BYTES, settingsReloadStage: 0,
-    settingRows: settingsRows(initialAppearance(), NO_BYTES, 0) }));
+     bindings: initialKeybindings(), bindingsLoaded: false, bindingsPending: false, bindingsOwnsBusy: false,
+    settingEditId: 65535, settingsDetailId: 65535, bindingDetailIndex: 65535, settingsQuery: NO_BYTES, settingsNotice: NO_BYTES, settingsReloadStage: 0 };
+  const next = applySettingsChrome(scopeOverlays(withVisibleSettings(withVisibleBindings(opening, opening.bindings))));
   return { ...requestAppearance(next, 0, 0), opening: true };
 }
 
@@ -2755,10 +2798,13 @@ function loadedAppearance(model: Model, body: Uint8Array): AppearanceDecision {
   const appearance = appearanceResponse(body);
   if (appearance === null) return appearanceFailure(model);
   const cursor = appearance.theme < model.themes.length ? appearance.theme : model.settingsCursor;
-  const rows = settingsRows(appearance, model.settingsQuery, model.settingsSection);
-  const next = applySettingsChrome(scopeOverlays({ ...model, appearance, appearanceBusy: false, appearanceClosing: false, settingsCursor: cursor,
-    settingRows: rows, themes: highlightThemes(model.themes, cursor), settingsOpen: appearance.active }));
+  const listed = withVisibleSettings({ ...model, appearance, settingsCursor: cursor });
+  const next = applySettingsChrome(scopeOverlays({ ...listed, appearanceBusy: false, appearanceClosing: false,
+    themes: highlightThemes(model.themes, cursor), settingsOpen: appearance.active }));
   if (model.settingsReloadStage > 0) return advanceSettingsReload(next);
+  if (appearance.active && !model.bindingsLoaded && !model.bindingsPending) {
+    return { ...appearanceDecision({ ...next, bindingsPending: true }), loadBindings: true };
+  }
   if (appearance.active) return appearanceDecision({ ...next, pendingToolOpen: false });
   if (model.navigationAfterSettings) return openNavigationAfterAppearance(next);
   return { ...appearanceDecision(next), closed: true };
@@ -2770,7 +2816,7 @@ function openNavigationAfterAppearance(model: Model): AppearanceDecision {
 }
 
 function advanceSettingsReload(model: Model): AppearanceDecision {
-  const next = scopeOverlays({ ...model, settingsOpen: true, appearanceBusy: true });
+  const next = scopeOverlays({ ...model, settingsOpen: true, appearanceBusy: true, bindingsOwnsBusy: false });
   if (model.settingsReloadStage === 1) return { ...appearanceDecision({ ...next, settingsReloadStage: 2 }), request: reloadSettingsRequest() };
   return requestAppearance({ ...next, settingsReloadStage: 0, settingsNotice: model.appearance.notice }, 0, 0);
 }
@@ -2798,6 +2844,7 @@ function appearanceFailure(model: Model): AppearanceDecision {
 
 function dismissAppearance(model: Model): AppearanceDecision {
   model = { ...model, settingsReloadStage: 0 };
+  if (model.appearanceClosing) return appearanceDecision(model);
   if (!model.appearance.active && !model.appearanceBusy) return dismissLocally(model);
   return requestAppearance({ ...model, appearanceClosing: true }, 6, 0);
 }
@@ -2859,12 +2906,19 @@ function updateAppearance(model: Model, msg: Msg): AppearanceDecision | null {
 }
 
 function updateOpenAppearance(model: Model, msg: Msg): AppearanceDecision | null {
-  if (msg.kind === "settings_section") return appearanceDecision({ ...model, settingsSection: msg.section });
+  if (msg.kind === "settings_section") {
+    if (model.appearanceClosing) return appearanceDecision(model);
+    return appearanceDecision({ ...model, settingsSection: msg.section });
+  }
   if (msg.kind === "settings_close") return dismissAppearance(model);
-  if (msg.kind === "palette_open") return dismissAppearance({ ...model, navigationAfterSettings: true });
+  if (msg.kind === "palette_open") {
+    if (model.appearanceClosing) return appearanceDecision({ ...model, navigationAfterSettings: true });
+    return dismissAppearance({ ...model, navigationAfterSettings: true });
+  }
   const edited = editAppearance(model, msg);
   if (edited === null) return null;
-  return model.appearanceBusy ? appearanceDecision(model) : edited;
+  if (model.appearanceClosing || model.appearanceBusy) return appearanceDecision(model);
+  return edited;
 }
 
 function activeTabs(model: Model): readonly Tab[] {
@@ -2915,7 +2969,7 @@ function refreshActions(model: Model, cursor: number): Model {
 }
 
 function openActions(model: Model): Model {
-  const next = scopeOverlays({ ...model, paletteOpen: true, navigatorView: 4,
+  const next = scopeOverlays({ ...model, paletteOpen: true, agentsMode: false, inspectedResource: NO_BYTES, navigatorView: 4,
     navigatorTitle: asciiBytes("Commands"), paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
     paletteRows: NO_ROWS, paletteLoading: false, settingsOpen: false, hostOpen: false, hostAwaiting: false,
     dirOpen: false, renameOpen: false });
@@ -2988,7 +3042,7 @@ function requestMachineOperation(model: Model, operation: number, target: Uint8A
 function openNavigator(model: Model, view: number): NavigatorDecision {
   const destination = view >= 1 && view <= 3 ? Math.trunc(view) : 1;
   const title = view === 1 ? asciiBytes("Sessions") : view === 2 ? asciiBytes("Machines") : asciiBytes("Windows");
-  const next = scopeOverlays({ ...model, paletteOpen: true, navigatorView: destination, navigatorTitle: title,
+  const next = scopeOverlays({ ...model, paletteOpen: true, agentsMode: false, inspectedResource: NO_BYTES, navigatorView: destination, navigatorTitle: title,
     settingsOpen: false, hostOpen: false, hostAwaiting: false, dirOpen: false, renameOpen: false,
     paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0, paletteRows: NO_ROWS,
     paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES, palettePrevious: false, paletteNext: false,
@@ -3097,25 +3151,57 @@ function retainMachineInvalidation(model: Model): Model {
 function loadedKeybindings(model: Model, body: Uint8Array): NavigatorDecision {
   const bindings = keybindingResponse(body);
   if (bindings === null) return failedKeybindings(model);
-  if (model.appearanceClosing || model.settingsReloadStage > 0) return navigatorDecision({ ...model, bindings,
-    bindingRows: filteredBindings(bindings, model.settingsQuery), settingsNotice: bindings.notice }, 0, NO_BYTES);
-  const next = { ...model, bindings, bindingRows: filteredBindings(bindings, model.settingsQuery), appearanceBusy: false, settingsNotice: bindings.notice };
-  if (model.settingsOpen) return navigatorDecision({ ...next, appearanceBusy: true }, 7, appearanceRequest(0, 0));
+  const described = model.bindingsPending;
+  const listed = withVisibleBindings(model, bindings);
+  const appearanceBusy = model.bindingsOwnsBusy ? false : model.appearanceBusy;
+  const next = { ...listed, appearanceBusy, bindingsLoaded: true, bindingsPending: false,
+    bindingsOwnsBusy: false, settingsNotice: bindings.notice };
+  if (model.appearanceClosing || model.settingsReloadStage > 0) return navigatorDecision(next, 0, NO_BYTES);
+  if (model.settingsOpen && (!described || bindings.rejected)) {
+    return navigatorDecision({ ...next, appearanceBusy: true, bindingsOwnsBusy: false }, 7, appearanceRequest(0, 0));
+  }
   if (!model.paletteOpen || model.navigatorView !== 4) return navigatorDecision(next, 0, NO_BYTES);
   return navigatorDecision(refreshActions(next, model.paletteCursor), 0, NO_BYTES);
 }
 
 function failedKeybindings(model: Model): NavigatorDecision {
   const notice = asciiBytes("Keyboard shortcuts unavailable. Reopen Keyboard to retry.");
-  return navigatorDecision({ ...model, appearanceBusy: false, settingsNotice: notice }, 0, NO_BYTES);
+  return navigatorDecision({ ...model, appearanceBusy: model.bindingsOwnsBusy ? false : model.appearanceBusy,
+    bindingsLoaded: true, bindingsPending: false, bindingsOwnsBusy: false, settingsNotice: notice }, 0, NO_BYTES);
 }
 
 function filteredBindings(bindings: KeybindingPage, query: Uint8Array): readonly KeybindingRow[] {
   const rows: KeybindingRow[] = [];
   for (const row of bindings.rows) {
-    if (containsQuery(row.label, query) || containsQuery(row.command, query)) rows.push(row);
+    if (bindingSearchHit(row, query)) rows.push(row);
   }
   return rows;
+}
+
+function bindingSearchHit(row: KeybindingRow, query: Uint8Array): boolean {
+  return containsQuery(row.label, query) || containsQuery(row.command, query)
+    || containsQuery(row.binding, query) || containsQuery(row.defaultBinding, query);
+}
+
+function bindingConcealedHit(row: KeybindingRow, query: Uint8Array): boolean {
+  if (query.length === 0 || containsQuery(row.label, query) || containsQuery(row.command, query)
+    || containsQuery(row.binding, query)) return false;
+  return containsQuery(row.defaultBinding, query);
+}
+
+function revealedBindingDetail(rows: readonly KeybindingRow[], query: Uint8Array, current: number): number {
+  if (query.length === 0) return current;
+  for (const row of rows) if (row.index === current && bindingConcealedHit(row, query)) return current;
+  for (const row of rows) if (bindingConcealedHit(row, query)) return row.index;
+  return 65535;
+}
+
+function withVisibleBindings(model: Model, bindings: KeybindingPage): Model {
+  const bindingRows = filteredBindings(bindings, model.settingsQuery);
+  const revealed = revealedBindingDetail(bindingRows, model.settingsQuery, model.bindingDetailIndex);
+  const bindingDetailIndex = revealed >= 0 && revealed <= 65535 ? Math.trunc(revealed) : 65535;
+  const showBindingRows = model.settingsSection === 2 || (model.settingsQuery.length > 0 && bindingRows.length > 0);
+  return { ...model, bindings, bindingRows, bindingDetailIndex, showBindingRows, noBindingRows: bindingRows.length === 0 };
 }
 
 function commandsTransition(model: Model, msg: Msg): NavigatorDecision | null {
@@ -3249,18 +3335,58 @@ function catalogNavigationTransition(incoming: Model, msg: Msg): NavigatorDecisi
   return input === null ? navigationReplyTransition(model, msg) : input;
 }
 
+function settingSearchHit(row: Setting, query: Uint8Array): boolean {
+  return containsQuery(row.label, query) || containsQuery(row.effectiveValue, query) || containsQuery(row.timing, query)
+    || containsQuery(row.defaultLabel, query) || containsQuery(row.applicability, query) || containsQuery(row.value, query);
+}
+
+function settingConcealedHit(row: Setting, query: Uint8Array): boolean {
+  if (query.length === 0) return false;
+  if (containsQuery(row.label, query) || containsQuery(row.effectiveValue, query) || containsQuery(row.timing, query)) return false;
+  return containsQuery(row.defaultLabel, query) || containsQuery(row.applicability, query) || containsQuery(row.value, query);
+}
+
+function visibleSettingRows(appearance: Appearance, query: Uint8Array, section: number): readonly Setting[] {
+  if (query.length === 0) return settingsRows(appearance, query, section);
+  const rows: Setting[] = [];
+  for (let group = 0; group <= 5; group += 1) {
+    for (const row of settingsRows(appearance, NO_BYTES, group)) {
+      if (settingSearchHit(row, query)) rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function revealedSettingDetail(rows: readonly Setting[], query: Uint8Array, current: number): number {
+  if (query.length === 0) return current;
+  for (const row of rows) if (row.id === current && settingConcealedHit(row, query)) return current;
+  for (const row of rows) {
+    if (!settingConcealedHit(row, query)) continue;
+    return row.id >= 0 && row.id <= 14 ? Math.trunc(row.id) : 65535;
+  }
+  return 65535;
+}
+
+function withVisibleSettings(model: Model): Model {
+  const settingRows = visibleSettingRows(model.appearance, model.settingsQuery, model.settingsSection);
+  const revealed = revealedSettingDetail(settingRows, model.settingsQuery, model.settingsDetailId);
+  const settingsDetailId = revealed >= 0 && revealed <= 65535 ? Math.trunc(revealed) : 65535;
+  return { ...model, settingRows, noSettingRows: settingRows.length === 0,
+    settingsDetailId };
+}
+
 function editSettingsSearch(model: Model, edit: TextInputEvent): Model {
   const state: TextEditState = { text: model.settingsQuery, selection: { anchor: model.settingsAnchor, focus: model.settingsFocus }, composition: null };
   const next = applyTextInputEvent(state, edit, 64);
   if (next === null) return model;
   const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 64 ? Math.trunc(next.selection.anchor) : 0;
   const focus = next.selection.focus >= 0 && next.selection.focus <= 64 ? Math.trunc(next.selection.focus) : 0;
-  return { ...model, settingsQuery: next.text, settingsAnchor: anchor, settingsFocus: focus,
-    bindingRows: filteredBindings(model.bindings, next.text),
-    settingRows: settingsRows(model.appearance, next.text, model.settingsSection) };
+  const queried = { ...model, settingsQuery: next.text, settingsAnchor: anchor, settingsFocus: focus };
+  return withVisibleSettings(withVisibleBindings(queried, model.bindings));
 }
 
 function selectSetting(model: Model, id: number): Model {
+  if (!model.settingsFooterSave) return model;
   for (const row of model.settingRows) {
     if (row.id !== id || !row.editable || !row.available) continue;
     const selected = id >= 0 && id <= 10 ? Math.trunc(id) : 65535;
@@ -3284,21 +3410,39 @@ function chooseSettingsSection(model: Model, section: number): NavigatorDecision
   // Visible Settings groups are Appearance..About (0..5). Check for Updates
   // still opens About with its own request; this path only selects the tab.
   if (!(section >= 0 && section <= 5)) return navigatorDecision(model, 0, NO_BYTES);
+  if (model.appearanceBusy || model.appearanceClosing) return navigatorDecision(model, 0, NO_BYTES);
+  if (section === 2 && model.bindingsPending) return navigatorDecision(model, 0, NO_BYTES);
   const selected = Math.trunc(section);
-  const next = { ...model, settingsSection: selected, settingEditId: 65535,
-    settingRows: settingsRows(model.appearance, model.settingsQuery, selected) };
-  if (selected === 2) return navigatorDecision({ ...next, appearanceBusy: true }, 4, keybindingRequest(0, 0, NO_BYTES));
+  const next = withVisibleSettings(withVisibleBindings({ ...model, settingsSection: selected, settingEditId: 65535, bindingEditIndex: 65535,
+    settingsDetailId: 65535, bindingDetailIndex: 65535 }, model.bindings));
+  if (selected === 2) return navigatorDecision({ ...next, appearanceBusy: true, bindingsLoaded: false,
+    bindingsPending: true, bindingsOwnsBusy: true }, 4, keybindingRequest(0, 0, NO_BYTES));
   return navigatorDecision(next, 0, NO_BYTES);
+}
+
+function toggleSettingsDetail(model: Model, id: number): Model {
+  if (!(id >= 0 && id <= 14)) return model;
+  const selected = Math.trunc(id);
+  const settingsDetailId = model.settingsDetailId === selected ? 65535 : selected;
+  return { ...model, settingsDetailId, bindingDetailIndex: 65535 };
+}
+
+function toggleBindingDetail(model: Model, index: number): Model {
+  if (!(index >= 0 && index <= 191)) return model;
+  const selected = Math.trunc(index);
+  const bindingDetailIndex = model.bindingDetailIndex === selected ? 65535 : selected;
+  return { ...model, bindingDetailIndex, settingsDetailId: 65535 };
 }
 
 function reloadSettings(model: Model): NavigatorDecision {
   if (model.appearanceBusy) return navigatorDecision(model, 0, NO_BYTES);
   if (model.appearance.dirty) return navigatorDecision({ ...model, settingsNotice: asciiBytes("Save or cancel the preview before reloading the configuration file.") }, 0, NO_BYTES);
-  return navigatorDecision({ ...model, appearanceBusy: true, settingsReloadStage: 1 }, 7, appearanceRequest(6, 0));
+  return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false,
+    settingsReloadStage: 1 }, 7, appearanceRequest(6, 0));
 }
 
 function directSetting(model: Model, id: number, value: Uint8Array): NavigatorDecision {
-  return navigatorDecision({ ...model, appearanceBusy: true }, 7, settingRequest(id, value));
+  return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }, 7, settingRequest(id, value));
 }
 
 function visibleSetting(model: Model, id: number, control: number): Setting | null {
@@ -3332,7 +3476,7 @@ function applySettingDraft(model: Model): NavigatorDecision {
 
 function resetVisibleSetting(model: Model, id: number): NavigatorDecision {
   if (model.appearanceBusy || visibleEditableSetting(model, id) === null) return navigatorDecision(model, 0, NO_BYTES);
-  return navigatorDecision({ ...model, appearanceBusy: true }, 7, resetSettingRequest(id));
+  return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }, 7, resetSettingRequest(id));
 }
 
 function settingControlTransition(model: Model, msg: Msg): NavigatorDecision | null {
@@ -3368,27 +3512,62 @@ function editBinding(model: Model, edit: TextInputEvent): Model {
 }
 
 function bindingTransition(model: Model, msg: Msg): NavigatorDecision | null {
-  if (model.appearanceBusy) return null;
+  if (model.appearanceBusy || model.bindingsPending) return null;
   switch (msg.kind) {
     case "binding_select": return navigatorDecision(selectBinding(model, msg.index), 0, NO_BYTES);
+    case "binding_detail": return navigatorDecision(toggleBindingDetail(model, msg.index), 0, NO_BYTES);
     case "binding_edit": return navigatorDecision(editBinding(model, msg.edit), 0, NO_BYTES);
     case "binding_apply": {
       if (model.bindingEditIndex > 191) return navigatorDecision(model, 0, NO_BYTES);
-      return navigatorDecision({ ...model, appearanceBusy: true }, 4, keybindingRequest(1, model.bindingEditIndex, model.bindingEditValue));
+      return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: true }, 4, keybindingRequest(1, model.bindingEditIndex, model.bindingEditValue));
     }
-    case "binding_reset": return navigatorDecision({ ...model, appearanceBusy: true }, 4, keybindingRequest(2, msg.index, NO_BYTES));
+    case "binding_reset": return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: true }, 4, keybindingRequest(2, msg.index, NO_BYTES));
     default: return null;
   }
+}
+
+function mutatesSettingValue(msg: Msg): boolean {
+  return msg.kind === "settings_select" || msg.kind === "settings_value" || msg.kind === "settings_apply"
+    || msg.kind === "settings_reset";
+}
+
+function mutatesAppearancePreview(msg: Msg): boolean {
+  return msg.kind === "settings_pick" || msg.kind === "settings_move" || msg.kind === "settings_font"
+    || msg.kind === "settings_cursor" || msg.kind === "settings_placement" || msg.kind === "settings_commit"
+    || msg.kind === "toggle_tab_placement";
+}
+
+function mutatesConfigEditor(msg: Msg): boolean {
+  return msg.kind === "settings_edit_configuration" || msg.kind === "settings_reload" || msg.kind === "settings_save_edit"
+    || msg.kind === "settings_discard_edit" || msg.kind === "settings_cancel_edit";
+}
+
+function mutatesBinding(msg: Msg): boolean {
+  return msg.kind === "binding_select" || msg.kind === "binding_edit" || msg.kind === "binding_apply"
+    || msg.kind === "binding_reset";
+}
+
+function mutatesEditableSettings(msg: Msg): boolean {
+  return mutatesSettingValue(msg) || mutatesAppearancePreview(msg) || mutatesConfigEditor(msg) || mutatesBinding(msg);
+}
+
+function editableSettingsTransition(model: Model, msg: Msg): NavigatorDecision | null {
+  if (msg.kind === "settings_select") return navigatorDecision(selectSetting(model, msg.id), 0, NO_BYTES);
+  if (msg.kind === "settings_value") return navigatorDecision(editSettingValue(model, msg.edit), 0, NO_BYTES);
+  return settingControlTransition(model, msg) ?? bindingTransition(model, msg);
 }
 
 function settingsTransition(model: Model, msg: Msg): NavigatorDecision | null {
   if (!model.settingsOpen) return null;
   switch (msg.kind) {
     case "settings_query": return navigatorDecision(editSettingsSearch(model, msg.edit), 0, NO_BYTES);
-    case "settings_select": return navigatorDecision(selectSetting(model, msg.id), 0, NO_BYTES);
-    case "settings_value": return navigatorDecision(editSettingValue(model, msg.edit), 0, NO_BYTES);
+    case "settings_detail": return navigatorDecision(toggleSettingsDetail(model, msg.id), 0, NO_BYTES);
+    case "binding_detail": return model.appearanceBusy ? null : navigatorDecision(toggleBindingDetail(model, msg.index), 0, NO_BYTES);
     case "settings_section": return chooseSettingsSection(model, msg.section);
-    default: return settingControlTransition(model, msg) ?? bindingTransition(model, msg);
+    default: {
+      if (!model.settingsFooterSave && mutatesEditableSettings(msg)) return navigatorDecision(model, 0, NO_BYTES);
+      return editableSettingsTransition(model, msg);
+    }
   }
 }
 
@@ -3426,7 +3605,7 @@ function remoteReplyTransition(model: Model, msg: Msg): NavigatorDecision | null
 
 function remoteTransition(model: Model, msg: Msg): NavigatorDecision | null {
   if (msg.kind === "host_open") {
-    if (model.hostOpen) return navigatorDecision(model, 0, NO_BYTES);
+    if (model.hostOpen && model.toolPurpose === 0) return navigatorDecision(model, 0, NO_BYTES);
     const displaced = displaceRename(displaceDirectory(model, msg), msg);
     return navigatorDecision(openHost({ ...displaced, toolPurpose: 0 }), 9, remoteRequest(REMOTE_KIND_STATUS, NO_BYTES));
   }
@@ -3573,12 +3752,15 @@ function editFriendlyName(model: Model, edit: TextInputEvent): Model {
 function configEditorTransition(model: Model, msg: Msg): NavigatorDecision | null {
   if (msg.kind === "settings_cancel_edit") return navigatorDecision({ ...model, configEditorConfirm: false, pendingToolOpen: false }, 0, NO_BYTES);
   if (model.settingsOpen && model.appearanceBusy) return null;
-  if (msg.kind === "settings_save_edit") return navigatorDecision({ ...model, configEditorConfirm: false, pendingToolOpen: true, appearanceBusy: true }, 7, appearanceRequest(7, 0));
-  if (msg.kind === "settings_discard_edit") return navigatorDecision({ ...model, configEditorConfirm: false, pendingToolOpen: true, appearanceBusy: true }, 7, appearanceRequest(6, 0));
+  if (msg.kind === "settings_save_edit") return navigatorDecision({ ...model, configEditorConfirm: false,
+    pendingToolOpen: true, appearanceBusy: true, bindingsOwnsBusy: false }, 7, appearanceRequest(7, 0));
+  if (msg.kind === "settings_discard_edit") return navigatorDecision({ ...model, configEditorConfirm: false,
+    pendingToolOpen: true, appearanceBusy: true, bindingsOwnsBusy: false }, 7, appearanceRequest(6, 0));
   if (msg.kind !== "config_edit" && msg.kind !== "settings_edit_configuration") return null;
   if (!model.settingsOpen) return describeLocalTool(model, 2);
   if (model.appearance.dirty) return navigatorDecision({ ...model, configEditorConfirm: true }, 0, NO_BYTES);
-  return navigatorDecision({ ...model, pendingToolOpen: true, appearanceBusy: true }, 7, appearanceRequest(6, 0));
+  return navigatorDecision({ ...model, pendingToolOpen: true, appearanceBusy: true,
+    bindingsOwnsBusy: false }, 7, appearanceRequest(6, 0));
 }
 
 function localToolsTransition(model: Model, msg: Msg): NavigatorDecision | null {
@@ -3651,6 +3833,7 @@ function newSessionReplyTransition(model: Model, msg: Msg): NavigatorDecision | 
 }
 
 function openingSurface(msg: Msg): number {
+  if (msg.kind === "agents_open") return 23;
   const view = navigatorDestination(msg);
   if (view >= 1 && view <= 3) return view + 1;
   let index = 1;
@@ -3735,7 +3918,7 @@ function deferredArgument(msg: Msg): number {
 function captureDeferredAction(model: Model, msg: Msg): DeferredAction {
   const rawCode = deferredActionCode(msg);
   const rawArgument = deferredArgument(msg);
-  const code = rawCode >= 0 && rawCode <= 22 ? Math.trunc(rawCode) : 0;
+  const code = rawCode >= 0 && rawCode <= 23 ? Math.trunc(rawCode) : 0;
   const argument = rawArgument >= 0 && rawArgument <= 65535 ? Math.trunc(rawArgument) : 0;
   const target = msg.kind === "select_target" || msg.kind === "palette_pick" ? msg.target.slice() : NO_BYTES;
   return { code, argument, target, revision: model.engineRevision, window: model.activeWindow,
@@ -3744,6 +3927,7 @@ function captureDeferredAction(model: Model, msg: Msg): DeferredAction {
 
 function deferredContextRequired(action: DeferredAction): boolean {
   if (action.code <= 5) return false;
+  if (action.code === 23) return false;
   return action.code !== 11;
 }
 
@@ -3764,6 +3948,7 @@ function resumeDeferredAction(model: Model, action: DeferredAction): PreparedMes
 function deferredActionMessage(action: DeferredAction): Msg {
   if (action.code === 0) return { kind: "engine_wake" };
   if (action.code <= 10) return surfaceMessage(action.code);
+  if (action.code === 23) return { kind: "agents_open" };
   if (action.code === 11) return { kind: "settings_open" };
   if (action.code === 12) return { kind: "config_edit" };
   if (action.code === 13) return { kind: "new_window" };
@@ -3828,8 +4013,13 @@ function failedSessionCancellation(model: Model): NavigatorDecision {
 }
 
 function cancelSettingsForAction(model: Model, msg: Msg): NavigatorDecision {
+  if (model.appearanceClosing) {
+    return navigatorDecision({ ...model, pendingSettingsAction: captureDeferredAction(model, msg),
+      navigationAfterSettings: model.navigationAfterSettings || msg.kind === "palette_open" }, 0, NO_BYTES);
+  }
   const next: Model = { ...model, pendingSettingsAction: captureDeferredAction(model, msg), settingsReloadStage: 0, pendingToolOpen: false,
-    appearanceClosing: true, appearanceBusy: true, navigationAfterSettings: msg.kind === "palette_open" };
+    appearanceClosing: true, appearanceBusy: true, bindingsOwnsBusy: false,
+    navigationAfterSettings: msg.kind === "palette_open" };
   return navigatorDecision(next, 7, appearanceRequest(6, 0));
 }
 
@@ -3863,11 +4053,21 @@ function resumeSettingsAction(model: Model, msg: Msg): PreparedMessage {
   return resumeDeferredAction({ ...decision.model, pendingSettingsAction: null }, action);
 }
 
+/// A failed Describe never produced cancellation authority. Do not park a
+/// destination behind a continuation for which no request or reply can exist.
+function abandonFailedSessionDeparture(model: Model, msg: Msg): Model {
+  if (!model.creatingSession || model.pendingSessionAction !== null) return model;
+  if (model.renameBusy || model.newSessionAwaiting || model.newSessionToken.length !== 0) return model;
+  if (!sessionDisplacingMessage(msg)) return model;
+  return scopeOverlays({ ...model, renameOpen: false, creatingSession: false,
+    newSessionAwaiting: false, retiredSessionToken: NO_BYTES });
+}
+
 function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
   const menu = prepareHeaderMenu(model, msg);
   const session = resumeSessionAction(menu.model, menu.msg);
   const settings = resumeSettingsAction(session.model, session.msg);
-  let next = settings.model;
+  let next = abandonFailedSessionDeparture(settings.model, settings.msg);
   const action = settings.msg;
   if (openingSurface(action) > 0) next = { ...next, navigatorScroll: 0, windowActionPending: false };
   if (sessionDisplacingMessage(action)) next = { ...next, windowActionPending: false };
@@ -3877,487 +4077,776 @@ function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
   return { model: next, msg: action };
 }
 
+/// Native closure is an observed fact, not cancelable intent. Retire the
+/// descriptor and its owned surface before Settings/New Session start their
+/// rollback continuations; those transaction gates remain alive until their
+/// acknowledgements settle.
+function observeNativeLifecycle(model: Model, msg: Msg): Model {
+  if (msg.kind !== "window_closed") return model;
+  const owned = presentationOwnedBy(model.presentation, msg.window);
+  const presentation = retirePresentationWindow(model.presentation, msg.window, {
+    sequenceHi: model.engineSequence.hi, sequenceLo: model.engineSequence.lo,
+    revisionHi: model.engineRevision.hi, revisionLo: model.engineRevision.lo,
+  });
+  const forgotten = forgetClosedWindow({ ...model, presentation }, msg.window);
+  if (!owned) return scopeOverlays(forgotten);
+  if (model.settingsOpen || model.creatingSession) return scopeOverlays(forgotten);
+  return scopeOverlays({ ...forgotten, paletteOpen: false, agentsMode: false, hostOpen: false, dirOpen: false, renameOpen: false });
+}
+
 function commandDeparture(previous: Model, next: Model): boolean {
   if (previous.headerMenuWindow >= 0 && next.headerMenuWindow < 0) return true;
   if (previous.settingsOpen && !next.settingsOpen) return true;
   return next.paletteOpen && next.navigatorView === 4;
 }
 
-export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+function bytesOr(value: Uint8Array, fallback: Uint8Array): Uint8Array {
+  return value.length > 0 ? value : fallback;
+}
+
+function snapshotOverflow(hidden: number): Uint8Array {
+  return hidden > 0 ? overflowLabel(hidden) : NO_BYTES;
+}
+
+function snapshotEmptyBusy(model: Model, emptyMask: number, opening: boolean): boolean {
+  if (emptyMask === 0) return false;
+  return model.emptyBusy || opening;
+}
+
+function snapshotCursor(model: Model, projected: EngineSnapshot): number {
+  if (model.settingsOpen) return model.settingsCursor;
+  const active = projected.activeTheme;
+  if (!(active >= 0 && active <= 32 && active < projected.themes.length)) return 0;
+  return Math.trunc(active);
+}
+
+function snapshotOpenMask(w1: WindowState, w2: WindowState, w3: WindowState, w4: WindowState): number {
+  let mask = 1;
+  if (w1.open) mask |= 2;
+  if (w2.open) mask |= 4;
+  if (w3.open) mask |= 8;
+  if (w4.open) mask |= 16;
+  return mask;
+}
+
+function snapshotEmptyPicked(contexts: WindowContexts, projected: EngineSnapshot, windows: readonly WindowChromeContext[]): boolean {
+  if (!contexts.present) return projected.emptySession.picked;
+  for (const context of windows) if (context.emptyPicked) return true;
+  return false;
+}
+
+function snapshotPrimaryHost(contexts: WindowContexts, primary: WindowContext | null, fallback: Uint8Array): Uint8Array {
+  if (!contexts.present) return fallback;
+  if (primary === null || primary.host.length === 0) return asciiBytes("Machine not yet known");
+  return primary.host;
+}
+
+function snapshotConnectionStatus(model: Model, contexts: WindowContexts, primary: WindowContext | null, status: Uint8Array): Uint8Array {
+  if (contexts.present && primary === null) return asciiBytes("Connection status unavailable");
+  return remoteConnectionStatus(model, status);
+}
+
+function validSnapshotProjection(projected: EngineSnapshot): boolean {
+  if (!(projected.selectedTab >= 0 && projected.selectedTab <= 255)) return false;
+  if (!(projected.tabWidth >= 0 && projected.tabWidth <= 65535)) return false;
+  if (!(projected.activeWindow >= 0 && projected.activeWindow <= 4)) return false;
+  if (projected.activeWindow > 0 && findSection(projected.secondary, projected.activeWindow) === null) return false;
+  return true;
+}
+
+interface SnapshotWindowProjection {
+  readonly w1: WindowState;
+  readonly w2: WindowState;
+  readonly w3: WindowState;
+  readonly w4: WindowState;
+  readonly presentation: PresentationLifecycle;
+  readonly window1Open: boolean;
+  readonly window2Open: boolean;
+  readonly window3Open: boolean;
+  readonly window4Open: boolean;
+  readonly emptyMask: number;
+}
+
+function snapshotWindowProjection(model: Model, projected: EngineSnapshot): SnapshotWindowProjection {
+  const connection = projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255;
+  const w1 = windowState(1, findSection(projected.secondary, 1), projected.agents, connection);
+  const w2 = windowState(2, findSection(projected.secondary, 2), projected.agents, connection);
+  const w3 = windowState(3, findSection(projected.secondary, 3), projected.agents, connection);
+  const w4 = windowState(4, findSection(projected.secondary, 4), projected.agents, connection);
+  const legacyEmpty = projected.emptySession.windows >= 0 && projected.emptySession.windows <= 31 ? Math.trunc(projected.emptySession.windows) : 0;
+  const contexts = projected.windowContexts;
+  const rawEmptyMask = emptyMaskFromContexts(contexts, legacyEmpty);
+  const emptyMask = rawEmptyMask >= 0 && rawEmptyMask <= 31 ? Math.trunc(rawEmptyMask) : 0;
+  const activeWindow = projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0;
+  const presentation = syncPresentationSnapshot(model.presentation, {
+    openWindows: snapshotOpenMask(w1, w2, w3, w4), emptyWindows: emptyMask, activeWindow,
+    sequenceHi: projected.sequence.hi, sequenceLo: projected.sequence.lo,
+    revisionHi: projected.revision.hi, revisionLo: projected.revision.lo,
+  });
+  const window1Open = windowIsDeclared(presentation, 1, w1.open);
+  const window2Open = windowIsDeclared(presentation, 2, w2.open);
+  const window3Open = windowIsDeclared(presentation, 3, w3.open);
+  const window4Open = windowIsDeclared(presentation, 4, w4.open);
+  return { w1, w2, w3, w4, presentation, window1Open, window2Open, window3Open, window4Open, emptyMask };
+}
+
+interface SnapshotContextProjection {
+  readonly contexts: WindowContexts;
+  readonly mainContext: WindowChromeContext;
+  readonly window1Context: WindowChromeContext;
+  readonly window2Context: WindowChromeContext;
+  readonly window3Context: WindowChromeContext;
+  readonly window4Context: WindowChromeContext;
+  readonly contextRows: readonly WindowChromeContext[];
+  readonly machineLabel: Uint8Array;
+  readonly connectionStatus: Uint8Array;
+}
+
+function snapshotContextProjection(model: Model, projected: EngineSnapshot, windows: SnapshotWindowProjection): SnapshotContextProjection {
+  const contexts = projected.windowContexts;
+  const sessionLabel = bytesOr(projected.currentSession, asciiBytes("Sessions"));
+  const hostLabel = bytesOr(projected.coordinatorEndpoint, asciiBytes("Machine not yet known"));
+  const primaryRecord = findWindowContext(contexts.records, 0);
+  const mainContext = windowChromeContext(true, 0, 1, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window1Context = windowChromeContext(windows.window1Open, 1, 2, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window2Context = windowChromeContext(windows.window2Open, 2, 4, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window3Context = windowChromeContext(windows.window3Open, 3, 8, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window4Context = windowChromeContext(windows.window4Open, 4, 16, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const contextRows = [mainContext, window1Context, window2Context, window3Context, window4Context];
+  const primaryStatus = windowConnectionStatus(true, 0, contexts, projected.connection, projected.terminalStates[0], (projected.flags & 159) !== 0);
+  return { contexts, mainContext, window1Context, window2Context, window3Context, window4Context, contextRows,
+    machineLabel: snapshotPrimaryHost(contexts, primaryRecord, hostLabel),
+    connectionStatus: snapshotConnectionStatus(model, contexts, primaryRecord, primaryStatus) };
+}
+
+function applySnapshotWindows(model: Model, projected: EngineSnapshot, windows: SnapshotWindowProjection): Model {
+  const window1TabWidth = windows.w1.tabWidth >= 0 && windows.w1.tabWidth <= 65535 ? Math.trunc(windows.w1.tabWidth) : 168;
+  const window2TabWidth = windows.w2.tabWidth >= 0 && windows.w2.tabWidth <= 65535 ? Math.trunc(windows.w2.tabWidth) : 168;
+  const window3TabWidth = windows.w3.tabWidth >= 0 && windows.w3.tabWidth <= 65535 ? Math.trunc(windows.w3.tabWidth) : 168;
+  const window4TabWidth = windows.w4.tabWidth >= 0 && windows.w4.tabWidth <= 65535 ? Math.trunc(windows.w4.tabWidth) : 168;
+  const activeWindow = projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0;
+  return {
+    ...model,
+    presentation: windows.presentation,
+    activeWindow,
+    window1Open: windows.window1Open, window1Tabs: windows.w1.visibleTabs, window1TabWidth, window1HasOverflow: windows.w1.hasOverflow, window1OverflowLabel: windows.w1.overflowLabel,
+    window2Open: windows.window2Open, window2Tabs: windows.w2.visibleTabs, window2TabWidth, window2HasOverflow: windows.w2.hasOverflow, window2OverflowLabel: windows.w2.overflowLabel,
+    window3Open: windows.window3Open, window3Tabs: windows.w3.visibleTabs, window3TabWidth, window3HasOverflow: windows.w3.hasOverflow, window3OverflowLabel: windows.w3.overflowLabel,
+    window4Open: windows.window4Open, window4Tabs: windows.w4.visibleTabs, window4TabWidth, window4HasOverflow: windows.w4.hasOverflow, window4OverflowLabel: windows.w4.overflowLabel,
+  };
+}
+
+function applySnapshotContexts(model: Model, projected: EngineSnapshot, windows: SnapshotWindowProjection, context: SnapshotContextProjection): Model {
+  const refused = (projected.flags & 159) !== 0;
+  return {
+    ...model,
+    workspaceLabel: context.mainContext.title,
+    mainContext: context.mainContext, window1Context: context.window1Context, window2Context: context.window2Context,
+    window3Context: context.window3Context, window4Context: context.window4Context,
+    coordinatorEndpoint: projected.coordinatorEndpoint, machineLabel: context.machineLabel, connectionDetail: projected.connectionDetail,
+    window1RailRows: railRows(windows.w1.tabs), window2RailRows: railRows(windows.w2.tabs),
+    window3RailRows: railRows(windows.w3.tabs), window4RailRows: railRows(windows.w4.tabs),
+    connectionStatus: context.connectionStatus,
+    window1Status: windowConnectionStatus(windows.window1Open, 1, context.contexts, projected.connection, projected.terminalStates[1], refused),
+    window2Status: windowConnectionStatus(windows.window2Open, 2, context.contexts, projected.connection, projected.terminalStates[2], refused),
+    window3Status: windowConnectionStatus(windows.window3Open, 3, context.contexts, projected.connection, projected.terminalStates[3], refused),
+    window4Status: windowConnectionStatus(windows.window4Open, 4, context.contexts, projected.connection, projected.terminalStates[4], refused),
+  };
+}
+
+function applySnapshotState(model: Model, projected: EngineSnapshot, windows: SnapshotWindowProjection, context: SnapshotContextProjection): Model {
+  const selectedTab = projected.selectedTab >= 0 && projected.selectedTab <= 255 ? Math.trunc(projected.selectedTab) : 0;
+  const tabWidth = projected.tabWidth >= 0 && projected.tabWidth <= 65535 ? Math.trunc(projected.tabWidth) : 168;
+  const connection = projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255;
+  const rawCursor = snapshotCursor(model, projected);
+  const cursor = rawCursor >= 0 && rawCursor <= 32 ? Math.trunc(rawCursor) : 0;
+  const emptyMask = windows.emptyMask >= 0 && windows.emptyMask <= 31 ? Math.trunc(windows.emptyMask) : 0;
+  const mainTabs = stampSlots(projected.tabs, 0, projected.agents, connection);
+  const mainVisible = sliceRun(mainTabs, projected.runStart, projected.runCount);
+  const hidden = projected.tabs.length - projected.runCount;
+  const emptyOpening = context.contexts.present ? false : projected.emptySession.opening;
+  const refusedMask = projected.flags & 159;
+  const refused = (projected.flags & 8) !== 0;
+  return {
+    ...model,
+    themes: themeRows(projected.themes, projected.activeTheme, cursor), settingsCursor: cursor,
+    configExists: projected.configExists,
+    configNotice: configNotice(projected.configEnabled, projected.configProbed, projected.configExists, projected.configWritable, refused, projected.configPath),
+    tabs: mainTabs, visibleTabs: mainVisible, railRows: railRows(mainTabs),
+    agentCountLabel: joinBytes(asciiBytes("Agents "), decimalBytes(projected.agentTotal), NO_BYTES),
+    tabWidth,
+    hasOverflow: hidden > 0, overflowLabel: snapshotOverflow(hidden), selectedTab,
+    tabPlacement: projected.tabPlacement === 1 ? "side" : "top",
+    engineConnected: true, engineSequence: projected.sequence, engineRevision: projected.revision,
+    canReconnect: projected.connection === 3, lastConnection: connection,
+    status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
+    emptyWindows: emptyMask, emptyName: projected.emptySession.name,
+    emptyDetail: joinBytes(asciiBytes("Empty session on "), projected.emptySession.host, NO_BYTES),
+    emptyPicked: snapshotEmptyPicked(context.contexts, projected, context.contextRows),
+    emptyBusy: snapshotEmptyBusy(model, emptyMask, emptyOpening),
+    emptyNotice: emptyMask === 0 ? NO_BYTES : model.emptyNotice,
+  };
+}
+
+function projectSnapshotModel(model: Model, projected: EngineSnapshot): Model | null {
+  if (!validSnapshotProjection(projected)) return null;
+  const windows = snapshotWindowProjection(model, projected);
+  const context = snapshotContextProjection(model, projected, windows);
+  const windowed = applySnapshotWindows(model, projected, windows);
+  const contextual = applySnapshotContexts(windowed, projected, windows, context);
+  return applySnapshotState(contextual, projected, windows, context);
+}
+
+interface LoadedSnapshotProjection {
+  readonly projected: EngineSnapshot;
+  readonly model: Model;
+  readonly stale: boolean;
+}
+
+function wireU64Before(left: WireU64, right: WireU64): boolean {
+  if (left.hi !== right.hi) return left.hi < right.hi;
+  return left.lo < right.lo;
+}
+
+function staleSnapshot(model: Model, projected: EngineSnapshot): boolean {
+  if (wireU64Before(projected.sequence, model.engineSequence)) return true;
+  return wireU64Before(projected.revision, model.engineRevision);
+}
+
+function projectLoadedSnapshot(model: Model, body: Uint8Array): LoadedSnapshotProjection | null {
+  const projected = snapshot(body);
+  if (projected === null) return null;
+  if (staleSnapshot(model, projected)) return { projected, model, stale: true };
+  const synced = projectSnapshotModel(model, projected);
+  return synced === null ? null : { projected, model: synced, stale: false };
+}
+
+function validPresentationModel(model: Model): Model {
+  if (presentationLifecycleValid(model.presentation)) return model;
+  const presentation = initialPresentation();
+  const projection = projectPresentation(presentation);
+  return { ...model, ...projection, presentation,
+    window1Open: false, window2Open: false, window3Open: false, window4Open: false };
+}
+
+type RequestReplyKind = Extract<Msg, { readonly body: Uint8Array }>["kind"] | Extract<Msg, { readonly error: Uint8Array }>["kind"];
+type DelayedMessageKind = Extract<Msg, { readonly at: number }>["kind"];
+
+interface PlannedRequest {
+  readonly name: string;
+  readonly payload: Uint8Array;
+  readonly key: string;
+  readonly ok: RequestReplyKind;
+  readonly err: RequestReplyKind;
+}
+
+interface UpdatePlan {
+  readonly model: Model;
+  readonly effect: number;
+  readonly hostName: string;
+  readonly hostPayload: Uint8Array;
+  readonly firstRequest: PlannedRequest;
+  readonly secondRequest: PlannedRequest;
+  readonly thirdRequest: PlannedRequest;
+  readonly cancelKey: string;
+  readonly delayKey: string;
+  readonly delayMs: number;
+  readonly delayKind: DelayedMessageKind;
+}
+
+const UPDATE_EFFECT_MODEL = 0;
+const UPDATE_EFFECT_HOST = 1;
+const UPDATE_EFFECT_REQUEST = 2;
+const UPDATE_EFFECT_COMMITTED_REQUEST = 3;
+const UPDATE_EFFECT_COMMITTED_REQUEST_CANCEL = 4;
+const UPDATE_EFFECT_CANCEL_COMMITTED_REQUEST = 5;
+const UPDATE_EFFECT_COMMITTED_CANCEL = 6;
+const UPDATE_EFFECT_COMMITTED_HOST = 7;
+const UPDATE_EFFECT_DELAY = 8;
+const UPDATE_EFFECT_TWO_REQUESTS = 9;
+const UPDATE_EFFECT_THREE_REQUESTS = 10;
+const UPDATE_EFFECT_COMMITTED_TWO_REQUESTS = 11;
+
+const NO_PLANNED_REQUEST: PlannedRequest = { name: "", payload: NO_BYTES, key: "", ok: "snapshot_loaded", err: "snapshot_failed" };
+
+function plannedRequest(name: string, payload: Uint8Array, key: string, ok: RequestReplyKind, err: RequestReplyKind): PlannedRequest {
+  return { name, payload, key, ok, err };
+}
+
+function baseUpdatePlan(model: Model, effect: number): UpdatePlan {
+  return { model, effect, hostName: "", hostPayload: NO_BYTES, firstRequest: NO_PLANNED_REQUEST,
+    secondRequest: NO_PLANNED_REQUEST, thirdRequest: NO_PLANNED_REQUEST, cancelKey: "",
+    delayKey: "", delayMs: 0, delayKind: "tool_status_tick" };
+}
+
+function modelPlan(model: Model): UpdatePlan {
+  return baseUpdatePlan(model, UPDATE_EFFECT_MODEL);
+}
+
+function hostPlan(model: Model, name: string, payload: Uint8Array): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_HOST), hostName: name, hostPayload: payload };
+}
+
+function requestPlan(model: Model, request: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_REQUEST), firstRequest: request };
+}
+
+function committedRequestPlan(model: Model, request: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_REQUEST), firstRequest: request };
+}
+
+function committedRequestCancelPlan(model: Model, request: PlannedRequest, key: string): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_REQUEST_CANCEL), firstRequest: request, cancelKey: key };
+}
+
+function cancelCommittedRequestPlan(model: Model, key: string, request: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_CANCEL_COMMITTED_REQUEST), firstRequest: request, cancelKey: key };
+}
+
+function committedCancelPlan(model: Model, key: string): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_CANCEL), cancelKey: key };
+}
+
+function committedHostPlan(model: Model, name: string, payload: Uint8Array): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_HOST), hostName: name, hostPayload: payload };
+}
+
+function delayPlan(model: Model, key: string, afterMs: number, kind: DelayedMessageKind): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_DELAY), delayKey: key, delayMs: afterMs, delayKind: kind };
+}
+
+function twoRequestPlan(model: Model, first: PlannedRequest, second: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_TWO_REQUESTS), firstRequest: first, secondRequest: second };
+}
+
+function threeRequestPlan(model: Model, first: PlannedRequest, second: PlannedRequest, third: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_THREE_REQUESTS), firstRequest: first, secondRequest: second, thirdRequest: third };
+}
+
+function navigatorLowEffect(decision: NavigatorDecision): UpdatePlan {
+  switch (decision.effect) {
+    case 1: return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
+    case 2: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.machines", decision.request, "cockpit-machines", "machines_loaded", "machines_failed"));
+    case 3: return committedRequestCancelPlan(decision.model,
+      plannedRequest("cockpit.navigation", decision.request, "cockpit-navigation", "navigation_loaded", "navigation_failed"),
+      "cockpit-window-command");
+    case 4: return committedRequestCancelPlan(decision.model,
+      plannedRequest("cockpit.keybindings", decision.request, "cockpit-keybindings", "keybindings_loaded", "keybindings_failed"),
+      "cockpit-window-command");
+    case 5: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.new-session", decision.request, "cockpit-new-session", "new_session_loaded", "new_session_failed"));
+    case 6: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-local-tools", "local_tool_loaded", "local_tool_failed"));
+    case 7: return requestPlan(decision.model,
+      plannedRequest("cockpit.appearance", decision.request, "cockpit-appearance", "appearance_loaded", "appearance_failed"));
+    default: return modelPlan(decision.model);
+  }
+}
+
+function navigatorMidEffect(decision: NavigatorDecision): UpdatePlan {
+  switch (decision.effect) {
+    case 8: return requestPlan(decision.model,
+      plannedRequest("cockpit.remote", decision.request, "cockpit-remote", "remote_loaded", "remote_failed"));
+    case 9: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.remote", decision.request, "cockpit-remote", "remote_loaded", "remote_failed"));
+    case 10: return requestPlan(decision.model,
+      plannedRequest("cockpit.window-command", decision.request, "cockpit-window-command", "window_action_loaded", "window_action_failed"));
+    case 11: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.tab-command", decision.request, "cockpit-tab-command", "tab_command_completed", "tab_command_failed"));
+    case 12: return requestPlan(decision.model,
+      plannedRequest("cockpit.navigation", decision.request, "cockpit-navigation", "navigation_loaded", "navigation_failed"));
+    case 13: return cancelCommittedRequestPlan(decision.model, "cockpit-new-session",
+      plannedRequest("cockpit.new-session", decision.request, "cockpit-new-session-cancel", "new_session_cancelled", "new_session_cancel_failed"));
+    case 14: return committedCancelPlan(decision.model, "cockpit-window-command");
+    default: return modelPlan(decision.model);
+  }
+}
+
+function navigatorHighEffect(decision: NavigatorDecision): UpdatePlan {
+  switch (decision.effect) {
+    case 15: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-tool-status", "local_tool_status_loaded", "local_tool_status_failed"));
+    case 16: return delayPlan(decision.model, "cockpit-tool-status-tick", 500, "tool_status_tick");
+    case 17: return requestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-tool-status", "local_tool_status_loaded", "local_tool_status_failed"));
+    case 18: return requestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-tool-status", "local_tool_acknowledged", "local_tool_ack_failed"));
+    case 19: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-tool-launch", "local_tool_launch_loaded", "local_tool_launch_failed"));
+    case 20: return hostPlan(decision.model, "cockpit.intent", decision.request);
+    case 21: return committedHostPlan(decision.model, "cockpit.intent", decision.request);
+    default: return modelPlan(decision.model);
+  }
+}
+
+function navigatorUpdate(decision: NavigatorDecision): UpdatePlan {
+  if (decision.effect <= 7) return navigatorLowEffect(decision);
+  if (decision.effect <= 14) return navigatorMidEffect(decision);
+  return navigatorHighEffect(decision);
+}
+
+function directoryUpdate(decision: DirectoryDecision): UpdatePlan {
+  const request = plannedRequest("cockpit.directory", decision.request, "cockpit-directory", "directory_loaded", "directory_failed");
+  if (decision.request.length > 0 && decision.committed) return committedRequestPlan(decision.model, request);
+  if (decision.request.length > 0) return requestPlan(decision.model, request);
+  if (decision.committed) return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
+  return modelPlan(decision.model);
+}
+
+function renameUpdate(decision: RenameDecision): UpdatePlan {
+  const request = plannedRequest("cockpit.session", decision.request, "cockpit-session", "session_loaded", "session_failed");
+  if (decision.request.length > 0 && decision.committed) return committedRequestPlan(decision.model, request);
+  if (decision.request.length > 0) return requestPlan(decision.model, request);
+  if (decision.committed) return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
+  return modelPlan(decision.model);
+}
+
+function commandResultUpdate(decision: TabCommandTransition): UpdatePlan {
+  if (decision.request.length === 0) return modelPlan(decision.model);
+  return requestPlan(decision.model,
+    plannedRequest("cockpit.command-results", decision.request, "cockpit-command-results", "command_result_loaded", "command_result_failed"));
+}
+
+function selfUpdateResult(decision: UpdateDecision): UpdatePlan {
+  if (decision.request.length === 0) return modelPlan(decision.model);
+  const updateRequest = plannedRequest("cockpit.update", decision.request, "cockpit-update", "update_loaded", "update_failed");
+  if (!decision.opening) return requestPlan(decision.model, updateRequest);
+  return committedThenTwoRequestsPlan(decision.model,
+    plannedRequest("cockpit.appearance", decision.appearanceRequest, "cockpit-appearance", "appearance_loaded", "appearance_failed"),
+    updateRequest);
+}
+
+function committedThenTwoRequestsPlan(model: Model, first: PlannedRequest, second: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_TWO_REQUESTS), firstRequest: first, secondRequest: second };
+}
+
+function describeKeybindingsRequest(): PlannedRequest {
+  return plannedRequest("cockpit.keybindings", keybindingRequest(0, 0, NO_BYTES),
+    "cockpit-keybindings", "keybindings_loaded", "keybindings_failed");
+}
+
+function appearanceUpdate(model: Model, decision: AppearanceDecision): UpdatePlan {
+  const next = decision.model;
+  if (decision.closed && model.pendingToolOpen) {
+    const editor = describeLocalTool(next, 2);
+    return committedRequestPlan(editor.model,
+      plannedRequest("cockpit.local-tools", editor.request, "cockpit-local-tools", "local_tool_loaded", "local_tool_failed"));
+  }
+  if (decision.opening) return committedRequestPlan(next,
+    plannedRequest("cockpit.appearance", decision.request, "cockpit-appearance", "appearance_loaded", "appearance_failed"));
+  if (decision.navigate) return committedRequestPlan(next,
+    plannedRequest("cockpit.navigation", navigationRequestFor(next), "cockpit-navigation", "navigation_loaded", "navigation_failed"));
+  if (decision.closed) return hostPlan(next, "cockpit.committed", NO_BYTES);
+  if (decision.loadBindings) return requestPlan(next, describeKeybindingsRequest());
+  if (decision.request.length === 0) return modelPlan(next);
+  return requestPlan(next,
+    plannedRequest("cockpit.appearance", decision.request, "cockpit-appearance", "appearance_loaded", "appearance_failed"));
+}
+
+function tabCommandUpdate(decision: TabCommandTransition, fromCommands: boolean): UpdatePlan {
+  if (decision.request.length === 0) {
+    if (fromCommands) return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
+    return modelPlan(decision.model);
+  }
+  const request = plannedRequest("cockpit.tab-command", decision.request, "cockpit-tab-command", "tab_command_completed", "tab_command_failed");
+  if (fromCommands) return committedRequestPlan(decision.model, request);
+  return requestPlan(decision.model, request);
+}
+
+function selectedCommand(model: Model, msg: Msg): PreparedMessage | null {
+  if (!model.paletteOpen || model.navigatorView !== 4) return { model, msg };
+  const action = selectedAction(model, msg);
+  if (action !== null) return { model: closePalette(model), msg: action };
+  if (msg.kind === "palette_submit" || msg.kind === "commands_pick") return null;
+  return { model, msg };
+}
+
+function selectionMessageUpdate(model: Model, msg: Msg): UpdatePlan | null {
+  switch (msg.kind) {
+    case "select_tab":
+      return hostPlan({ ...model, tabs: selectTab(model.tabs, msg.index),
+        visibleTabs: selectTab(model.visibleTabs, msg.index), selectedTab: msg.index },
+      "cockpit.intent", intent(1, model.engineRevision, msg.index, 0));
+    case "select_active_tab":
+      return hostPlan(model, "cockpit.intent", intent(1, model.engineRevision, msg.index, 255));
+    case "select_slot": {
+      const payload = legacySlotIntent(model.engineRevision, msg.slot);
+      if (payload.length === 0) return modelPlan(model);
+      return hostPlan(model, "cockpit.intent", payload);
+    }
+    case "reconnect":
+      return hostPlan(model, "cockpit.intent", intent(12, model.engineRevision, 0, 255));
+    default:
+      return null;
+  }
+}
+
+function emptyMessageUpdate(model: Model, msg: Msg): UpdatePlan | null {
+  switch (msg.kind) {
+    case "empty_new_tab":
+      if (model.emptyBusy || model.emptyWindows === 0) return modelPlan(model);
+      return requestPlan({ ...model, emptyBusy: true, emptyNotice: asciiBytes("Opening a new tab...") },
+        plannedRequest("cockpit.session", sessionRequest(SESSION_KIND_NEW_TAB, NO_BYTES), "cockpit-session-empty", "empty_loaded", "empty_failed"));
+    case "empty_dismiss":
+      if (!model.emptyPicked) return modelPlan(model);
+      return requestPlan(model,
+        plannedRequest("cockpit.session", sessionRequest(SESSION_KIND_DISMISS, NO_BYTES), "cockpit-session-empty", "empty_loaded", "empty_failed"));
+    case "empty_loaded":
+      return modelPlan(receiveEmpty(model, msg.body));
+    case "empty_failed":
+      return modelPlan({ ...model, emptyBusy: false, emptyNotice: asciiBytes("Could not open a tab there. Try again.") });
+    default:
+      return null;
+  }
+}
+
+function closedWindowUpdate(model: Model, window: number): UpdatePlan {
+  // Native retirement already matched the actual OS window incarnation.
+  // Withdraw its declaration before the SDK rebuilds; this label never
+  // authorizes a second lifecycle mutation against a recycled slot.
+  return committedRequestPlan(forgetClosedWindow(model, window),
+    plannedRequest("cockpit.snapshot", NO_BYTES, "cockpit-snapshot", "snapshot_loaded", "snapshot_failed"));
+}
+
+function tabPlacementUpdate(model: Model, fromCommands: boolean): UpdatePlan {
+  const placement: TabPlacement = model.tabPlacement === "top" ? "side" : "top";
+  const next = { ...model, tabPlacement: placement };
+  const payload = intent(4, model.engineRevision, placement === "side" ? 1 : 0, 255);
+  if (fromCommands) return committedHostPlan(next, "cockpit.intent", payload);
+  return hostPlan(next, "cockpit.intent", payload);
+}
+
+interface SnapshotRouting {
+  readonly projected: EngineSnapshot;
+  readonly scoped: Model;
+  readonly directoryRelists: boolean;
+  readonly askRemote: boolean;
+}
+
+function routeSnapshot(model: Model, loaded: LoadedSnapshotProjection): SnapshotRouting {
+  const projected = loaded.projected;
+  // An open Go to Directory names a listing on the connection that just
+  // moved: withdraw its rows, and list again once connected.
+  const directoryMoved = model.dirOpen && model.lastConnection !== 255 && projected.connection !== model.lastConnection;
+  const directoryRelists = directoryMoved && projected.connection === 2;
+  const synced = loaded.model;
+  const scoped = retainMachineInvalidation(directoryMoved ? relistDirectory(scopeOverlays(synced), directoryRelists) : scopeOverlays(synced));
+  // Remote status is asked for only when the connection moved (or a
+  // Connect to Host is waiting on it), never once per snapshot.
+  const askRemote = projected.connection !== model.lastConnection || model.hostAwaiting;
+  return { projected, scoped, directoryRelists, askRemote };
+}
+
+function snapshotWithoutNavigator(model: Model, routed: SnapshotRouting): UpdatePlan {
+  const remote = plannedRequest("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), "cockpit-remote", "remote_loaded", "remote_failed");
+  const session = plannedRequest("cockpit.session", sessionRequest(SESSION_KIND_STATUS, NO_BYTES), "cockpit-session", "session_loaded", "session_failed");
+  if (model.renameAwaiting && routed.askRemote) return twoRequestPlan(routed.scoped, remote, session);
+  if (model.renameAwaiting) return requestPlan(routed.scoped, session);
+  if (!routed.askRemote) return modelPlan(routed.scoped);
+  if (routed.directoryRelists) return twoRequestPlan(routed.scoped, remote,
+    plannedRequest("cockpit.directory", directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES),
+      "cockpit-directory", "directory_loaded", "directory_failed"));
+  return requestPlan(routed.scoped, remote);
+}
+
+function snapshotWithNavigator(routed: SnapshotRouting): UpdatePlan {
+  const refreshed = refreshNavigation(routed.scoped);
+  const navigation = plannedRequest("cockpit.navigation", navigationRequestFor(refreshed),
+    "cockpit-navigation", "navigation_loaded", "navigation_failed");
+  if (!routed.askRemote) return requestPlan(refreshed, navigation);
+  const remote = plannedRequest("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES),
+    "cockpit-remote", "remote_loaded", "remote_failed");
+  return twoRequestPlan(refreshed, navigation, remote);
+}
+
+function loadedSnapshotUpdate(model: Model, body: Uint8Array): UpdatePlan {
+  const loaded = projectLoadedSnapshot(model, body);
+  if (loaded === null) return modelPlan(engineUnavailable(model, asciiBytes("BAD SNAPSHOT")));
+  if (loaded.stale) return modelPlan(model);
+  const routed = routeSnapshot(model, loaded);
+  // Menus cannot coexist with the editors/pickers below. Native focus may
+  // retire one via a snapshot; release input before refreshing host status.
+  if (model.headerMenuWindow >= 0 && routed.scoped.headerMenuWindow < 0) return committedRequestPlan(routed.scoped,
+    plannedRequest("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES),
+      "cockpit-remote", "remote_loaded", "remote_failed"));
+  const machinePoll = refreshMachineSnapshot(routed.scoped);
+  if (machinePoll !== null) return requestPlan(machinePoll.model,
+    plannedRequest("cockpit.machines", machinePoll.request, "cockpit-machines", "machines_loaded", "machines_failed"));
+  if (model.newSessionAwaiting) return requestPlan(routed.scoped,
+    plannedRequest("cockpit.new-session", newSessionRequest(3, model.newSessionToken, NO_BYTES),
+      "cockpit-new-session", "new_session_loaded", "new_session_failed"));
+  if (!model.paletteOpen || model.navigatorView === 2 || model.navigatorView === 4) return snapshotWithoutNavigator(model, routed);
+  return snapshotWithNavigator(routed);
+}
+
+function eventModel(model: Model, sequence: WireU64): Model {
+  const read = requestCommandResults(model.commandResults);
+  return {
+    ...withdrawAgentRows(model),
+    commandResults: read.state,
+    engineSequence: sequence,
+    engineConnected: false,
+    status: asciiBytes("SYNCING"),
+    // Agent inspection drops the prior page; everyday navigator keeps held
+    // painted targets across the fence until the refreshed page lands.
+    paletteRows: model.agentsMode ? NO_ROWS : model.paletteRows,
+    paletteLoading: model.paletteOpen && (model.agentsMode || (model.navigatorView !== 2 && model.navigatorView !== 4)),
+    palettePrevious: model.agentsMode ? false : model.palettePrevious,
+    paletteNext: model.agentsMode ? false : model.paletteNext,
+    paletteNotice: model.agentsMode ? asciiBytes("Updating workspace and agent state...") : model.paletteNotice,
+  };
+}
+
+function eventRequests(next: Model, resultRequest: Uint8Array, directoryPoll: Uint8Array, pollDirectory: boolean): UpdatePlan {
+  const snapshotRequest = plannedRequest("cockpit.snapshot", NO_BYTES, "cockpit-snapshot", "snapshot_loaded", "snapshot_failed");
+  const results = plannedRequest("cockpit.command-results", resultRequest,
+    "cockpit-command-results", "command_result_loaded", "command_result_failed");
+  const directory = plannedRequest("cockpit.directory", directoryPoll, "cockpit-directory", "directory_loaded", "directory_failed");
+  if (resultRequest.length > 0 && pollDirectory) return threeRequestPlan(next, snapshotRequest, results, directory);
+  if (resultRequest.length > 0) return twoRequestPlan(next, snapshotRequest, results);
+  if (pollDirectory) return twoRequestPlan(next, snapshotRequest, directory);
+  return requestPlan(next, snapshotRequest);
+}
+
+function engineEventUpdate(model: Model, msg: Extract<Msg, { readonly kind: "engine_event" }>): UpdatePlan {
+  if (msg.state !== "data") {
+    const status = msg.state === "rejected" ? asciiBytes("ENGINE REFUSED") : asciiBytes("ENGINE CLOSED");
+    return modelPlan(engineUnavailable(model, status));
+  }
+  const event = invalidation(msg.bytes);
+  if (event === null) return modelPlan({ ...model, status: asciiBytes("ENGINE PROTOCOL ERROR") });
+  const read = requestCommandResults(model.commandResults);
+  const next = eventModel(model, event.sequence);
+  // A listing Go to Directory waits on settles in the provider drain
+  // that announced this invalidation; ask for its page with the snapshot.
+  const pollDirectory = model.dirOpen && model.dirAwaiting;
+  const directoryPoll = directoryRequest(DIR_KIND_PAGE, model.dirRequest, model.dirOffset, 0, model.dirQuery);
+  return eventRequests(next, read.request, directoryPoll, pollDirectory);
+}
+
+function applicationMessageUpdate(model: Model, msg: Msg, fromCommands: boolean): UpdatePlan {
+  switch (msg.kind) {
+    case "settings_reveal":
+      if (!model.settingsOpen || !model.configExists) return modelPlan(model);
+      return hostPlan(model, "cockpit.intent", intent(6, model.engineRevision, 0, 0));
+    case "native_command": {
+      const payload = intent(11, model.engineRevision, msg.command, 255);
+      if (fromCommands) return committedHostPlan(model, "cockpit.intent", payload);
+      return hostPlan(model, "cockpit.intent", payload);
+    }
+    case "clipboard_action":
+      return hostPlan(model, "cockpit.clipboard", msg.target);
+    case "engine_wake":
+      return modelPlan({ ...model });
+    case "snapshot_failed":
+      return modelPlan(engineUnavailable(model, asciiBytes("ENGINE UNAVAILABLE")));
+    default:
+      return modelPlan(model);
+  }
+}
+
+function finalMessageUpdate(model: Model, msg: Msg, fromCommands: boolean): UpdatePlan {
+  const selection = selectionMessageUpdate(model, msg);
+  if (selection !== null) return selection;
+  const empty = emptyMessageUpdate(model, msg);
+  if (empty !== null) return empty;
+  if (msg.kind === "window_closed") return closedWindowUpdate(model, msg.window);
+  if (msg.kind === "toggle_tab_placement") return tabPlacementUpdate(model, fromCommands);
+  if (msg.kind === "snapshot_loaded") return loadedSnapshotUpdate(model, msg.body);
+  if (msg.kind === "engine_event") return engineEventUpdate(model, msg);
+  return applicationMessageUpdate(model, msg, fromCommands);
+}
+
+function planUpdate(incoming: Model, msg: Msg): UpdatePlan {
+  incoming = validPresentationModel(incoming);
+  incoming = observeNativeLifecycle(incoming, msg);
   const prepared = prepareContinuations(incoming, msg);
   const fromCommands = commandDeparture(incoming, prepared.model);
   incoming = prepared.model;
   msg = prepared.msg;
-  if (incoming.paletteOpen && incoming.navigatorView === 4) {
-    const action = selectedAction(incoming, msg);
-    if (action !== null) { incoming = closePalette(incoming); msg = action; }
-    else if (msg.kind === "palette_submit" || msg.kind === "commands_pick") return { ...incoming, paletteNotice: asciiBytes("This command is unavailable in the captured context. Reopen Commands to use the current terminal.") };
-  }
+  const selected = selectedCommand(incoming, msg);
+  if (selected === null) return modelPlan({ ...incoming, paletteNotice: asciiBytes("This command is unavailable in the captured context. Reopen Commands to use the current terminal.") });
+  incoming = selected.model;
+  msg = selected.msg;
   const navigator = navigatorTransition(incoming, msg);
-  if (navigator !== null) {
-    if (navigator.effect === 1) return [navigator.model, Cmd.host("cockpit.committed", NO_BYTES)];
-    if (navigator.effect === 2) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.machines", navigator.request, { key: "cockpit-machines", ok: "machines_loaded", err: "machines_failed" }),
-    ])];
-    if (navigator.effect === 3) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.navigation", navigator.request, { key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed" }),
-      Cmd.cancel("cockpit-window-command"),
-    ])];
-    if (navigator.effect === 4) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.keybindings", navigator.request, { key: "cockpit-keybindings", ok: "keybindings_loaded", err: "keybindings_failed" }),
-      Cmd.cancel("cockpit-window-command"),
-    ])];
-    if (navigator.effect === 5) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.new-session", navigator.request, { key: "cockpit-new-session", ok: "new_session_loaded", err: "new_session_failed" }),
-    ])];
-    if (navigator.effect === 6) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-local-tools", ok: "local_tool_loaded", err: "local_tool_failed" }),
-    ])];
-    if (navigator.effect === 7) return [navigator.model, Cmd.request("cockpit.appearance", navigator.request, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" })];
-    if (navigator.effect === 8) return [navigator.model, Cmd.request("cockpit.remote", navigator.request, { key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed" })];
-    if (navigator.effect === 9) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.remote", navigator.request, { key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed" }),
-    ])];
-    if (navigator.effect === 10) return [navigator.model, Cmd.request("cockpit.window-command", navigator.request, { key: "cockpit-window-command", ok: "window_action_loaded", err: "window_action_failed" })];
-    if (navigator.effect === 11) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.tab-command", navigator.request, { key: "cockpit-tab-command", ok: "tab_command_completed", err: "tab_command_failed" }),
-    ])];
-    if (navigator.effect === 12) return [navigator.model, Cmd.request("cockpit.navigation", navigator.request, { key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed" })];
-    if (navigator.effect === 13) return [navigator.model, Cmd.batch([
-      Cmd.cancel("cockpit-new-session"),
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.new-session", navigator.request, { key: "cockpit-new-session-cancel", ok: "new_session_cancelled", err: "new_session_cancel_failed" }),
-    ])];
-    if (navigator.effect === 14) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.cancel("cockpit-window-command"),
-    ])];
-    if (navigator.effect === 15) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-status", ok: "local_tool_status_loaded", err: "local_tool_status_failed" }),
-    ])];
-    if (navigator.effect === 16) return [navigator.model, Cmd.delay("cockpit-tool-status-tick", 500, "tool_status_tick")];
-    if (navigator.effect === 17) return [navigator.model, Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-status", ok: "local_tool_status_loaded", err: "local_tool_status_failed" })];
-    if (navigator.effect === 18) return [navigator.model, Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-status", ok: "local_tool_acknowledged", err: "local_tool_ack_failed" })];
-    if (navigator.effect === 19) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-launch", ok: "local_tool_launch_loaded", err: "local_tool_launch_failed" }),
-    ])];
-    if (navigator.effect === 20) return [navigator.model, Cmd.host("cockpit.intent", navigator.request)];
-    if (navigator.effect === 21) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.host("cockpit.intent", navigator.request),
-    ])];
-    return navigator.model;
-  }
+  if (navigator !== null) return navigatorUpdate(navigator);
   // Go to Directory first: while it is open it owns Escape and the arrows.
   const directory = directoryTransition(incoming, msg);
-  if (directory !== null) {
-    const decided = directory.model;
-    if (directory.request.length > 0 && directory.committed) return [decided, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.directory", directory.request, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
-    ])];
-    if (directory.request.length > 0) {
-      return [decided, Cmd.request("cockpit.directory", directory.request, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" })];
-    }
-    if (directory.committed) return [decided, Cmd.host("cockpit.committed", NO_BYTES)];
-    return decided;
-  }
+  if (directory !== null) return directoryUpdate(directory);
   const undirected = displaceDirectory(incoming, msg);
   // Rename Session next: while it is open it owns Escape and its field.
   const rename = renameTransition(undirected, msg);
-  if (rename !== null) {
-    const decided = rename.model;
-    if (rename.request.length > 0 && rename.committed) return [decided, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.session", rename.request, { key: "cockpit-session", ok: "session_loaded", err: "session_failed" }),
-    ])];
-    if (rename.request.length > 0) {
-      return [decided, Cmd.request("cockpit.session", rename.request, { key: "cockpit-session", ok: "session_loaded", err: "session_failed" })];
-    }
-    if (rename.committed) return [decided, Cmd.host("cockpit.committed", NO_BYTES)];
-    return decided;
-  }
+  if (rename !== null) return renameUpdate(rename);
   const model = displaceRename(undirected, msg);
   const result = resultTransition(model, msg);
-  if (result !== null) {
-    if (result.request.length === 0) return result.model;
-    return [result.model, Cmd.request("cockpit.command-results", result.request, {
-      key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
-    })];
-  }
+  if (result !== null) return commandResultUpdate(result);
   const selfUpdate = handleSelfUpdate(model, msg);
-  if (selfUpdate !== null) {
-    if (selfUpdate.request.length === 0) return selfUpdate.model;
-    if (selfUpdate.opening) {
-      return [selfUpdate.model, Cmd.batch([
-        Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.request("cockpit.appearance", selfUpdate.appearanceRequest, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" }),
-        Cmd.request("cockpit.update", selfUpdate.request, { key: "cockpit-update", ok: "update_loaded", err: "update_failed" }),
-      ])];
-    }
-    return [selfUpdate.model, Cmd.request("cockpit.update", selfUpdate.request, { key: "cockpit-update", ok: "update_loaded", err: "update_failed" })];
-  }
+  if (selfUpdate !== null) return selfUpdateResult(selfUpdate);
   const appearance = updateAppearance(model, msg);
-  if (appearance !== null) {
-    const next = appearance.model;
-    if (appearance.closed && model.pendingToolOpen) {
-      const editor = describeLocalTool(next, 2);
-      return [editor.model, Cmd.batch([
-        Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.request("cockpit.local-tools", editor.request, { key: "cockpit-local-tools", ok: "local_tool_loaded", err: "local_tool_failed" }),
-      ])];
-    }
-    if (appearance.opening) return [next, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.appearance", appearance.request, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" }),
-    ])];
-    if (appearance.navigate) return [next, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.navigation", navigationRequestFor(next), {
-        key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
-      }),
-    ])];
-    if (appearance.closed) return [next, Cmd.host("cockpit.committed", NO_BYTES)];
-    if (appearance.request.length === 0) return next;
-    return [next, Cmd.request("cockpit.appearance", appearance.request, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" })];
-  }
+  if (appearance !== null) return appearanceUpdate(model, appearance);
   const command = tabCommandTransition(model, msg);
-  if (command !== null) {
-    if (command.request.length === 0) {
-      if (fromCommands) return [command.model, Cmd.host("cockpit.committed", NO_BYTES)];
-      return command.model;
-    }
-    if (fromCommands) return [command.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.tab-command", command.request, { key: "cockpit-tab-command", ok: "tab_command_completed", err: "tab_command_failed" }),
-    ])];
-    return [command.model, Cmd.request("cockpit.tab-command", command.request, {
-      key: "cockpit-tab-command", ok: "tab_command_completed", err: "tab_command_failed",
-    })];
-  }
-  switch (msg.kind) {
-    case "select_tab":
-      return [
-        {
-          ...model,
-          tabs: selectTab(model.tabs, msg.index),
-          visibleTabs: selectTab(model.visibleTabs, msg.index),
-          selectedTab: msg.index,
-        },
-        Cmd.host("cockpit.intent", intent(1, model.engineRevision, msg.index, 0)),
-      ];
-    case "select_active_tab":
-      return [model, Cmd.host("cockpit.intent", intent(1, model.engineRevision, msg.index, 255))];
-    case "select_slot": {
-      const payload = legacySlotIntent(model.engineRevision, msg.slot);
-      if (payload.length === 0) return model;
-      return [model, Cmd.host("cockpit.intent", payload)];
-    }
-    case "reconnect":
-      return [model, Cmd.host("cockpit.intent", intent(12, model.engineRevision, 0, 255))];
-    case "empty_new_tab":
-      if (model.emptyBusy || model.emptyWindows === 0) return model;
-      return [{ ...model, emptyBusy: true, emptyNotice: asciiBytes("Opening a new tab...") },
-        Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_NEW_TAB, NO_BYTES), {
-          key: "cockpit-session-empty", ok: "empty_loaded", err: "empty_failed",
-        })];
-    case "empty_dismiss":
-      if (!model.emptyPicked) return model;
-      return [model, Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_DISMISS, NO_BYTES), {
-        key: "cockpit-session-empty", ok: "empty_loaded", err: "empty_failed",
-      })];
-    case "empty_loaded":
-      return receiveEmpty(model, msg.body);
-    case "empty_failed":
-      return { ...model, emptyBusy: false, emptyNotice: asciiBytes("Could not open a tab there. Try again.") };
-    case "window_closed": {
-      // Native retirement already matched the actual OS window incarnation.
-      // Withdraw its declaration before the SDK rebuilds; this label never
-      // authorizes a second lifecycle mutation against a recycled slot.
-      return [forgetClosedWindow(model, msg.window), Cmd.batch([
+  if (command !== null) return tabCommandUpdate(command, fromCommands);
+  return finalMessageUpdate(model, msg, fromCommands);
+}
+
+export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+  const planned = planUpdate(incoming, msg);
+  const first = planned.firstRequest;
+  const second = planned.secondRequest;
+  const third = planned.thirdRequest;
+  switch (planned.effect) {
+    case UPDATE_EFFECT_HOST:
+      return [planned.model, Cmd.host(planned.hostName, planned.hostPayload)];
+    case UPDATE_EFFECT_REQUEST:
+      return [planned.model, Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err })];
+    case UPDATE_EFFECT_COMMITTED_REQUEST:
+      return [planned.model, Cmd.batch([
         Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.request("cockpit.snapshot", NO_BYTES, {
-          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-        }),
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
       ])];
-    }
-    case "toggle_tab_placement": {
-      const placement: TabPlacement = model.tabPlacement === "top" ? "side" : "top";
-      if (fromCommands) return [{ ...model, tabPlacement: placement }, Cmd.batch([
+    case UPDATE_EFFECT_COMMITTED_REQUEST_CANCEL:
+      return [planned.model, Cmd.batch([
         Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.host("cockpit.intent", intent(4, model.engineRevision, placement === "side" ? 1 : 0, 255)),
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
+        Cmd.cancel(planned.cancelKey),
       ])];
-      return [
-        { ...model, tabPlacement: placement },
-        Cmd.host("cockpit.intent", intent(4, model.engineRevision, placement === "side" ? 1 : 0, 255)),
-      ];
-    }
-    case "settings_reveal":
-      if (!model.settingsOpen || !model.configExists) return model;
-      return [model, Cmd.host("cockpit.intent", intent(6, model.engineRevision, 0, 0))];
-    case "native_command":
-      if (fromCommands) return [model, Cmd.batch([Cmd.host("cockpit.committed", NO_BYTES), Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))])];
-      return [model, Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))];
-    case "clipboard_action":
-      return [model, Cmd.host("cockpit.clipboard", msg.target)];
-    case "engine_wake":
-      return { ...model };
-    case "snapshot_loaded": {
-      const projected = snapshot(msg.body);
-      if (projected === null) {
-        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
-      }
-      // Bits 0..4 are the engine model's own limit and write refusals; bit 7
-      // is the seam's: the last intent named a revision the engine had left.
-      const refusedMask = projected.flags & 159;
-      const rawSelected = projected.selectedTab;
-      if (!(rawSelected >= 0 && rawSelected <= 255)) {
-        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
-      }
-      const selectedTab = Math.trunc(rawSelected);
-      const rawWidth = projected.tabWidth;
-      if (!(rawWidth >= 0 && rawWidth <= 65535)) {
-        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
-      }
-      const tabWidth = Math.trunc(rawWidth);
-      const hidden = projected.tabs.length - projected.runCount;
-      const active = projected.activeTheme;
-      const cursor = model.settingsOpen ? model.settingsCursor : active >= 0 && active <= 32 && active < projected.themes.length ? Math.trunc(active) : 0;
-      const refused = (projected.flags & 8) !== 0;
-      const connection = projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255;
-      const mainTabs = stampSlots(projected.tabs, 0, projected.agents, connection);
-      const mainVisible = sliceRun(mainTabs, projected.runStart, projected.runCount);
-      const w1 = windowState(1, findSection(projected.secondary, 1), projected.agents, connection);
-      const w2 = windowState(2, findSection(projected.secondary, 2), projected.agents, connection);
-      const w3 = windowState(3, findSection(projected.secondary, 3), projected.agents, connection);
-      const w4 = windowState(4, findSection(projected.secondary, 4), projected.agents, connection);
-      // The width crosses a record into an integer slot; the proof is
-      // restated at the boundary, once per slot.
-      const width1 = w1.tabWidth >= 0 && w1.tabWidth <= 65535 ? Math.trunc(w1.tabWidth) : 168;
-      const width2 = w2.tabWidth >= 0 && w2.tabWidth <= 65535 ? Math.trunc(w2.tabWidth) : 168;
-      const width3 = w3.tabWidth >= 0 && w3.tabWidth <= 65535 ? Math.trunc(w3.tabWidth) : 168;
-      const width4 = w4.tabWidth >= 0 && w4.tabWidth <= 65535 ? Math.trunc(w4.tabWidth) : 168;
-      const rawEmpty = projected.emptySession.windows;
-      const legacyEmpty = rawEmpty >= 0 && rawEmpty <= 31 ? Math.trunc(rawEmpty) : 0;
-      const contexts = projected.windowContexts;
-      const emptyMaskRaw = emptyMaskFromContexts(contexts, legacyEmpty);
-      const emptyMask = emptyMaskRaw >= 0 && emptyMaskRaw <= 31 ? Math.trunc(emptyMaskRaw) : 0;
-      const sessionLabel = projected.currentSession.length > 0 ? projected.currentSession : asciiBytes("Sessions");
-      const hostLabel = projected.coordinatorEndpoint.length > 0 ? projected.coordinatorEndpoint : asciiBytes("Machine not yet known");
-      const primaryRecord = findWindowContext(contexts.records, 0);
-      const mainContext = windowChromeContext(true, 0, 1, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const window1Context = windowChromeContext(w1.open, 1, 2, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const window2Context = windowChromeContext(w2.open, 2, 4, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const window3Context = windowChromeContext(w3.open, 3, 8, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const window4Context = windowChromeContext(w4.open, 4, 16, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const refusedLocal = refusedMask !== 0;
-      const primaryStatus = windowConnectionStatus(true, 0, contexts, projected.connection, projected.terminalStates[0], refusedLocal);
-      const emptyPicked = contexts.present
-        ? mainContext.emptyPicked || window1Context.emptyPicked || window2Context.emptyPicked || window3Context.emptyPicked || window4Context.emptyPicked
-        : projected.emptySession.picked;
-      const emptyOpening = contexts.present ? false : projected.emptySession.opening;
-      const primaryHost = contexts.present
-        ? (primaryRecord !== null && primaryRecord.host.length > 0 ? primaryRecord.host : asciiBytes("Machine not yet known"))
-        : hostLabel;
-      const synced: Model = {
-        ...model,
-        activeWindow: projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0,
-        window1Open: w1.open,
-        window1Tabs: w1.visibleTabs,
-        window1TabWidth: width1,
-        window1HasOverflow: w1.hasOverflow,
-        window1OverflowLabel: w1.overflowLabel,
-        window2Open: w2.open,
-        window2Tabs: w2.visibleTabs,
-        window2TabWidth: width2,
-        window2HasOverflow: w2.hasOverflow,
-        window2OverflowLabel: w2.overflowLabel,
-        window3Open: w3.open,
-        window3Tabs: w3.visibleTabs,
-        window3TabWidth: width3,
-        window3HasOverflow: w3.hasOverflow,
-        window3OverflowLabel: w3.overflowLabel,
-        window4Open: w4.open,
-        window4Tabs: w4.visibleTabs,
-        window4TabWidth: width4,
-        window4HasOverflow: w4.hasOverflow,
-        window4OverflowLabel: w4.overflowLabel,
-        themes: themeRows(projected.themes, active, cursor),
-        settingsCursor: cursor,
-        configExists: projected.configExists,
-        configNotice: configNotice(projected.configEnabled, projected.configProbed, projected.configExists, projected.configWritable, refused, projected.configPath),
-        tabs: mainTabs,
-        visibleTabs: mainVisible,
-        railRows: railRows(mainTabs),
-        agentCountLabel: joinBytes(asciiBytes("Agents "), decimalBytes(projected.agentTotal), NO_BYTES),
-        workspaceLabel: mainContext.title,
-        mainContext,
-        window1Context,
-        window2Context,
-        window3Context,
-        window4Context,
-        coordinatorEndpoint: projected.coordinatorEndpoint,
-        machineLabel: primaryHost,
-        connectionDetail: projected.connectionDetail,
-        window1RailRows: railRows(w1.tabs),
-        window2RailRows: railRows(w2.tabs),
-        window3RailRows: railRows(w3.tabs),
-        window4RailRows: railRows(w4.tabs),
-        tabWidth,
-        hasOverflow: hidden > 0,
-        overflowLabel: hidden > 0 ? overflowLabel(hidden) : new Uint8Array(0),
-        selectedTab,
-        tabPlacement: projected.tabPlacement === 1 ? "side" : "top",
-        engineConnected: true,
-        engineSequence: projected.sequence,
-        engineRevision: projected.revision,
-        canReconnect: projected.connection === 3,
-        lastConnection: projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255,
-        connectionStatus: contexts.present && primaryRecord === null
-          ? asciiBytes("Connection status unavailable")
-          : remoteConnectionStatus(model, primaryStatus),
-        window1Status: windowConnectionStatus(w1.open, 1, contexts, projected.connection, projected.terminalStates[1], refusedLocal),
-        window2Status: windowConnectionStatus(w2.open, 2, contexts, projected.connection, projected.terminalStates[2], refusedLocal),
-        window3Status: windowConnectionStatus(w3.open, 3, contexts, projected.connection, projected.terminalStates[3], refusedLocal),
-        window4Status: windowConnectionStatus(w4.open, 4, contexts, projected.connection, projected.terminalStates[4], refusedLocal),
-        status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
-        emptyWindows: emptyMask,
-        emptyName: projected.emptySession.name,
-        emptyDetail: joinBytes(asciiBytes("Empty session on "), projected.emptySession.host, NO_BYTES),
-        emptyPicked,
-        emptyBusy: emptyMask !== 0 && (model.emptyBusy || emptyOpening),
-        emptyNotice: emptyMask === 0 ? NO_BYTES : model.emptyNotice,
-      };
-      // An open Go to Directory names a listing on the connection that just
-      // moved: withdraw its rows, and list again once connected.
-      const directoryMoved = model.dirOpen && model.lastConnection !== 255 && projected.connection !== model.lastConnection;
-      const directoryRelists = directoryMoved && projected.connection === 2;
-      const scoped = retainMachineInvalidation(directoryMoved ? relistDirectory(scopeOverlays(synced), directoryRelists) : scopeOverlays(synced));
-      // Menus cannot coexist with the editors/pickers below. Native focus may
-      // retire one via a snapshot; release input before refreshing host status.
-      if (model.headerMenuWindow >= 0 && scoped.headerMenuWindow < 0) return [scoped, Cmd.batch([
+    case UPDATE_EFFECT_CANCEL_COMMITTED_REQUEST:
+      return [planned.model, Cmd.batch([
+        Cmd.cancel(planned.cancelKey),
         Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-        }),
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
       ])];
-      const machinePoll = refreshMachineSnapshot(scoped);
-      if (machinePoll !== null) return [machinePoll.model, Cmd.request("cockpit.machines", machinePoll.request, { key: "cockpit-machines", ok: "machines_loaded", err: "machines_failed" })];
-      // Remote status is asked for only when the connection moved (or a
-      // Connect to Host is waiting on it), never once per snapshot.
-      const askRemote = projected.connection !== model.lastConnection || model.hostAwaiting;
-      if (model.newSessionAwaiting) return [scoped, Cmd.request("cockpit.new-session", newSessionRequest(3, model.newSessionToken, NO_BYTES), {
-        key: "cockpit-new-session", ok: "new_session_loaded", err: "new_session_failed",
-      })];
-      if (!model.paletteOpen || model.navigatorView === 2 || model.navigatorView === 4) {
-        // A rename waits on its coordinator: each snapshot asks how it went.
-        if (model.renameAwaiting && askRemote) return [scoped, Cmd.batch([
-          Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-            key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-          }),
-          Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_STATUS, NO_BYTES), {
-            key: "cockpit-session", ok: "session_loaded", err: "session_failed",
-          }),
-        ])];
-        if (model.renameAwaiting) return [scoped, Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_STATUS, NO_BYTES), {
-          key: "cockpit-session", ok: "session_loaded", err: "session_failed",
-        })];
-        if (!askRemote) return scoped;
-        if (directoryRelists) return [scoped, Cmd.batch([
-          Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-            key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-          }),
-          Cmd.request("cockpit.directory", directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES), {
-            key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed",
-          }),
-        ])];
-        return [scoped, Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-        })];
-      }
-      if (!askRemote) {
-        const refreshed = refreshNavigation(scoped);
-        return [refreshed, Cmd.request("cockpit.navigation", navigationRequestFor(refreshed), {
-          key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
-        })];
-      }
-      return [refreshNavigation(scoped), Cmd.batch([
-        Cmd.request("cockpit.navigation", navigationRequestFor(refreshNavigation(scoped)), {
-          key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
-        }),
-        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-        }),
-      ])];    }
-    case "snapshot_failed":
-      return engineUnavailable(model, asciiBytes("ENGINE UNAVAILABLE"));
-    case "engine_event": {
-      if (msg.state !== "data") {
-        return engineUnavailable(model, msg.state === "rejected" ? asciiBytes("ENGINE REFUSED") : asciiBytes("ENGINE CLOSED"));
-      }
-      const event = invalidation(msg.bytes);
-      if (event === null) return { ...model, status: asciiBytes("ENGINE PROTOCOL ERROR") };
-      const read = requestCommandResults(model.commandResults);
-      const next = {
-        ...withdrawAgentRows(model),
-        commandResults: read.state,
-        engineSequence: event.sequence,
-        engineConnected: false,
-        status: asciiBytes("SYNCING"),
-        // Agent inspection drops the prior page; everyday navigator keeps held
-        // painted targets across the fence until the refreshed page lands.
-        paletteRows: model.agentsMode ? NO_ROWS : model.paletteRows,
-        paletteLoading: model.paletteOpen && (model.agentsMode || (model.navigatorView !== 2 && model.navigatorView !== 4)),
-        palettePrevious: model.agentsMode ? false : model.palettePrevious,
-        paletteNext: model.agentsMode ? false : model.paletteNext,
-        paletteNotice: model.agentsMode ? asciiBytes("Updating workspace and agent state...") : model.paletteNotice,
-      };
-      // A listing Go to Directory waits on settles in the provider drain
-      // that announced this invalidation; ask for its page with the snapshot.
-      const pollDirectory = model.dirOpen && model.dirAwaiting;
-      const directoryPoll = directoryRequest(DIR_KIND_PAGE, model.dirRequest, model.dirOffset, 0, model.dirQuery);
-      if (read.request.length > 0 && pollDirectory) return [next, Cmd.batch([
-        Cmd.request("cockpit.snapshot", NO_BYTES, {
-          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-        }),
-        Cmd.request("cockpit.command-results", read.request, {
-          key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
-        }),
-        Cmd.request("cockpit.directory", directoryPoll, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
+    case UPDATE_EFFECT_COMMITTED_CANCEL:
+      return [planned.model, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.cancel(planned.cancelKey),
       ])];
-      if (read.request.length > 0) return [next, Cmd.batch([
-        Cmd.request("cockpit.snapshot", NO_BYTES, {
-          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-        }),
-        Cmd.request("cockpit.command-results", read.request, {
-          key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
-        }),
+    case UPDATE_EFFECT_COMMITTED_HOST:
+      return [planned.model, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.host(planned.hostName, planned.hostPayload),
       ])];
-      if (pollDirectory) return [next, Cmd.batch([
-        Cmd.request("cockpit.snapshot", NO_BYTES, {
-          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-        }),
-        Cmd.request("cockpit.directory", directoryPoll, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
+    case UPDATE_EFFECT_DELAY:
+      return [planned.model, Cmd.delay(planned.delayKey, planned.delayMs, planned.delayKind)];
+    case UPDATE_EFFECT_TWO_REQUESTS:
+      return [planned.model, Cmd.batch([
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
+        Cmd.request(second.name, second.payload, { key: second.key, ok: second.ok, err: second.err }),
       ])];
-      return [
-        next,
-        Cmd.request("cockpit.snapshot", new Uint8Array(0), {
-          key: "cockpit-snapshot",
-          ok: "snapshot_loaded",
-          err: "snapshot_failed",
-        }),
-      ];
-    }
+    case UPDATE_EFFECT_THREE_REQUESTS:
+      return [planned.model, Cmd.batch([
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
+        Cmd.request(second.name, second.payload, { key: second.key, ok: second.ok, err: second.err }),
+        Cmd.request(third.name, third.payload, { key: third.key, ok: third.ok, err: third.err }),
+      ])];
+    case UPDATE_EFFECT_COMMITTED_TWO_REQUESTS:
+      return [planned.model, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
+        Cmd.request(second.name, second.payload, { key: second.key, ok: second.ok, err: second.err }),
+      ])];
     default:
-      return model;
+      return planned.model;
   }
 }

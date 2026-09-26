@@ -71,6 +71,10 @@ FFI_PROFILE="ffi-release"
 MEASURE_FIRST_FRAME=0
 BUILD_DURATION_NS="skipped"
 LAUNCH_STARTED_NS=0
+FRONT_PID=""
+DEV_APP_PID=""
+DEV_APP_OWNED=0
+DETACH_SUCCEEDED=0
 
 wall_ns() {
     /usr/bin/python3 -c 'import time; print(time.time_ns())'
@@ -165,6 +169,33 @@ measure_first_frame() {
     fi
 }
 
+front_app() {
+    local process_name="$1" timeout_seconds="$2"
+    local deadline=$((SECONDS + timeout_seconds)) status
+
+    while [[ "$SECONDS" -lt "$deadline" ]]; do
+        osascript -e "tell application \"System Events\" to set frontmost of process \"${process_name}\" to true" >/dev/null 2>&1 &
+        FRONT_PID=$!
+        while kill -0 "$FRONT_PID" 2>/dev/null; do
+            if [[ "$SECONDS" -ge "$deadline" ]]; then
+                kill -KILL "$FRONT_PID" 2>/dev/null || true
+                wait "$FRONT_PID" 2>/dev/null || true
+                FRONT_PID=""
+                return 1
+            fi
+            sleep 0.1
+        done
+
+        status=0
+        wait "$FRONT_PID" || status=$?
+        FRONT_PID=""
+        [[ "$status" == 0 ]] && return 0
+        [[ "$SECONDS" -ge "$deadline" ]] && return 1
+        sleep 0.5
+    done
+    return 1
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --debug) OPTIMIZE="Debug" ;;
@@ -218,6 +249,7 @@ fi
 EXECUTABLE="$(dev_app_stage "${ROOT}/zig-out/package/phux-cockpit.app" "$STAGED_APP")"
 
 read -r staged_id staged_executable staged_name <<<"$(dev_app_identity "$STAGED_APP")"
+# shellcheck disable=SC2034 # consumed by app-instance.sh after sourcing
 APP_INSTANCE_NAME="$staged_executable"
 printf '\n'
 printf 'running:  %s\n' "$STAGED_APP"
@@ -250,22 +282,28 @@ if [[ "$MEASURE_FIRST_FRAME" == "1" ]]; then
     LAUNCH_STARTED_NS="$(wall_ns)"
     launch_env+=(NATIVE_SDK_WINDOW_TIMING=1 NATIVE_SDK_GPU_DRAW_TRACE=1)
 fi
-dev_app_launch "$EXECUTABLE" "$DEV_HOME" "$CONFIG" "$LOG" "${launch_env[@]}"
-printf 'pid %s, log %s\n' "$DEV_APP_PID" "$LOG"
-
 cleanup() {
-    [[ "$DETACH" == "1" ]] && return 0
-    kill "$DEV_APP_PID" 2>/dev/null || true
+    if [[ -n "$FRONT_PID" ]]; then
+        kill -KILL "$FRONT_PID" 2>/dev/null || true
+        wait "$FRONT_PID" 2>/dev/null || true
+    fi
+    if [[ "$DEV_APP_OWNED" == "1" && "$DETACH_SUCCEEDED" != "1" ]]; then
+        kill "$DEV_APP_PID" 2>/dev/null || true
+        wait "$DEV_APP_PID" 2>/dev/null || true
+        DEV_APP_OWNED=0
+    fi
 }
 trap cleanup EXIT
+
+dev_app_launch "$EXECUTABLE" "$DEV_HOME" "$CONFIG" "$LOG" "${launch_env[@]}"
+DEV_APP_OWNED=1
+printf 'pid %s, log %s\n' "$DEV_APP_PID" "$LOG"
 
 # Fail here rather than leaving a half-started app: if the name does not resolve
 # to exactly this pid, every later `pgrep -x` and every System Events activation
 # in this session is already ambiguous.
 dev_app_wait_named "$staged_executable" "$DEV_APP_PID"
 if [[ "$MEASURE_FIRST_FRAME" == "1" ]] && ! measure_first_frame; then
-    # A failed detached measurement must not leave the failed subject running.
-    DETACH=0
     exit 1
 fi
 
@@ -276,17 +314,18 @@ fi
 # Retried, because the process exists (pgrep sees it) several seconds before
 # System Events does, and a single attempt right after launch fails on a
 # perfectly healthy app -- it reported "needs Accessibility permission" on a
-# machine that had the grant. Failure after the deadline is still not fatal: a
-# machine without the grant cannot be activated this way at all, and the app is
-# already running.
-front_deadline=$((SECONDS + 15))
-until osascript -e "tell application \"System Events\" to set frontmost of process \"${staged_executable}\" to true" >/dev/null 2>&1; do
-    if [[ "$SECONDS" -ge "$front_deadline" ]]; then
-        printf 'note: could not front the window in 15s (System Events may need an Accessibility grant)\n'
-        break
-    fi
-    sleep 0.5
-done
+# machine that had the grant. Each attempt runs in the background so a wedged
+# System Events request cannot prevent the deadline itself from firing. Failure
+# after the deadline is still not fatal: the app is already running.
+front_timeout_seconds="${PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS:-15}"
+if [[ ! "$front_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'error: PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS must be a positive integer\n' >&2
+    exit 2
+fi
+if ! front_app "$staged_executable" "$front_timeout_seconds"; then
+    printf 'note: could not front the window in %ss (System Events may need an Accessibility grant)\n' \
+        "$front_timeout_seconds"
+fi
 
 if [[ "$AUTOMATION" == "1" && "$BUILD" == "1" ]]; then
     printf '\nautomation is on. The dropbox is resolved against the app CWD, which\n'
@@ -297,11 +336,13 @@ fi
 
 if [[ "$DETACH" == "1" ]]; then
     printf 'detached. kill %s to stop it.\n' "$DEV_APP_PID"
+    DETACH_SUCCEEDED=1
     exit 0
 fi
 
 printf 'attached. ctrl-c to quit.\n'
 status=0
 wait "$DEV_APP_PID" || status=$?
+DEV_APP_OWNED=0
 printf 'app exited (status %s). log: %s\n' "$status" "$LOG"
 exit "$status"

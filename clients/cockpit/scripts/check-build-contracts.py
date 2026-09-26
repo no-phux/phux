@@ -5,9 +5,11 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -245,12 +247,6 @@ class BuildContracts(unittest.TestCase):
         self.assertIn("_ring_core_0_17_14__p256_mul_mont", checker)
         self.assertIn("_ring_core_0_17_14__p256_sqr_mont", checker)
         self.assertIn("zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all", workflow)
-        node_test = "node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs"
-        justfile = (REPO_ROOT / "just" / "cockpit.just").read_text()
-        self.assertIn("cockpit-node-test:", justfile)
-        self.assertIn(node_test, justfile)
-        self.assertIn(node_test, workflow)
-        self.assertIn("npm ci --ignore-scripts --no-audit --no-fund", workflow)
         self.assertEqual(len(re.findall(r"zig-build\.sh test", workflow)), 1)
         self.assertNotIn("Test the app graph without the Phux provider", workflow)
         self.assertNotIn("cockpit-rust-artifacts", workflow)
@@ -264,6 +260,81 @@ class BuildContracts(unittest.TestCase):
         self.assertIn("cancel-in-progress: true", workflow)
         self.assertIn("uses: ./.github/actions/classify-changes", workflow)
         self.assertNotRegex(workflow, r"(?m)^    paths:")
+
+    def test_node_model_suite_gates_local_and_ci_once(self):
+        justfile = (REPO_ROOT / "just" / "cockpit.just").read_text()
+        workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
+        helper = (ROOT / "scripts/cockpit-node-test.sh").read_text()
+        self.assertRegex(justfile, r"(?m)^cockpit-test:.*\bcockpit-node-test\b")
+        self.assertRegex(justfile, r"(?m)^cockpit-node-test:\n    \./scripts/cockpit-node-test\.sh$")
+        self.assertEqual(workflow.count("run: ./scripts/cockpit-node-test.sh"), 1)
+        self.assertIn("npm ci --ignore-scripts --no-audit --no-fund", helper)
+        self.assertIn("node --import ./src/tests/navigation-loader.mjs --test", helper)
+        self.assertIn("./src/tests/*.test.mjs ./src/keybindings.test.ts", helper)
+
+    def test_detached_launcher_regressions_gate_local_and_ci(self):
+        justfile = (REPO_ROOT / "just" / "cockpit.just").read_text()
+        workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
+        self.assertEqual(justfile.count("./scripts/dev-run_test.sh"), 1)
+        self.assertEqual(workflow.count("./scripts/dev-run_test.sh"), 1)
+
+    def test_live_journey_cleanup_is_signal_safe_and_stops_only_owned_pid_once(self):
+        with tempfile.TemporaryDirectory(prefix="cockpit-live-cleanup-") as directory:
+            root = Path(directory)
+            scripts = root / "scripts"
+            (scripts / "lib").mkdir(parents=True)
+            journey = scripts / "cockpit-live-journey.sh"
+            journey.write_text((ROOT / "scripts/cockpit-live-journey.sh").read_text())
+            (scripts / "lib/app-instance.sh").write_text('''
+app_instance_require_free() { :; }
+app_instance_pids() { printf '%s\\n' "${MOCK_LIVE_PIDS:-}"; }
+app_instance_stop() { printf '%s\\n' "$1" >> "$STOP_LOG"; }
+''')
+            dev_run = scripts / "dev-run.sh"
+            dev_run.write_text("#!/bin/sh\nprintf 'pid 4242, log fixture\\n'\nexit 23\n")
+            dev_run.chmod(0o755)
+            source = journey.read_text()
+            self.assertIn("trap 'exit 130' INT", source)
+            self.assertIn("trap 'exit 143' TERM", source)
+            self.assertIn('pid="$(reported_pid)"', source)
+            for live_pids, expected_stops in (("4242", ["4242"]), ("7777", [])):
+                with self.subTest(live_pids=live_pids):
+                    stop_log = root / "stops"
+                    env = dict(os.environ, MOCK_LIVE_PIDS=live_pids, STOP_LOG=str(stop_log), TMPDIR=directory)
+                    result = subprocess.run(["bash", str(journey), "--no-build"], env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("dev-run exited 23", result.stderr)
+                    actual = stop_log.read_text().splitlines() if stop_log.exists() else []
+                    self.assertEqual(actual, expected_stops)
+                    stop_log.unlink(missing_ok=True)
+
+            dev_run.write_text('''#!/usr/bin/env bash
+printf 'pid 4242, log fixture\\n'
+trap 'exit 130' INT
+trap 'exit 143' TERM
+while :; do sleep 1; done
+''')
+            for sent_signal, expected_status in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+                with self.subTest(sent_signal=sent_signal):
+                    stop_log = root / "stops"
+                    env = dict(os.environ, MOCK_LIVE_PIDS="4242", STOP_LOG=str(stop_log), TMPDIR=directory)
+                    process = subprocess.Popen(["bash", str(journey), "--no-build"], env=env,
+                                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                               text=True, start_new_session=True)
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        launch_logs = list(root.glob("cockpit-presentation.*/dev-run.log"))
+                        if launch_logs and "pid 4242, log fixture" in launch_logs[-1].read_text():
+                            break
+                        time.sleep(0.05)
+                    else:
+                        self.fail("fixture launcher did not publish its pid")
+                    os.killpg(process.pid, sent_signal)
+                    stdout, stderr = process.communicate(timeout=10)
+                    self.assertEqual(process.returncode, expected_status, stdout + stderr)
+                    self.assertEqual(stop_log.read_text().splitlines(), ["4242"])
+                    stop_log.unlink()
 
     def check_dev_invocation(self, options, profile):
         # Stop at the build boundary: no compiler, staging, or app launch.

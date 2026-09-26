@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialModel, update } from '../core.ts';
+import { initialModel, update, windows } from '../core.ts';
 import { navigationScopedRequest, navigationPage } from '../protocol.ts';
 const bytes = text => new TextEncoder().encode(text);
 const step = (model, msg) => { const value = update(model, msg); return Array.isArray(value) ? value : [value, null]; };
@@ -11,6 +11,7 @@ const appearance = (active = true, dirty = false) => new Uint8Array([1, +active,
 const settings = () => step(step(initialModel()[0], { kind: 'settings_open' })[0], { kind: 'appearance_loaded', body: appearance(true, true) })[0];
 const token = new Uint8Array([42, 0, 0, 0, 0, 0, 0, 0]);
 const session = phase => new Uint8Array([1, phase, ...token, 1, 0, 0, 0, 4, ...bytes('mini'), 0]);
+const renameSession = (phase, name = '', host = '') => new Uint8Array([1, phase, name.length, ...bytes(name), host.length, ...bytes(host), 0]);
 function pendingSession() {
   let [model] = step(initialModel()[0], { kind: 'new_session_open' });
   [model] = step(model, { kind: 'new_session_loaded', body: session(0) });
@@ -231,6 +232,64 @@ test('late Windows receipt cannot dismiss newer Commands', () => {
   assert.equal(cmd, null);
 });
 
+test('closing and reopening Rename retires the old request before its late success', () => {
+  let [model] = step(initialModel()[0], { kind: 'rename_open' });
+  [model] = step(model, { kind: 'session_loaded', body: renameSession(0, 'alpha', 'mini') });
+  [model] = step(model, { kind: 'rename_edit', edit: { kind: 'insert_text', text: bytes('-new') } });
+  [model] = step(model, { kind: 'rename_submit' });
+  const firstContinuation = model.renameContinuation;
+  let cmd;
+  [model, cmd] = step(model, { kind: 'rename_close' });
+  assert.ok(committed(cmd));
+  [model, cmd] = step(model, { kind: 'rename_open' });
+  assert.equal(request(cmd, 'cockpit.session')?.key, 'cockpit-session', 'reopen owns the same single-flight key');
+  assert.notEqual(model.renameContinuation, firstContinuation);
+  const currentContinuation = model.renameContinuation;
+  [model] = step(model, { kind: 'session_loaded', body: renameSession(2) });
+  assert.equal(model.renameOpen, true, 'a Rename terminal cannot satisfy a new Describe stage');
+  assert.equal(model.renameBusy, true);
+  assert.equal(model.renameContinuation, currentContinuation);
+});
+
+test('uncorrelated modal providers replace their single-flight key on reopen', () => {
+  const cases = [
+    [{ kind: 'dir_open' }, { kind: 'dir_close' }, 'cockpit.directory', 'cockpit-directory'],
+    [{ kind: 'host_open' }, { kind: 'host_close' }, 'cockpit.remote', 'cockpit-remote'],
+  ];
+  for (const [open, close, provider, key] of cases) {
+    let [model] = step(initialModel()[0], open);
+    let cmd;
+    [model, cmd] = step(model, close);
+    assert.ok(committed(cmd), provider);
+    [model, cmd] = step(model, open);
+    assert.equal(request(cmd, provider)?.key, key, `${provider} reopen replaces only its retired generation`);
+  }
+
+  let [settingsModel] = step(initialModel()[0], { kind: 'settings_open' });
+  const [, replacement] = step(settingsModel, { kind: 'settings_close' });
+  assert.equal(request(replacement, 'cockpit.appearance')?.key, 'cockpit-appearance',
+    'Settings cleanup replaces its opening request before another generation can open');
+
+  let [host] = step(initialModel()[0], { kind: 'host_open' });
+  [host] = step(host, { kind: 'host_close' });
+  [host] = step(host, { kind: 'host_open' });
+  [host] = step(host, { kind: 'remote_loaded', body: new Uint8Array([1, 2, 4, ...bytes('mini'), 0]) });
+  assert.equal(host.hostOpen, true, 'an old settled connection cannot close a reopened status-only host panel');
+});
+
+test('leaving Agents for Sessions or Commands retires the inspector surface', () => {
+  for (const destination of [{ kind: 'sessions_open' }, { kind: 'commands_open' }]) {
+    let [model] = step(initialModel()[0], { kind: 'agents_open' });
+    assert.equal(model.agentsMode, true);
+    assert.equal(model.mainAgentsOpen, true);
+    [model] = step(model, destination);
+    assert.equal(model.agentsMode, false, destination.kind);
+    assert.equal(model.mainAgentsOpen, false, destination.kind);
+    assert.equal(model.mainPaletteOpen, true, destination.kind);
+    assert.equal(model.navigatorView, destination.kind === 'sessions_open' ? 1 : 4, destination.kind);
+  }
+});
+
 test('New Window and window closure retire the Settings transaction first', () => {
   for (const msg of [{ kind: 'new_window' }, { kind: 'window_closed', window: 1 }]) {
     const [waiting, cmd] = step(settings(), msg);
@@ -240,6 +299,77 @@ test('New Window and window closure retire the Settings transaction first', () =
     assert.equal(closed.settingsOpen, false);
     assert.ok(committed(departed), msg.kind);
     assert.ok(request(departed, msg.kind === 'new_window' ? 'cockpit.tab-command' : 'cockpit.snapshot'));
+  }
+});
+
+test('closing the Settings owner withdraws its native window before rollback completes', () => {
+  let [open] = step({ ...initialModel()[0], activeWindow: 1, window1Open: true }, { kind: 'settings_open' });
+  [open] = step(open, { kind: 'appearance_loaded', body: appearance(true, true) });
+  assert.equal(open.presentation.owner, 1);
+  [open] = step({ ...open, activeWindow: 0 }, { kind: 'appearance_loaded', body: appearance(true, true) });
+  assert.equal(open.presentation.owner, 1, 'ambient focus does not move an open Settings surface');
+  assert.equal(open.window1SettingsOpen, true);
+  assert.equal(open.mainSettingsOpen, false);
+  const [waiting, cmd] = step(open, { kind: 'window_closed', window: 1 });
+  assert.equal(waiting.window1Open, false);
+  assert.equal(waiting.window1SettingsOpen, false);
+  assert.equal(waiting.mainSettingsOpen, false);
+  assert.equal(windows(waiting).length, 0);
+  assert.notEqual(waiting.pendingSettingsAction, null, 'Settings cleanup still owns its rollback continuation');
+  assert.deepEqual([...request(cmd, 'cockpit.appearance').payload], [1, 6, 0]);
+  const [closed, departed] = step(waiting, { kind: 'appearance_loaded', body: appearance(false) });
+  assert.equal(closed.window1Open, false);
+  assert.equal(closed.window1SettingsOpen, false);
+  assert.equal(closed.mainSettingsOpen, false);
+  assert.equal(windows(closed).length, 0);
+  assert.equal(closed.pendingSettingsAction, null);
+  assert.ok(request(departed, 'cockpit.snapshot'));
+});
+
+test('an invalid or closed active window cannot acquire a projected surface', () => {
+  for (const activeWindow of [-1, 1, 1.5, 5]) {
+    const [observed] = step(initialModel()[0], snapshotMessage());
+    const base = { ...observed, activeWindow };
+    const [model] = step(base, { kind: 'agents_open' });
+    assert.equal(model.presentation.phase, 3, String(activeWindow));
+    assert.equal(model.mainAgentsOpen, false, String(activeWindow));
+    assert.equal(model.window1AgentsOpen, false, String(activeWindow));
+    assert.equal(model.window2AgentsOpen, false, String(activeWindow));
+    assert.equal(model.window3AgentsOpen, false, String(activeWindow));
+    assert.equal(model.window4AgentsOpen, false, String(activeWindow));
+  }
+});
+
+test('a pre-snapshot secondary owner without an open window fails closed', () => {
+  const malformed = { ...initialModel()[0], activeWindow: 1 };
+  const [model] = step(malformed, { kind: 'agents_open' });
+  assert.equal(model.presentation.phase, 3);
+  assert.equal(model.mainAgentsOpen, false);
+  assert.equal(model.window1AgentsOpen, false);
+  assert.equal(windows(model).length, 0);
+});
+
+test('malformed presentation records fail closed at exported update and windows seams', () => {
+  const valid = initialModel()[0];
+  const malformed = [
+    { ...valid.presentation, kind: 0, owner: 1 },
+    { ...valid.presentation, kind: 2, owner: 1, focusReturnWindow: 2, continuation: 1 },
+    { ...valid.presentation, kind: 2, continuation: 0 },
+    { ...valid.presentation, retiredWindows: 1 },
+    { ...valid.presentation, retiredWindows: 2, absentRetiredWindows: 4 },
+    { ...valid.presentation, snapshotObserved: false, snapshotActiveWindow: 1 },
+    { ...valid.presentation, kind: 2, continuation: 1, navigatorView: 1 },
+    { ...valid.presentation, kind: 1, continuation: 1, navigatorView: 1, inspector: true },
+  ];
+  for (const presentation of malformed) {
+    const corrupt = { ...valid, presentation, window1Open: true, mainSettingsOpen: true, window1SettingsOpen: true };
+    assert.equal(windows(corrupt).length, 0);
+    const [sanitized] = step(corrupt, { kind: 'engine_wake' });
+    assert.equal(sanitized.presentation.kind, 0);
+    assert.equal(sanitized.presentation.owner, 0);
+    assert.equal(sanitized.mainSettingsOpen, false);
+    assert.equal(sanitized.window1SettingsOpen, false);
+    assert.equal(windows(sanitized).length, 0);
   }
 });
 
@@ -292,13 +422,17 @@ test('failed or malformed cancellation never claims that focus authority was wit
   }
 });
 
-test('malformed creation status clears awaiting and pre-Describe failure releases departure', () => {
+test('malformed creation status clears awaiting and a failed open cannot stall departure', () => {
   const [failed] = step(pendingSession(), { kind: 'new_session_loaded', body: bytes('bad') });
   assert.equal(failed.newSessionAwaiting, false);
   let [model] = step(initialModel()[0], { kind: 'new_session_open' });
-  [model] = step(model, { kind: 'commands_open' });
   [model] = step(model, { kind: 'new_session_failed', error: bytes('failed') });
-  assert.equal(model.navigatorView, 4);
+  assert.equal(model.pendingSessionAction, null);
+  [model] = step(model, { kind: 'sessions_open' });
+  assert.equal(model.creatingSession, false);
+  assert.equal(model.renameOpen, false);
+  assert.equal(model.pendingSessionAction, null);
+  assert.equal(model.navigatorView, 1);
   assert.equal(model.paletteOpen, true);
 });
 
