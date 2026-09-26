@@ -233,6 +233,13 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
             terminal_send.finish().unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             write_frame(&mut control_send, &FrameKind::Pong { nonce: 99 }).await;
+            // The Terminal frame sent after the end is dropped, not rerouted:
+            // the next frame on control is the client's own PING.
+            assert_eq!(
+                read_frame(&mut control_recv).await,
+                FrameKind::Ping { nonce: 5 }
+            );
+            write_frame(&mut control_send, &FrameKind::Pong { nonce: 5 }).await;
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     };
@@ -257,11 +264,29 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
                 .expect("control progresses after stream end"),
             FrameKind::Pong { nonce: 99 }
         );
-        let error = conn
-            .send(&from_client)
+        // A frame racing the server's stream end is dropped: the close on
+        // control, not a send error, is how the caller learns of it.
+        conn.send(&from_client)
             .await
-            .expect_err("Terminal traffic cannot fall back to control after stream end");
+            .expect("Terminal traffic after stream end is dropped");
+        conn.send(&FrameKind::Ping { nonce: 5 })
+            .await
+            .expect("control stays live");
+        // A Terminal never bound is still a caller bug.
+        let error = conn
+            .send(&FrameKind::FrameAck {
+                terminal_id: ResourceId::local(10),
+                stream_id: phux_protocol::StreamId::new(1).unwrap(),
+                bootstrap_id: phux_protocol::BootstrapId::new(1).unwrap(),
+                seq: 1,
+            })
+            .await
+            .expect_err("Terminal traffic cannot fall back to control");
         assert!(error.to_string().contains("requires a live QUIC binding"));
+        assert_eq!(
+            conn.recv().await.expect("server read the PING"),
+            FrameKind::Pong { nonce: 5 }
+        );
         drop(conn);
         received
     };

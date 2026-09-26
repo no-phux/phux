@@ -2767,6 +2767,21 @@ impl SessionLoop {
                     }
                 }
             }
+            // A local split or window this client spawned: the server
+            // subscribed us but publishes nothing on control (L1 §4.9), so
+            // open the pane's Terminal stream before the frame lands and
+            // its reflow resizes the new pane. Satellite spawns bind after
+            // their ATTACH_RESOURCE reply instead (`attach_spawned_panes`).
+            FrameKind::ResourceSpawned { request_id, result }
+                if self.pending_splits.contains_key(request_id)
+                    || self.pending_windows.contains_key(request_id) =>
+            {
+                if let Some(terminal_id) = result.spawned_id()
+                    && terminal_id.is_local()
+                {
+                    conn.bind_terminal(terminal_id).await?;
+                }
+            }
             FrameKind::AttachReady { .. } => {
                 return Ok(self
                     .engine_kernel

@@ -4200,6 +4200,11 @@ where
                     &root_token,
                     &token,
                     &mut plumbing.output_pumps,
+                    // QUIC multi-stream: the pane's content starts at the
+                    // client's STREAM_BIND, never on control (L1 §4.9).
+                    selection
+                        .server_features
+                        .contains(ServerFeature::QuicStreams),
                 )
                 .await;
             }
