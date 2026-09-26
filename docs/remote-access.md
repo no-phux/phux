@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-26
 ---
 
 # Remote access
@@ -63,6 +63,28 @@ Each step prints one line as it happens; each failure names the next command.
 Running it again on a registered host is safe: if the saved route answers it
 says so and changes nothing; if not, it sets the host up again.
 
+### Managing many hosts
+
+```sh
+phux host ls                         # remotes and satellites together
+phux host show mini                  # inspect its route and auth references
+phux host attach mini                # same repair-aware path as phux attach mini
+phux host rename mini desk           # rename the local label, keep credentials
+phux host disable edge               # pause a satellite without forgetting it
+phux host enable edge                # resume it
+phux host rm desk                    # forget the entry; token file stays put
+```
+
+`ls`, `show`, `rename`, `enable`, `disable`, and `rm` accept `--json` for
+scripts (except `attach`, which is interactive). `show`, `rename`, and `rm`
+accept `--role remote|satellite` when the same name exists in both registries;
+without it they refuse to guess. Enable/disable apply only to satellites.
+Renaming changes the local registry label, not the machine's hostname, service,
+session names, or the path to its token file. The original SSH destination is
+kept so attach repair still reaches the same machine.
+The hub reads satellite entries at startup: after enabling, disabling, or
+renaming a satellite, restart the hub for the change to affect live routes.
+
 `--role satellite` uses the same steps to register a peer this hub dials for
 its users instead of a server you attach to. `--ssh-only` registers an
 `ssh://` entry without contacting the host at all.
@@ -105,7 +127,7 @@ If the host has no ssh you can use, run `phux pair` there, copy the one-tap
 link it prints, and hand it over:
 
 ```sh
-phux --remote mini --code 'https://phux.phall.io/connect?url=wss://100.64.0.2:8787&fp=...&token=...'
+phux --remote mini --code 'https://phux.sh/connect?url=wss://100.64.0.2:8787&fp=...&token=...'
 ```
 
 That is the same link `phux pair --qr` renders for a phone, so a laptop and a
@@ -307,7 +329,7 @@ For a phone or tablet, skip the transcription entirely: when the server
 address is known — pass `--host HOST:PORT` (or a full `ws://`/`wss://` URL),
 or let it fall back to a detected overlay address plus the `PHUX_WS_ADDR`
 port — `phux pair` also prints a one-tap
-`https://phux.phall.io/connect?url=…&fp=…&token=…` link carrying the URL,
+`https://phux.sh/connect?url=…&fp=…&token=…` link carrying the URL,
 fingerprint, and token together, and `phux pair --qr` renders that same link
 as a scannable terminal QR. It is an https Universal Link rather than a
 custom `phux://` scheme so that only the app which owns the domain can
@@ -493,6 +515,24 @@ Failures fall into a few classes, and the symptom tells you which one you have.
   address the overlay routes (`0.0.0.0:8787` or the overlay IP itself) and
   that no host firewall drops the port. QUIC needs UDP end to end — if QUIC
   times out but wss:// works, UDP is blocked; stay on `--ws`.
+- **Connect succeeds, then hangs forever; `phux ls` on the server is fine.**
+  This is a host firewall stealth-drop, not an overlay failure. On macOS the
+  Application Firewall completes the TCP handshake and never delivers the
+  bytes to phux, so the server logs nothing and UDS/loopback checks stay
+  green. phux ships adhoc-signed, so it is not covered by "automatically
+  allow signed software" and needs an explicit allowlist entry. That entry
+  is keyed to the exact binary path — Homebrew's
+  `/opt/homebrew/Cellar/phux/<version>/bin/phux` changes on every upgrade,
+  which silently breaks a previous allow. `phux upgrade` re-execs the
+  installed path (not a deleted tempfile) so the *current* Cellar binary
+  can be allowlisted; the next version bump still needs a new allow.
+  `phux doctor` on the server host probes the bound non-loopback listener
+  and names this as `remote-reachable`. Until release binaries are
+  Developer ID signed and notarized, the durable workaround on a host that
+  already lives behind Tailscale/WireGuard is to turn the Application
+  Firewall off, or re-allow the new Cellar path after every upgrade. Check
+  with
+  `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`.
 - **Auth failure** (HTTP 401 / unauthorized on the WebSocket upgrade; QUIC
   token rejection). The link is fine; the bearer token is missing, mistyped,
   or was revoked. Mint one with `phux pair`; it is live at the next connection

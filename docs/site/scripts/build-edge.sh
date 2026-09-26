@@ -14,7 +14,7 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo/edge"
 
 echo "building phux-edge → wasm ..."
-wasm-pack build --target web --release --out-dir pkg
+wasm-pack build --target web --release --out-dir pkg --locked
 
 out="$repo/worker/edge"
 mkdir -p "$out"

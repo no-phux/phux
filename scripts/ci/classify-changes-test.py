@@ -38,6 +38,7 @@ class RoutingTests(unittest.TestCase):
             (["clients/phux-vt-web/vendor/ghostty-vt.wasm"], {"web", "web_engine"}),
             (["scripts/build-vt-wasm.sh"], {"web", "web_engine"}),
             (["integrations/pi/src/index.ts"], {"integrations"}),
+            (["scripts/ci/agent-integrations.sh"], {"integrations"}),
             (["integrations/claude/skills/phux/SKILL.md"], {"integrations"}),
             ([".claude-plugin/marketplace.json"], {"integrations"}),
             (["crates/phux-server/src/lib.rs"], {"phux", "cockpit", "web"}),
@@ -51,15 +52,52 @@ class RoutingTests(unittest.TestCase):
             (["Cargo.lock"], {"phux", "cockpit", "web", "native"}),
             ([".cargo/config.toml"], {"phux", "cockpit", "web", "native"}),
             ([".config/zig-toolchain.json"], {"phux", "cockpit", "web", "web_engine", "native"}),
-            (["scripts/install-zig.sh"], {"phux", "cockpit", "web", "web_engine", "native"}),
-            (["scripts/setup-rust.sh"], {"phux", "cockpit", "web", "native"}),
+            (["scripts/install-zig.sh"], {"cockpit", "native", "web_engine"}),
+            (["scripts/lib/dev-toolchain.sh"], {"cockpit", "native", "web_engine"}),
+            (["scripts/setup-rust.sh"], {"native"}),
+            (["scripts/doctor.sh"], {"native"}),
+            (["scripts/test-dev-setup.sh"], {"native"}),
+            (["scripts/native-smoke.sh"], {"native"}),
+            (["just/setup.just"], {"native"}),
+            (["just/gates.just"], {"phux"}),
+            (["just/test.just"], {"phux"}),
+            (["just/build.just"], {"phux"}),
+            (["just/cockpit.just"], {"cockpit"}),
+            (["justfile"], set()),
+            (["just/perf.just"], set()),
+            (["just/release.just"], set()),
+            (["just/mutation.just"], set()),
+            (["release-please-config.json"], set()),
+            (["just/unknown.just"], ALL),
+            (["docs/SETUP.md", "scripts/doctor.sh"], {"native"}),
+            (["docs/SETUP.md", "justfile"], set()),
+            (["scripts/check-e2e-lanes.sh"], set()),
+            (["scripts/check-docs.sh"], set()),
+            (["scripts/check-install-surface.sh"], set()),
+            (["scripts/check-product-skills-export.sh"], set()),
+            (["scripts/export-product-skills.sh"], set()),
+            (["scripts/product-skills"], set()),
+            (["scripts/skills-package/README.md"], set()),
+            (["scripts/skills-package/NOTICE"], set()),
+            ([".agents/skills/beads/SKILL.md"], set()),
+            ([".agents/skills/beads/agents/openai.yaml"], set()),
+            (["scripts/build-ffi-xcframework.sh"], set()),
+            (["scripts/build-mobile-ffi-android.sh"], set()),
+            (["scripts/ci/setup-android-ndk.sh"], set()),
+            ([".github/workflows/ffi-xcframework.yml"], set()),
+            ([".github/workflows/ffi-android.yml"], set()),
             ([".github/workflows/release.yml"], set()),
             ([".github/workflows/native-setup.yml"], set()),
             ([".github/actions/setup-rust-lane/action.yml"], set()),
             (["scripts/ci/classify-changes.sh"], set()),
+            (["scripts/ci/release_metadata.py"], set()),
+            (["scripts/ci/test_release_metadata.py"], set()),
             (["scripts/ci/validation_receipt.py"], set()),
-            (["scripts/ci/wait_validation.py"], set()),
+            (["scripts/ci/publish_plan.py"], set()),
+            (["scripts/ci/dispatch_integration_publishes.py"], set()),
             (["scripts/ci/extract_changelog_section.py"], set()),
+            (["scripts/ci/setup-linux-release-userspace.sh"], set()),
+            (["scripts/ci/test_runner_policy.py"], set()),
             (["scripts/check-release-orchestration.mjs"], set()),
             (["scripts/ci/cockpit_artifacts.py"], {"cockpit"}),
             (["clients/cockpit/src/main.zig", "integrations/pi/src/index.ts"], {"cockpit", "integrations"}),
@@ -76,19 +114,35 @@ class RoutingTests(unittest.TestCase):
                     self.assertIn(outputs.get(key + "_needed"), ("true", "false"))
 
     def test_all_coordinator_crates(self):
-        # Conservative whole root-crate closure covers the bundled CLI and FFI.
+        # Library inputs in the phux binary or FFI closure rebuild Cockpit.
+        # The MCP binary and server testkit are not in either closure.
+        outside = {"phux-mcp", "phux-server-testkit"}
         for manifest in (ROOT / "crates").glob("*/Cargo.toml"):
             with self.subTest(crate=manifest.parent.name):
                 outputs = classify([str(manifest.parent.relative_to(ROOT) / "src/lib.rs")])
                 self.assertEqual(outputs["phux_needed"], "true")
-                self.assertEqual(outputs["cockpit_needed"], "true")
                 self.assertEqual(outputs["native_needed"], "false")
+                wanted = "false" if manifest.parent.name in outside else "true"
+                self.assertEqual(outputs["cockpit_needed"], wanted)
+
+    def test_server_test_file_does_not_rebuild_cockpit_or_the_workspace(self):
+        test_file = classify(["crates/phux-server/tests/hub_relay_federation.rs"])
+        self.assertEqual(test_file["cockpit_needed"], "false")
+        self.assertEqual(test_file["web_needed"], "false")
+        self.assertEqual(test_file["unit_mode"], "narrow")
+        self.assertEqual(test_file["unit_targets"], "phux-server:hub_relay_federation")
+        self.assertEqual(test_file["e2e_needed"], "false")
+        library = classify(["crates/phux-server/src/lib.rs"])
+        self.assertEqual(library["cli_needed"], "true")
+        self.assertEqual(library["shipping_needed"], "false")
+        self.assertEqual(library["unit_mode"], "rdeps")
 
     def test_cheap_flags(self):
         for paths, docs, workflows in [
             (["docs/SETUP.md", "clients/cockpit/README.md"], "true", "false"),
             ([".agents/skills/using-phux/SKILL.md"], "false", "false"),
             ([".github/workflows/ci.yml", ".github/workflows/release.yml"], "false", "true"),
+            ([".github/workflows/ffi-xcframework.yml"], "false", "true"),
             ([".github/workflows/ci.yml", "crates/phux/src/main.rs"], "false", "false"),
             ([], "false", "false"),
         ]:
@@ -252,6 +306,22 @@ class EventTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_root_justfile_is_imports_and_default_only(self):
+        # Product recipes in the root justfile would classify as cheap and
+        # silently skip the lane they belong to. Keep them in just/*.just.
+        text = (ROOT / "justfile").read_text()
+        recipes = []
+        for line in text.splitlines():
+            if line.startswith("import ") or line.startswith("#") or not line.strip():
+                continue
+            if line.startswith("[") or line.startswith(" ") or line.startswith("\t"):
+                continue
+            if line.startswith("default:"):
+                continue
+            if ":" in line and not line.lstrip().startswith("#"):
+                recipes.append(line)
+        self.assertEqual(recipes, [], msg=f"product recipes belong in just/*.just: {recipes}")
+
     def test_cheap_changes_do_not_allocate_rust_setup(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         cheap_jobs = workflow.split("  workflow-gate:", 1)[1].split("  check:", 1)[0]
@@ -263,7 +333,10 @@ class WorkflowTests(unittest.TestCase):
 
     def test_pr_unit_lane_uses_classifier_rdeps_filterset(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        recipe = (ROOT / "justfile").read_text()
+        recipe = "\n".join(
+            path.read_text()
+            for path in [ROOT / "justfile", *sorted((ROOT / "just").glob("*.just"))]
+        )
         action = (ROOT / ".github/actions/classify-changes/action.yml").read_text()
         self.assertIn("test_filterset:", workflow)
         self.assertIn("PHUX_NEXTEST_FILTERSET:", workflow)
@@ -271,7 +344,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("needs.changes.outputs.test_filterset", workflow)
         self.assertIn("PHUX_NEXTEST_FILTERSET", recipe)
         self.assertIn("cargo nextest run --workspace", recipe)
-        self.assertNotIn("cargo nextest run -p", recipe)
+        self.assertIn('PHUX_UNIT_MODE:-workspace}" == "narrow"', recipe)
         self.assertIn("test_filterset:", action)
 
     def test_shared_detection_has_no_outer_path_filter(self):

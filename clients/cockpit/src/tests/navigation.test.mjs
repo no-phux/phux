@@ -248,6 +248,7 @@ test('agent rows decode from the extension record and hang under their tab', () 
   assert.deepEqual(model.railRows.map(row => text(row.label)), ['Terminal 1', 'claude', 'codex']);
   assert.deepEqual(model.railRows.map(row => text(row.state)), ['', 'working', 'blocked']);
   assert.deepEqual(model.railRows.map(row => text(row.mark)), ['', '', '\u25cf']);
+  assert.deepEqual(model.railRows.map(row => text(row.attentionLabel)), ['', '', 'Needs attention: codex']);
   // Every agent row names the tab a press would select, and takes none itself.
   assert.deepEqual(model.railRows.map(row => row.index), [0, 0, 0]);
   assert.deepEqual(model.railRows.map(row => row.selected), [true, false, false]);
@@ -269,6 +270,7 @@ test('offline and delayed snapshots cannot leave an agent claiming current block
   body[23] = 3;
   let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
   assert.equal(model.visibleTabs[0].agents[0].attention, false);
+  assert.equal(text(model.railRows[1].attentionLabel), '');
   assert.match(text(model.visibleTabs[0].agents[0].state), /offline/);
   [model] = step(model, { kind: 'snapshot_failed', error: bytes('unavailable') });
   assert.equal(model.railRows.some(row => row.agent), false);
@@ -282,12 +284,33 @@ function boundAgent(resource, parent, parentIndex, window = 0, tab = 0) {
 }
 function inspectedAgent(offset = 0, total = 30, parentIndex = 300, rev = revision, details = {}) {
   const head = navigationAgentsRequest(rev, offset);
-  const label = bytes('claude · blocked');
+  const label = bytes(details.label ?? 'claude · blocked');
   const fields = [details.resource ?? `phux:0:${9000 + offset}@`, details.parent ?? 'phux:0:42@',
     details.nativeId ?? `producer-session-${offset}`, details.evidence ?? 'Catalog: working; records: blocked'];
-  return new Uint8Array([...head, ...u16(total), 1, ...u16(parentIndex), label.length, ...label,
+  return new Uint8Array([...head, ...u16(total), 1, details.kind ?? 0, ...u16(parentIndex), label.length, ...label,
     ...fields.flatMap(value => [...u16(bytes(value).length), ...bytes(value)])]);
 }
+
+test('agent inspection distinguishes a terminal identity from a tracked AgentSession', () => {
+  const body = inspectedAgent(0, 1, 300, revision, {
+    kind: 1,
+    label: 'opencode · idle',
+    resource: 'phux:0:42@',
+    parent: '',
+    nativeId: 'opencode-thread',
+    evidence: 'Detected on a terminal. No AgentSession evidence stream is attached.\nProvider: opencode\nDeclared state: idle',
+  });
+  const decoded = navigationPage(body);
+  assert.notEqual(decoded, null);
+  assert.equal(decoded.rows[0].kind, 1);
+  let model = step({ ...initialModel()[0], engineRevision: revision, engineConnected: true }, { kind: 'agents_open' })[0];
+  [model] = step(model, { kind: 'navigation_loaded', body });
+  assert.equal(model.paletteRows[0].kind, 1);
+  assert.equal(text(model.paletteRows[0].label), 'opencode · idle');
+  assert.equal(text(model.paletteRows[0].resource), 'phux:0:42@');
+  assert.equal(text(model.paletteRows[0].nativeId), 'opencode-thread');
+  assert.match(text(model.paletteRows[0].evidence), /No AgentSession evidence stream is attached/);
+});
 
 test('agent inspection retains a full bounded latest reason beyond the identity budget', () => {
   const reason = '界'.repeat(340) + 'end!'; // 1024 UTF-8 bytes, including a recognizable tail.

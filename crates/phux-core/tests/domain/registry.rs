@@ -531,6 +531,31 @@ fn removing_a_parent_removes_its_children_but_not_vice_versa() {
 }
 
 #[test]
+fn removing_a_parent_removes_grandchildren() {
+    let mut reg = Registry::new();
+    let s = reg.new_session("s".to_string());
+    let w = reg.new_window(s).expect("session exists");
+    let t = reg.new_terminal(w).expect("window exists");
+    let child = reg
+        .new_agent_session(t, agent("child"))
+        .expect("terminal parent");
+    let grandchild = reg
+        .new_agent_session(t, agent("grandchild"))
+        .expect("grandchild seed");
+    reg.resource_mut(grandchild).expect("live").parent = Some(child);
+
+    assert_eq!(reg.children(t), vec![child]);
+    assert_eq!(reg.children(child), vec![grandchild]);
+
+    reg.remove_resource(t).expect("parent existed");
+    assert!(
+        reg.resource(grandchild).is_none(),
+        "closing an ancestor must close its grandchild, not leave it orphaned"
+    );
+    assert_eq!(reg.resource_count(), 0);
+}
+
+#[test]
 fn window_and_session_removal_cascade_through_children() {
     let mut reg = Registry::new();
     let s = reg.new_session("s".to_string());

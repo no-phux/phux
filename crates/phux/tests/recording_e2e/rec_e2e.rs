@@ -35,18 +35,9 @@ mod common;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_record::cast::{EventCode, read_cast};
-
-/// Idle lifetime for this file's harness server, as a backstop UNDER the
-/// `Drop` kill (ADR-0063). The guard is still the primary cleanup; it cannot
-/// run if the test process is `SIGKILL`ed or the runner is reaped mid-job, and
-/// what leaks then is a daemon holding a live PTY on a socket nobody will
-/// ever look at again. Ten minutes is far longer than any gap between this
-/// file's client connections, so it can only fire after the harness is gone.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -54,14 +45,8 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// The pre-seeded session name every test drives against.
 const SESSION: &str = "work";
 
-/// How long to wait for the server to bind its socket (cold-start bound).
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
-
 /// Poll cadence for every wait loop in this file.
 const POLL: Duration = Duration::from_millis(50);
-
-/// Monotonic counter so concurrent tests never collide on a socket path.
-static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// The committed demo asset, which doubles as this file's render fixture.
 fn demo_cast() -> PathBuf {
@@ -70,73 +55,29 @@ fn demo_cast() -> PathBuf {
 
 /// A running `phux server`, killed and unlinked when the guard drops.
 struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
+    inner: common::ServerGuard,
     // Output files live here; only the socket needs the short path.
     dir: tempfile::TempDir,
 }
 
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl ServerGuard {
     fn start() -> Self {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = PathBuf::from(format!("/tmp/phux-rec-e2e-{}-{n}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&socket);
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
+        Self {
+            inner: common::ServerGuard::start("rec"),
             dir: tempfile::tempdir().expect("create temp dir for outputs"),
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
         }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            guard.socket.display()
-        );
     }
 
     /// An output path inside this guard's scratch directory.
     fn out(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
-    }
-
-    /// Build `phux <verb> --socket <sock> <rest...>`. `--socket` goes right
-    /// after the verb: `send-keys` uses `trailing_var_arg`, so a trailing
-    /// `--socket` would be swallowed into the keys and the verb would fall
-    /// back to the user's real default socket.
-    fn cmd(&self, args: &[&str]) -> Command {
-        let (verb, rest) = args.split_first().expect("at least a verb");
-        let mut c = Command::new(PHUX);
-        c.arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .stdin(Stdio::null());
-        c
-    }
-
-    fn success(&self, args: &[&str]) -> String {
-        let out = self.cmd(args).output().expect("run phux verb");
-        assert!(
-            out.status.success(),
-            "phux {args:?} exited {:?}; stderr={}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
     fn json(&self, args: &[&str]) -> serde_json::Value {

@@ -53,8 +53,8 @@ use tokio::time::timeout;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result,
-    join_after_shutdown, recv_typed, run_local, send_frame, spawn_server,
-    spawn_server_seed_pty_no_cmd, try_recv_typed, wait_for_socket,
+    join_after_shutdown, recv_typed, recv_until, recv_until_deadline, run_local, send_frame,
+    spawn_server_connected, spawn_server_seed_pty_no_cmd, try_recv_typed, wait_for_socket,
 };
 
 async fn read_metadata_value(
@@ -72,32 +72,34 @@ async fn read_metadata_value(
         },
     )
     .await;
-    loop {
-        let (_type_byte, frame) = recv_typed(stream).await;
-        if let FrameKind::MetadataValue {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::MetadataValue {
             request_id: got,
             value,
-        } = frame
-            && got == request_id
-        {
-            return value;
-        }
-    }
+        } if got == request_id => Some(value),
+        _ => None,
+    })
+    .await
 }
 
 async fn list_metadata_keys(stream: &mut UnixStream, request_id: u32, scope: Scope) -> Vec<String> {
     send_frame(stream, &FrameKind::ListMetadata { request_id, scope }).await;
-    loop {
-        let (_type_byte, frame) = recv_typed(stream).await;
-        if let FrameKind::MetadataKeys {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::MetadataKeys {
             request_id: got,
             keys,
-        } = frame
-            && got == request_id
-        {
-            return keys;
-        }
-    }
+        } if got == request_id => Some(keys),
+        _ => None,
+    })
+    .await
+}
+
+async fn recv_attached(stream: &mut UnixStream) -> phux_protocol::wire::info::SessionSnapshot {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::Attached { snapshot, .. } => Some(snapshot),
+        _ => None,
+    })
+    .await
 }
 
 #[test]
@@ -115,12 +117,7 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let terminal_id = loop {
-            let (_, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let terminal_id = recv_attached(&mut stream).await.resources[0].id.clone();
 
         send_frame(
             &mut stream,
@@ -169,10 +166,7 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
 #[test]
 fn get_state_lists_the_seeded_session() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         send_frame(
             &mut stream,
@@ -202,20 +196,16 @@ fn get_state_lists_the_seeded_session() {
 #[test]
 fn get_screen_returns_structured_screen_for_live_pane() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         // Attach to learn a real wire terminal id + its dims.
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let (pane_id, cols, rows) = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                let p = &snapshot.resources[0];
-                break (p.id.clone(), p.cols, p.rows);
-            }
-        };
+        let snap = recv_attached(&mut stream).await;
+        let (pane_id, cols, rows) = (
+            snap.resources[0].id.clone(),
+            snap.resources[0].cols,
+            snap.resources[0].rows,
+        );
 
         send_frame(
             &mut stream,
@@ -276,18 +266,10 @@ fn get_screen_returns_structured_screen_for_live_pane() {
 #[test]
 fn get_screen_with_cells_requests_cell_projection() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
 
         send_frame(
             &mut stream,
@@ -325,10 +307,7 @@ fn get_screen_with_cells_requests_cell_projection() {
 /// Each stays its own `#[test]` so a failure names the command that regressed,
 /// and the message comes back so a caller can assert more than the code.
 async fn unknown_terminal_error(request_id: u32, command: Command) -> String {
-    let tmp = TempDir::new().unwrap();
-    let socket_path = tmp.path().join("phux.sock");
-    let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-    let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+    let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
     send_frame(
         &mut stream,
@@ -370,18 +349,10 @@ fn get_screen_unknown_id_returns_terminal_not_found() {
 #[test]
 fn get_screen_unknown_format_returns_invalid_command() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
 
         send_frame(
             &mut stream,
@@ -422,12 +393,7 @@ fn get_screen_format_html_returns_markup_for_styled_cells() {
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
         phux_server_testkit::wait_for_server_screen_text(
             &mut stream,
             &pane_id,
@@ -496,13 +462,12 @@ fn get_screen_format_vt_roundtrips_into_a_fresh_engine_with_the_same_grid() {
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let (pane_id, cols, rows) = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                let p = &snapshot.resources[0];
-                break (p.id.clone(), p.cols, p.rows);
-            }
-        };
+        let snap = recv_attached(&mut stream).await;
+        let (pane_id, cols, rows) = (
+            snap.resources[0].id.clone(),
+            snap.resources[0].cols,
+            snap.resources[0].rows,
+        );
         phux_server_testkit::wait_for_server_screen_text(
             &mut stream,
             &pane_id,
@@ -631,12 +596,7 @@ fn get_screen_format_respects_request_scrollback() {
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
         phux_server_testkit::wait_for_server_screen_text(
             &mut stream,
             &pane_id,
@@ -720,19 +680,11 @@ fn kill_terminal_unknown_id_returns_terminal_not_found() {
 #[test]
 fn kill_terminal_live_pane_acks_and_closes() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         // Attach to learn a real wire terminal id from the snapshot.
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
 
         send_frame(
             &mut stream,
@@ -805,12 +757,7 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
         // Attach to learn the seed pane id and to satisfy SPAWN_RESOURCE's
         // "spawning client must be attached" precondition.
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_a = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let pane_a = recv_attached(&mut stream).await.resources[0].id.clone();
 
         // Add a second pane to the same session.
         send_frame(
@@ -841,19 +788,17 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
             },
         )
         .await;
-        let pane_b = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::ResourceSpawned {
+        let pane_b = recv_until(&mut stream, |_, frame| match frame {
+            FrameKind::ResourceSpawned {
                 request_id: 41,
                 result,
-            } = frame
-            {
-                match result {
-                    phux_protocol::wire::frame::SpawnResult::Ok(id) => break id,
-                    other => panic!("SPAWN_RESOURCE failed: {other:?}"),
-                }
-            }
-        };
+            } => match result {
+                phux_protocol::wire::frame::SpawnResult::Ok(id) => Some(id),
+                other => panic!("SPAWN_RESOURCE failed: {other:?}"),
+            },
+            _ => None,
+        })
+        .await;
         assert_ne!(pane_a, pane_b, "the two panes must be distinct");
 
         // Atomic teardown of BOTH panes in one round-trip.
@@ -914,18 +859,10 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
 #[test]
 fn kill_terminals_skips_unknown_ids() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let pane = recv_attached(&mut stream).await.resources[0].id.clone();
 
         // One live id + one id that does not exist.
         send_frame(
@@ -976,10 +913,7 @@ fn session_create_via_metadata_seeds_session_and_publishes_id() {
         use phux_protocol::wire::frame::{
             RESOURCE_AGENT_SESSION_KEY, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
         };
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         let agent_session =
             br#"{"plugin_id":"com.phux.agents","integration_id":"codex","native_id":"session-42"}"#
@@ -1056,11 +990,8 @@ fn session_create_via_metadata_seeds_session_and_publishes_id() {
 fn correlated_session_create_results_cannot_reuse_another_creators_success() {
     run_local(async {
         use phux_protocol::wire::frame::{SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY_PREFIX};
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut winner = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        let mut loser = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (server, mut winner) = spawn_server_connected(Some("work")).await;
+        let mut loser = server.connect().await;
         let winner_token = "11111111-1111-4111-8111-111111111111";
         let loser_token = "22222222-2222-4222-8222-222222222222";
 
@@ -1172,17 +1103,14 @@ async fn read_session_create_terminal_id(stream: &mut UnixStream, request_id: u3
         },
     )
     .await;
-    let value = loop {
-        let (_t, frame) = recv_typed(stream).await;
-        if let FrameKind::MetadataValue {
+    let value = recv_until(stream, |_, frame| match frame {
+        FrameKind::MetadataValue {
             request_id: got,
             value,
-        } = frame
-            && got == request_id
-        {
-            break value;
-        }
-    };
+        } if got == request_id => Some(value),
+        _ => None,
+    })
+    .await;
     let bytes = value?;
     let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     json.get("terminal_id").and_then(serde_json::Value::as_u64)
@@ -1502,10 +1430,7 @@ fn session_create_unenterable_wire_cwd_falls_back_without_failing() {
 fn session_rename_via_metadata_updates_registry_name() {
     run_local(async {
         use phux_protocol::wire::frame::{SESSION_NAME_KEY, Scope};
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         let mut value = b"work".to_vec();
         value.push(0);
@@ -1568,20 +1493,15 @@ fn session_rename_broadcasts_metadata_changed_to_subscribers() {
             value
         }
 
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
+        let (server, mut subscriber) = spawn_server_connected(Some("work")).await;
 
         // Client A: attach (giving the L3 fanout a mailbox), then subscribe
         // to the session-name key under the scope renames are written to.
-        let mut subscriber = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut subscriber, &attach_by_name("work")).await;
-        loop {
-            let (type_byte, _frame) = recv_typed(&mut subscriber).await;
-            if type_byte == TYPE_ATTACHED {
-                break;
-            }
-        }
+        recv_until(&mut subscriber, |type_byte, _| {
+            (type_byte == TYPE_ATTACHED).then_some(())
+        })
+        .await;
         send_frame(
             &mut subscriber,
             &FrameKind::SubscribeMetadata {
@@ -1606,7 +1526,7 @@ fn session_rename_broadcasts_metadata_changed_to_subscribers() {
         let _ = await_command_result(&mut subscriber, 1).await;
 
         // Client B: a failed rename, a no-op rename, then the real one.
-        let mut renamer = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut renamer = server.connect().await;
         for (request_id, value) in [
             (10, rename_value("ghost", "phantom")), // unknown session: refused
             (11, rename_value("work", "work")),     // same name: applied no-op
@@ -1627,24 +1547,18 @@ fn session_rename_broadcasts_metadata_changed_to_subscribers() {
         // The FIRST session-name notification the subscriber sees must be
         // the applied rename's `current\0new` transition.
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        let value = loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            assert!(
-                !remaining.is_zero(),
-                "no METADATA_CHANGED for the applied rename within deadline",
-            );
-            let (_type_byte, frame) = timeout(remaining, recv_typed(&mut subscriber))
-                .await
-                .expect("subscriber stream must stay live while awaiting the rename fanout");
-            if let FrameKind::MetadataChanged {
-                scope, key, value, ..
-            } = frame
-            {
-                assert_eq!(scope, Scope::Global, "rename fanout scope");
-                assert_eq!(key, SESSION_NAME_KEY, "rename fanout key");
-                break value;
+        let (scope, key, value) = recv_until_deadline(&mut subscriber, deadline, |_, frame| {
+            match frame {
+                FrameKind::MetadataChanged {
+                    scope, key, value, ..
+                } => Some((scope, key, value)),
+                _ => None,
             }
-        };
+        })
+        .await
+        .unwrap_or_else(|| panic!("no METADATA_CHANGED for the applied rename within deadline"));
+        assert_eq!(scope, Scope::Global, "rename fanout scope");
+        assert_eq!(key, SESSION_NAME_KEY, "rename fanout key");
         assert_eq!(
             value.as_deref(),
             Some(rename_value("work", "renamed").as_slice()),
@@ -1660,19 +1574,11 @@ fn session_rename_broadcasts_metadata_changed_to_subscribers() {
 #[test]
 fn get_terminal_state_returns_structured_snapshot_for_live_pane() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
 
         // Attach to learn a real wire terminal id.
         send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = loop {
-            let (_t, frame) = recv_typed(&mut stream).await;
-            if let FrameKind::Attached { snapshot, .. } = frame {
-                break snapshot.resources[0].id.clone();
-            }
-        };
+        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
 
         send_frame(
             &mut stream,
@@ -1757,12 +1663,9 @@ fn get_terminal_state_unknown_terminal_returns_not_found_error() {
 #[test]
 fn detach_clients_force_detaches_attached_client() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
+        let (server, mut victim) = spawn_server_connected(Some("work")).await;
 
         // Victim: attach to "work", drain ATTACHED + SNAPSHOT.
-        let mut victim = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut victim, &attach_by_name("work")).await;
         let (t, _) = recv_typed(&mut victim).await;
         assert_eq!(t, TYPE_ATTACHED, "victim expected ATTACHED");
@@ -1770,7 +1673,7 @@ fn detach_clients_force_detaches_attached_client() {
         assert_eq!(t, TYPE_BOOTSTRAP_BEGIN, "victim expected SNAPSHOT");
 
         // Controller: a separate connection issues DETACH_CLIENTS { "work" }.
-        let mut controller = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut controller = server.connect().await;
         send_frame(
             &mut controller,
             &FrameKind::Command {
@@ -1816,11 +1719,7 @@ fn detach_clients_force_detaches_attached_client() {
 #[test]
 fn detach_clients_unknown_session_reports_zero() {
     run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
-
-        let mut controller = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let (_server, mut controller) = spawn_server_connected(Some("work")).await;
         send_frame(
             &mut controller,
             &FrameKind::Command {

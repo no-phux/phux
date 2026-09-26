@@ -126,13 +126,14 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_run",
-            "description": "Run a command in a pane and report its exit code, output, and duration. Assumes a POSIX shell.",
+            "description": "Run a command in a pane and report its exit code, output, and duration. Assumes a POSIX shell, and refuses when a shell is not in the pane's foreground — against vim, less, or another agent the command line would land as keystrokes, not as a command.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "target": { "type": "string", "description": TARGET_DESC },
                     "command": { "type": "string" },
                     "timeout_secs": { "type": "number", "minimum": 1, "maximum": 3600, "description": "Give up after this many seconds. Default 600; bounded to 1..=3600." },
+                    "force": { "type": "boolean", "description": "Skip the available-shell precondition and type the command line whatever is running in the pane. Default false." },
                     "socket": { "type": "string" }
                 },
                 "required": ["target", "command"]
@@ -457,7 +458,7 @@ async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
 async fn phux_run(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
-        &["target", "command", "timeout_secs", "socket"],
+        &["target", "command", "timeout_secs", "force", "socket"],
         &["target", "command"],
     )?;
     let target = crate::cli_adapter::bounded_string(args, "target", true)?.unwrap_or_default();
@@ -475,6 +476,11 @@ async fn phux_run(args: &Value) -> Result<Value, ToolError> {
         "--timeout".to_owned(),
         timeout_secs.to_string(),
     ];
+    // Opt-in only: without it `phux run` refuses a pane whose foreground is
+    // not a shell, which is the whole point of the precondition.
+    if bool_arg(args, "force").unwrap_or(false) {
+        argv.push("--force".to_owned());
+    }
     crate::cli_adapter::push_socket(&mut argv, args)?;
     argv.extend([target, command]);
     // `phux run` mirrors the command's exit code, so a failing command is a
@@ -550,9 +556,11 @@ async fn phux_new(args: &Value) -> Result<Value, ToolError> {
 
 /// `phux_kill` — tear down the Terminal(s) a selector resolves to.
 ///
-/// In-process ([`crate::kill_tool`]), with `phux kill`'s tag-aware
-/// resolution, whole-session atomic teardown, empty-session clear, per-pane
-/// fallback, and clean-disconnect handling.
+/// In-process through [`phux_client::kill::selected`], the same path
+/// `phux kill` calls: tag-aware resolution, whole-session atomic teardown,
+/// empty-session clear, per-pane fallback, and clean-disconnect handling.
+/// A hit against a partial fleet view prints the same stderr warning the
+/// CLI does.
 async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -567,8 +575,40 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_arg(args)?;
     let selector = selector::parse(&target)
         .map_err(|err| ToolError::new(format!("invalid target '{target}': {err}")))?;
-    crate::kill_tool::kill_selected(&socket, &selector, &target, key).await?;
-    Ok(json!({ "schema_version": 1, "killed": true, "target": target }))
+    let mut conn = Connection::connect(&socket).await?;
+    let mut notices = Vec::new();
+    let result =
+        phux_client::kill::selected(&mut conn, &selector, &target, key, &mut notices).await;
+    drop(conn);
+    warn_partial_view("kill", &notices);
+    match result {
+        Ok(_) => Ok(json!({ "schema_version": 1, "killed": true, "target": target })),
+        Err(err) => Err(kill_error(err)),
+    }
+}
+
+/// Print the CLI's partial-fleet-view warning on stderr, the adapter's
+/// out-of-band diagnostic channel.
+pub(crate) fn warn_partial_view(verb: &str, notices: &[String]) {
+    for notice in notices {
+        eprintln!("{}", phux_client::state::partial_view_warning(verb, notice));
+    }
+}
+
+fn kill_error(err: phux_client::kill::KillError) -> ToolError {
+    use phux_client::kill::KillError;
+    match err {
+        KillError::UnsupportedKeyedSignal => crate::pane_tools::unsupported_keyed_signal(),
+        KillError::Unresolved {
+            target,
+            degradation,
+        } => ToolError::new(format!(
+            "could not resolve '{target}': this server's view of the fleet is incomplete ({}), so a \
+             miss here does not mean the target is gone",
+            degradation.notices().join("; ")
+        )),
+        other => ToolError::new(other.to_string()),
+    }
 }
 
 /// `phux_detach` — force-detach clients from *outside* the attach UI.
@@ -840,35 +880,14 @@ pub(crate) async fn resolve_one(
     selector: &Selector,
     view: &StateView,
 ) -> Result<ResourceId, ToolError> {
-    resolve_with(socket, selector, view, false).await
-}
-
-/// [`resolve_one`] for a tool that delivers into the pane (`signal`): a
-/// `%name` whose record has the withdrawn shape is refused (ADR-0075
-/// point 5) rather than resolved, exactly as the CLI's input verbs refuse it.
-///
-/// # Errors
-///
-/// As [`resolve_one`].
-pub(crate) async fn resolve_one_for_input(
-    socket: &std::path::Path,
-    selector: &Selector,
-    view: &StateView,
-) -> Result<ResourceId, ToolError> {
-    resolve_with(socket, selector, view, true).await
-}
-
-async fn resolve_with(
-    socket: &std::path::Path,
-    selector: &Selector,
-    view: &StateView,
-    for_input: bool,
-) -> Result<ResourceId, ToolError> {
     let snapshot = view.snapshot();
     // `%name` never reaches `pick_target_pane` (ADR-0075 point 3): it
-    // resolves to exactly one agent or refuses with the reason.
+    // resolves to exactly one agent or refuses with the reason. MCP's
+    // remaining callers here are not input verbs; `phux_signal` uses
+    // [`phux_client::signal::deliver`], which applies the withdrawn-record
+    // guard itself.
     if let Selector::Agent(name) = selector {
-        return state::resolve_agent_target(socket, name, snapshot, for_input)
+        return state::resolve_agent_target(socket, name, snapshot, false)
             .await
             .map(|target| target.terminal)
             .map_err(|err| ToolError::new(err.to_string()));

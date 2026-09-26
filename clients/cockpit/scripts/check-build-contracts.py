@@ -54,8 +54,9 @@ class BuildContracts(unittest.TestCase):
             r"(?ms)^      - uses: actions/cache/(?:restore|save)@.*?(?=^      - |\Z)",
             workflow,
         )
-        self.assertEqual(len(steps), 2)
-        return steps
+        zig = [step for step in steps if "~/.cache/zig" in step]
+        self.assertEqual(len(zig), 2)
+        return zig
 
     def test_ci_uses_shared_zig_cache_without_isolated_duplicate(self):
         env = dict(os.environ, GITHUB_ACTIONS="true")
@@ -100,10 +101,12 @@ class BuildContracts(unittest.TestCase):
         self.assertNotIn("${{ github.sha }}", key)
         self.assertIn("${{ runner.os }}", key)
         self.assertIn("${{ runner.arch }}", key)
-        self.assertTrue(key.startswith("mini-v2-cockpit-zig-"))
+        self.assertTrue(key.startswith("mini-v3-cockpit-zig-"))
         self.assertIn("hashFiles(", key)
+        self.assertIn("clients/cockpit/src/**", key)
+        self.assertIn("relsafe-aarch64-baseline-phux-traceoff", key)
         self.assertIn(f"          key: {key}", save)
-        self.assertRegex(restore, r"restore-keys: \|\n            mini-v2-cockpit-zig-0\.16\.0-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-\n")
+        self.assertRegex(restore, r"restore-keys: \|\n            mini-v3-cockpit-zig-0\.16\.0-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-\n")
         self.assertIn("github.ref == 'refs/heads/main'", save)
         self.assertIn("steps.zig-cache.outputs.cache-hit != 'true'", save)
 
@@ -233,7 +236,10 @@ class BuildContracts(unittest.TestCase):
     def test_main_has_one_shipping_compile_owner_and_debug_tests(self):
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
         app = re.search(r"(?ms)^      - name: Build the production macOS app\n(.*?)(?=^      - name:)", workflow).group(1)
-        self.assertIn("if: github.event_name == 'pull_request'", app)
+        self.assertIn("github.event_name != 'pull_request'", app)
+        self.assertNotIn("if: github.event_name == 'pull_request'", app)
+        self.assertNotIn("package-macos.sh", workflow)
+        self.assertNotIn("soak-macos-app.sh", workflow)
         self.assertIn("build-shipping-app.sh", app)
         self.assertIn("check-ring-p256-helpers.py zig-out/bin/phux-cockpit", workflow)
         checker = (ROOT / "scripts" / "check-ring-p256-helpers.py").read_text()
@@ -255,7 +261,7 @@ class BuildContracts(unittest.TestCase):
         self.assertNotRegex(workflow, r"(?m)^    paths:")
 
     def test_node_model_suite_gates_local_and_ci_once(self):
-        justfile = (REPO_ROOT / "justfile").read_text()
+        justfile = (REPO_ROOT / "just" / "cockpit.just").read_text()
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
         helper = (ROOT / "scripts/cockpit-node-test.sh").read_text()
         self.assertRegex(justfile, r"(?m)^cockpit-test:.*\bcockpit-node-test\b")
@@ -266,7 +272,7 @@ class BuildContracts(unittest.TestCase):
         self.assertIn("./src/tests/*.test.mjs ./src/keybindings.test.ts", helper)
 
     def test_detached_launcher_regressions_gate_local_and_ci(self):
-        justfile = (REPO_ROOT / "justfile").read_text()
+        justfile = (REPO_ROOT / "just" / "cockpit.just").read_text()
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
         self.assertEqual(justfile.count("./scripts/dev-run_test.sh"), 1)
         self.assertEqual(workflow.count("./scripts/dev-run_test.sh"), 1)

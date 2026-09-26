@@ -270,7 +270,7 @@ const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
             qr: true,
             ..
         }) => Some(
-            "phux: --qr belongs to minting a credential; it cannot combine with rotate or revoke",
+            "phux: --qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
         _ => None,
     }
@@ -541,14 +541,17 @@ pub(crate) const BANNER: &str = concat!("phux ", env!("PHUX_VERSION_LABEL"));
 /// Whether this invocation will enter the interactive TUI (raw mode +
 /// alt screen) and therefore MUST keep logs off stderr.
 ///
-/// The alt-screen-entering paths are: `phux attach`, naked `phux` (attach
-/// fallback), `phux new` *without* `--json`, and worktree new/open with
-/// `--attach`. Headless creation stays on the stderr path like every other
-/// one-shot verb.
+/// The alt-screen-entering paths are: `phux attach` and `phux host attach`,
+/// naked `phux` (attach fallback), `phux new` *without* `--json`, and worktree
+/// new/open with `--attach`. Headless creation stays on the stderr path like
+/// every other one-shot verb.
 const fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
         Some(
             Command::Attach { .. }
+            | Command::Host {
+                action: commands::host::HostAction::Attach { .. },
+            }
             | Command::Worktree {
                 action:
                     commands::WorktreeAction::New { attach: true, .. }
@@ -766,6 +769,18 @@ pub(crate) fn render_help_page(
 fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
     if cli.capabilities {
         eprintln!("phux: --capabilities requires --json");
+        return Some(ExitCode::from(2));
+    }
+
+    if matches!(
+        &cli.command,
+        Some(Command::Server {
+            ensure: false,
+            json: commands::JsonOpt { json: true },
+            ..
+        })
+    ) {
+        eprintln!("phux: `phux server --json` requires `--ensure`");
         return Some(ExitCode::from(2));
     }
 
@@ -1088,6 +1103,7 @@ fn dispatch(
         Some(Command::Server {
             // --ensure returns from run before tracing and this dispatch.
             ensure: _,
+            json: _,
             session,
             listen,
             quic,
@@ -1439,8 +1455,9 @@ fn dispatch(
             target,
             command,
             timeout,
+            force,
             json,
-        }) => commands::run::run_run(&target, &command, timeout, json.json, socket),
+        }) => commands::run::run_run(&target, &command, timeout, force, json.json, socket),
         Some(Command::Config { action }) => commands::config::run_config(&action, socket),
         Some(Command::Plugin { action }) => commands::plugin::run_plugin(&action),
         Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action, socket),
@@ -1466,7 +1483,18 @@ fn dispatch(
             name,
             json,
             migrate_legacy,
-        }) => commands::pair::run_pair(action, tokens, cert, qr, host, name, json, migrate_legacy),
+            replace_token,
+        }) => commands::pair::run_pair(
+            action,
+            tokens,
+            cert,
+            qr,
+            host,
+            name,
+            json,
+            migrate_legacy,
+            replace_token,
+        ),
         Some(Command::Workload { action, json }) => commands::workload::run(action, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell.into()),
         // Returned above, before process-global setup.
@@ -1564,8 +1592,11 @@ pub fn run() -> ExitCode {
     // The one-shot watchdog must precede any potentially blocking log open
     // (PHUX_LOG may name a FIFO). Ensure initializes tracing on its bounded
     // worker; its watchdog reports failures directly on stderr.
-    if matches!(cli.command, Some(Command::Server { ensure: true, .. })) {
-        return commands::server::run_ensure(cli.socket);
+    if let Some(Command::Server {
+        ensure: true, json, ..
+    }) = &cli.command
+    {
+        return commands::server::run_ensure(cli.socket, json.json);
     }
 
     // Refuse every alt-screen path before telemetry, dialing, server spawn,
@@ -2539,15 +2570,63 @@ mod tests {
             }
         ));
 
-        // `host` is socketless: a provided --socket must be refused.
+        // `host` does not use a local server socket, including remote attach.
         let cli = crate::parse_cli(["phux", "host", "ls", "--socket", "/tmp/x.sock"])
             .expect("the global --socket always parses");
         let command = cli.command.as_ref().expect("a verb was given");
         assert_eq!(
             crate::commands::socketless_verb(command),
             Some("host"),
-            "host never dials a server"
+            "host never uses a local server socket"
         );
+    }
+
+    #[test]
+    fn host_everyday_actions_parse_and_only_attach_is_interactive() {
+        use crate::commands::host::{HostAction, HostRole};
+        type HostCase<'a> = (&'a [&'a str], fn(&HostAction) -> bool);
+        let cases: &[HostCase<'_>] = &[
+            (&["phux", "host", "show", "mini", "--json"], |action| {
+                matches!(action, HostAction::Show { .. })
+            }),
+            (
+                &[
+                    "phux",
+                    "host",
+                    "rename",
+                    "mini",
+                    "desk",
+                    "--role",
+                    "satellite",
+                ],
+                |action| {
+                    matches!(
+                        action,
+                        HostAction::Rename {
+                            role: Some(HostRole::Satellite),
+                            ..
+                        }
+                    )
+                },
+            ),
+            (&["phux", "host", "enable", "edge"], |action| {
+                matches!(action, HostAction::Enable { .. })
+            }),
+            (&["phux", "host", "disable", "edge"], |action| {
+                matches!(action, HostAction::Disable { .. })
+            }),
+            (&["phux", "host", "attach", "mini"], |action| {
+                matches!(action, HostAction::Attach { .. })
+            }),
+        ];
+        for (argv, expected) in cases {
+            let cli = crate::parse_cli(argv.iter().copied()).expect("valid host command");
+            let Some(Command::Host { action }) = &cli.command else {
+                panic!("expected host action: {argv:?}")
+            };
+            assert!(expected(action), "wrong host action: {argv:?}");
+            assert_eq!(super::is_interactive_client(&cli), argv[2] == "attach");
+        }
     }
 
     /// `phux host add HOST` (ADR-0122) is the ssh form: one positional, no

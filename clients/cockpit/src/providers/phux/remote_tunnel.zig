@@ -142,12 +142,6 @@ pub const Tunnel = struct {
         };
     }
 
-    /// Start dialing through `fd`, one end of a connected Unix-domain socket
-    /// pair. Ownership of `fd` transfers on every path, including failure.
-    pub fn start(self: Tunnel, fd: posix.fd_t) error{TunnelStartFailed}!void {
-        if (c.phux_remote_tunnel_start(self.handle, fd) != c.PHUX_CLIENT_OK) return error.TunnelStartFailed;
-    }
-
     /// Cancel any dial, close the connection, join the tunnel's thread.
     pub fn close(self: Tunnel) void {
         c.phux_remote_tunnel_free(self.handle);

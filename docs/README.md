@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: stable
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-16
 ---
 
 # phux documentation
@@ -15,8 +15,9 @@ architecture, operations, and ADRs are separate reference sections.
 
 | Your goal | Best first page |
 |---|---|
-| Decide whether phux fits today | [When to use phux](./when-to-use.md) |
-| Coming from tmux, screen, or the old phux distro | [Coming from](./coming-from.md) |
+| Compare phux with tmux or Herdr | [When to use phux](./when-to-use.md) |
+| Translate tmux or screen keys | [Coming from](./coming-from.md) |
+| See latency, throughput, and memory measurements | [Performance](./performance.md) |
 | Run a persistent terminal and reattach | [Quickstart](./QUICKSTART.md) |
 | Install through curl, Homebrew, a release, or source | [Install](./INSTALL.md) |
 | Let an agent inspect and drive that same terminal | [Agents](./consumers/agents.md) |

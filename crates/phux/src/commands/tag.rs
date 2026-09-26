@@ -4,13 +4,12 @@
 //! key `RESOURCE_TAGS_KEY` (`phux.tags/v1`), scoped to a `ResourceId`. Once a
 //! Terminal is tagged, the `#tag` selector ([`crate::selector`]) addresses
 //! every Terminal carrying that tag — the read side this command writes.
-//! The wire round trips (connect, `GET_STATE` + tag index, `SET_METADATA` +
-//! confirming `GET_METADATA`) live in [`phux_client::tags`].
+//! The wire round trips and the list/add/rm orchestration live in
+//! [`phux_client::tags`].
 
 use std::process::ExitCode;
 
-use phux_client::selector::{self, TagIndex};
-use phux_client::tags::TagWriteOutcome;
+use phux_client::selector;
 use phux_protocol::ids::ResourceId;
 use phux_server::runtime::default_socket_path;
 
@@ -45,61 +44,42 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
     };
 
     rt.block_on(async move {
-        let phux_client::tags::TagSession {
-            mut conn,
-            snapshot: _snapshot,
-            degradation,
-            index,
-            targets,
-        } = match phux_client::tags::prepare(&socket_path, &selector).await {
-            Ok(session) => session,
-            Err(err) => return json_err::report_no_server(json, &err, &socket_path, "tag"),
+        let op = match action {
+            TagAction::Ls { .. } => phux_client::tags::TagOp::List,
+            TagAction::Add { tags, .. } => phux_client::tags::TagOp::Add(tags),
+            TagAction::Rm { tags, .. } => phux_client::tags::TagOp::Remove(tags),
         };
-        if targets.is_empty() {
-            // Every `phux tag` target is Terminal-scoped, and `panes` is the
-            // list a hub aggregates. So an empty match against a degraded
-            // snapshot is unresolved, not absent — and `tag ls` reporting
-            // "no such target" for a pane sitting on a temporarily
-            // unreachable satellite is the exact confusion this splits apart.
-            // Under `--json` the same split lands in `error.code`
-            // (`no_such_target` vs `partial_view`), same exit codes.
-            return partial::report_target_miss_for(json, Some(target), &degradation);
+        match phux_client::tags::apply(&socket_path, &selector, op).await {
+            Ok(outcome) => {
+                // A `#tag` set resolved against a partial fleet is a subset
+                // of the real one; the writes land on that subset only.
+                // Under `--json` this stays a prose stderr warning ahead of
+                // the document, per the contract's warnings rule.
+                partial::warn_partial_view("tag", &outcome.view);
+                for message in outcome.interleaved {
+                    eprintln!("phux: warning: partial results — {message}");
+                }
+                print_rows(json, &outcome.rows)
+            }
+            Err(phux_client::tags::TagError::Attach(err)) => {
+                json_err::report_no_server(json, &err, &socket_path, "tag")
+            }
+            Err(phux_client::tags::TagError::Miss { degradation }) => {
+                // Every `phux tag` target is Terminal-scoped, and `panes`
+                // is the list a hub aggregates. An empty match against a
+                // degraded snapshot is unresolved, not absent.
+                partial::report_target_miss_for(json, Some(target), &degradation)
+            }
+            Err(phux_client::tags::TagError::WriteRefused { message }) => json_err::emit(
+                json,
+                &CliError::new(
+                    codes::TRANSPORT,
+                    message,
+                    "run `phux doctor` for a health check",
+                ),
+                1,
+            ),
         }
-        // A `#tag` set resolved against a partial fleet is a subset of the
-        // real one; the writes below will land on that subset only. Under
-        // `--json` this stays a prose stderr warning ahead of the document,
-        // per the contract's warnings rule.
-        partial::warn_partial_view("tag", &degradation);
-
-        let code = match action {
-            TagAction::Ls { .. } => {
-                let rows: Vec<(ResourceId, Vec<String>)> = targets
-                    .iter()
-                    .map(|id| (id.clone(), index.get(id).cloned().unwrap_or_default()))
-                    .collect();
-                print_rows(json, &rows)
-            }
-            TagAction::Add { tags, .. } => {
-                let wanted = phux_client::tags::normalize(tags);
-                edit_tags(&mut conn, &targets, &index, &socket_path, json, |cur| {
-                    for t in &wanted {
-                        if !cur.iter().any(|e| e == t) {
-                            cur.push(t.clone());
-                        }
-                    }
-                })
-                .await
-            }
-            TagAction::Rm { tags, .. } => {
-                let unwanted = phux_client::tags::normalize(tags);
-                edit_tags(&mut conn, &targets, &index, &socket_path, json, |cur| {
-                    cur.retain(|e| !unwanted.iter().any(|u| u == e));
-                })
-                .await
-            }
-        };
-        drop(conn);
-        code
     })
 }
 
@@ -157,66 +137,6 @@ fn tags_document(rows: &[(ResourceId, Vec<String>)]) -> serde_json::Value {
 /// One tag output line, prefixed by a canonical, reusable Terminal selector.
 fn render_tags(id: &ResourceId, tags: &[String]) -> String {
     format!("{}\t{}", selector::format_terminal_id(id), tags.join(" "))
-}
-
-/// Read every `targets` Terminal's current tags from `index`, apply `mutate`,
-/// and write the result back via [`phux_client::tags::write_tags`].
-async fn edit_tags<F: Fn(&mut Vec<String>)>(
-    conn: &mut phux_client::attach::connection::Connection,
-    targets: &[ResourceId],
-    index: &TagIndex,
-    socket_path: &std::path::Path,
-    json: bool,
-    mutate: F,
-) -> ExitCode {
-    // Under `--json` the confirmed rows are buffered and emitted as one
-    // document after every write lands: a partial document on stdout would
-    // break the "one object or nothing" hygiene contract, and any failure
-    // below leaves stdout empty with the error line on stderr.
-    let mut rows: Vec<(ResourceId, Vec<String>)> = Vec::with_capacity(targets.len());
-    let mut req: u32 = 100;
-    for id in targets {
-        let mut cur = index.get(id).cloned().unwrap_or_default();
-        mutate(&mut cur);
-        cur.sort();
-        cur.dedup();
-        req += 1;
-        let (outcome, degradation) = match phux_client::tags::write_tags(conn, req, id, &cur).await
-        {
-            Ok(v) => v,
-            Err(err) => return json_err::report_no_server(json, &err, socket_path, "tag"),
-        };
-        req += 1;
-        for message in degradation.notices() {
-            eprintln!("phux: warning: partial results — {message}");
-        }
-        let confirmed = match outcome {
-            TagWriteOutcome::Confirmed(tags) => tags,
-            TagWriteOutcome::Refused(refusal) => {
-                return json_err::emit(
-                    json,
-                    &CliError::new(
-                        codes::TRANSPORT,
-                        format!(
-                            "tag write to {} could not be confirmed: server refused the read: {refusal}",
-                            selector::format_terminal_id(id),
-                        ),
-                        "run `phux doctor` for a health check",
-                    ),
-                    1,
-                );
-            }
-        };
-        if json {
-            rows.push((id.clone(), confirmed));
-        } else {
-            outln!("{}", render_tags(id, &confirmed));
-        }
-    }
-    if json {
-        return print_rows(true, &rows);
-    }
-    ExitCode::SUCCESS
 }
 
 #[cfg(test)]

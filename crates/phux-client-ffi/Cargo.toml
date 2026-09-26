@@ -1,6 +1,6 @@
 [package]
 name = "phux-client-ffi"
-description = "Stable native C ABI for the phux client session kernel."
+description = "The phux binding crate: one runtime projection, C ABI, UniFFI and optional NAPI encoders."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -13,10 +13,62 @@ authors.workspace = true
 workspace = true
 
 [lib]
+# staticlib for Cockpit's linker and the Apple archives the xcframework
+# carries, cdylib for the Android jniLibs and the library-mode bindgen, rlib
+# so the in-crate `uniffi-bindgen` bin can link this crate.
 crate-type = ["rlib", "staticlib", "cdylib"]
 
+# `cargo run --bin uniffi-bindgen -- generate --library ...` emits the Swift
+# and Kotlin that ship inside the mobile artifacts. Proc-macro mode: the
+# exported surface is `#[uniffi::export]` in `src/uniffi/`, with no UDL to
+# keep in sync.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["uniffi"]
+
+# The rig seeder speaks the runtime directly; it stays out of C-only builds.
+[[example]]
+name = "rig_seed"
+required-features = ["uniffi"]
+
+[[example]]
+name = "napi_smoke"
+required-features = ["napi"]
+
+[[example]]
+name = "napi_host"
+crate-type = ["cdylib"]
+required-features = ["napi"]
+
+[features]
+# Cockpit's lane and the shipped default: the `extern "C"` surface
+# `include/phux/client.h` declares. `cargo build -p phux-client-ffi` links no
+# UniFFI scaffolding and no proc-macro generator.
+default = ["c-abi"]
+# `dep:` deps here are used only under `src/c/`: JSON-lines re-encoding
+# (bytes), create-operation nonces (uuid), the `[[remote]]`/`[[satellite]]`
+# registry schema (phux-config) and the embedder-facing log init (tracing,
+# tracing-subscriber). Gating them keeps the mobile artifact's dependency
+# closure the same size it was as `phux-mobile-ffi`.
+c-abi = ["dep:bytes", "dep:uuid", "dep:phux-config", "dep:tracing", "dep:tracing-subscriber"]
+# The mobile lane: the Swift/Kotlin surface UniFFI generates. Off by default
+# so Cockpit's `ffi-release` archive never carries it (ADR-0135). Kitty
+# graphics stays on for parity with the `phux-mobile-ffi` era artifact (its
+# `engine` feature carried `libghostty-vt/kitty-graphics` so the artifact
+# exposed the image surface); nothing on this side reads placements yet, but
+# the capability isn't dropped silently in a shipped artifact.
+uniffi = [
+    "dep:uniffi",
+    "dep:thiserror",
+    "dep:unicode-segmentation",
+    "libghostty-vt/kitty-graphics",
+]
+# Desktop's in-process Node encoder. Match the pinned GPUIX host's napi
+# runtime so the wrapper and this rlib register into ONE export registry.
+napi = ["dep:napi", "dep:napi-derive"]
+
 [dependencies]
-bytes.workspace = true
 libghostty-vt.workspace = true
 phux-client-core = { workspace = true, features = ["native-engine"] }
 phux-protocol.workspace = true
@@ -24,35 +76,65 @@ phux-protocol.workspace = true
 # carries them as JSON lines again, so the same workspace-pinned encoder
 # re-emits them. No new crate enters the lockfile.
 serde_json.workspace = true
+# The C ABI re-encodes the bridge's decoded records as JSON-line bytes.
+# Optional: `c-abi` only, see [features].
+bytes = { workspace = true, optional = true }
 # The server requires UUID-shaped create-operation nonces, just as the CLI
 # emits. Reuse the already-locked workspace v4 implementation rather than
 # inventing a second collision-prone generator for concurrent native clients.
-uuid.workspace = true
-# Remote hosts (`remote` module, ADR-0007/ADR-0031/ADR-0093 rung 1). The
-# `[[remote]]` registry is read through the CLI's own schema and loader, and
-# QUIC/WSS establishment (certificate pin, bearer preamble) goes through the
-# shared dialer, so an embedder never carries a second copy of either. All
-# five are workspace members or already-locked crates: phux-dial already
-# depends on quinn, tokio and futures-util at these exact specs, and nothing
-# new enters Cargo.lock.
-phux-config.workspace = true
-phux-dial.workspace = true
-quinn.workspace = true
-tokio.workspace = true
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-# The WebSocket lane reads the raw message stream so its two directions can
-# run concurrently while it still sees keepalive pongs; `Message` is not
-# re-exported by phux-dial. Same spec phux-dial locks.
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# Optional: `c-abi` only, see [features].
+uuid = { workspace = true, optional = true }
+# Remote hosts (`remote` module, ADR-0007/ADR-0031/ADR-0093 rung 1) are the
+# runtime's relay tunnel behind a C handle (ADR-0133): resolution, dial
+# planning, trust rules and the relay live there, so an embedder never
+# carries a second registry reader or a second dialer. The machine-registry
+# snapshot still reads `[[remote]]` and `[[satellite]]` entries through the
+# CLI's own schema. Always on: the runtime layer both encoders sit on.
+phux-client-runtime.workspace = true
+# The `[[remote]]`/`[[satellite]]` registry schema `src/c/remote/registry.rs`
+# reads. Optional: `c-abi` only, see [features].
+phux-config = { workspace = true, optional = true }
 # `phux_client_log_init` gives an embedder the tunnel's lifecycle on its own
 # stderr, and the dial stacks (quinn, rustls, phux-dial) already speak
 # `tracing`, so without a subscriber their spans are dropped. Both crates are
 # workspace deps already locked through phux-server at these exact features
 # (env-filter + fmt); nothing new enters Cargo.lock. tracing's `log` feature
-# stays off: feature unification would switch it on workspace-wide.
-tracing.workspace = true
-tracing-subscriber.workspace = true
+# stays off: feature unification would switch it on workspace-wide. Optional:
+# `c-abi` only, see [features].
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+
+# The binding generator and its runtime scaffolding, behind the `uniffi`
+# feature. It is new to this workspace's DEFAULT graph only when that feature
+# is on: no shipped phux executable depends on this crate, and Cockpit's
+# `just cockpit-ffi` builds the default features, so the proc-macro generator
+# stack (uniffi_bindgen/uniffi_meta/uniffi_macros plus askama, weedle2,
+# camino, clap and cargo_metadata) is compiled only for the mobile artifact
+# jobs. In the library it adds a small lowering/lifting runtime over `bytes`
+# and `once_cell`, both already locked here. The `cli` feature is what lets the
+# in-crate `uniffi-bindgen` bin drive generation from the built library, which
+# is how the artifact's Swift is guaranteed to come from this revision.
+uniffi = { version = "0.32", features = ["cli"], optional = true }
+# Error-derive for the UniFFI-facing error enums.
+thiserror = { workspace = true, optional = true }
+# Grapheme segmentation for the mobile text-commit path into the shared
+# predictor.
+unicode-segmentation = { workspace = true, optional = true }
+
+# NAPI is the host ABI, not a second client runtime. Dynamic symbol lookup
+# lets ordinary Rust test executables link without pretending to be Node;
+# the final desktop cdylib calls napi_build::setup() in its own build script.
+napi = { version = "=3.12.7", default-features = false, features = ["napi4", "dyn-symbols"], optional = true }
+napi-derive = { version = "=3.6.8", optional = true }
 
 [dev-dependencies]
+# The connected lane's e2e test runs the real server the TUI runs.
+phux-server-testkit.workspace = true
 # A registry fixture file for the resolution and relay tests.
 tempfile.workspace = true
+# `TunnelShared::inject_failure` for the captured-tunnel test.
+phux-client-runtime = { workspace = true, features = ["testing"] }
+# The relay tests run a loopback WebSocket echo server against the tunnel.
+tokio.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

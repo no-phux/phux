@@ -69,14 +69,50 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(active_reader.read(), b"old in-use binary")
         self.assertEqual(output.read_bytes(), b"phux")
 
+    def test_single_kind_restore_accepts_kind_scoped_manifest(self):
+        """save_present(kind) writes one file; restore must not demand the full FILES set."""
+        kind_cache = self.cache / "ffi"
+        kind_cache.mkdir()
+        name = artifacts.KIND_FILES["ffi"][0]
+        (self.source / name).write_bytes(b"ffi-only")
+        identity = {**self.identity, "kind": "ffi"}
+        artifacts.save(identity, self.source, kind_cache, artifacts.KIND_FILES["ffi"])
+        self.assertTrue(
+            artifacts.restore(identity, kind_cache, self.target, artifacts.KIND_FILES["ffi"])
+        )
+        self.assertEqual((self.target / name).read_bytes(), b"ffi-only")
+        self.assertFalse((self.target / "phux").exists())
+
     def test_dirty_checkout_cannot_claim_committed_tree_identity(self):
         with patch.object(artifacts, "command", return_value=" M crates/phux/src/main.rs"):
             with self.assertRaisesRegex(ValueError, "clean checkout"):
                 artifacts.build_identity()
 
+    def test_unrelated_worktree_dirt_does_not_block_identity(self):
+        """Node tests under clients/cockpit must not fail Cockpit Rust artifact identity."""
+        calls = []
+
+        def command(*args):
+            calls.append(args)
+            if args[:2] == ("git", "status"):
+                self.assertEqual(args[args.index("--") + 1 :], artifacts.INPUT_PATHS)
+                return ""
+            return "fixture"
+
+        with (patch.object(artifacts, "command", side_effect=command),
+              patch.object(artifacts, "input_digest", return_value="digest"),
+              patch.object(artifacts.shutil, "which", return_value="/compiler/zig"),
+              patch.object(artifacts, "digest", return_value="compiler-fingerprint"),
+              patch.dict(os.environ, {}, clear=True)):
+            identity = artifacts.build_identity("ffi")
+        self.assertEqual(identity["kind"], "ffi")
+        self.assertTrue(any(args[:2] == ("git", "status") for args in calls))
+
     def test_engine_optimization_is_a_build_input(self):
         def command(*args):
-            return "" if args[:2] == ("git", "status") else "fixture"
+            if args[:2] == ("git", "status"):
+                return ""
+            return "fixture"
 
         with (patch.object(artifacts, "command", side_effect=command),
               patch.object(artifacts.shutil, "which", return_value="/compiler/zig"),
@@ -85,6 +121,20 @@ class ArtifactTests(unittest.TestCase):
             default_key = artifacts.cache_key(artifacts.build_identity())
             os.environ["LIBGHOSTTY_VT_SYS_OPTIMIZE"] = "Debug"
             self.assertNotEqual(default_key, artifacts.cache_key(artifacts.build_identity()))
+
+    def test_test_files_are_not_binary_inputs(self):
+        lines = [
+            "100644 abc 0\tcrates/phux-server/src/lib.rs",
+            "100644 def 0\tcrates/phux-server/tests/hub_relay_federation.rs",
+            "100644 ghi 0\tcrates/phux-server/benches/flood.rs",
+            "100644 jkl 0\tcrates/phux-mcp/src/lib.rs",
+            "100644 mno 0\tCargo.lock",
+        ]
+        selected = artifacts.select_input_lines(lines, {"phux-server"})
+        self.assertEqual(selected, [
+            "100644 abc 0\tcrates/phux-server/src/lib.rs",
+            "100644 mno 0\tCargo.lock",
+        ])
 
     def test_external_engine_directories_cannot_claim_tree_identity(self):
         for key in ("GHOSTTY_SOURCE_DIR", "GHOSTTY_ZIG_SYSTEM_DIR"):

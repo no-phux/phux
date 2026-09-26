@@ -35,7 +35,9 @@ The worker and `public/` together publish the machine-readable agent surface
 text/markdown`), a read-only MCP endpoint at `POST /mcp` (`host/mcp.ts`, card
 at `/.well-known/mcp/server-card.json`), RFC 9727 `/.well-known/api-catalog`,
 ARD `/.well-known/ai-catalog.json`, an agent-skills index rebuilt from
-`.agents/skills/` by `scripts/sync-agent-skills.ts` on every build, `llms.txt`,
+`.agents/skills/` by `scripts/sync-agent-skills.ts` on every build (product
+skills only; the same allowlist is mirrored to `no-phux/skills` for
+`npx skills add no-phux/skills`), `llms.txt`,
 `auth.md`, Content Signals + `Agentmap` in `robots.txt`, and RFC 8288 `Link`
 headers on HTML responses.
 
@@ -163,6 +165,16 @@ paths are scoped to `docs/site/**`.
    reliable. The `phux.phall.io` redirect lives as a **zone Redirect Rule**
    (Rules → Redirect Rules) over a dummy proxied `AAAA 100::` record, not a
    Worker — keep it that way.
+
+   **That redirect is why pairing links no longer use `phux.phall.io`.** iOS
+   fetches `/.well-known/apple-app-site-association` with redirects
+   disallowed, so a zone redirect is indistinguishable from an unclaimed
+   domain and every scanned pairing QR opened Safari. The association is
+   served from `host/pairing.ts`, ahead of all routing, and the emitted link
+   host is `phux.sh` (ADR-0031, amendment 2026-09-19). If the association
+   ever needs to move hosts again, the app's entitlement is compiled into its
+   signature — a new TestFlight build must ship *before* the CLI emits the
+   new host, or in-app scanning breaks for everyone on the old build.
 4. **Session and OAuth secrets** on the Worker (after the first deploy):
    ```sh
    openssl rand -hex 32 | bunx wrangler secret put SESSION_TOKEN_SECRET --cwd worker
@@ -185,7 +197,10 @@ paths are scoped to `docs/site/**`.
      some document requests to that hostname. A mismatch is GitHub's
      "Invalid Redirect URI" page.
      Request no scopes. An unverified-app caution on first authorize is not a
-     failure; publisher verification is the only way to remove it.
+     failure; publisher verification is the only way to remove it. The Worker
+     always sends that public-site `redirect_uri`, and the OAuth `state` is the
+     signed transaction, so a no-scope GitHub bounce that drops the transaction
+     cookie still completes.
    - Google Web OAuth client in the `phux-shell-*` project: authorized
      JavaScript origins `https://phux.sh` and `https://shell.phux.sh`;
      authorized redirect URI exactly `https://phux.sh/auth/google/callback`

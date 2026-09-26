@@ -28,6 +28,7 @@ server and one terminal model.
 | Run Claude Code against the same terminals | [The Claude Code plugin](./claude.md) |
 | Run the terminal client in a browser | [The web client](./web.md) |
 | Use the native macOS app | [Cockpit](./cockpit.md) |
+| Understand the accepted GPUIX Solid desktop contract | [Desktop](./desktop.md) (not yet release-verified) |
 | Record a pane or an attached session | [Recording](./recording.md) |
 | Use phux on [iOS](./ios.md) or [Android](./android.md) | Coming soon |
 
@@ -42,6 +43,7 @@ Gaps: [`../CONCEPTS.md`](../CONCEPTS.md#status).
 |---|---|
 | [tui.md](./tui.md) | Reference TUI: prefix keys, layout, chrome, copy-mode, fleet overlay. |
 | [cockpit.md](./cockpit.md) | Native macOS client over `phux-client-ffi`. |
+| [desktop.md](./desktop.md) | Accepted terminal-first Solid desktop product contract and implementation gaps. |
 | [web.md](./web.md) | Browser client that carries its own engine over the WebSocket wire codec. |
 | [ios.md](./ios.md) | Coming soon. |
 | [android.md](./android.md) | Coming soon. |

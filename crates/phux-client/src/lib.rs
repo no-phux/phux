@@ -19,9 +19,9 @@
 //!
 //! # Features
 //!
-//! `testkit` exposes [`testkit`], the one scripted server every client-side
-//! unit test in the workspace speaks to. There is no `tui` feature any more:
-//! the TUI is a crate.
+//! `testkit` exposes the `testkit` module, the one scripted server every
+//! client-side unit test in the workspace speaks to. There is no `tui`
+//! feature any more: the TUI is a crate.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -69,8 +69,8 @@ pub mod deadline;
 pub mod detach;
 pub mod explain;
 // `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` / the keep-empty clear
-// (`phux kill`). Selector resolution and the whole-session-vs-per-pane
-// choice stay in the CLI; this module owns the wire round trips.
+// (`phux kill`). [`kill::selected`] is the verb orchestration both the CLI
+// and MCP `phux_kill` call; the wire round trips sit beside it.
 pub mod kill;
 pub mod layout_ops;
 pub mod pane_move;
@@ -84,11 +84,18 @@ pub mod run;
 pub mod selector;
 pub mod send_keys;
 // Session-identity writes over L3 (`phux rename` today; ADR-0022 §5).
+// [`session::rename_checked`] is the snapshot check + write + ordering
+// barrier both the CLI and MCP `phux_rename` call. The decision itself is
+// [`rename`], re-exported from `phux-client-core`: the TUI calls it through
+// this crate, and the FFI bridge calls `phux_client_core::rename` directly
+// so it does not link this crate's tokio connection.
 pub mod session;
 // The `phux ls --json` document, shared by the CLI and the MCP `phux_ls`.
 pub mod session_list;
 // `ACQUIRE_INPUT` / `RELEASE_INPUT` / `SIGNAL_TERMINAL` command builders and
 // their shared outcome (`phux take` / `phux give` / `phux signal`, ADR-0033).
+// [`signal::deliver`] is the resolve-and-send path both the CLI and MCP
+// `phux_signal` call.
 pub mod signal;
 pub mod snapshot;
 // `insert-pane` / `move-pane` / `swap-pane`: resolution, plan, execution,
@@ -98,7 +105,8 @@ pub mod spatial;
 // behind explicit placement (`phux spawn`, `phux launch`).
 pub mod spawn;
 pub mod state;
-// `phux.tags/v1` read/write (`phux tag`, ADR-0027).
+// `phux.tags/v1` read/write (`phux tag`, ADR-0027). [`tags::apply`] is the
+// list/add/rm orchestration both the CLI and MCP `phux_tag` call.
 pub mod tags;
 // `UPGRADE` (`phux upgrade`, ADR-0032): ask the server to graceful-upgrade
 // itself in place.
@@ -117,4 +125,4 @@ pub mod watch;
 // Pane-interior substrate, re-exported from `phux-client-core` so the
 // `ratatui`-free boundary is compiler-enforced (ADR-0020) while consumers
 // keep stable `phux_client::{layout, multi_pane, predict}` paths.
-pub use phux_client_core::{layout, multi_pane, predict};
+pub use phux_client_core::{layout, multi_pane, predict, rename};

@@ -44,7 +44,14 @@ test('editable rows always have an effective value for the closed-row line', () 
     assert.equal(row.editable, true);
     assert.ok(row.effectiveValue.length > 0, `id ${row.id}`);
   }
-  assert.equal(text(settingsRows(initialAppearance(), bytes(''), 3)[0].effectiveValue), 'top');
+  assert.equal(text(settingsRows(initialAppearance(), bytes(''), 3)[0].effectiveValue), 'Current value unavailable');
+});
+
+test('version-one replies mark missing boolean values unavailable', () => {
+  const legacy = appearanceResponse(new Uint8Array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0]));
+  const terminal = settingsRows(legacy, bytes(''), 1);
+  assert.equal(terminal.find(row => row.id === 5).available, false);
+  assert.equal(terminal.find(row => row.id === 8).available, false);
 });
 
 test('unsupported requested font names do not masquerade as effective faces', () => {

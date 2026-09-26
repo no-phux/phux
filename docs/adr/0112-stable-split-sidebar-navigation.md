@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-18
 ---
 
 # 0112 — Sidebar navigation stays put while status changes
@@ -61,8 +61,9 @@ inventory now exists (ADR-0107), but the strip hides that context.
 - A full panel can hide a newly blocked agent below overflow. That trade-off is
   deliberate: attention shortcuts and the fleet remain available; the sidebar
   is a stable navigation surface.
-- Review lifetime remains a separate client-state defect (phux-deya). A session
-  switch can still reset review badges, but it cannot reorder sidebar rows.
+- Review status is per-client and keyed by ResourceId for the connection
+  (phux-deya); a session switch cannot reset an unchanged completion, nor
+  reorder sidebar rows.
 - No wire or server state is added. Host inventory is a snapshot refreshed by
   existing lifecycle/picker sweeps, not a claim of a new live federation feed.
 

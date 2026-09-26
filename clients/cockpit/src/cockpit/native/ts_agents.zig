@@ -13,11 +13,35 @@ pub const max_identity_bytes = 288;
 pub const max_evidence_bytes = 256 + 1024 + 512;
 pub const max_snapshot_rows = 24;
 pub const Parent = struct { index: u16 = no_parent, window: u8 = 255, tab: u8 = 255 };
+pub const InspectionKind = enum(u8) { session = 0, terminal_identity = 1 };
 
 pub fn total(model: *const model_module.Model) usize {
     if (comptime !support.phux_enabled) return 0;
     const remote = model.phuxConst() orelse return 0;
-    return remote.agentSessions().len;
+    return remote.agentSessions().len + visibleIdentityCount(remote);
+}
+
+fn identityHasSession(remote: anytype, identity_value: *const model_module.AgentIdentity) bool {
+    var children: [model_module.max_agent_sessions]*const model_module.AgentSession = undefined;
+    return remote.agentSessionsUnder(identity_value.ref(), &children) != 0;
+}
+
+fn visibleIdentityCount(remote: anytype) usize {
+    var count: usize = 0;
+    for (remote.agentIdentities()) |*identity_value| {
+        if (!identityHasSession(remote, identity_value)) count += 1;
+    }
+    return count;
+}
+
+fn visibleIdentityAt(remote: anytype, wanted: usize) ?*const model_module.AgentIdentity {
+    var index: usize = 0;
+    for (remote.agentIdentities()) |*identity_value| {
+        if (identityHasSession(remote, identity_value)) continue;
+        if (index == wanted) return identity_value;
+        index += 1;
+    }
+    return null;
 }
 
 pub fn identity(ref: model_module.TerminalRef, out: []u8) []const u8 {
@@ -115,17 +139,39 @@ fn encodeInspection(model: *const model_module.Model, session: *const model_modu
     var label_buffer: [640]u8 = undefined;
     var label_display: [navigation.max_label_bytes]u8 = undefined;
     const label = navigation.displayText(std.fmt.bufPrint(&label_buffer, "{s} · {s}", .{ session.provider_name, session.state().word() }) catch "Agent", &label_display);
-    if (start + 3 + label.len > out.len) return error.BufferTooSmall;
-    std.mem.writeInt(u16, out[start..][0..2], target.index, .little);
-    out[start + 2] = @intCast(label.len);
-    @memcpy(out[start + 3 ..][0..label.len], label);
+    if (start + 4 + label.len > out.len) return error.BufferTooSmall;
+    out[start] = @intFromEnum(InspectionKind.session);
+    std.mem.writeInt(u16, out[start + 1 ..][0..2], target.index, .little);
+    out[start + 3] = @intCast(label.len);
+    @memcpy(out[start + 4 ..][0..label.len], label);
     var resource_buffer: [max_identity_bytes]u8 = undefined;
     var parent_buffer: [max_identity_bytes]u8 = undefined;
-    var written = try field(out, start + 3 + label.len, identity(session.ref(), &resource_buffer));
+    var written = try field(out, start + 4 + label.len, identity(session.ref(), &resource_buffer));
     written = try field(out, written, if (session.parentRef()) |ref| identity(ref, &parent_buffer) else "No parent reported");
     written = try field(out, written, session.native_id);
     var evidence: [max_evidence_bytes]u8 = undefined;
     return field(out, written, try evidenceText(session, &evidence));
+}
+
+fn encodeTerminalIdentity(model: *const model_module.Model, agent: *const model_module.AgentIdentity, out: []u8, start: usize) navigation.Error!usize {
+    if (comptime !support.phux_enabled) return start;
+    const target = parentTarget(model, agent.ref());
+    var label_buffer: [640]u8 = undefined;
+    var label_display: [navigation.max_label_bytes]u8 = undefined;
+    const state = if (agent.state.len == 0) "state not reported" else agent.state;
+    const label = navigation.displayText(std.fmt.bufPrint(&label_buffer, "{s} · {s}", .{ agent.provider_name, state }) catch "Detected agent", &label_display);
+    if (start + 4 + label.len > out.len) return error.BufferTooSmall;
+    out[start] = @intFromEnum(InspectionKind.terminal_identity);
+    std.mem.writeInt(u16, out[start + 1 ..][0..2], target.index, .little);
+    out[start + 3] = @intCast(label.len);
+    @memcpy(out[start + 4 ..][0..label.len], label);
+    var terminal_buffer: [max_identity_bytes]u8 = undefined;
+    var evidence_buffer: [max_evidence_bytes]u8 = undefined;
+    const evidence = std.fmt.bufPrint(&evidence_buffer, "Detected on a terminal. No AgentSession evidence stream is attached.\nProvider: {s}\nDeclared state: {s}", .{ agent.provider_name, state }) catch return error.BufferTooSmall;
+    var written = try field(out, start + 4 + label.len, identity(agent.ref(), &terminal_buffer));
+    written = try field(out, written, "");
+    written = try field(out, written, agent.native_id);
+    return field(out, written, evidence);
 }
 
 /// Kind 5: one complete inspection row per page. The usual navigation header
@@ -142,8 +188,12 @@ pub fn encode(model: *const model_module.Model, revision: u64, request: []const 
     out[15] = 0;
     if (first == count) return out[0..16];
     if (comptime !support.phux_enabled) return out[0..16];
-    const session = &model.phuxConst().?.agentSessions()[first];
-    const end = try encodeInspection(model, session, out, 16);
+    const remote = model.phuxConst().?;
+    const sessions = remote.agentSessions();
+    const end = if (first < sessions.len)
+        try encodeInspection(model, &sessions[first], out, 16)
+    else
+        try encodeTerminalIdentity(model, visibleIdentityAt(remote, first - sessions.len) orelse return error.InvalidRequest, out, 16);
     out[15] = 1;
     return out[0..end];
 }

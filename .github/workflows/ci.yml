@@ -39,9 +39,12 @@ jobs:
       integrations_needed: ${{ steps.detect.outputs.integrations_needed }}
       native_needed: ${{ steps.detect.outputs.native_needed }}
       test_filterset: ${{ steps.detect.outputs.test_filterset }}
+      unit_mode: ${{ steps.detect.outputs.unit_mode }}
+      unit_targets: ${{ steps.detect.outputs.unit_targets }}
+      e2e_needed: ${{ steps.detect.outputs.e2e_needed }}
       validated: ${{ steps.receipt.outputs.validated }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: detect
@@ -62,8 +65,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: read desktop Bun pin
+        id: desktop-bun
+        run: |
+          version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' mise.toml)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.desktop-bun.outputs.version }}
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: phux
@@ -74,6 +86,7 @@ jobs:
             nixpkgs#just nixpkgs#nodejs_24 nixpkgs#python3 nixpkgs#jq \
             -c bash -euo pipefail <<'EOF'
           just workflow-check docs-check font-check e2e-lane-check formula-check zig-pin-check install-surface-check
+          just desktop-install desktop-check
           timeout 120 just agents-fleet-smoke
           EOF
 
@@ -84,22 +97,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: integrations/*/package-lock.json
       - name: agent integration gates
-        run: |
-          set -euo pipefail
-          bash scripts/doctor.sh integrations
-          node scripts/check-agent-integration-versions.mjs
-          export npm_config_audit=false npm_config_fund=false
-          for package in opencode pi claude; do
-            npm --prefix "integrations/$package" ci
-            npm --prefix "integrations/$package" run gates
-          done
+        run: bash scripts/ci/agent-integrations.sh
 
   # Clippy/rustdoc exercise all features; tests deliberately use default
   # features so dhat's allocator does not distort the performance e2e gates.
@@ -110,7 +115,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
@@ -137,31 +142,43 @@ jobs:
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
 
-  # Unit and ignored e2e selections must keep identical Cargo feature/package
-  # selection. nextest filters select execution after one workspace build.
+  # Library changes keep the workspace feature union. A tests/-only diff
+  # builds that integration test instead of linking the rest of the pool.
+  # Pushes keep the full pool even when the classifier says skip.
   test:
     name: test
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     needs: changes
-    if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true'
+    if: needs.changes.outputs.phux_needed == 'true' && needs.changes.outputs.validated != 'true' && (github.event_name == 'push' || needs.changes.outputs.unit_mode != 'skip' || needs.changes.outputs.e2e_needed == 'true')
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           rust-cache-shared-key: test
+          cache-workspace-crates: "true"
       - name: tests (unit + e2e)
         env:
           # Pushes to main keep the full unit pool. PRs and merge groups use
           # the classifier's rdeps filterset; empty means run everything.
           PHUX_NEXTEST_FILTERSET: ${{ github.event_name != 'push' && needs.changes.outputs.test_filterset || '' }}
+          PHUX_UNIT_MODE: ${{ github.event_name == 'push' && 'workspace' || needs.changes.outputs.unit_mode }}
+          PHUX_UNIT_TARGETS: ${{ needs.changes.outputs.unit_targets }}
+          PHUX_E2E_NEEDED: ${{ github.event_name == 'push' && 'true' || needs.changes.outputs.e2e_needed }}
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
-          timed unit env NEXTEST_PROFILE=ci just test
-          timed e2e  just e2e
+          if [[ "${PHUX_UNIT_MODE}" != "skip" ]]; then
+            timed unit   env NEXTEST_PROFILE=ci just test
+          fi
+          if [[ "${PHUX_UNIT_MODE}" == "workspace" || "${PHUX_UNIT_MODE}" == "rdeps" ]]; then
+            timed uniffi just binding-uniffi-test
+          fi
+          if [[ "${PHUX_E2E_NEEDED}" == "true" ]]; then
+            timed e2e    just e2e
+          fi
           EOF
       - name: sccache stats
         if: always()
@@ -202,7 +219,7 @@ jobs:
             }
             process.exit(bad ? 1 : 0);
           '
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.validated != 'true'
         with:
           persist-credentials: false

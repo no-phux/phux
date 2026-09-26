@@ -132,6 +132,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     <p class="install-more">
       Both scripts verify release checksums. Cockpit needs Apple silicon macOS
       11+. Homebrew: <code>brew trust --tap no-phux/tap && brew tap no-phux/tap && brew install no-phux/tap/phux</code>.
+      Agents: <code>npx skills add no-phux/skills</code>.
       To track green <code>main</code>, add{" "}
       <code>--channel next</code>{" "}
       (<code>curl -fsSL https://phux.sh/install | sh -s -- --channel next</code>).
@@ -279,19 +280,24 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     if (!modelContext || typeof modelContext.registerTool !== "function") return;
     modelContext.registerTool("get_install_command", {
       description:
-        "Get the one-line shell installer for phux (the terminal multiplexer CLI) or Cockpit (its native GUI).",
+        "Get the one-line installer for the phux CLI, Cockpit (the native GUI), or the agent skills package.",
       inputSchema: {
         type: "object",
         properties: {
           target: {
             type: "string",
-            enum: ["cli", "cockpit"],
+            enum: ["cli", "cockpit", "skills"],
             description: "Which installer to return. Defaults to the phux CLI.",
           },
         },
       },
       execute: ({ target } = {}) => ({
-        command: target === "cockpit" ? cockpitInstall : cliInstall,
+        command:
+          target === "cockpit"
+            ? cockpitInstall
+            : target === "skills"
+              ? "npx skills add no-phux/skills"
+              : cliInstall,
       }),
     });
     modelContext.registerTool("open_docs", {

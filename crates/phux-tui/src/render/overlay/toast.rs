@@ -75,20 +75,14 @@ impl RenderOverlay for ToastOverlay {
                 ))
             })
             .collect();
-        let footer = if self.passthrough {
-            "Start typing - this note will close"
-        } else {
-            "Press any key to close"
-        };
         Modal::new(&self.theme, self.title.clone(), body)
-            .footer(footer)
             .wrap(true)
             .render_into(modal_area, buf);
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        // ~60% of the viewport, min 40x8, clamped to the outer rect.
-        Some(centered_panel(area, 6, 40, 8, self.breakpoints))
+        // 50% of the viewport, min 32x6, clamped to the outer rect.
+        Some(centered_panel(area, 5, 32, 6, self.breakpoints))
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
@@ -154,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_title_body_and_footer() {
+    fn renders_title_and_body() {
         let toast = ToastOverlay::new(
             "plugin: p a failed",
             vec!["exit code 2".to_owned(), "boom".to_owned()],
@@ -164,15 +158,22 @@ mod tests {
         assert!(text.contains("plugin: p a failed"), "title:\n{text}");
         assert!(text.contains("exit code 2"), "body line 1:\n{text}");
         assert!(text.contains("boom"), "body line 2:\n{text}");
-        assert!(text.contains("Press any key to close"), "footer:\n{text}");
+        assert!(
+            !text.contains("Press any key"),
+            "no teaching footer:\n{text}"
+        );
     }
 
     #[test]
-    fn passthrough_notice_advertises_and_reports_transparency() {
+    fn passthrough_notice_reports_transparency() {
         let toast = ToastOverlay::passthrough("t", vec!["body".to_owned()], &Theme::default());
         assert!(toast.is_input_passthrough());
         let text = render_to_string(&toast, 80, 24);
-        assert!(text.contains("Start typing - this note will close"));
+        assert!(text.contains("body"), "body:\n{text}");
+        assert!(
+            !text.contains("Start typing"),
+            "no teaching footer:\n{text}"
+        );
     }
 
     #[test]
@@ -181,8 +182,8 @@ mod tests {
         let b = toast
             .bounds(Rect::new(0, 0, 100, 40))
             .expect("toast is bounded");
-        assert!(b.width >= 40 && b.width <= 100);
-        assert!(b.height >= 8 && b.height <= 40);
+        assert!(b.width >= 32 && b.width <= 100);
+        assert!(b.height >= 6 && b.height <= 40);
         // Tiny viewport still yields a rect inside it.
         let tiny = toast.bounds(Rect::new(0, 0, 20, 6)).expect("bounded");
         assert!(tiny.width <= 20 && tiny.height <= 6);

@@ -901,7 +901,13 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
     // Apply ONLY delta 2 (delta 1 was lost).
     mirror.vt_write(&delivered[0].1);
 
-    let canonical_grid = render_viewport(&actor.terminal.borrow());
+    let canonical_grid = render_viewport(
+        actor
+            .terminal
+            .borrow()
+            .try_terminal()
+            .expect("no capture in flight"),
+    );
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,
@@ -952,7 +958,13 @@ fn loss_tolerant_incremental_after_ack_converges() {
     mirror.vt_write(&f2[0].1);
     actor.on_frame_ack(client, f2[0].0);
 
-    let canonical_grid = render_viewport(&actor.terminal.borrow());
+    let canonical_grid = render_viewport(
+        actor
+            .terminal
+            .borrow()
+            .try_terminal()
+            .expect("no capture in flight"),
+    );
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,
@@ -1005,7 +1017,13 @@ fn loss_tolerant_retransmits_lost_frame_when_idle() {
     // The retransmit (re-diffed against the acked reference) converges the
     // mirror that never saw the original frame.
     mirror.vt_write(&retransmit[0].1);
-    let canonical_grid = render_viewport(&actor.terminal.borrow());
+    let canonical_grid = render_viewport(
+        actor
+            .terminal
+            .borrow()
+            .try_terminal()
+            .expect("no capture in flight"),
+    );
     let mirror_grid = render_viewport(&mirror);
     assert_eq!(
         canonical_grid, mirror_grid,

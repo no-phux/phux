@@ -132,16 +132,36 @@ reduction terminates affected connections immediately.
 ## Amendment — 2026-09-08: the connect link is an https Universal Link
 
 The one-tap link `phux pair` prints and `--qr` encodes is
-`https://phux.phall.io/connect?<query>`, with the query exactly as above.
+`https://phux.sh/connect?<query>`, with the query exactly as above.
 The link carries the bearer token, and a custom URL scheme is not exclusive
 on iOS: any installed app may register `phux`, and which app receives an
 open is undefined, so `phux://` could hand the token to a hostile or
 careless app at the moment of the tap. A Universal Link opens only in the app
-that proves ownership of the domain (`applinks:phux.phall.io`), which closes
+that proves ownership of the domain (`applinks:phux.sh`), which closes
 that window for links emitted in this form. The `phux://connect?<query>`
 spelling stays valid: `--code` parses both, and `phux pair` prints it on a
 second line for app builds that predate the entitlement, until the App Store
 build carrying it is the floor. Consumers must accept both prefixes.
+
+## Amendment — 2026-09-19: the link host is `phux.sh`, and the domain must serve the association
+
+The emitted host moves from `phux.phall.io` to `phux.sh`. The claim above —
+"a Universal Link opens only in the app that proves ownership of the domain"
+— is not self-executing: it holds only while the domain actually serves
+`/.well-known/apple-app-site-association` over TLS, with **no redirect**.
+iOS reads any 3xx while fetching the association as no association at all.
+
+`phux.phall.io` is a zone Redirect Rule to `phux.sh` and therefore can never
+satisfy that, so every scanned QR opened a browser instead of the app, with
+no diagnostic on either side. Serving the association is part of this
+decision, not deployment trivia: `docs/site/host/pairing.ts` answers it ahead
+of all routing so nothing can redirect it, and pins the claimed paths to
+`/connect` alone — claiming a domain routes *every* matching https URL into
+the app.
+
+Parsers must additionally accept `https://phux.phall.io/connect?<query>`
+indefinitely. A link already printed or saved is a live credential, and the
+host it names has no bearing on the server it points at.
 
 ## Why
 

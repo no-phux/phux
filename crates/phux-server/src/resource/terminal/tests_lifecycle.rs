@@ -36,7 +36,8 @@ fn seeded_default_colors_are_installed_before_actor_run() {
     .expect("actor");
     let mut actor = bundle.actor;
     {
-        let terminal = actor.terminal.borrow();
+        let canonical = actor.terminal.borrow();
+        let terminal = canonical.try_terminal().expect("no capture in flight");
         assert_eq!(
             terminal.default_fg_color().expect("foreground"),
             Some(libghostty_vt::style::RgbColor {
@@ -552,6 +553,25 @@ async fn signal_freezes_resumes_and_kills_the_child() {
 /// exit, so an idle trap still returns on the first poll.
 const CONTENDED_FLUSH_GRACE: std::time::Duration = std::time::Duration::from_millis(2500);
 
+/// Larger than everything that could absorb a hangup flush without the
+/// child blocking: the reader→actor channel plus slack for the kernel
+/// PTY buffer. Derived from the production constants so retuning the
+/// channel cannot silently defang the grace test.
+const TERMINAL_FLUSH_BYTES: usize =
+    super::spawn::PTY_CHANNEL_DEPTH * super::spawn::PTY_READ_CHUNK + 512 * 1024;
+
+/// Poll until `path` exists or 30s expires. Covers ambient shell
+/// scheduling (the armed / trap-started barriers), not the hangup flush.
+async fn wait_until_fixture_exists(path: &std::path::Path) -> bool {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !path.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
 /// Poll the SIGHUP flush marker until it lands or [`CONTENDED_FLUSH_GRACE`]
 /// expires. Replaces a one-shot read after a fixed actor join.
 async fn wait_for_flush_marker(path: &std::path::Path) -> String {
@@ -737,34 +757,29 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
 ///   With `;` it lands even when `cat` died after one buffer, which makes this
 ///   test pass against the exact bug it exists to catch.
 ///
-/// Load-sensitive for the same structural reason as the sibling test, and
-/// mitigated the same way: stretch the hangup ceiling (phux-7n1g) and
-/// clear the runner pool via `threads-required` in `.config/nextest.toml`.
+/// Load-sensitive for the same structural reason as the sibling test.
+/// The hangup ceiling is stretched (phux-7n1g) and, for this fixture
+/// only, gated on an observed trap-started marker so a starved `/bin/sh`
+/// does not spend that ceiling waiting to be scheduled (phux-ko7j).
+/// `.config/nextest.toml` still gives this test `threads-required =
+/// 'num-cpus'` so the runner's own pool is not a second source of
+/// starvation.
 #[tokio::test(flavor = "current_thread")]
 async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
     use portable_pty::CommandBuilder;
-
-    // Larger than everything that could absorb the flush without the child
-    // ever blocking: the whole reader->actor channel, plus slack for the
-    // kernel PTY buffer. Derived from the constants rather than written out,
-    // so retuning the channel cannot silently defang this test. This is
-    // deliberately above the 512 KiB the ticket names — 512 KiB is under the
-    // bound on any platform whose line discipline fills a whole
-    // `PTY_READ_CHUNK` per read, and would gate nothing there.
-    const FLUSH_BYTES: usize =
-        super::spawn::PTY_CHANNEL_DEPTH * super::spawn::PTY_READ_CHUNK + 512 * 1024;
 
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let dir = tempfile::tempdir().expect("tempdir");
             let marker = dir.path().join("flushed");
+            let started = dir.path().join("started");
             let armed = dir.path().join("armed");
             let foreground = FixtureGroup::new(dir.path(), "PHUX_TEST_FOREGROUND");
             let payload = dir.path().join("payload");
             let status = dir.path().join("status");
             let stderr = dir.path().join("err");
-            std::fs::write(&payload, vec![b'.'; FLUSH_BYTES]).expect("write flush payload");
+            std::fs::write(&payload, vec![b'.'; TERMINAL_FLUSH_BYTES]).expect("write flush payload");
 
             // `cat`, not a shell loop: this has to move megabytes inside a
             // 500ms product budget, and a `printf` loop cannot.
@@ -777,7 +792,8 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             std::fs::write(
                 &script,
                 foreground.script(
-                    "trap 'trap \"\" HUP; cat \"$PHUX_TEST_PAYLOAD\" 2>\"$PHUX_TEST_ERR\"; s=$?; \
+                    "trap 'trap \"\" HUP; printf flushing > \"$PHUX_TEST_STARTED\"; \
+                     cat \"$PHUX_TEST_PAYLOAD\" 2>\"$PHUX_TEST_ERR\"; s=$?; \
                      printf %s \"$s\" > \"$PHUX_TEST_STATUS\"; \
                      [ \"$s\" -eq 0 ] && printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
                      printf armed > \"$PHUX_TEST_ARMED\"\n\
@@ -797,6 +813,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                 script.display()
             ));
             cmd.env("PHUX_TEST_MARKER", &marker);
+            cmd.env("PHUX_TEST_STARTED", &started);
             cmd.env("PHUX_TEST_ARMED", &armed);
             cmd.env("PHUX_TEST_PAYLOAD", &payload);
             cmd.env("PHUX_TEST_STATUS", &status);
@@ -820,22 +837,13 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             let master = std::sync::Arc::clone(&pty.master);
             let run = tokio::task::spawn_local(actor.run());
 
-            // Same single barrier as the sibling test, generous for the same
-            // reason: forking and scheduling two shells is ambient work whose
-            // cost is unbounded in machine load. Nothing after it depends on
-            // this budget.
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                while !armed.exists() {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect(
+            assert!(
+                wait_until_fixture_exists(&armed).await,
                 "foreground job never installed its SIGHUP trap: the fixture shells did not \
                      get scheduled, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
             );
-            let _grace = stretch_pane_kill_grace(CONTENDED_FLUSH_GRACE);
+            let _grace = stretch_pane_kill_grace_after(CONTENDED_FLUSH_GRACE, Some(&started));
 
             let foreground_group = master
                 .lock()
@@ -850,6 +858,12 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
 
             let killed_at = std::time::Instant::now();
             token.cancel();
+            assert!(
+                wait_until_fixture_exists(&started).await,
+                "SIGHUP trap never started: the fixture shell did not get scheduled \
+                     after hangup, which is an environment problem (machine load), not a \
+                     failure of the flush-before-death path this test covers",
+            );
             let body = wait_for_flush_marker(&marker).await;
             tokio::time::timeout(std::time::Duration::from_secs(10), run)
                 .await
@@ -860,7 +874,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             let cat_err = std::fs::read_to_string(&stderr).unwrap_or_default();
             assert!(
                 body.contains("flushed"),
-                "a foreground job flushing {FLUSH_BYTES} bytes to the TERMINAL must finish \
+                "a foreground job flushing {TERMINAL_FLUSH_BYTES} bytes to the TERMINAL must finish \
                      inside the hangup grace. An empty marker with a non-zero cat status means \
                      it could not write: either it blocked against an undrained PTY and was \
                      hard-killed mid-flush, or the terminal was revoked out from under it. \
@@ -1235,12 +1249,13 @@ fn configured_history_bytes_decides_retained_scrollback() {
                 terminal.vt_write(format!("scrollback row {row}\r\n").as_bytes());
             }
         }
-        let rows = bundle
-            .actor
-            .terminal
-            .borrow()
+        let canonical = bundle.actor.terminal.borrow();
+        let rows = canonical
+            .try_terminal()
+            .expect("no capture in flight")
             .scrollback_rows()
             .expect("retained scrollback rows");
+        drop(canonical);
         bundle.token.cancel();
         rows
     }
@@ -1348,6 +1363,194 @@ async fn progressive_native_ready_stays_within_one_seed_window() {
             run.await.expect("actor run");
         })
         .await;
+}
+
+/// phux-c0r0: every reader of the canonical terminal degrades while a
+/// snapshot capture holds it, instead of aborting the process.
+///
+/// The two shipped crashes were each one *route* into
+/// `NativeTerminalManager::terminal`'s `unreachable!`, closed one at a time by
+/// adding a guard at the call site. This asserts the property those guards
+/// were standing in for: with a capture genuinely in flight, the readers the
+/// actor exposes all return rather than panic. `try_terminal` returning
+/// `Option` is what makes that checkable — and unavoidable for a future
+/// caller, which no amount of `select!` guarding was.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
+    let bundle = TerminalActor::new(80, 24).expect("new actor");
+    let mut actor = bundle.actor;
+    let (reply, _replied) = oneshot::channel();
+    actor.start_native_bootstrap(NativeBootstrapRequest {
+        owner: 31,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        limits: phux_protocol::caps::BootstrapLimits::default(),
+        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        reply,
+    });
+    assert!(
+        actor.terminal.borrow().try_terminal().is_none(),
+        "the capture must actually hold the terminal for this to test anything",
+    );
+
+    // Each of these used to reach the aborting accessor. None may panic, and
+    // each must report the loan rather than inventing an answer.
+    assert!(
+        matches!(
+            actor.synthesize(),
+            Err(crate::grid::SynthesisError::TerminalUnavailable)
+        ),
+        "snapshot synthesis must refuse, not abort",
+    );
+    assert!(
+        matches!(
+            actor.screen_state(1, None, false, 0),
+            Err(crate::grid::SynthesisError::TerminalUnavailable)
+        ),
+        "GET_SCREEN must refuse, not abort",
+    );
+    assert!(
+        actor.viewport_lines().is_none(),
+        "the agent detector must skip its tick, not abort",
+    );
+    assert!(
+        !actor.refresh_title(),
+        "a title read must report unchanged, not abort",
+    );
+    // Void readers: the assertion is simply that these return at all.
+    actor.publish_input_snapshot();
+
+    // ...and the terminal is usable again once the capture lands.
+    actor.land_native_cuts();
+    assert!(
+        actor.terminal.borrow().try_terminal().is_some(),
+        "landing the cut must return the terminal",
+    );
+    assert!(
+        actor.synthesize().is_ok(),
+        "synthesis works once it is back"
+    );
+}
+
+/// Fails-without-the-fix guard for the OTHER two routes into the same abort.
+///
+/// `flush_final_gap_resync` runs on the teardown paths that sit OUTSIDE the
+/// `!bootstrap_pending` guards protecting the `select!` arms: the `biased`
+/// `token.cancelled()` arm, and `flush_exit_resync_if_needed` hanging off the
+/// ungated ingress arm. It drains queued resizes (which reach
+/// `NativeTerminalManager::resize`) and fires the owed resync (which
+/// dereferences the terminal to synthesize a grid) — both of which a capture
+/// has moved out from under it.
+///
+/// Reached by exactly the bug's own scenario plus one queued resize: a client
+/// attaches, the pane's child exits, and the server is shutting down or the
+/// host terminal was resized. It now lands the cut first.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn teardown_drain_survives_an_in_flight_native_capture() {
+    let bundle = TerminalActor::new(80, 24).expect("new actor");
+    let mut actor = bundle.actor;
+    let (reply, replied) = oneshot::channel();
+    actor.start_native_bootstrap(NativeBootstrapRequest {
+        owner: 31,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        limits: phux_protocol::caps::BootstrapLimits::default(),
+        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        reply,
+    });
+    assert!(
+        actor.pending_native_bootstrap.is_some(),
+        "the capture must be in flight for this to be the race under test",
+    );
+
+    // Queue the resize that the gated `resize_rx` arm has been parking for
+    // the length of the capture. Without it the drain finds an empty mailbox
+    // and never reaches the terminal, so this test would pass against the
+    // unfixed code and prove nothing.
+    bundle
+        .handle
+        .terminal()
+        .expect("terminal facet")
+        .resize
+        .send(super::ResizeRequest {
+            cols: 100,
+            rows: 40,
+            cell_px: None,
+            resync_clients: true,
+            resync_only: false,
+            resync_for: None,
+        })
+        .await
+        .expect("queue a resize behind the capture");
+
+    // The panic was here — the drain applies the resize against a terminal
+    // that is not there.
+    let mut resync = super::run_loop::ResyncDebounce::idle();
+    let _ = actor.flush_final_gap_resync(&mut resync);
+
+    assert!(
+        actor.pending_native_bootstrap.is_none(),
+        "the in-flight cut must be landed, not left holding the terminal",
+    );
+    assert!(
+        replied.await.expect("capture reply").is_err(),
+        "the waiter must be answered, not left hanging on a cut that was discarded",
+    );
+    actor.terminal.borrow_mut().vt_write(b"ok");
+}
+
+/// Fails-without-the-fix guard: resetting the canonical terminal for a
+/// replacement child while a client's snapshot capture holds it used to hit
+/// `NativeTerminalManager::reset`'s `unreachable!` and abort the entire
+/// server process — destroying every session on it, since sessions are not
+/// persisted anywhere.
+///
+/// The race is not exotic, it is the designed-for one: `handle_pty_eof`
+/// deliberately keeps the actor alive so "a client attaching just after the
+/// child exited" still finds it, and that attach is exactly what moves the
+/// terminal out into a capture. `reset_for_replacement` now lands every
+/// in-flight cut first, so the terminal is home before it is reset.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn reset_for_replacement_survives_an_in_flight_native_capture() {
+    let bundle = TerminalActor::new(80, 24).expect("new actor");
+    let mut actor = bundle.actor;
+    let (reply, replied) = oneshot::channel();
+    actor.start_native_bootstrap(NativeBootstrapRequest {
+        owner: 31,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        limits: phux_protocol::caps::BootstrapLimits::default(),
+        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        reply,
+    });
+    assert!(
+        actor.pending_native_bootstrap.is_some(),
+        "the capture must be in flight for this to be the race under test",
+    );
+
+    // The panic was here.
+    actor.reset_for_replacement();
+
+    assert!(
+        actor.pending_native_bootstrap.is_none(),
+        "the in-flight cut must be landed, not left holding the terminal",
+    );
+    assert!(
+        replied.await.expect("capture reply").is_err(),
+        "the waiter must be answered, not left hanging on a cut that was discarded",
+    );
+    // The terminal is home and usable: a write that would have panicked
+    // against a loaned terminal now lands.
+    actor.terminal.borrow_mut().vt_write(b"ok");
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

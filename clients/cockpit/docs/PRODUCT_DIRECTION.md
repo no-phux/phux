@@ -7,7 +7,9 @@ Phux Cockpit is a native command environment for directed machine work.
 The immediate application is a world-class native terminal for Phux and
 terminal-based agents. The long-term product lets one person direct hundreds or
 thousands of concurrent agents, runs, processes, and services without carrying
-their individual state in their head.
+their individual state in their head. Repo positioning for that shape is
+[ADR-0132](../../../docs/adr/0132-swarm-members-are-coordinator-clients.md):
+swarm members are coordinator clients; Cockpit is a projection.
 
 These are one path. Terminal quality proves the execution, identity, focus,
 inspection, and intervention primitives that larger orchestration requires.

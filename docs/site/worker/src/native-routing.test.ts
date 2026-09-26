@@ -7,6 +7,7 @@ import {
   nativeUpstreamRequest,
   parseDemoMode,
   isNativeEnabled,
+  trustedClientIp,
 } from "./native-routing";
 
 describe("native mode routing", () => {
@@ -60,6 +61,8 @@ describe("native mode routing", () => {
         "X-Forwarded-For": "192.0.2.1",
         "X-Phux-Session": "sid",
         "X-Phux-Token": "secret",
+        Cookie: "__Secure-phux_session=dummy",
+        Authorization: "Bearer monitor-secret",
       },
     });
 
@@ -71,6 +74,35 @@ describe("native mode routing", () => {
     expect(upstream.headers.has("X-Forwarded-For")).toBe(false);
     expect(upstream.headers.has("X-Phux-Session")).toBe(false);
     expect(upstream.headers.has("X-Phux-Token")).toBe(false);
+    expect(upstream.headers.has("Cookie")).toBe(false);
+    expect(upstream.headers.has("Authorization")).toBe(false);
+  });
+
+  test("trustedClientIp uses only CF-Connecting-IP", () => {
+    expect(
+      trustedClientIp(
+        new Request("https://phux.sh/session", {
+          headers: {
+            "CF-Connecting-IP": "192.0.2.1",
+            "X-Forwarded-For": "198.51.100.1",
+          },
+        }),
+      ),
+    ).toBe("192.0.2.1");
+    expect(
+      trustedClientIp(
+        new Request("https://phux.sh/session", {
+          headers: { "X-Forwarded-For": "198.51.100.1, 203.0.113.1" },
+        }),
+      ),
+    ).toBe("unknown");
+    expect(
+      trustedClientIp(
+        new Request("https://phux.sh/session", {
+          headers: { "CF-Connecting-IP": "  " },
+        }),
+      ),
+    ).toBe("unknown");
   });
 });
 

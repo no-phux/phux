@@ -58,6 +58,7 @@ use phux_protocol::wire::frame::{
     TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
+use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -312,6 +313,45 @@ pub async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
     stream
 }
 
+/// Owning handles for [`spawn_server_connected`]. Keep this alive: dropping it
+/// drops the shutdown sender, which is what tells `run_async` to exit.
+#[must_use = "dropping the shutdown sender stops the server"]
+pub struct SpawnedServer {
+    _tmp: TempDir,
+    socket_path: PathBuf,
+    _shutdown: oneshot::Sender<()>,
+    _server: JoinHandle<Result<(), ServerError>>,
+}
+
+impl SpawnedServer {
+    /// Open another HELLO'd client against this server.
+    pub async fn connect(&self) -> UnixStream {
+        wait_for_socket(&self.socket_path, SOCKET_CONNECT_DEADLINE).await
+    }
+}
+
+/// Spawn a [`ServerRuntime`] (optionally pre-seeded) and wait until a HELLO'd
+/// client is connected.
+///
+/// Replaces the four-line `TempDir` + [`spawn_server`] + [`wait_for_socket`]
+/// preamble (phux-n0du Pass 3 item 2). Extra clients use [`SpawnedServer::connect`].
+#[must_use = "dropping the shutdown sender stops the server"]
+pub async fn spawn_server_connected(pre_seeded: Option<&str>) -> (SpawnedServer, UnixStream) {
+    let tmp = TempDir::new().unwrap();
+    let socket_path = tmp.path().join("phux.sock");
+    let (shutdown, server) = spawn_server(socket_path.clone(), pre_seeded);
+    let stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+    (
+        SpawnedServer {
+            _tmp: tmp,
+            socket_path,
+            _shutdown: shutdown,
+            _server: server,
+        },
+        stream,
+    )
+}
+
 /// Poll `UnixStream::connect(path)` without sending protocol frames.
 pub async fn wait_for_raw_socket(path: &Path, deadline: Duration) -> UnixStream {
     let start = Instant::now();
@@ -379,17 +419,66 @@ pub async fn recv_typed(stream: &mut UnixStream) -> (u8, FrameKind) {
     assert!(rest.is_empty(), "decoder did not consume entire frame");
     (type_byte, frame)
 }
+
+/// Drain frames until `pred` returns `Some`.
+///
+/// Each read uses [`recv_typed`]'s per-frame [`WIRE_RECV_TIMEOUT`]. Unrelated
+/// frames are skipped. This is the shared form of the
+/// `loop { let (type_byte, frame) = recv_typed(...); if ... continue; }`
+/// skeleton that was hand-rolled across the protocol/attach/metadata tests
+/// (phux-n0du Pass 3 item 3).
+///
+/// The specialized siblings [`recv_until_detached`] and [`recv_command_result`]
+/// stay as named wrappers for the two most common predicates. For a wait that
+/// must fail once an overall deadline elapses — even if frames keep arriving —
+/// use [`recv_until_deadline`].
+pub async fn recv_until<T>(
+    stream: &mut UnixStream,
+    mut pred: impl FnMut(u8, FrameKind) -> Option<T>,
+) -> T {
+    loop {
+        let (type_byte, frame) = recv_typed(stream).await;
+        if let Some(value) = pred(type_byte, frame) {
+            return value;
+        }
+    }
+}
+
+/// Like [`recv_until`], but the whole wait is bounded by `deadline`.
+///
+/// Returns `None` if the deadline elapses before `pred` matches. Each read
+/// is also bounded by the remaining time, matching [`await_command_result`].
+/// A hung server still fails the run; a missing frame is a `None` the caller
+/// panics on with its own wording.
+pub async fn recv_until_deadline<T>(
+    stream: &mut UnixStream,
+    deadline: tokio::time::Instant,
+    mut pred: impl FnMut(u8, FrameKind) -> Option<T>,
+) -> Option<T> {
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
+            break;
+        };
+        if let Some(value) = pred(type_byte, frame) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 /// Drain queued attach/bootstrap traffic until the server acknowledges DETACH.
 ///
 /// Progressive bootstrap frames can already be in flight when a client sends
 /// DETACH; tests must not assume the acknowledgement is the next wire frame.
 pub async fn recv_until_detached(stream: &mut UnixStream) -> FrameKind {
-    loop {
-        let (_, frame) = recv_typed(stream).await;
-        if matches!(frame, FrameKind::Detached { .. }) {
-            return frame;
-        }
-    }
+    recv_until(stream, |_, frame| {
+        matches!(frame, FrameKind::Detached { .. }).then_some(frame)
+    })
+    .await
 }
 
 /// Like [`recv_typed`] but returns `None` on a clean connection close
@@ -476,52 +565,52 @@ pub fn encode_frame(frame: &FrameKind) -> BytesMut {
 /// Read frames until the `COMMAND_RESULT` for `request_id` arrives, bounded by
 /// [`WIRE_RECV_TIMEOUT`] overall. Unrelated frames in between are skipped.
 ///
-/// Six test files carried their own copy, four byte-identical and two
-/// differing only in the panic wording.
+/// Pass 2 moved the six named copies here (four byte-identical, two
+/// differing only in panic wording). Leftover skip-until drain loops that
+/// still spelled the same wait by hand now call this too.
 ///
 /// The unbounded sibling is [`recv_command_result`]: use this one when a
 /// missing reply should fail the test rather than hang it.
 pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
+    recv_until_deadline(stream, deadline, |type_byte, frame| {
         if type_byte != TYPE_COMMAND_RESULT {
-            continue;
+            return None;
         }
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
+        match frame {
+            FrameKind::CommandResult {
+                request_id: got,
+                result,
+            } if got == request_id => Some(result),
+            _ => None,
         }
-    }
-    panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
+    })
+    .await
+    .unwrap_or_else(|| panic!("no COMMAND_RESULT with request_id={request_id} within deadline"))
 }
 
 /// Read frames until the `COMMAND_RESULT` for `request_id` arrives, skipping
 /// anything else, with no overall deadline of its own.
 ///
-/// Four test files carried a byte-identical copy. Prefer
-/// [`await_command_result`] in new tests; this exists because these call sites
-/// deliberately lean on the per-read timeout inside [`recv_typed`] instead of
-/// bounding the whole wait.
+/// Pass 2 moved four byte-identical copies here; leftover skip-until drains
+/// that leaned on [`recv_typed`]'s per-read timeout now call this too. Prefer
+/// [`await_command_result`] in new tests.
+///
+/// Call sites left alone on purpose, not duplication: `end_to_end.rs`
+/// asserts the id rather than skipping a mismatch; `stress_spawn_kill.rs`
+/// takes the first result regardless of request id; `open_listener.rs` reads
+/// over QUIC, not a `UnixStream`; loops that collect interleaved frames
+/// (events, output, errors) stay local because discarding those frames
+/// would change the test.
 pub async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    loop {
-        let (_type_byte, frame) = recv_typed(stream).await;
-        if let FrameKind::CommandResult {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::CommandResult {
             request_id: got,
             result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
+        } if got == request_id => Some(result),
+        _ => None,
+    })
+    .await
 }
 
 /// Bind an ephemeral loopback port, read it back, and drop the listener.
@@ -552,8 +641,10 @@ pub fn encode_frame_vec(frame: &FrameKind) -> Vec<u8> {
 /// Signal shutdown and assert the server task joined cleanly.
 ///
 /// Pairs with every `spawn_server*` in this module, which hand back exactly
-/// this `(Sender, JoinHandle)`. Forty-nine call sites across nineteen test
-/// files each spelled this block out by hand before it was promoted here.
+/// this `(Sender, JoinHandle)`. Promoted from forty-nine hand-written copies
+/// across nineteen files; leftover asserting teardowns that still spelled
+/// send-then-join by hand (the two-line `await.unwrap().unwrap()` form and
+/// the timeout+expect form) now call this too.
 ///
 /// Deliberately does NOT assert the socket was unlinked: most of those call
 /// sites had no socket path in scope, and the ones that care about unlinking
@@ -561,6 +652,9 @@ pub fn encode_frame_vec(frame: &FrameKind) -> Vec<u8> {
 ///
 /// Drop your own client stream before calling this — the call sites that need
 /// it keep their `drop(stream)` because the variable is theirs, not ours.
+///
+/// Call sites that swallow the join (`await.ok()`, `let _ = handle.await`)
+/// stay inline: that is a different contract, not this helper.
 pub async fn join_after_shutdown(
     shutdown: oneshot::Sender<()>,
     server: JoinHandle<Result<(), ServerError>>,

@@ -11,7 +11,7 @@
 //! `PendingWindow`) that bridges a local `split-pane` / `new-window`
 //! chord to its remote `SPAWN_RESOURCE` reply.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use phux_protocol::ResourceId;
 use phux_protocol::input::InputEvent;
@@ -20,14 +20,13 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::connection::Connection;
-use crate::attach::focus::FocusHistory;
 use crate::attach::paint::{SidebarReservation, content_rect};
-use crate::attach::pane_state::{AttentionNavigation, PaneSlot};
+use crate::attach::pane_state::PaneSlot;
 use crate::attach::render::ReplicaWalk;
 use crate::layout::Workspace;
 use crate::predict::Overlay;
+use crate::render::Theme;
 use crate::render::overlay::OverlayState;
-use crate::render::{ChromeBreakpoints, Theme};
 
 use super::ACTION_NAMES;
 use super::args::*;
@@ -52,10 +51,6 @@ use super::test_support::*;
 /// intercepted the next key too. A user typing a name into the rename
 /// prompt that contained the leader chord lost characters.
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the fixture's DispatchCtx grows a line per composed feature (wave-2 + wave-2.5); the scenario itself is one flow"
-)]
 async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
@@ -77,18 +72,11 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
-    let mut workspace = Workspace::single(tid(1));
     let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    let mut next_request_id = 1;
-    let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
-    let theme = Theme::default();
-    let mut switch_request = None;
-    let mut session_name = String::new();
 
     // The default leader is `C-a`. Feed it, then a printable key.
     let leader = KeyEvent {
@@ -110,65 +98,10 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
         unshifted_codepoint: Some(u32::from(b'x')),
     };
 
-    let mut zoomed = None;
-    let mut sidebar_enabled = false;
-    let mut drag: Option<DragGrab> = None;
-    let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
-    let fleet_agent_meta = HashMap::new();
-    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
-    let mut engine_kernel = test_engine_kernel();
-    // phux-k0cw: the strip's shape comes from the painted target
-    // table now, not from the workspace, so a fixture that wants
-    // hit-testable window rows must declare them.
-    let sidebar_targets = targets(0, workspace.windows.len(), 0);
-    let mut host_refresh = false;
-    let mut ctx = DispatchCtx {
-        control_dial: None,
-        layout_read_complete: true,
-        engine_kernel: &mut engine_kernel,
-        resolver: Some(&mut resolver),
-        focus_history: FocusHistory::default(),
-        workspace: &mut workspace,
-        viewport: (80, 24),
-        cell_px: (1, 1),
-        next_request_id: &mut next_request_id,
-        input_replay: None,
-        spawn_initial_size_supported: true,
-        pending_splits: &mut pending_splits,
-        pending_windows: &mut pending_windows,
-        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
-        pending_directory: &mut None,
-        expected_closes: &mut HashSet::new(),
-        overlays: &mut overlays,
-        keybindings: None,
-        theme: &theme,
-        sessions: &[],
-        foreign_layouts: &HashMap::new(),
-        hosts: &[],
-        host_refresh_request: &mut host_refresh,
-        foreign_agents: &HashMap::new(),
-        focused_session: None,
-        session_name: &mut session_name,
-        switch_request: &mut switch_request,
-        zoomed: &mut zoomed,
-        sidebar: None,
-        sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
-        chrome: ChromeBreakpoints::default(),
-        sidebar_targets: &sidebar_targets,
-        bar: None,
-        status_bar: None,
-        drag: &mut drag,
-        mouse_optout: &mut mouse_optout,
-        attention_navigation: &mut AttentionNavigation::default(),
-        plugin_actions: &[],
-        plugin_panes: &[],
-        plugin_tx: None,
-        reload_request: &mut reload_request,
-        agent_meta: &fleet_agent_meta,
-        vcs: &mut fleet_vcs,
-    };
+    let mut fx = CtxFixture::default();
+    fx.overlays = overlays;
+    let mut ctx = fx.ctx();
+    ctx.resolver = Some(&mut resolver);
     dispatch_input_events(
         &mut out,
         &mut conn,
@@ -202,7 +135,6 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
 /// detach_pending, resolver_pending_after)`.
 #[allow(
     clippy::future_not_send,
-    clippy::too_many_lines,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 async fn dispatch_with_passthrough_popup(
@@ -239,76 +171,16 @@ async fn dispatch_with_passthrough_popup(
     let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
-    let mut workspace = Workspace::single(tid(1));
     let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    let mut next_request_id = 1;
-    let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
-    let mut switch_request = None;
-    let mut session_name = String::new();
-    let mut zoomed = None;
-    let mut sidebar_enabled = false;
-    let mut drag: Option<DragGrab> = None;
-    let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
-    let fleet_agent_meta = HashMap::new();
-    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
-    let mut engine_kernel = test_engine_kernel();
-    // phux-k0cw: the strip's shape comes from the painted target
-    // table now, not from the workspace, so a fixture that wants
-    // hit-testable window rows must declare them.
-    let sidebar_targets = targets(0, workspace.windows.len(), 0);
-    let mut host_refresh = false;
-    let mut ctx = DispatchCtx {
-        control_dial: None,
-        layout_read_complete: true,
-        engine_kernel: &mut engine_kernel,
-        resolver: Some(&mut resolver),
-        focus_history: FocusHistory::default(),
-        workspace: &mut workspace,
-        viewport: (80, 24),
-        cell_px: (1, 1),
-        next_request_id: &mut next_request_id,
-        input_replay: None,
-        spawn_initial_size_supported: true,
-        pending_splits: &mut pending_splits,
-        pending_windows: &mut pending_windows,
-        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
-        pending_directory: &mut None,
-        expected_closes: &mut HashSet::new(),
-        overlays: &mut overlays,
-        keybindings: Some(&cfg.keybindings),
-        theme: &theme,
-        sessions: &[],
-        foreign_layouts: &HashMap::new(),
-        hosts: &[],
-        host_refresh_request: &mut host_refresh,
-        foreign_agents: &HashMap::new(),
-        focused_session: None,
-        session_name: &mut session_name,
-        switch_request: &mut switch_request,
-        zoomed: &mut zoomed,
-        sidebar: None,
-        sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
-        chrome: ChromeBreakpoints::default(),
-        sidebar_targets: &sidebar_targets,
-        bar: None,
-        status_bar: None,
-        drag: &mut drag,
-        mouse_optout: &mut mouse_optout,
-        attention_navigation: &mut AttentionNavigation::default(),
-        plugin_actions: &[],
-        plugin_panes: &[],
-        plugin_tx: None,
-        reload_request: &mut reload_request,
-        agent_meta: &fleet_agent_meta,
-        vcs: &mut fleet_vcs,
-    };
+    let mut fx = CtxFixture::default();
+    fx.overlays = overlays;
+    let mut ctx = fx.ctx();
+    ctx.resolver = Some(&mut resolver);
+    ctx.keybindings = Some(&cfg.keybindings);
     dispatch_input_events(
         &mut out,
         &mut conn,
@@ -322,7 +194,11 @@ async fn dispatch_with_passthrough_popup(
     )
     .await
     .expect("dispatch");
-    (overlays.is_active(), detach_pending, resolver.is_pending())
+    (
+        fx.overlays.is_active(),
+        detach_pending,
+        resolver.is_pending(),
+    )
 }
 
 /// phux-foz.2 requirement 3 (execute path): with the which-key popup
@@ -382,10 +258,6 @@ async fn onboarding_dismissal_passes_the_intended_key_through() {
     assert!(!resolver_pending, "the binding must resolve normally");
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "full copy-mode page-up/page-down round trip needs a complete DispatchCtx fixture, which grows a line per composed feature (phux-foz.9 sidebar_agents, phux-foz.12 status-bar lend)"
-)]
 #[tokio::test]
 async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -411,7 +283,6 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
-    let mut workspace = Workspace::single(tid(1));
     let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 8, 4);
@@ -420,79 +291,19 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     for n in 0..10 {
         replay.extend_from_slice(format!("line{n:02}\r\n").as_bytes());
     }
-    let (mut engine_kernel, _, mut panes) =
+    let (engine_kernel, _, mut panes) =
         super::super::pane_state::published_test_state(&[(&tid(1), 8, 4, &replay)]);
 
     let before = visible_prefix(&engine_kernel, &mut panes, &tid(1), 0);
 
-    let mut overlays = OverlayState::new();
-    overlays.push(Box::new(crate::render::overlay::CopyModeOverlay::new(
-        0, 0, 8, 4,
-    )));
-    let mut next_request_id = 1;
-    let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
-    let theme = Theme::default();
-    let mut switch_request = None;
-    let mut session_name = String::new();
-    let mut zoomed = None;
-    let mut sidebar_enabled = false;
-    let mut drag: Option<DragGrab> = None;
-    let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
-    let fleet_agent_meta = HashMap::new();
-    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
-    // phux-k0cw: the strip's shape comes from the painted target
-    // table now, not from the workspace, so a fixture that wants
-    // hit-testable window rows must declare them.
-    let sidebar_targets = targets(0, workspace.windows.len(), 0);
-    let mut host_refresh = false;
-    let mut ctx = DispatchCtx {
-        control_dial: None,
-        layout_read_complete: true,
-        engine_kernel: &mut engine_kernel,
-        resolver: None,
-        focus_history: FocusHistory::default(),
-        workspace: &mut workspace,
-        viewport: (8, 4),
-        cell_px: (1, 1),
-        next_request_id: &mut next_request_id,
-        input_replay: None,
-        spawn_initial_size_supported: true,
-        pending_splits: &mut pending_splits,
-        pending_windows: &mut pending_windows,
-        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
-        pending_directory: &mut None,
-        expected_closes: &mut HashSet::new(),
-        overlays: &mut overlays,
-        keybindings: None,
-        theme: &theme,
-        sessions: &[],
-        foreign_layouts: &HashMap::new(),
-        hosts: &[],
-        host_refresh_request: &mut host_refresh,
-        foreign_agents: &HashMap::new(),
-        focused_session: None,
-        session_name: &mut session_name,
-        switch_request: &mut switch_request,
-        zoomed: &mut zoomed,
-        sidebar: None,
-        sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
-        chrome: ChromeBreakpoints::default(),
-        sidebar_targets: &sidebar_targets,
-        bar: None,
-        status_bar: None,
-        drag: &mut drag,
-        mouse_optout: &mut mouse_optout,
-        attention_navigation: &mut AttentionNavigation::default(),
-        plugin_actions: &[],
-        plugin_panes: &[],
-        plugin_tx: None,
-        reload_request: &mut reload_request,
-        agent_meta: &fleet_agent_meta,
-        vcs: &mut fleet_vcs,
-    };
+    let mut fx = CtxFixture::default();
+    fx.engine_kernel = engine_kernel;
+    fx.viewport = (8, 4);
+    fx.overlays
+        .push(Box::new(crate::render::overlay::CopyModeOverlay::new(
+            0, 0, 8, 4,
+        )));
+    let mut ctx = fx.ctx();
     let page_up = KeyEvent {
         action: KeyAction::Press,
         key: PhysicalKey::PageUp,
@@ -518,7 +329,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     .expect("dispatch");
 
     drop(conn);
-    let after = visible_prefix(&engine_kernel, &mut panes, &tid(1), 0);
+    let after = visible_prefix(&fx.engine_kernel, &mut panes, &tid(1), 0);
     assert!(changed, "scrolling copy-mode should trigger a repaint");
     assert_ne!(
         before, after,
@@ -533,12 +344,12 @@ fn str_arg(r: &phux_config::keybind::ResolvedAction, key: &str) -> Option<String
 }
 
 /// The pure click→action mapping: window blocks commit
-/// `select-window { index }`, the footer rows `new-window` and
-/// `command-palette` / `settings`, the collapse corner `toggle-sidebar`, and
-/// section headers their corresponding management views.
+/// `select-window { index }`, the footer row `new-window`, the collapse
+/// corner `toggle-sidebar`, and section headers their corresponding
+/// management views.
 #[test]
 fn sidebar_click_action_maps_rows_to_registry_actions() {
-    // Body has 21 rows: Agents starts at 0, Sessions at 10, footer at 21.
+    // Body has 22 rows: Agents starts at 0, Sessions at 11, footer at 22.
     let strip = crate::layout::Rect {
         x: 0,
         y: 0,
@@ -546,27 +357,23 @@ fn sidebar_click_action_maps_rows_to_registry_actions() {
         h: 23,
     };
     let quiet = targets(0, 2, 1);
-    let resolved = sidebar_click_action(strip, &quiet, 4, 14).expect("window row hits");
+    let resolved = sidebar_click_action(strip, &quiet, 4, 15).expect("window row hits");
     assert_eq!(resolved.action, "select-window");
     assert_eq!(index_arg(&resolved), Some(1));
-    let new = sidebar_click_action(strip, &quiet, 4, 21).expect("new row hits");
+    let new = sidebar_click_action(strip, &quiet, 4, 22).expect("new row hits");
     assert_eq!(new.action, "new-window");
     assert!(new.args.is_empty());
-    let menu = sidebar_click_action(strip, &quiet, 4, 22).expect("menu row hits");
-    assert_eq!(menu.action, "command-palette");
-    let settings = sidebar_click_action(strip, &quiet, 14, 22).expect("settings label hits");
-    assert_eq!(settings.action, "settings");
     // phux-foz.9: the collapse chevron in the bottom corner.
     let collapse = sidebar_click_action(strip, &quiet, 27, 22).expect("collapse corner hits");
     assert_eq!(collapse.action, "toggle-sidebar");
     assert!(collapse.args.is_empty());
     let fleet = sidebar_click_action(strip, &quiet, 4, 0).expect("Agents header hits");
     assert_eq!(fleet.action, "agent-fleet");
-    let sessions = sidebar_click_action(strip, &quiet, 4, 10).expect("Sessions header hits");
+    let sessions = sidebar_click_action(strip, &quiet, 4, 11).expect("Sessions header hits");
     assert_eq!(sessions.action, "session-picker");
     // Blank padding and the separator column (outside the chevron corner)
     // commit nothing.
-    assert!(sidebar_click_action(strip, &quiet, 4, 9).is_none());
+    assert!(sidebar_click_action(strip, &quiet, 4, 10).is_none());
     assert!(sidebar_click_action(strip, &quiet, 27, 0).is_none());
 }
 
@@ -582,7 +389,7 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
         w: 28,
         h: 23,
     };
-    // Agent activity never moves Sessions from row 10.
+    // Agent activity never moves Sessions from the lower half.
     let t = targets(2, 2, 0);
     let local = sidebar_click_action(strip, &t, 4, 1).expect("queue row 0 hits");
     assert_eq!(local.action, "select-window", "a local row stays local");
@@ -593,13 +400,34 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
     assert_eq!(str_arg(&peer, "name").as_deref(), Some("peer-1"));
     assert_eq!(usize_arg(&peer, "window"), Some(2));
     assert_eq!(usize_arg(&peer, "pane"), Some(3));
+    assert!(
+        !peer.args.contains_key("resource"),
+        "layout-backed fixture rows do not invent a resource"
+    );
+
+    let mut graph = t.clone();
+    graph.needs_you[1] = crate::render::chrome::sidebar::SidebarTarget::Session {
+        name: "peer".to_owned(),
+        id: Some(phux_protocol::ids::SessionId::new(2)),
+        window: None,
+        pane: None,
+        resource: Some(ResourceId::local(10)),
+    };
+    let graph_click = sidebar_click_action(strip, &graph, 4, 2).expect("graph row hits");
+    assert_eq!(graph_click.action, "switch-session");
+    assert_eq!(str_arg(&graph_click, "resource").as_deref(), Some("@10"));
+    assert!(
+        !graph_click.args.contains_key("window") && !graph_click.args.contains_key("pane"),
+        "graph rows must not fabricate TUI indices: {:?}",
+        graph_click.args
+    );
     let fleet = sidebar_click_action(strip, &t, 4, 0).expect("Agents header hits");
     assert_eq!(fleet.action, "agent-fleet");
 
     let mut t = targets(0, 2, 2);
-    let sessions = sidebar_click_action(strip, &t, 4, 10).expect("Sessions header hits");
+    let sessions = sidebar_click_action(strip, &t, 4, 11).expect("Sessions header hits");
     assert_eq!(sessions.action, "session-picker");
-    let space = sidebar_click_action(strip, &t, 4, 11).expect("roster row hits");
+    let space = sidebar_click_action(strip, &t, 4, 12).expect("roster row hits");
     assert_eq!(space.action, "switch-session");
     assert_eq!(str_arg(&space, "name").as_deref(), Some("space-0"));
     assert!(
@@ -607,12 +435,12 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
         "a roster click names a session, not a pane"
     );
     t.roster[0].as_mut().unwrap().host = Some("devbox".to_owned());
-    let host = sidebar_click_action(strip, &t, 4, 12).expect("host row hits");
+    let host = sidebar_click_action(strip, &t, 4, 13).expect("host row hits");
     assert_eq!(str_arg(&host, "name").as_deref(), Some("space-0"));
     assert_eq!(str_arg(&host, "host").as_deref(), Some("devbox"));
     t.roster[0] = None;
     assert!(
-        sidebar_click_action(strip, &t, 4, 12).is_none(),
+        sidebar_click_action(strip, &t, 4, 13).is_none(),
         "unreachable host is inert"
     );
 
@@ -696,89 +524,60 @@ async fn dispatch_sidebar_click_with(
     height: u16,
     sidebar_targets: crate::render::chrome::sidebar::SidebarTargets,
 ) -> (usize, bool, usize) {
+    let run = dispatch_sidebar_events(vec![ev], height, sidebar_targets).await;
+    (run.active, run.overlay_active, run.pending_windows)
+}
+
+/// What a sidebar fixture run left behind.
+struct SidebarRun {
+    active: usize,
+    overlay_active: bool,
+    pending_windows: usize,
+    /// Window names in display order.
+    names: Vec<String>,
+    /// The driver's sidebar width after the batch.
+    width: u16,
+    sidebar_enabled: bool,
+    drag_live: bool,
+    /// Insertion index of a live window-row drag, if any.
+    drop_at: Option<usize>,
+}
+
+/// Drive one batch of `events` against a left-docked, 20-column sidebar
+/// over an 80-column viewport and a two-window workspace ("1", "two").
+#[allow(
+    clippy::future_not_send,
+    reason = "test-owned native terminal is !Send"
+)]
+async fn dispatch_sidebar_events(
+    events: Vec<InputEvent>,
+    height: u16,
+    sidebar_targets: crate::render::chrome::sidebar::SidebarTargets,
+) -> SidebarRun {
     let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("two".to_owned(), tid(2));
-    workspace.select(0);
+    let mut fx = CtxFixture::default();
+    fx.workspace.add_window("two".to_owned(), tid(2));
+    fx.workspace.select(0);
+    fx.viewport = (80, height);
+    fx.sidebar = Some(SidebarReservation {
+        edge: super::super::paint::SidebarEdge::Left,
+        width: 20,
+    });
+    fx.sidebar_enabled = true;
+    fx.sidebar_targets = Some(sidebar_targets);
+    fx.bar = Some(crate::render::chrome::status_bar::Position::Bottom);
     let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    let mut next_request_id = 1;
-    let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
-    let mut overlays = OverlayState::new();
-    let theme = Theme::default();
-    let mut switch_request = None;
-    let mut session_name = String::new();
-    let mut zoomed = None;
-    let mut sidebar_enabled = true;
-    let mut drag: Option<DragGrab> = None;
-    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
-    let mut reload_request = false;
-    let fleet_agent_meta = HashMap::new();
-    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
-    let mut engine_kernel = test_engine_kernel();
-    // phux-k0cw: the strip's shape comes from the painted target
-    // table now, not from the workspace, so a fixture that wants
-    // hit-testable window rows must declare them.
-    let mut host_refresh = false;
-    let mut ctx = DispatchCtx {
-        control_dial: None,
-        layout_read_complete: true,
-        engine_kernel: &mut engine_kernel,
-        resolver: None,
-        focus_history: FocusHistory::default(),
-        workspace: &mut workspace,
-        viewport: (80, height),
-        cell_px: (1, 1),
-        next_request_id: &mut next_request_id,
-        input_replay: None,
-        spawn_initial_size_supported: true,
-        pending_splits: &mut pending_splits,
-        pending_windows: &mut pending_windows,
-        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
-        pending_directory: &mut None,
-        expected_closes: &mut HashSet::new(),
-        overlays: &mut overlays,
-        keybindings: None,
-        theme: &theme,
-        sessions: &[],
-        foreign_layouts: &HashMap::new(),
-        hosts: &[],
-        host_refresh_request: &mut host_refresh,
-        foreign_agents: &HashMap::new(),
-        focused_session: None,
-        session_name: &mut session_name,
-        switch_request: &mut switch_request,
-        zoomed: &mut zoomed,
-        sidebar: Some(SidebarReservation {
-            edge: super::super::paint::SidebarEdge::Left,
-            width: 20,
-        }),
-        sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
-        chrome: ChromeBreakpoints::default(),
-        sidebar_targets: &sidebar_targets,
-        bar: Some(crate::render::chrome::status_bar::Position::Bottom),
-        status_bar: None,
-        drag: &mut drag,
-        mouse_optout: &mut mouse_optout,
-        attention_navigation: &mut AttentionNavigation::default(),
-        plugin_actions: &[],
-        plugin_panes: &[],
-        plugin_tx: None,
-        reload_request: &mut reload_request,
-        agent_meta: &fleet_agent_meta,
-        vcs: &mut fleet_vcs,
-    };
+    let mut ctx = fx.ctx();
     dispatch_input_events(
         &mut out,
         &mut conn,
-        &mut vec![ev],
+        &mut events.clone(),
         &mut focused_resource,
         &mut detach_pending,
         &mut predict,
@@ -788,11 +587,24 @@ async fn dispatch_sidebar_click_with(
     )
     .await
     .expect("dispatch");
-    (
-        workspace.active,
-        overlays.is_active(),
-        pending_windows.len(),
-    )
+    SidebarRun {
+        active: fx.workspace.active,
+        overlay_active: fx.overlays.is_active(),
+        pending_windows: fx.pending_windows.len(),
+        names: fx
+            .workspace
+            .windows
+            .iter()
+            .map(|w| w.name.clone())
+            .collect(),
+        width: fx.sidebar_width,
+        sidebar_enabled: fx.sidebar_enabled,
+        drag_live: fx.drag.is_some(),
+        drop_at: match &fx.drag {
+            Some(DragGrab::Window(grab)) => grab.drop_at,
+            _ => None,
+        },
+    }
 }
 
 /// A left press on the second window's block switches to it — the
@@ -815,7 +627,7 @@ async fn short_sidebar_overflow_clicks_open_both_navigation_overlays() {
         h: 7,
     };
     let table = targets(3, 2, 2);
-    for (y, action) in [(1, "agent-fleet"), (3, "session-picker")] {
+    for (y, action) in [(2, "agent-fleet"), (3, "session-picker")] {
         let resolved = sidebar_click_action(strip, &table, 4, y).unwrap();
         assert_eq!(resolved.action, action);
         let (_, opened, pending) =
@@ -829,26 +641,12 @@ async fn short_sidebar_overflow_clicks_open_both_navigation_overlays() {
 /// the window), exactly like the `new-window` chord.
 #[tokio::test]
 async fn sidebar_click_on_new_parks_a_window_spawn() {
-    // The footer is bottom-anchored: `+ new` is the strip's second-to-last
-    // row, y = 22 of a full-height 24-row strip (phux-qtw8).
-    let (active, overlay_active, pending) = dispatch_sidebar_click(left_press_at(3, 22)).await;
+    // The footer is bottom-anchored: `+ new` is the strip's last row,
+    // y = 23 of a full-height 24-row strip.
+    let (active, overlay_active, pending) = dispatch_sidebar_click(left_press_at(3, 23)).await;
     assert_eq!(active, 0, "spawn is parked; no window switch yet");
     assert!(!overlay_active);
     assert_eq!(pending, 1, "new-window spawn must be parked");
-}
-
-/// A left press on `= menu` opens the command palette overlay — the
-/// session/plugin menu built from the action registry.
-///
-/// phux-qtw8: `= menu` is the strip's last row, which is also the bar row —
-/// the strip owns its columns there, and the bar has yielded them. The
-/// strip hit-tests first, so the click reaches the footer, not the bar.
-#[tokio::test]
-async fn sidebar_click_on_menu_opens_the_command_palette() {
-    let (active, overlay_active, pending) = dispatch_sidebar_click(left_press_at(3, 23)).await;
-    assert_eq!(active, 0);
-    assert!(overlay_active, "menu click must push the palette overlay");
-    assert_eq!(pending, 0);
 }
 
 /// Pointer events over the strip never leak into pane routing: a press
@@ -883,6 +681,224 @@ async fn sidebar_right_press_on_blank_chrome_opens_the_session_menu() {
 
 // ---------- phux-foz.12: status-bar window-tab hit targets ----------
 
+fn left_mouse(action: MouseAction, x: u16, y: u16) -> InputEvent {
+    InputEvent::Mouse(mev(action, MouseButton::Left, f64::from(x), f64::from(y)))
+}
+
+/// Dragging the left-docked strip's separator rule resizes the strip to
+/// follow the pointer, and the release ends the grab without undoing it.
+/// The 20-column strip's rule sits on column 19.
+#[tokio::test]
+async fn dragging_the_sidebar_edge_resizes_the_strip() {
+    let run = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 19, 5),
+            left_mouse(MouseAction::Motion, 25, 5),
+            left_mouse(MouseAction::Motion, 29, 6),
+            left_mouse(MouseAction::Release, 29, 6),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(run.width, 30, "the rule lands under the pointer");
+    assert!(!run.drag_live, "the release ends the grab");
+    assert_eq!(run.active, 0, "grabbing the edge selects nothing");
+    assert!(run.sidebar_enabled);
+}
+
+/// A drag whose release never arrives (the outer terminal lost focus) is
+/// abandoned on focus loss, so the next press acts instead of being eaten.
+#[tokio::test]
+async fn focus_loss_abandons_a_live_drag() {
+    use phux_protocol::input::focus::FocusEvent;
+    let run = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 19, 5),
+            left_mouse(MouseAction::Motion, 25, 5),
+            InputEvent::Focus(FocusEvent::Lost),
+            left_mouse(MouseAction::Press, 3, 15),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(run.width, 26, "the width reached before focus loss stays");
+    assert_eq!(run.active, 1, "the press after focus loss selects its row");
+}
+
+/// The dragged width is clamped: the strip keeps room for a window name
+/// and the panes keep `min_pane_cols` (40 by default of 80 columns).
+#[tokio::test]
+async fn sidebar_edge_drag_is_clamped_at_both_ends() {
+    let wide = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 19, 5),
+            left_mouse(MouseAction::Motion, 75, 5),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(wide.width, 40, "panes keep their minimum columns");
+    assert!(wide.drag_live, "without a release the grab stays live");
+
+    let narrow = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 19, 5),
+            left_mouse(MouseAction::Motion, 2, 5),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(
+        narrow.width,
+        super::chrome_drag::MIN_DRAGGED_SIDEBAR_COLS,
+        "the strip keeps room for a window name"
+    );
+}
+
+/// Width math for both docks, and the strip floor that yields to a config
+/// already narrower than the default floor.
+#[test]
+fn dragged_sidebar_width_tracks_the_pointer_within_both_floors() {
+    use super::super::paint::SidebarEdge;
+    use super::chrome_drag::{WidthFloors, dragged_sidebar_width};
+    let floors = WidthFloors {
+        strip: 16,
+        panes: 40,
+    };
+    assert_eq!(
+        dragged_sidebar_width(80, SidebarEdge::Left, 29, floors),
+        Some(30)
+    );
+    assert_eq!(
+        dragged_sidebar_width(80, SidebarEdge::Right, 50, floors),
+        Some(30)
+    );
+    assert_eq!(
+        dragged_sidebar_width(80, SidebarEdge::Left, 79, floors),
+        Some(40)
+    );
+    assert_eq!(
+        dragged_sidebar_width(50, SidebarEdge::Left, 20, floors),
+        None
+    );
+    let narrow = WidthFloors {
+        strip: 12,
+        panes: 40,
+    };
+    assert_eq!(
+        dragged_sidebar_width(80, SidebarEdge::Left, 11, narrow),
+        Some(12),
+        "a 12-column config does not snap to 16 when grabbed"
+    );
+}
+
+/// The rule's bottom corner is still the collapse chevron, not a handle.
+#[tokio::test]
+async fn the_collapse_corner_is_not_a_resize_handle() {
+    let run = dispatch_sidebar_events(
+        vec![left_mouse(MouseAction::Press, 19, 23)],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert!(
+        !run.sidebar_enabled,
+        "the chevron still collapses the strip"
+    );
+    assert!(!run.drag_live);
+    assert_eq!(run.width, 20);
+}
+
+/// Pressing a sidebar window row selects it and picks it up; releasing it
+/// over another window row moves it into that slot, still selected.
+/// Window rows sit at 14 and 15 in this fixture.
+#[tokio::test]
+async fn dragging_a_sidebar_window_row_reorders_windows() {
+    let run = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 3, 14),
+            left_mouse(MouseAction::Motion, 3, 15),
+            left_mouse(MouseAction::Release, 3, 15),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(run.names, ["two", "1"]);
+    assert_eq!(run.active, 1, "the dragged window stays active");
+    assert!(!run.drag_live);
+}
+
+/// A window row dropped anywhere but another window row stays put, and so
+/// does a plain click.
+#[tokio::test]
+async fn sidebar_window_drop_off_the_rows_changes_nothing() {
+    for release_at in [(3, 14), (3, 5), (50, 15)] {
+        let run = dispatch_sidebar_events(
+            vec![
+                left_mouse(MouseAction::Press, 3, 14),
+                left_mouse(MouseAction::Release, release_at.0, release_at.1),
+            ],
+            24,
+            targets(0, 2, 1),
+        )
+        .await;
+        assert_eq!(run.names, ["1", "two"], "release at {release_at:?}");
+        assert!(!run.drag_live);
+    }
+}
+
+/// phux-mv5y: motion over another window row points the insertion marker
+/// at that slot; release and focus-loss cancel both clear it.
+#[tokio::test]
+async fn sidebar_drag_drop_marker_follows_the_pointer_and_clears() {
+    use phux_protocol::input::focus::FocusEvent;
+    let mid = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 3, 14),
+            left_mouse(MouseAction::Motion, 3, 15),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(mid.drop_at, Some(1), "motion over row 1 paints that slot");
+    assert!(mid.drag_live);
+
+    let released = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 3, 14),
+            left_mouse(MouseAction::Motion, 3, 15),
+            left_mouse(MouseAction::Release, 3, 15),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(released.drop_at, None, "release clears the marker");
+    assert!(!released.drag_live);
+
+    let cancelled = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 3, 14),
+            left_mouse(MouseAction::Motion, 3, 15),
+            InputEvent::Focus(FocusEvent::Lost),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(
+        cancelled.drop_at, None,
+        "cancel on focus loss clears the marker"
+    );
+    assert!(!cancelled.drag_live);
+}
+
 /// Build a status-bar painter with the `windows` widget in the left
 /// slot (the default config's layout), fed `bash`/`vim` tabs and
 /// painted once at `cols x rows` so its cached strip — the click
@@ -908,6 +924,8 @@ fn painted_windows_bar(
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
+            badge: None,
         },
         WindowInfo {
             name: "vim".to_owned(),
@@ -915,6 +933,8 @@ fn painted_windows_bar(
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
+            badge: None,
         },
     ]);
     let mut sink = Vec::new();
@@ -936,97 +956,49 @@ fn painted_windows_bar(
 /// both the select effect and that nothing leaked to a pane.
 #[allow(
     clippy::future_not_send,
-    clippy::too_many_lines,
-    reason = "client-side libghostty Terminal is !Send (ADR-0003 binds us to current-thread); the length is one DispatchCtx fixture literal, as in the other dispatch fixtures in this file"
+    reason = "client-side libghostty Terminal is !Send (ADR-0003 binds us to current-thread)"
 )]
 async fn dispatch_bar_click(
     ev: InputEvent,
     position: crate::render::chrome::status_bar::Position,
     with_painter: bool,
 ) -> (usize, Vec<FrameKind>, bool) {
-    let painter = painted_windows_bar(position, 80, 24);
+    let (active, received, overlay_active, ..) =
+        dispatch_bar_events(vec![ev], position, with_painter).await;
+    (active, received, overlay_active)
+}
+
+/// [`dispatch_bar_click`] over a batch of events, also returning the window
+/// names in display order.
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal is !Send (ADR-0003 binds us to current-thread)"
+)]
+async fn dispatch_bar_events(
+    events: Vec<InputEvent>,
+    position: crate::render::chrome::status_bar::Position,
+    with_painter: bool,
+) -> (usize, Vec<FrameKind>, bool, Vec<String>, Option<usize>) {
     let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut peer = Connection::from_stream(b);
     let mut out: Vec<u8> = Vec::new();
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("two".to_owned(), tid(2));
-    workspace.select(0);
+    let mut fx = CtxFixture::default();
+    fx.workspace.add_window("two".to_owned(), tid(2));
+    fx.workspace.select(0);
+    fx.bar = Some(position);
+    fx.status_bar = with_painter.then(|| painted_windows_bar(position, 80, 24));
     let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
     let overlay = Overlay;
     let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    let mut next_request_id = 1;
-    let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
-    let mut overlays = OverlayState::new();
-    let theme = Theme::default();
-    let mut switch_request = None;
-    let mut session_name = String::new();
-    let mut zoomed = None;
-    let mut sidebar_enabled = false;
-    let mut drag: Option<DragGrab> = None;
-    let mut reload_request = false;
-    let fleet_agent_meta = HashMap::new();
-    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
     {
-        let mut engine_kernel = test_engine_kernel();
-        // phux-k0cw: the strip's shape comes from the painted target
-        // table now, not from the workspace, so a fixture that wants
-        // hit-testable window rows must declare them.
-        let sidebar_targets = targets(0, workspace.windows.len(), 0);
-        let mut host_refresh = false;
-        let mut ctx = DispatchCtx {
-            control_dial: None,
-            layout_read_complete: true,
-            engine_kernel: &mut engine_kernel,
-            resolver: None,
-            focus_history: FocusHistory::default(),
-            workspace: &mut workspace,
-            viewport: (80, 24),
-            cell_px: (1, 1),
-            next_request_id: &mut next_request_id,
-            input_replay: None,
-            spawn_initial_size_supported: true,
-            pending_splits: &mut pending_splits,
-            pending_windows: &mut pending_windows,
-            directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
-            pending_directory: &mut None,
-            expected_closes: &mut HashSet::new(),
-            overlays: &mut overlays,
-            keybindings: None,
-            theme: &theme,
-            sessions: &[],
-            foreign_layouts: &HashMap::new(),
-            hosts: &[],
-            host_refresh_request: &mut host_refresh,
-            foreign_agents: &HashMap::new(),
-            focused_session: None,
-            session_name: &mut session_name,
-            switch_request: &mut switch_request,
-            zoomed: &mut zoomed,
-            sidebar: None,
-            sidebar_enabled: &mut sidebar_enabled,
-            sidebar_width: 20,
-            chrome: ChromeBreakpoints::default(),
-            sidebar_targets: &sidebar_targets,
-            bar: Some(position),
-            status_bar: with_painter.then_some(&painter),
-            drag: &mut drag,
-            mouse_optout: &mut HashSet::new(),
-            attention_navigation: &mut AttentionNavigation::default(),
-            plugin_actions: &[],
-            plugin_panes: &[],
-            plugin_tx: None,
-            reload_request: &mut reload_request,
-            agent_meta: &fleet_agent_meta,
-            vcs: &mut fleet_vcs,
-        };
+        let mut ctx = fx.ctx();
         dispatch_input_events(
             &mut out,
             &mut conn,
-            &mut vec![ev],
+            &mut events.clone(),
             &mut focused_resource,
             &mut detach_pending,
             &mut predict,
@@ -1051,7 +1023,23 @@ async fn dispatch_bar_click(
         }
     }
     drop(peer);
-    (workspace.active, received, overlays.is_active())
+    let names = fx
+        .workspace
+        .windows
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    let drop_at = match &fx.drag {
+        Some(DragGrab::Window(grab)) => grab.drop_at,
+        _ => None,
+    };
+    (
+        fx.workspace.active,
+        received,
+        fx.overlays.is_active(),
+        names,
+        drop_at,
+    )
 }
 
 /// A left press on window 1's tab in the BOTTOM bar (the user-reported
@@ -1153,6 +1141,95 @@ async fn bar_click_without_painter_is_consumed() {
 /// column commits `select-window { index }`; non-tab columns and a
 /// missing painter commit nothing — and the committed name must be a
 /// dispatched action (the palette-registry lockstep).
+/// Dragging a status-bar tab onto another tab moves that window into the
+/// other tab's slot. The strip reads "0:bash 1:vim": window 0 on columns
+/// 0..=5, window 1 on 7..=11.
+#[tokio::test]
+async fn dragging_a_tab_onto_another_tab_reorders_windows() {
+    use crate::render::chrome::status_bar::Position;
+    let (active, received, _, names, _) = dispatch_bar_events(
+        vec![
+            left_mouse(MouseAction::Press, 2, 23),
+            left_mouse(MouseAction::Motion, 5, 23),
+            left_mouse(MouseAction::Motion, 9, 23),
+            left_mouse(MouseAction::Release, 9, 23),
+        ],
+        Position::Bottom,
+        true,
+    )
+    .await;
+    assert_eq!(names, ["two", "1"]);
+    assert_eq!(active, 1, "the dragged window stays active");
+    assert!(
+        received.is_empty(),
+        "a tab drag must not reach a pane; got {received:?}"
+    );
+}
+
+/// A tab released off the bar row, or back on itself, keeps the order.
+#[tokio::test]
+async fn tab_drop_off_the_bar_changes_nothing() {
+    use crate::render::chrome::status_bar::Position;
+    for release_at in [(9, 10), (3, 23), (40, 23)] {
+        let (_, received, _, names, _) = dispatch_bar_events(
+            vec![
+                left_mouse(MouseAction::Press, 2, 23),
+                left_mouse(MouseAction::Release, release_at.0, release_at.1),
+            ],
+            Position::Bottom,
+            true,
+        )
+        .await;
+        assert_eq!(names, ["1", "two"], "release at {release_at:?}");
+        assert!(
+            received.is_empty(),
+            "release at {release_at:?}: {received:?}"
+        );
+    }
+}
+
+/// phux-mv5y: motion over another tab points the insertion marker at that
+/// slot; release and focus-loss cancel both clear it.
+#[tokio::test]
+async fn tab_drag_drop_marker_follows_the_pointer_and_clears() {
+    use crate::render::chrome::status_bar::Position;
+    use phux_protocol::input::focus::FocusEvent;
+    let (_, _, _, _, drop_at) = dispatch_bar_events(
+        vec![
+            left_mouse(MouseAction::Press, 2, 23),
+            left_mouse(MouseAction::Motion, 9, 23),
+        ],
+        Position::Bottom,
+        true,
+    )
+    .await;
+    assert_eq!(drop_at, Some(1), "motion over tab 1 paints that slot");
+
+    let (_, _, _, _, drop_at) = dispatch_bar_events(
+        vec![
+            left_mouse(MouseAction::Press, 2, 23),
+            left_mouse(MouseAction::Motion, 9, 23),
+            left_mouse(MouseAction::Release, 9, 23),
+        ],
+        Position::Bottom,
+        true,
+    )
+    .await;
+    assert_eq!(drop_at, None, "release clears the marker");
+
+    let (_, _, _, _, drop_at) = dispatch_bar_events(
+        vec![
+            left_mouse(MouseAction::Press, 2, 23),
+            left_mouse(MouseAction::Motion, 9, 23),
+            InputEvent::Focus(FocusEvent::Lost),
+        ],
+        Position::Bottom,
+        true,
+    )
+    .await;
+    assert_eq!(drop_at, None, "cancel on focus loss clears the marker");
+}
+
 #[test]
 fn bar_click_action_maps_tab_columns_to_select_window() {
     use crate::render::chrome::status_bar::Position;
@@ -1307,10 +1384,6 @@ async fn dispatch_mouse_two_pane_with(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-#[allow(
-    clippy::too_many_lines,
-    reason = "composed DispatchCtx fixture includes the confirmed initial-read state"
-)]
 async fn dispatch_mouse_two_pane_into(
     overlays: &mut OverlayState,
     events: Vec<InputEvent>,
@@ -1381,10 +1454,6 @@ async fn input_to_a_retained_pane_is_dropped_by_the_dispatcher() {
     clippy::future_not_send,
     reason = "client-side libghostty Terminal and the replay journal are current-thread state"
 )]
-#[allow(
-    clippy::too_many_lines,
-    reason = "composed DispatchCtx fixture includes the confirmed initial-read state"
-)]
 async fn dispatch_mouse_two_pane_into_with_journal(
     overlays: &mut OverlayState,
     mut events: Vec<InputEvent>,
@@ -1400,7 +1469,6 @@ async fn dispatch_mouse_two_pane_into_with_journal(
     std::collections::HashSet<ResourceId>,
     bool,
 ) {
-    let mut workspace = two_pane_workspace();
     let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut peer = Connection::from_stream(b);
@@ -1413,8 +1481,7 @@ async fn dispatch_mouse_two_pane_into_with_journal(
         .iter()
         .map(|(id, bytes)| (id, 39, 24, *bytes))
         .collect();
-    let (mut engine_kernel, _, mut panes) =
-        super::super::pane_state::published_test_state(&entries);
+    let (engine_kernel, _, mut panes) = super::super::pane_state::published_test_state(&entries);
     for id in exited {
         if let Some(slot) = panes.get_mut(id) {
             slot.exited = Some(super::super::pane_state::ExitMark {
@@ -1423,73 +1490,16 @@ async fn dispatch_mouse_two_pane_into_with_journal(
             });
         }
     }
-    let mut next_request_id = 1;
-    let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
-    let theme = Theme::default();
-    let mut switch_request = None;
-    let mut session_name = String::new();
-    let mut zoomed = None;
-    let mut sidebar_enabled = false;
-    let mut drag: Option<DragGrab> = None;
-    let mut mouse_optout: std::collections::HashSet<ResourceId> =
-        seed_optout.iter().cloned().collect();
-    let mut reload_request = false;
-    let fleet_agent_meta = HashMap::new();
-    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
+    let mut fx = CtxFixture::default();
+    fx.workspace = two_pane_workspace();
+    fx.engine_kernel = engine_kernel;
+    fx.cell_px = cell_px;
+    fx.mouse_optout = seed_optout.iter().cloned().collect();
     let repainted;
     {
-        // phux-k0cw: the strip's shape comes from the painted target
-        // table now, not from the workspace, so a fixture that wants
-        // hit-testable window rows must declare them.
-        let sidebar_targets = targets(0, workspace.windows.len(), 0);
-        let mut host_refresh = false;
-        let mut ctx = DispatchCtx {
-            control_dial: None,
-            layout_read_complete: true,
-            engine_kernel: &mut engine_kernel,
-            resolver: None,
-            focus_history: FocusHistory::default(),
-            workspace: &mut workspace,
-            viewport: (80, 24),
-            cell_px,
-            next_request_id: &mut next_request_id,
-            input_replay,
-            spawn_initial_size_supported: true,
-            pending_splits: &mut pending_splits,
-            pending_windows: &mut pending_windows,
-            directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
-            pending_directory: &mut None,
-            expected_closes: &mut HashSet::new(),
-            overlays,
-            keybindings: None,
-            theme: &theme,
-            sessions: &[],
-            foreign_layouts: &HashMap::new(),
-            hosts: &[],
-            host_refresh_request: &mut host_refresh,
-            foreign_agents: &HashMap::new(),
-            focused_session: None,
-            session_name: &mut session_name,
-            switch_request: &mut switch_request,
-            zoomed: &mut zoomed,
-            sidebar: None,
-            sidebar_enabled: &mut sidebar_enabled,
-            sidebar_width: 20,
-            chrome: ChromeBreakpoints::default(),
-            sidebar_targets: &sidebar_targets,
-            bar: None,
-            status_bar: None,
-            drag: &mut drag,
-            mouse_optout: &mut mouse_optout,
-            attention_navigation: &mut AttentionNavigation::default(),
-            plugin_actions: &[],
-            plugin_panes: &[],
-            plugin_tx: None,
-            reload_request: &mut reload_request,
-            agent_meta: &fleet_agent_meta,
-            vcs: &mut fleet_vcs,
-        };
+        let mut ctx = fx.ctx();
+        ctx.overlays = overlays;
+        ctx.input_replay = input_replay;
         repainted = dispatch_input_events(
             &mut out,
             &mut conn,
@@ -1521,7 +1531,13 @@ async fn dispatch_mouse_two_pane_into_with_journal(
         }
     }
     drop(peer);
-    (received, drag, focused_resource, mouse_optout, repainted)
+    (
+        received,
+        fx.drag,
+        focused_resource,
+        fx.mouse_optout,
+        repainted,
+    )
 }
 
 #[tokio::test]
@@ -1882,11 +1898,11 @@ async fn wheel_down_in_alt_screen_pane_synthesizes_arrow_down() {
     }
 }
 
-/// An app that opted out of alternate scroll (`?1007l`) gets neither
-/// arrows nor a forwarded wheel — matching xterm, the wheel is inert on
-/// an alt screen that asked for silence.
+/// An app that opted out of alternate scroll (`?1007l`) is still on the
+/// alt screen, so the client must not local-scroll. Forward the wheel
+/// instead of eating a no-op (phux-2vnl).
 #[tokio::test]
-async fn wheel_with_alt_scroll_off_sends_nothing() {
+async fn wheel_with_alt_scroll_off_forwards_to_the_app() {
     let (received, _, _, _) = dispatch_mouse_two_pane_with(
         vec![InputEvent::Mouse(mev(
             MouseAction::Press,
@@ -1899,13 +1915,40 @@ async fn wheel_with_alt_scroll_off_sends_nothing() {
         (1, 1),
     )
     .await;
+    match received.as_slice() {
+        [FrameKind::InputMouse { terminal_id, event }] => {
+            assert_eq!(*terminal_id, tid(2));
+            assert_eq!(event.button, MouseButton::Four);
+        }
+        other => panic!("expected the wheel to be forwarded, got {other:?}"),
+    }
+}
+
+/// Wheel over a primary-screen pane that actually has scrollback is
+/// consumed by the local viewport — nothing crosses the wire.
+#[tokio::test]
+async fn wheel_in_primary_screen_pane_scrolls_locally() {
+    let history = primary_scrollback_vt(40);
+    let (received, _, _, _) = dispatch_mouse_two_pane_with(
+        vec![InputEvent::Mouse(mev(
+            MouseAction::Press,
+            MouseButton::Four,
+            70.0,
+            5.0,
+        ))],
+        &[],
+        &[(tid(2), history.as_slice())],
+        (1, 1),
+    )
+    .await;
     assert!(received.is_empty(), "expected no frames, got {received:?}");
 }
 
-/// Wheel over a primary-screen pane without mouse tracking is consumed
-/// by the local scrollback viewport — nothing crosses the wire.
+/// phux-2vnl miss path: when local scroll cannot move the viewport
+/// (empty history, already at the live tail, or an alt-screen replica
+/// whose mode bits we missed), the wheel is forwarded instead of eaten.
 #[tokio::test]
-async fn wheel_in_primary_screen_pane_scrolls_locally() {
+async fn wheel_noop_local_scroll_is_forwarded() {
     let (received, _, _, _) = dispatch_mouse_two_pane_with(
         vec![InputEvent::Mouse(mev(
             MouseAction::Press,
@@ -1918,7 +1961,81 @@ async fn wheel_in_primary_screen_pane_scrolls_locally() {
         (1, 1),
     )
     .await;
-    assert!(received.is_empty(), "expected no frames, got {received:?}");
+    match received.as_slice() {
+        [FrameKind::InputMouse { terminal_id, event }] => {
+            assert_eq!(*terminal_id, tid(2));
+            assert_eq!(event.button, MouseButton::Four);
+        }
+        other => panic!("expected a no-op local scroll to forward, got {other:?}"),
+    }
+}
+
+/// Same miss path at the live tail of a pane that *does* have history:
+/// wheel-down cannot move further, so it must not be eaten.
+#[tokio::test]
+async fn wheel_down_at_live_tail_is_forwarded() {
+    let history = primary_scrollback_vt(40);
+    let (received, _, _, _) = dispatch_mouse_two_pane_with(
+        vec![InputEvent::Mouse(mev(
+            MouseAction::Press,
+            MouseButton::Five,
+            70.0,
+            5.0,
+        ))],
+        &[],
+        &[(tid(2), history.as_slice())],
+        (1, 1),
+    )
+    .await;
+    match received.as_slice() {
+        [FrameKind::InputMouse { terminal_id, event }] => {
+            assert_eq!(*terminal_id, tid(2));
+            assert_eq!(event.button, MouseButton::Five);
+        }
+        other => panic!("expected wheel-down at the live tail to forward, got {other:?}"),
+    }
+}
+
+/// Alt-screen with prior primary history still must not local-scroll
+/// (phux-2vnl): the wheel becomes arrows, not a replica history pan.
+#[tokio::test]
+async fn wheel_in_alt_screen_with_prior_history_still_synthesizes_arrows() {
+    let mut vt = primary_scrollback_vt(40);
+    vt.extend_from_slice(b"\x1b[?1049h");
+    let (received, _, _, _) = dispatch_mouse_two_pane_with(
+        vec![InputEvent::Mouse(mev(
+            MouseAction::Press,
+            MouseButton::Four,
+            70.0,
+            5.0,
+        ))],
+        &[],
+        &[(tid(2), vt.as_slice())],
+        (1, 1),
+    )
+    .await;
+    assert_eq!(
+        received.len(),
+        3,
+        "alt-screen owns the wheel; one notch = 3 arrows: {received:?}"
+    );
+    for frame in &received {
+        match frame {
+            FrameKind::InputKey { terminal_id, event } => {
+                assert_eq!(*terminal_id, tid(2));
+                assert_eq!(event.key, PhysicalKey::ArrowUp);
+            }
+            other => panic!("expected INPUT_KEY, not a forwarded wheel, got {other:?}"),
+        }
+    }
+}
+
+fn primary_scrollback_vt(lines: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for i in 0..lines {
+        out.extend_from_slice(format!("line-{i:03}\r\n").as_bytes());
+    }
+    out
 }
 
 /// Wheel over a pane whose app tracks the mouse (Claude Code sets
@@ -2146,71 +2263,12 @@ fn run_set_pane(
     workspace: &mut Workspace,
     mouse_optout: &mut std::collections::HashSet<ResourceId>,
 ) -> ActionEffects {
-    let mut next_request_id = 100;
-    let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
-    let mut overlays = OverlayState::new();
-    let theme = Theme::default();
-    let mut switch_request = None;
-    let mut session_name = String::new();
-    let mut zoomed = None;
-    let mut sidebar_enabled = false;
-    let mut drag: Option<DragGrab> = None;
-    let mut reload_request = false;
-    let fleet_agent_meta = HashMap::new();
-    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
-    let mut engine_kernel = test_engine_kernel();
-    // phux-k0cw: the strip's shape comes from the painted target
-    // table now, not from the workspace, so a fixture that wants
-    // hit-testable window rows must declare them.
-    let sidebar_targets = targets(0, workspace.windows.len(), 0);
-    let mut host_refresh = false;
-    let mut ctx = DispatchCtx {
-        control_dial: None,
-        layout_read_complete: true,
-        engine_kernel: &mut engine_kernel,
-        resolver: None,
-        focus_history: FocusHistory::default(),
-        workspace,
-        viewport: (80, 24),
-        cell_px: (1, 1),
-        next_request_id: &mut next_request_id,
-        input_replay: None,
-        spawn_initial_size_supported: true,
-        pending_splits: &mut pending_splits,
-        pending_windows: &mut pending_windows,
-        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
-        pending_directory: &mut None,
-        expected_closes: &mut HashSet::new(),
-        overlays: &mut overlays,
-        keybindings: None,
-        theme: &theme,
-        sessions: &[],
-        foreign_layouts: &HashMap::new(),
-        hosts: &[],
-        host_refresh_request: &mut host_refresh,
-        foreign_agents: &HashMap::new(),
-        focused_session: None,
-        session_name: &mut session_name,
-        switch_request: &mut switch_request,
-        zoomed: &mut zoomed,
-        sidebar: None,
-        sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
-        chrome: ChromeBreakpoints::default(),
-        sidebar_targets: &sidebar_targets,
-        bar: None,
-        status_bar: None,
-        drag: &mut drag,
-        mouse_optout,
-        attention_navigation: &mut AttentionNavigation::default(),
-        plugin_actions: &[],
-        plugin_panes: &[],
-        plugin_tx: None,
-        reload_request: &mut reload_request,
-        agent_meta: &fleet_agent_meta,
-        vcs: &mut fleet_vcs,
-    };
+    let mut fx = CtxFixture::default();
+    fx.next_request_id = 100;
+    fx.sidebar_targets = Some(targets(0, workspace.windows.len(), 0));
+    let mut ctx = fx.ctx();
+    ctx.workspace = workspace;
+    ctx.mouse_optout = mouse_optout;
     let mut action = bare_action("set-pane");
     if let Some(v) = mouse {
         action.args.insert("mouse".to_owned(), v);
@@ -2377,12 +2435,9 @@ fn alt_screen_gate_tracks_dec_private_modes() {
 async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
     use phux_protocol::input::key::PhysicalKey;
 
-    let theme = Theme::default();
-    let mut overlays = OverlayState::new();
     let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
-    let mut workspace = Workspace::single(tid(1));
     let mut focused_resource = Some(tid(1));
     let mut detach_pending = false;
     // Enabled predictor, fresh (un-suspended) — a printable insert at the
@@ -2394,75 +2449,15 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
     // via `terminal.mode()`. A fresh pane sits on the main screen (cooked
     // shell prompt); `?1049h` puts it in a full-screen app.
     let bootstrap: &[u8] = if alt_screen { b"\x1b[?1049h" } else { b"" };
-    let (mut engine_kernel, _, mut panes) =
+    let (engine_kernel, _, mut panes) =
         super::super::pane_state::published_test_state(&[(&tid(1), 80, 24, bootstrap)]);
 
-    let mut next_request_id = 1;
-    let mut pending_splits = HashMap::new();
-    let mut pending_windows = HashMap::new();
-    let mut switch_request = None;
-    let mut session_name = String::new();
-    let mut zoomed = None;
-    let mut sidebar_enabled = false;
-    let mut drag: Option<DragGrab> = None;
-    let mut reload_request = false;
-    let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
-    let fleet_agent_meta = HashMap::new();
-    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
-    // phux-k0cw: the strip's shape comes from the painted target
-    // table now, not from the workspace, so a fixture that wants
-    // hit-testable window rows must declare them.
-    let sidebar_targets = targets(0, workspace.windows.len(), 0);
-    let mut host_refresh = false;
-    let mut ctx = DispatchCtx {
-        control_dial: None,
-        layout_read_complete: true,
-        engine_kernel: &mut engine_kernel,
-        // No resolver: every key forwards straight through to the pane,
-        // past the predict layer — no keybinding interception to muddy
-        // the gate assertion.
-        resolver: None,
-        focus_history: FocusHistory::default(),
-        workspace: &mut workspace,
-        viewport: (80, 24),
-        cell_px: (1, 1),
-        next_request_id: &mut next_request_id,
-        input_replay: None,
-        spawn_initial_size_supported: true,
-        pending_splits: &mut pending_splits,
-        pending_windows: &mut pending_windows,
-        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
-        pending_directory: &mut None,
-        expected_closes: &mut HashSet::new(),
-        overlays: &mut overlays,
-        keybindings: None,
-        theme: &theme,
-        sessions: &[],
-        foreign_layouts: &HashMap::new(),
-        hosts: &[],
-        host_refresh_request: &mut host_refresh,
-        foreign_agents: &HashMap::new(),
-        focused_session: None,
-        session_name: &mut session_name,
-        switch_request: &mut switch_request,
-        zoomed: &mut zoomed,
-        sidebar: None,
-        sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
-        chrome: ChromeBreakpoints::default(),
-        sidebar_targets: &sidebar_targets,
-        bar: None,
-        status_bar: None,
-        drag: &mut drag,
-        mouse_optout: &mut mouse_optout,
-        attention_navigation: &mut AttentionNavigation::default(),
-        plugin_actions: &[],
-        plugin_panes: &[],
-        plugin_tx: None,
-        reload_request: &mut reload_request,
-        agent_meta: &fleet_agent_meta,
-        vcs: &mut fleet_vcs,
-    };
+    let mut fx = CtxFixture::default();
+    fx.engine_kernel = engine_kernel;
+    // No resolver (the fixture default): every key forwards straight
+    // through to the pane, past the predict layer — no keybinding
+    // interception to muddy the gate assertion.
+    let mut ctx = fx.ctx();
 
     dispatch_input_events(
         &mut out,

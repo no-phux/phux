@@ -60,7 +60,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::widgets::{Modal, centered_panel, paint_scrollbar, scroll_into_view};
+use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::clip_text;
 use crate::render::{ChromeBreakpoints, Theme};
@@ -70,10 +70,9 @@ use crate::render::{ChromeBreakpoints, Theme};
 /// room it does not have on a narrow list.
 const GAP: usize = 1;
 
-/// Rows of the modal box that are *not* list rows: the two borders, the
-/// query line, the blank beneath it, and the footer's blank + text. The list
-/// viewport is whatever height is left over.
-const CHROME_ROWS: u16 = 6;
+/// Rows of the modal box that are *not* list rows: the two borders and
+/// the query line. The list viewport is whatever height is left over.
+const CHROME_ROWS: u16 = 3;
 
 /// Rows the selection moves per mouse-wheel detent, matching copy-mode's
 /// `WHEEL_SCROLL_LINES` so the wheel feels the same everywhere in the client.
@@ -445,14 +444,14 @@ impl SelectList {
         self.snap_to_selectable(indices);
     }
 
-    /// The modal rect: 60% of the viewport, min 30x10, clamped to the
-    /// outer rect.
+    /// The modal rect: 50% of the viewport, min 30x10, clamped to the
+    /// outer rect. Half leaves live panes visible around the finder.
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        centered_panel(outer, 6, 30, 10, bp)
+        centered_panel(outer, 5, 30, 10, bp)
     }
 
-    /// Rows available to the list inside `modal_area`, once the borders, the
-    /// query line + its blank, and the footer + its blank are taken out.
+    /// Rows available to the list inside `modal_area`, once the borders and
+    /// the query line + its blank are taken out.
     const fn list_height(modal_area: Rect) -> usize {
         modal_area.height.saturating_sub(CHROME_ROWS) as usize
     }
@@ -478,9 +477,9 @@ impl SelectList {
     /// absolute position — the thing `selected` indexes — is `offset + row`.
     fn body_lines(&self, window: &[usize], offset: usize, inner_width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
-        // Query line: a `> ` prompt, the text, and a reverse-video caret.
+        // Query line: a dim prompt, the text, and a reverse-video caret.
         lines.push(Line::from(vec![
-            Span::styled("> ".to_owned(), Style::default().fg(self.theme.accent)),
+            Span::styled("> ".to_owned(), Style::default().fg(self.theme.dim)),
             Span::styled(
                 self.visible_query(inner_width.saturating_sub(3)),
                 Style::default().fg(self.theme.text),
@@ -492,7 +491,6 @@ impl SelectList {
                     .bg(self.theme.accent),
             ),
         ]));
-        lines.push(Line::from(""));
 
         if window.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -534,9 +532,7 @@ impl SelectList {
     fn header_line(&self, item: &SelectItem) -> Line<'static> {
         Line::from(Span::styled(
             item.label.clone(),
-            Style::default()
-                .fg(self.theme.section_header)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(self.theme.section_header),
         ))
     }
 
@@ -567,10 +563,21 @@ impl SelectList {
         // The secondary gets whatever the full label does not need, less
         // one mandatory blank column: `label` and `secondary` are two
         // different facts and must never run together into one word.
-        let secondary = clip_text(
-            &secondary_full,
-            width.saturating_sub(crate::render::display_width(&label_full) + GAP),
-        );
+        //
+        // A SHORT secondary — a chord like `C-a z`, no wider than a third
+        // of the row — is kept whole and the label clips instead. It is
+        // the column the eye runs down, and a chord cut to `C-a…` is not
+        // a shorter chord but a wrong one; the label keeps two thirds of
+        // the row either way.
+        let secondary_w = crate::render::display_width(&secondary_full);
+        let secondary = if secondary_w > 0 && secondary_w + GAP <= width / 3 {
+            secondary_full
+        } else {
+            clip_text(
+                &secondary_full,
+                width.saturating_sub(crate::render::display_width(&label_full) + GAP),
+            )
+        };
         let sec_w = crate::render::display_width(&secondary);
         // The label then takes the rest, reserving the gap only if a
         // secondary actually survived.
@@ -589,8 +596,7 @@ impl SelectList {
                 text,
                 Style::default()
                     .fg(self.theme.selection_fg)
-                    .bg(self.theme.selection_bg)
-                    .add_modifier(Modifier::BOLD),
+                    .bg(self.theme.selection_bg),
             ))
         } else {
             // phux-foz.7: an attention row's label paints in the theme's
@@ -619,7 +625,7 @@ impl RenderOverlay for SelectList {
         let indices = self.filtered_indices();
         // Body width is the modal interior minus the 1-cell border on
         // each side.
-        let inner_width = modal_area.width.saturating_sub(2);
+        let inner_width = modal_inner_width(modal_area.width);
 
         // Window the rows to what actually fits, keeping the selection in
         // view. Both are view state: recorded here (the only place the
@@ -633,9 +639,7 @@ impl RenderOverlay for SelectList {
             .unwrap_or(&[]);
 
         let body = self.body_lines(window, offset, inner_width);
-        Modal::new(&self.theme, self.title.clone(), body)
-            .footer_hints(["Enter select", "Esc cancel", "type to filter"])
-            .render_into(modal_area, buf);
+        Modal::new(&self.theme, self.title.clone(), body).render_into(modal_area, buf);
         // Over the border the modal just drew, so an overflowing list shows
         // its extent and position instead of silently clipping.
         paint_scrollbar(
@@ -1291,10 +1295,10 @@ mod tests {
         assert_eq!(sl.selected, 1, "no measured viewport ⇒ a single-row step");
         // After a paint, a page is a real screenful. A 40x16 viewport is
         // compact on both axes, so the picker is full-bleed: 16 rows less
-        // the 6 of shared chrome leaves 10 visible.
+        // the 3 of shared chrome leaves 13 visible.
         render_to_string(&sl, 40, 16);
         sl.handle_key(&press(PhysicalKey::PageDown, None));
-        assert_eq!(sl.selected, 11);
+        assert_eq!(sl.selected, 14);
         sl.handle_key(&press(PhysicalKey::PageUp, None));
         assert_eq!(sl.selected, 1);
         // And both saturate rather than wrapping.
@@ -1536,12 +1540,6 @@ mod tests {
         assert!(hot.spans[0].style.add_modifier.contains(Modifier::BOLD));
         // Selection owns both colors regardless of the host terminal theme.
         let selected = sl.item_line(&sl.items[1], true, 40);
-        assert!(
-            selected.spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
         assert_eq!(selected.spans[0].style.fg, Some(theme.selection_fg));
         assert_eq!(selected.spans[0].style.bg, Some(theme.selection_bg));
     }
@@ -1628,8 +1626,8 @@ mod tests {
         }
         // The box occupies neither the full width nor the full height.
         let bounds = sl.bounds(area).expect("a floating picker is bounded");
-        assert!(bounds.width < area.width, "{bounds:?}");
-        assert!(bounds.height < area.height, "{bounds:?}");
+        assert_eq!(bounds.width, 50, "{bounds:?}");
+        assert_eq!(bounds.height, 15, "{bounds:?}");
         assert!(bounds.x > 0 && bounds.y > 0, "{bounds:?}");
         insta::assert_snapshot!(out);
     }
@@ -1730,5 +1728,26 @@ mod tests {
         }
         assert!(text.contains("command palette"), "{text}");
         assert!(text.contains("split-pane"), "{text}");
+    }
+
+    /// A short secondary is the column the eye runs down: a chord survives
+    /// whole and the long label clips instead.
+    #[test]
+    fn a_short_chord_survives_a_long_label() {
+        let item = SelectItem::new(
+            "Zoom the focused pane to fill the whole window",
+            action("zoom-pane"),
+        )
+        .secondary("C-a z");
+        let sl = SelectList::new("t", vec![item], &Theme::default());
+        let painted: String = sl
+            .item_line(&sl.items[0], false, 40)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(painted.ends_with("C-a z"), "{painted:?}");
+        assert!(painted.contains(crate::render::ELLIPSIS), "{painted:?}");
+        assert_eq!(crate::render::display_width(&painted), 40);
     }
 }

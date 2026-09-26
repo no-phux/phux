@@ -26,12 +26,14 @@ const remote_commands = @import("remote_presentation_commands.zig");
 const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
 const shared_workspace = @import("../shared_workspace.zig");
+const shared_mutations = @import("../shared_mutations.zig");
 const peer_edits = @import("../peer_edits.zig");
 const session_attachments = @import("session_attachments.zig");
 const local_tool_launch = @import("local_tool_launch.zig");
 pub const new_session = @import("new_session.zig");
 pub const new_session_runtime = @import("new_session_runtime.zig");
 pub const machine_runtime = @import("machine_runtime.zig");
+pub const clipboard = @import("clipboard_target.zig");
 
 test {
     _ = @import("machine_engine_tests.zig");
@@ -181,6 +183,63 @@ test "shared divider preview rolls back when an overlay suspends input" {
     try std.testing.expectEqual(@as(u64, 0), engine.model.shared_mutations.next_ticket);
 }
 
+test "native split resize callback cannot retarget a rebuilt local divider" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    engine.model.focused = true;
+    try std.testing.expect(engine.splitFocusedPane(.horizontal));
+    const original = engine.model.ws().selectedTree().?.root;
+    engine.captureNativeSplitResize(0, original);
+
+    try std.testing.expect(engine.newTerminal());
+    try std.testing.expect(engine.splitFocusedPane(.horizontal));
+    const replacement = engine.model.ws().selectedTree().?;
+    const before = replacement.node(replacement.root).fraction;
+    try std.testing.expect(!engine.applyNativeSplitResize(0, original, 0.8));
+    try std.testing.expectEqual(before, replacement.node(replacement.root).fraction);
+}
+
+test "native split resize callback rolls back a shared divider without a provider" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    engine.model.focused = true;
+    try std.testing.expect(engine.splitFocusedPane(.horizontal));
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTree().?;
+    const root = tree.root;
+    const original = tree.node(root).fraction;
+    workspace.shared_ids[workspace.selected_tab] = @splat(1);
+    engine.model.shared_workspace.revision = 10;
+    engine.captureNativeSplitResize(0, root);
+
+    try std.testing.expect(engine.applyNativeSplitResize(0, root, 0.7));
+    try std.testing.expectEqual(original, tree.node(root).fraction);
+    try std.testing.expect(engine.model.shared_workspace.refused);
+}
+
+test "captured reorder requires the physical neighbor to be the authoritative neighbor" {
+    var workspace: model_module.Workspace = .{};
+    workspace.tab_count = 2;
+    workspace.tabs[0].attachment_id = 71;
+    workspace.tabs[1].attachment_id = 71;
+    workspace.shared_ids[0] = @splat(1);
+    workspace.shared_ids[1] = @splat(3);
+    const with_hidden = [_]provider_contract.workspace.Window{
+        .{ .id = @splat(1), .root = 0 },
+        .{ .id = @splat(2), .root = 0 },
+        .{ .id = @splat(3), .root = 0 },
+    };
+    try std.testing.expect(Engine.sharedReorderTarget(&workspace, 0, 71, &with_hidden, true) == null);
+
+    const adjacent = [_]provider_contract.workspace.Window{
+        .{ .id = @splat(1), .root = 0 },
+        .{ .id = @splat(3), .root = 0 },
+    };
+    try std.testing.expectEqual(@as(?usize, 1), Engine.sharedReorderTarget(&workspace, 0, 71, &adjacent, true));
+    workspace.tabs[1].attachment_id = 72;
+    try std.testing.expect(Engine.sharedReorderTarget(&workspace, 0, 71, &adjacent, true) == null);
+}
+
 const SplitDrag = struct {
     window_id: platform.WindowId,
     pointer_id: u64,
@@ -219,6 +278,10 @@ pub const Engine = struct {
     sequence: u64 = 0,
     revision: u64 = 1,
     selection_epoch: u64 = 1,
+    /// Captured tab actions share the TypeScript FIFO's monotonic IDs. Once an
+    /// action is admitted or refused, the same (or an older) packet can never
+    /// mutate presentation after a delayed host-call replay.
+    last_tab_action_id: u64 = 0,
     intent_refused: bool = false,
     /// The pty key each registry slot was last spawned for, so `spawnShells`
     /// is idempotent across frames and a reused slot spawns again.
@@ -237,6 +300,10 @@ pub const Engine = struct {
     last_down_point: geometry.PointF = .{},
     last_click_count: u8 = 0,
     split_drag: ?SplitDrag = null,
+    /// Each shipping split callback is bound to the exact tree that produced
+    /// it. A node index is only meaningful inside that tree, so a rebuilt tab
+    /// or recycled window slot cannot resize a different divider.
+    split_resize_captures: [model_module.max_windows][layout.max_nodes]?SplitDrag = @splat(@splat(null)),
     remote_focus_owner: ?support.ReplicaOwner = null,
     remote_natural_keys_held: u8 = 0,
     input_suspended: bool = false,
@@ -1004,7 +1071,100 @@ pub const Engine = struct {
             .tab => |target| self.applyTabTarget(request.id, target),
             .catalog => |target| self.applyCatalogTarget(request.id, target, fx),
             .operation => |operation| self.applyOperationTarget(request.id, operation, fx),
+            .action => |action| self.applyCapturedTabAction(request.id, action, fx),
         };
+    }
+
+    fn applyCapturedTabAction(self: *Engine, id: u64, action: tab_commands.ActionTarget, fx: anytype) tab_commands.Receipt {
+        if (id <= self.last_tab_action_id) return self.tabReceipt(id, .invalid_command);
+        self.last_tab_action_id = id;
+        const index = action.target.resolve(self.model) orelse return self.tabReceipt(id, .stale_target);
+        const status = if (self.model.phux() == null)
+            self.applyLocalTabAction(action.target.window, index, action.action, fx)
+        else
+            self.applySharedTabAction(id, action.target.window, index, action.action) orelse
+                return self.tabReceipt(id, .unavailable);
+        if (status == .rejected) return self.tabReceipt(id, .unavailable);
+        self.revision +%= 1;
+        var receipt = self.tabReceipt(id, .none);
+        receipt.status = status;
+        return receipt;
+    }
+
+    fn applyLocalTabAction(self: *Engine, window: usize, index: u8, action: tab_commands.Action, fx: anytype) tab_commands.Status {
+        const changed = switch (action) {
+            .close => lifecycle.closeTab(self.model, fx, window, index),
+            .previous, .next => self.moveLocalTab(window, index, action == .next),
+        };
+        return if (changed) .applied else .rejected;
+    }
+
+    fn moveLocalTab(self: *Engine, window: usize, index: u8, right: bool) bool {
+        const workspace = self.model.wsAt(window) orelse return false;
+        const terminal = workspace.tabTerminal(index) orelse return false;
+        return workspace.moveTerminal(terminal, if (right) 1 else -1);
+    }
+
+    fn applySharedTabAction(self: *Engine, id: u64, window: usize, index: u8, action: tab_commands.Action) ?tab_commands.Status {
+        const workspace = self.model.wsAt(window) orelse return null;
+        const tree = workspace.treeConst(index) orelse return null;
+        const attachment = tree.attachment_id orelse return null;
+        const remote = self.model.phuxForTree(tree) orelse return null;
+        if (remote.context_id != attachment) return null;
+        if (action == .close) return self.applySharedTabClose(id, workspace, index, remote, attachment);
+        return self.applySharedTabReorder(id, workspace, index, remote, attachment, action == .next);
+    }
+
+    fn applySharedTabClose(self: *Engine, id: u64, workspace: *model_module.Workspace, index: u8, remote: *support.PhuxProvider, attachment: u64) ?tab_commands.Status {
+        const shared_id = workspace.shared_ids[index] orelse return null;
+        trySharedClose(self, id, remote, attachment, shared_id) catch return null;
+        if (workspace.selected_tab == index) self.supersedeSelection();
+        return .accepted_pending;
+    }
+
+    fn applySharedTabReorder(self: *Engine, id: u64, workspace: *model_module.Workspace, index: u8, remote: *support.PhuxProvider, attachment: u64, right: bool) ?tab_commands.Status {
+        const shared_id = workspace.shared_ids[index] orelse return null;
+        const target = sharedReorderTarget(workspace, index, attachment, remote.workspaceSnapshot().windows, right) orelse return null;
+        trySharedReorder(self, id, remote, attachment, shared_id, target) catch return null;
+        return .accepted_pending;
+    }
+
+    fn trySharedClose(self: *Engine, id: u64, remote: *support.PhuxProvider, attachment: u64, shared_id: shared_mutations.WindowId) !void {
+        if (primaryOwnsAttachment(self.model, remote, attachment)) {
+            return self.model.shared_mutations.requestRemoveWindowCorrelated(self.model, shared_id, id);
+        }
+        return self.peer_edits.removeWindowCorrelatedForAttachment(self.model, attachment, shared_id, id);
+    }
+
+    fn trySharedReorder(self: *Engine, id: u64, remote: *support.PhuxProvider, attachment: u64, shared_id: shared_mutations.WindowId, target: usize) !void {
+        if (primaryOwnsAttachment(self.model, remote, attachment)) {
+            return self.model.shared_mutations.requestReorderCorrelated(self.model, shared_id, target, id);
+        }
+        return self.peer_edits.reorderCorrelatedForAttachment(self.model, attachment, shared_id, target, id);
+    }
+
+    fn primaryOwnsAttachment(model: *const model_module.Model, remote: *const support.PhuxProvider, attachment: u64) bool {
+        const primary = model.phuxConst() orelse return false;
+        return primary == remote and primary.context_id == attachment;
+    }
+
+    fn sharedReorderTarget(workspace: *const model_module.Workspace, index: usize, attachment: u64, windows: []const provider_contract.workspace.Window, right: bool) ?usize {
+        const neighbor = adjacentTabIndex(workspace.tab_count, index, right) orelse return null;
+        const neighbor_id = sharedTabIdForAttachment(workspace, neighbor, attachment) orelse return null;
+        const shared_id = workspace.shared_ids[index] orelse return null;
+        const target = peer_edits.neighborIndex(windows, shared_id, right) orelse return null;
+        return if (std.mem.eql(u8, &windows[target].id, &neighbor_id)) target else null;
+    }
+
+    fn adjacentTabIndex(tab_count: usize, index: usize, right: bool) ?usize {
+        if (right) return if (index + 1 < tab_count) index + 1 else null;
+        return if (index > 0) index - 1 else null;
+    }
+
+    fn sharedTabIdForAttachment(workspace: *const model_module.Workspace, index: usize, attachment: u64) ?shared_mutations.WindowId {
+        const tree = workspace.treeConst(index) orelse return null;
+        if (tree.attachment_id != attachment) return null;
+        return workspace.shared_ids[index];
     }
 
     fn applyTabTarget(self: *Engine, id: u64, target: tab_commands.Target) tab_commands.Receipt {
@@ -1578,7 +1738,7 @@ pub const Engine = struct {
     }
 
     fn peerWakePending(peer: *support.PhuxProvider) bool {
-        return peer.bridge.incoming.hasReadiness();
+        return peer.wakePending();
     }
 
     fn nextBackgroundPeer(self: *Engine) ?usize {
@@ -1707,7 +1867,7 @@ pub const Engine = struct {
         const peer = model.phuxPeerAt(slot).?;
         empty_session.forgetAttachment(model, peer.context_id, false);
         peer.stop();
-        self.peer_edits.forget(slot);
+        self.peer_edits.forget(model, slot);
         empty_session.forgetPeer(model, peer.providerId(), false);
         peer_restore.failed(model, slot);
         // That occupancy is gone; the next one opens under a fresh key.
@@ -1723,7 +1883,7 @@ pub const Engine = struct {
         const peer = self.model.phuxPeerAt(slot) orelse return false;
         empty_session.forgetAttachment(self.model, peer.context_id, false);
         peer.stop();
-        self.peer_edits.forget(slot);
+        self.peer_edits.forget(self.model, slot);
         empty_session.forgetPeer(self.model, peer.providerId(), false);
         peer_restore.failed(self.model, slot);
         self.model.peers.items[slot].failed = true;
@@ -1983,7 +2143,7 @@ pub const Engine = struct {
         if (peer.state() != .new) peer.stop();
         // The next connection is a new epoch: nothing queued for this one
         // may reach it.
-        self.peer_edits.forget(slot);
+        self.peer_edits.forget(self.model, slot);
         if (self.peer_wake_key != 0) {
             self.retirePeerChannel(fx, slot);
             self.openPeerChannel(fx, slot, on_event);
@@ -2129,7 +2289,7 @@ pub const Engine = struct {
         const model = self.model;
         const peer = model.phuxPeerAt(slot) orelse return;
         const state = &model.peers.items[slot].workspace;
-        self.peer_edits.forget(slot);
+        self.peer_edits.forget(model, slot);
         if (peer.showing()) {
             // Its own tabs, by the id they carry; never another's.
             state.authority = peer.providerId();
@@ -3200,6 +3360,25 @@ pub const Engine = struct {
 
     // -------------------------------------------------------- clipboard
 
+    pub fn clipboardEnabled(self: *Engine, owner: support.ReplicaOwner, action: clipboard.Action) bool {
+        return interaction.clipboardEnabledForOwner(self.model, owner, action);
+    }
+
+    /// The menu's captured placement and provider replica, never current focus
+    /// or a ref-wide provider lookup, authorize the request and its completion.
+    pub fn applyClipboard(self: *Engine, fx: anytype, bytes: []const u8) bool {
+        if (self.input_suspended) return false;
+        const target = clipboard.decode(bytes) orelse return false;
+        const resolved = target.resolve(self.model) orelse return false;
+        if (!self.clipboardEnabled(resolved.owner, resolved.action)) return false;
+        switch (resolved.action) {
+            .copy => interaction.copyForOwner(self.model, fx, resolved.owner),
+            .paste => interaction.requestPasteForOwner(self.model, fx, resolved.owner),
+        }
+        self.sequence +%= 1;
+        return true;
+    }
+
     /// update.zig's copySelection for a local pane. The effects wrapper the
     /// graph hands in supplies the result constructor; the answer lands in
     /// `onClipboardWritten`.
@@ -3391,6 +3570,79 @@ pub const Engine = struct {
             self.model.shared_workspace.refused = true;
         };
         return true;
+    }
+
+    /// Bind a retained split's callback to this render's window epoch and
+    /// tree identity. The SDK callback supplies only a fraction, so the native
+    /// projection retains the rest of the target rather than trusting a node
+    /// index after a rebuild.
+    pub fn captureNativeSplitResize(self: *Engine, window_index: usize, node: layout.NodeId) void {
+        if (window_index >= self.split_resize_captures.len) return;
+        const workspace = self.model.wsAt(window_index) orelse {
+            self.split_resize_captures[window_index][node] = null;
+            return;
+        };
+        const tree = workspace.selectedTree() orelse {
+            self.split_resize_captures[window_index][node] = null;
+            return;
+        };
+        const entry = tree.node(node);
+        if (entry.kind != .branch) {
+            self.split_resize_captures[window_index][node] = null;
+            return;
+        }
+        const authority = shared_workspace.tabAuthority(tree);
+        self.split_resize_captures[window_index][node] = .{
+            .window_id = workspace.window_id,
+            .pointer_id = 0,
+            .window_index = window_index,
+            .node = node,
+            .orientation = entry.orientation,
+            .bounds = .{},
+            .shared_id = workspace.shared_ids[workspace.selected_tab],
+            .shared_revision = self.projectionRevision(authority),
+            .window_epoch = self.model.window_epochs[window_index],
+            .local_fingerprint = localSplitFingerprint(tree),
+            .original_fraction = entry.fraction,
+            .authority = authority,
+        };
+    }
+
+    pub fn clearNativeSplitResizeCaptures(self: *Engine, window_index: usize) void {
+        if (window_index < self.split_resize_captures.len) self.split_resize_captures[window_index] = @splat(null);
+    }
+
+    /// Persist keyboard and accessibility divider changes through the same
+    /// identity and shared-mutation seam as native pointer dragging. Local
+    /// trees own their fraction directly; shared trees keep the drag commit's
+    /// optimistic-then-authoritative contract.
+    pub fn applyNativeSplitResize(self: *Engine, window_index: usize, node: layout.NodeId, value: f32) bool {
+        if (!std.math.isFinite(value)) return false;
+        if (!self.model.focused) return false;
+        // Raw surface drags own terminal mouse arbitration and already mutate
+        // this branch through routeSplitDrag. The SDK emits the same resize
+        // echo for its overlapping semantic divider; accepting it would turn
+        // one pointer move into a second, uncaptured commit.
+        if (self.split_drag != null) return false;
+        const target = self.nativeSplitResizeTarget(window_index, node) orelse return false;
+        const before = target.tree.node(node).fraction;
+        target.tree.setFraction(node, value);
+        if (target.tree.node(node).fraction == before) return false;
+        if (target.drag.shared_id) |_| return self.finishSplitDrag(target.drag, true);
+        self.sequence +%= 1;
+        self.revision +%= 1;
+        self.intent_refused = false;
+        return true;
+    }
+
+    fn nativeSplitResizeTarget(self: *Engine, window_index: usize, node: layout.NodeId) ?struct { drag: SplitDrag, tree: *layout.Tree } {
+        if (window_index >= self.split_resize_captures.len) return null;
+        const drag = self.split_resize_captures[window_index][node] orelse return null;
+        if (drag.node != node) return null;
+        const tree = self.splitDragTree(drag) orelse return null;
+        const entry = tree.node(node);
+        if (entry.kind != .branch or entry.orientation != drag.orientation) return null;
+        return .{ .drag = drag, .tree = tree };
     }
 
     fn cancelSplitDrag(self: *Engine) void {
@@ -3675,20 +3927,23 @@ pub const Engine = struct {
         const size = workspace.surface_size;
         if (size.width <= 0 or size.height <= 0) return .{ .first = 0, .count = @intCast(total), .extent = 168 };
         if (self.model.tab_placement == .top) {
-            return stripRun(workspace);
+            return stripRun(workspace, self.last_runs[index].first);
         }
         // Every window uses the same scrollable rail; it owns vertical overflow.
         return .{ .first = 0, .count = @intCast(total), .extent = 168 };
     }
 
-    fn stripRun(workspace: *const model_module.Workspace) ts_snapshot.TabRun {
+    fn stripRun(workspace: *const model_module.Workspace, previous_first: usize) ts_snapshot.TabRun {
         const total = workspace.tab_count;
         if (total == 0) return .{};
         // app.native and cockpit-window.native use 4pt gaps and one 32pt
         // overflow cue. The old Zig chrome run also reserved an inline plus
         // button and two cues; its surrounding toolbar was different too.
         const gap = projection.chrome_band_inset;
-        const step = projection.tab_min_extent + gap;
+        // Preserve the readable title floor when adding the direct 32pt close
+        // target and its 4pt gap to each shipping tab.
+        const tab_floor = projection.tab_min_extent + projection.chrome_control_extent + gap;
+        const step = tab_floor + gap;
         var usable = @max(0, workspace.shipping_tab_strip_width) + gap;
         var count = @max(1, @as(usize, @intFromFloat(@floor(usable / step))));
         if (count < total) {
@@ -3697,8 +3952,18 @@ pub const Engine = struct {
         }
         count = @min(total, count);
         const selected = @min(workspace.selected_tab, total - 1);
-        const first = if (selected >= count) selected - count + 1 else 0;
-        const extent = @max(0, @min(projection.tab_extent, usable / @as(f32, @floatFromInt(count)) - gap));
+        // Keep visible tabs under the pointer; move only when the selection
+        // leaves the previous run. Clamp the anchor after closing or resizing.
+        const anchor = @min(previous_first, total - count);
+        const first = if (selected < anchor)
+            selected
+        else if (selected >= anchor + count)
+            selected - count + 1
+        else
+            anchor;
+        // The measured strip belongs to the tabs. Equal shares fill it even
+        // with only one or two tabs; the minimum above still governs overflow.
+        const extent = @max(0, usable / @as(f32, @floatFromInt(count)) - gap);
         return .{ .first = @intCast(first), .count = @intCast(count), .extent = @intFromFloat(extent) };
     }
 

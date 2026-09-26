@@ -43,8 +43,83 @@ The 640pt Settings/picker maximum is a composition choice on the same grid;
 the compiled layout audit verifies it at 900×420, 1100×640 and 1680×1000.
 Healthy windows give footer space back to the terminal. Failure notices retain
 their measured band, and terminal geometry is measured from the compiled tree.
+Connection recovery takes precedence over retained command feedback: an old
+command outcome must never hide the Reconnect action.
 
-`cockpitTokens` resolves `.pack = .geist`, so these are the live numbers, read
+The top header is tab-first: traffic-light reserve, equal-width tabs, New Tab,
+and one Workspace actions trigger. Tabs divide the measured strip without a
+maximum width; the readable minimum still determines overflow. The actions
+menu groups session/machine/agent navigation, window/layout actions, and
+Commands/Settings. It names the current window's session and connection inside
+the menu rather than charging every tab for a permanent session chip. Side-tab
+mode uses the freed header space for the session title.
+
+Top-tab titles are direct SDK tab triggers: Left/Right and Home/End move
+keyboard focus among visible tabs, and Enter/Space activates the focused tab.
+The SDK paints their selected underline within the shared 32pt header-control
+height. Each tab has a separate 32pt close target and a fixed 16pt attention
+slot; neither participates in arrow traversal. The shipping tab floor is 156pt:
+the existing 120pt readable floor plus the 32pt close target and its 4pt gap.
+The strip overflows before titles collapse into control furniture. Closing a
+background tab uses its captured identity and preserves the selected terminal.
+Every close action
+has a full-title accessible name; the selected tab also has a full-title close
+tooltip. Limiting that transient surface to selection keeps a crowded rail
+within the SDK's anchored-surface budget. Side tabs use the same close target
+and identity contract.
+
+An empty session uses a quiet inline group: session heading, machine/status
+detail, and New Tab. It sits below the header and beside the side rail, retaining
+its semantic surface behind chrome text over arbitrary terminal themes. The
+action reads Opening while pending, with failures shown next to it. A picked
+remote session retains its explicit dismiss action.
+
+The anchored menu is 280pt wide (a 4pt-grid composition choice), aligned to the
+trailing trigger with an 8pt token gap. Its rows, separators, corners and shadow
+are SDK menu primitives. The open menu owns input; Escape, outside dismissal,
+action handoff and native window changes release that ownership. Layout tests
+cover the open menu at the same declared sizes and densities as the chrome.
+
+The navigator is a semantic SDK dialog with a preferred 640×640pt frame. The
+width reuses the picker maximum; the square preferred envelope is a composition
+choice, capped by the SDK's viewport placement (24pt modal margins). At the
+900×420 minimum this resolves to 640×372pt, with a scrolling results region and
+fixed search/footer controls. Escape and outside clicks dispatch `palette_close`.
+Icon-only toolbar actions use runtime-owned anchored tooltips; attention keeps
+a fixed 16pt slot so a newly blocked agent does not shorten its tab button.
+
+The navigator uses the pinned SDK's modal scrim: token-driven backdrop blur
+(`blur.scrim`, 4pt) followed by a dim wash, with an opaque foreground panel.
+The [pinned modal renderer](https://github.com/phall1/native/blob/d6e85cd943c5746f03a57ddd1297620010f1a79b/src/primitives/canvas/widget_render.zig#L1066-L1108)
+owns that treatment. This is in-window frosting, **not Apple Liquid Glass**.
+Reserve canvas backdrop blur for transient overlays: it samples the rendered
+backdrop and promotes intersecting damage to a full ordered replay; the opt-in
+GPU composite path also performs a readback for blur. Closing the dialog removes
+that work from the terminal path. Persistent chrome uses the host material below.
+
+Native window materials are implemented in the SDK host, underneath the canvas
+content. Chrome uses the manifest's Geist theme and accent, following macOS
+appearance, contrast and reduced motion rather than forcing a dark token set.
+The native material and its foreground controls therefore share one appearance.
+The header and rail leave their background transparent; the terminal
+painter fills the independently measured terminal space, including all gutters,
+with its opaque configured background. Material geometry therefore follows the
+window while terminal geometry continues to follow the compiled markup slot.
+Neither path derives chrome spacing from terminal cell metrics.
+
+Use real WindowServer captures to judge native materials. A GPU texture capture
+contains the canvas content plane but cannot include the AppKit effect behind
+it. Validate native material composition, active/inactive windows, and system
+accessibility settings separately from terminal raster fidelity.
+
+Implementation and acceptance evidence are tracked in `phux-3gpg.5`.
+[Apple's materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials)
+places glass in controls/navigation and recommends restrained use;
+[`NSGlassEffectView`](https://developer.apple.com/documentation/appkit/nsglasseffectview)
+is available starting in macOS 26. Sources checked 2026-09-21.
+
+The manifest selects Geist, as does the native projection's `cockpitTokens`;
+these are the live numbers, read
 out of `primitives/canvas/themes/geist.zig` at the pinned SDK:
 
 | token | value |

@@ -47,6 +47,23 @@ if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     printf 'error: VERSION must be a semantic version (got %s)\n' "${VERSION}" >&2
     exit 1
 fi
+# next-release.yml builds green main as PHUX_BUILD_CHANNEL=next. The channel
+# and SHA are baked into Info.plist so the in-app updater and `phux update`
+# follow the rail this copy came from. Stable bundles carry neither key.
+BUILD_CHANNEL="${PHUX_BUILD_CHANNEL:-stable}"
+case "${BUILD_CHANNEL}" in
+    stable) ;;
+    next)
+        if [[ ! "${PHUX_BUILD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'error: PHUX_BUILD_CHANNEL=next requires a 40-hex PHUX_BUILD_SHA\n' >&2
+            exit 1
+        fi
+        ;;
+    *)
+        printf 'error: PHUX_BUILD_CHANNEL must be stable or next (got %s)\n' "${BUILD_CHANNEL}" >&2
+        exit 1
+        ;;
+esac
 
 notary_values=(
     "${APPLE_NOTARY_KEY_PATH:-}"
@@ -125,6 +142,10 @@ signature mode and THIRD_PARTY_NOTICES.md for bundled software licenses.
 EOF
 
 PLIST="${APP}/Contents/Info.plist"
+if [[ "${BUILD_CHANNEL}" == "next" ]]; then
+    /usr/bin/plutil -replace PhuxChannel -string next "${PLIST}"
+    /usr/bin/plutil -replace PhuxBuildSHA -string "${PHUX_BUILD_SHA}" "${PLIST}"
+fi
 /usr/bin/plutil -lint "${PLIST}" >/dev/null
 
 SIGNING_MODE="adhoc"

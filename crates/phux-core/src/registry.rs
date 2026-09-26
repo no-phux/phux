@@ -261,15 +261,15 @@ impl Registry {
 
     // ---- removal ----------------------------------------------------------
 
-    /// Remove a resource, its bound children, and (for a Terminal) its
+    /// Remove a resource, its bound descendants, and (for a Terminal) its
     /// window slot.
     ///
     /// Returns the removed [`ResourceDescriptor`] if it existed, otherwise
-    /// `None`. Every resource whose `parent` is `id` is removed as well —
-    /// a child never outlives its parent. For a Terminal the owning
-    /// window's `slots`, layout tree, and `active` are all updated to drop
-    /// the removed key; when it was the only leaf the window's `layout` is
-    /// cleared (the window persists, empty, until [`Self::remove_window`]).
+    /// `None`. Every resource whose `parent` is `id` is removed as well, and
+    /// theirs — a descendant never outlives its ancestor. For a Terminal the
+    /// owning window's `slots`, layout tree, and `active` are all updated to
+    /// drop the removed key; when it was the only leaf the window's `layout`
+    /// is cleared (the window persists, empty, until [`Self::remove_window`]).
     pub fn remove_resource(&mut self, id: ResourceId) -> Option<ResourceDescriptor> {
         let resource = self.resources.remove(id)?;
         self.remove_children_of(id);
@@ -279,8 +279,12 @@ impl Registry {
         Some(resource)
     }
 
-    /// Remove every resource bound to `parent`. One level: a child holds
-    /// no children of its own.
+    /// Remove every resource bound to `parent`, then theirs.
+    ///
+    /// Collects one generation, then recurses so a grandchild cannot outlive
+    /// the ancestor `remove_resource` was asked to drop (phux-v4tv). Spawn
+    /// still refuses a second level (ADR-0104 §5); the registry does not
+    /// assume that.
     fn remove_children_of(&mut self, parent: ResourceId) {
         let children: Vec<ResourceId> = self
             .resources
@@ -289,6 +293,7 @@ impl Registry {
             .map(|(id, _)| id)
             .collect();
         for child in children {
+            self.remove_children_of(child);
             self.resources.remove(child);
         }
     }

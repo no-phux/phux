@@ -842,7 +842,7 @@ fn authorize_request(
         return None;
     }
     let token = hex::decode(token_hex).ok()?;
-    store.authenticate(&token)
+    store.authenticate_and_touch(&token)
 }
 
 /// Admit a WebSocket upgrade: the pairing token first (outer admission,

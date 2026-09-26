@@ -1,0 +1,38 @@
+[package]
+name = "phux-desktop-native"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# GPUIX has its own locked source graph. Keep this host's resolved union local
+# instead of adding the platform renderer to every phux workspace consumer.
+[workspace]
+
+[features]
+terminal-fixtures = []
+input-fixture = []
+
+[dependencies]
+gpuix-native = { path = "../toolchain/gpuix/packages/native" }
+phux-client-core = { path = "../../../crates/phux-client-core" }
+phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
+phux-client-ffi = { path = "../../../crates/phux-client-ffi", default-features = false, features = ["napi"] }
+phux-protocol = { path = "../../../crates/phux-protocol" }
+unicode-segmentation = "1"
+napi = { version = "=3.12.7", features = ["napi8", "serde-json"] }
+napi-derive = "=3.6.8"
+serde_json = "1"
+
+[build-dependencies]
+napi-build = "=2.4.4"
+
+[profile.release]
+lto = true
+
+[lints.rust]
+# napi-derive's generated registration constructor must allow its own unsafe
+# FFI. Handwritten host code remains checked by deny.
+unsafe_code = "deny"

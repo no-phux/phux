@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-18
 ---
 
 # Transport abstraction
@@ -164,19 +164,21 @@ seam changes.
   86 ms against 71 and 72 ms); at 300 ms the faster flood hit the ceiling
   (about 1.4 Mbit/s delivered, one resync a second, p50 lag 350 ms against
   212 ms).
-- **WebTransport** (via `wtransport`) — QUIC-class transport for browsers,
-  which cannot open raw QUIC connections. An HTTP/3 `CONNECT` session whose
-  single bidirectional stream carries the identical length-prefixed frames;
-  the HTTP/3 layer is a transport detail below the frame seam. Always TLS
-  1.3; a routable listener requires the same `phux pair` bearer token as the
-  `wss://` path (ADR-0031), carried in the `CONNECT` request —
-  `Authorization: Bearer <hex>` from native consumers, or `?token=<hex>` on
-  the session URL from browsers (the JS `WebTransport` API cannot set request
-  headers) — and refused with HTTP 403 before the session exists. Shares the
-  persisted certificate and token store with the WebSocket and QUIC
-  listeners; binds its own UDP socket because browsers offer only the `h3`
-  ALPN while the raw-QUIC endpoint advertises the phux-private one. Opt-in
-  via `phux server --webtransport <HOST:PORT>` or `PHUX_WT_ADDR`; `phux-web`
+- **WebTransport** (HTTP/3 CONNECT over QUIC) — QUIC-class transport for
+  browsers, which cannot open raw QUIC connections. An HTTP/3 `CONNECT`
+  session whose single bidirectional stream carries the identical
+  length-prefixed frames; the HTTP/3 layer is a transport detail below the
+  frame seam. Always TLS 1.3; a routable listener requires the same
+  `phux pair` bearer token as the `wss://` path (ADR-0031), carried in the
+  `CONNECT` request — `Authorization: Bearer <hex>` from native consumers, or
+  `?token=<hex>` on the session URL from browsers (the JS `WebTransport` API
+  cannot set request headers) — and refused with HTTP 403 before the session
+  exists. Duplicate `Authorization` fields are refused on the CONNECT accept
+  path before QPACK is collapsed into a header map. Shares the persisted
+  certificate and token store with the WebSocket and QUIC listeners; binds
+  its own UDP socket because browsers offer only the `h3` ALPN while the
+  raw-QUIC endpoint advertises the phux-private one. Opt-in via
+  `phux server --webtransport <HOST:PORT>` or `PHUX_WT_ADDR`; `phux-web`
   dials it first and falls back to WebSocket.
 - **SSH-stdio** (ADR-0007) — frames the wire codec over a child SSH
   process's stdin/stdout. The dialing side spawns the system `ssh` binary

@@ -80,6 +80,16 @@ const DisabledAgentSession = struct {
     }
 };
 
+const DisabledAgentIdentity = struct {
+    terminal: RemoteResourceId = .{ .kind = 0, .id = 0 },
+    provider_name: []const u8 = "",
+    native_id: []const u8 = "",
+    state: []const u8 = "",
+    pub fn ref(_: *const DisabledAgentIdentity) TerminalRef {
+        return .{ .provider_id = .phux, .terminal_id = .{ .phux = .{ .kind = 0, .id = 0 } } };
+    }
+};
+
 /// The connection host the disabled provider names: only the identity field
 /// session navigation compares, never a connection.
 const DisabledHost = struct {
@@ -101,6 +111,7 @@ const DisabledPhuxProvider = struct {
 
     pub const AgentState = DisabledAgentState;
     pub const AgentSession = DisabledAgentSession;
+    pub const AgentIdentity = DisabledAgentIdentity;
     pub const OperationResult = struct {
         request_id: u32,
         connection_epoch: u64,
@@ -272,6 +283,9 @@ const DisabledPhuxProvider = struct {
     pub fn agentSessions(_: *const DisabledPhuxProvider) []const @This().AgentSession {
         return &.{};
     }
+    pub fn agentIdentities(_: *const DisabledPhuxProvider) []const @This().AgentIdentity {
+        return &.{};
+    }
     pub fn agentSessionsUnder(_: *const DisabledPhuxProvider, _: TerminalRef, _: []*const @This().AgentSession) usize {
         return 0;
     }
@@ -351,6 +365,7 @@ pub const SyncDelta = if (phux_enabled) @import("phux_provider").SyncDelta else 
 pub const PhuxEndpoint = if (phux_enabled) @import("phux_provider").Endpoint else DisabledPhuxProvider.Endpoint;
 pub const max_remote_sessions: usize = if (phux_enabled) @import("phux_provider").max_sessions else 0;
 pub const AgentSession = PhuxProvider.AgentSession;
+pub const AgentIdentity = PhuxProvider.AgentIdentity;
 pub const AgentState = PhuxProvider.AgentState;
 /// Roster ceiling, and the size of the row buffer every caller declares.
 pub const max_agent_sessions: usize = if (phux_enabled) @import("phux_provider").max_agent_sessions else 0;

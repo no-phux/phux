@@ -3888,6 +3888,24 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
             .format_selection(&replica.engine, selection)
             .map_err(KernelError::Engine)
     }
+
+    /// Copy with a hard output budget and the adapter's bounded-work policy.
+    /// Never falls back to allocating the complete selection.
+    pub fn format_document_selection_bounded(
+        &self,
+        terminal_id: &ResourceId,
+        selection: EngineDocumentSelection,
+        max_bytes: usize,
+    ) -> Result<crate::engine::BoundedSelectionText, KernelError<E::Error>> {
+        let replica = self
+            .terminals
+            .get(terminal_id)
+            .and_then(|state| state.published.as_ref())
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        self.adapter
+            .format_selection_bounded(&replica.engine, selection, max_bytes)
+            .map_err(KernelError::Engine)
+    }
 }
 
 const fn generation_of(key: &ReplicaKey) -> GenerationId {

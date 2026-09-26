@@ -286,6 +286,11 @@ which-key-delay-ms = 400
 "7" = { action = "select-window", index = 7 }
 "8" = { action = "select-window", index = 8 }
 "9" = { action = "select-window", index = 9 }
+# < and > move the active window one slot left or right in the order the
+# status bar and sidebar show. Dragging a tab or a sidebar window row does
+# the same with the mouse.
+"<" = { action = "move-window", delta = -1 }
+">" = { action = "move-window", delta = 1 }
 
 # Directory picker: browse directories on the attached server's host and
 # open a new window in the one you pick. G for "go" (the Go-to-Folder
@@ -506,35 +511,41 @@ which-key-delay-ms = 400
 
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per
-# window as `{index}:{name}`; by default the active tab is bold +
-# reverse-video and the rest are dimmed. Every part is restylable —
-# `active`/`inactive` take a style table (fg/bg color strings +
-# bold/dim/italic/underline/reverse), and `separator`/`format` tune the
-# layout, e.g.:
+# window from `format` (`{index}` and `{name}`); a window running an agent
+# shows that agent's state glyph before its name. Every part is
+# restylable — `active`/`inactive`/`index` take a style table (fg/bg color
+# strings + bold/dim/italic/underline/reverse), and `separator`/`format`
+# tune the layout, e.g.:
 #   { kind = "windows", active = { fg = "black", bg = "green", bold = true }, inactive = { fg = "gray" }, separator = " | " }
 # Right: session name + clock (the leading space in the time format keeps
 # them apart).
 #
-# The shipped lineup: padded window tabs left, clickable navigation hints
-# center, session name + clock right. The hints expose Sessions, Commands,
-# Settings, Help, and Copy through the same actions as their keybindings,
-# dropping complete destinations from the right as space tightens. The tab
-# `format` carries a leading
+# The shipped lineup: padded window tabs left, empty center, session name
+# + clock right. Destinations live on the prefix, the command palette
+# (`prefix Space` / `:`), and the context menu — not as a permanent hint
+# strip. `help-hints` remains available if you want the teaching bar back:
+#   center = [{ kind = "help-hints" }]
+# The tab `format` carries a leading
 # and trailing space with a one-cell separator, so the active tab's fill
 # reads as a padded chip rather than a highlight hugging the glyphs — and
 # because every cell of a segment (padding included) is a click target,
 # the padding also widens the mouse target by two columns per tab.
 #
-# The colors below follow the theme's lime `accent` over the selected
-# surface, and the slate `dim` text over the panel surface. Both chips
-# clear 4.5:1 against their own background, the contrast floor documented in
-# crates/phux-tui/src/render/theme.rs. They are spelled out rather
-# than named because widget styles are plain data — see `[theme]` in
-# docs/consumers/tui.md section 4.4 for the slot list.
+# The bar sits on the theme's `surface`, the same bed as the sidebar, so
+# the two read as one frame around the panes. The active tab is lime +
+# bold on the selection bed (the sidebar's selected-row colour), a chip
+# with one cell of padding either side. Inactive tabs are dim text with no
+# fill, so the strip is not a row of slabs. The `{index}` selector recedes
+# a step further than the name it selects. Session name and clock recede
+# to the same dim, and the clock keeps one cell of gutter from the edge,
+# matching the sidebar's. Lime and dim both clear 4.5:1 against the
+# surface, the contrast floor documented in crates/phux-tui/src/render/theme.rs.
+# They are spelled out rather than named because widget styles are plain
+# data — see `[theme]` in docs/consumers/tui.md section 4.4 for the slot list.
 left = [
-  { kind = "windows", format = " {index}:{name} ", separator = " ", active = { fg = "#bef264", bg = "#293628", bold = true }, inactive = { fg = "#9aa4b2", bg = "#171b23" } },
+  { kind = "windows", format = " {index} {name} ", separator = " ", active = { fg = "#bef264", bg = "#293628", bold = true }, inactive = { fg = "#9aa4b2" }, index = { fg = "#7c8696" } },
 ]
-center = [{ kind = "help-hints" }]
+center = []
 # The right slot changes shape with the terminal, via the universal
 # `min-cols` / `max-cols` options every widget accepts (they gate on the
 # width of the whole bar, not on the widget's own share).
@@ -546,9 +557,9 @@ center = [{ kind = "help-hints" }]
 # name step aside for a `switch` chip — click it (or press prefix-A) for
 # the fleet, which on a small terminal opens full-screen.
 right = [
-  { kind = "session-name", min-cols = 65 },
-  { kind = "time", format = " %a %H:%M", min-cols = 65 },
-  { kind = "switch", max-cols = 64 },
+  { kind = "session-name", min-cols = 65, style = { fg = "#9aa4b2" } },
+  { kind = "time", format = " %a %H:%M ", min-cols = 65, style = { fg = "#9aa4b2" } },
+  { kind = "switch", max-cols = 64, chip = { fg = "#bef264", bold = true } },
 ]
 # Which outer-terminal row the bar reserves: "top" (default) or "bottom".
 # position = "top"
@@ -571,7 +582,7 @@ right = [
 # error           = "#f87171"  # error and alarm text
 # text            = "#f4f7fb"  # body copy ON a filled panel (see surface)
 # surface         = "#171b23"  # sidebar + modal fill; "reset" = transparent
-# shadow          = "#090b0f"  # floating-modal drop shadow
+# shadow          = "reset"    # floating-modal drop shadow; reset = off
 # selection_fg    = "#f4f7fb"  # selected list row / copy-mode strip fg
 # selection_bg    = "#293628"  # selected list row / copy-mode strip bg
 # attention       = "#fde047"  # "needs you": asked-marker, blocked agents
@@ -601,7 +612,8 @@ right = [
 # Session names and host rows switch to that session with its host qualifier.
 # The Agents and Sessions headings open their full management views. Agents
 # overflow opens the fleet dashboard; Sessions overflow opens the picker.
-# The footer keeps New window on one row and Commands + Settings on the next.
+# The footer keeps a single New window row; Commands and Settings live on
+# the palette and the context menu.
 #
 # Width 0 (the default) adapts to one quarter of the viewport, bounded to
 # 28–40 columns. A positive width reserves exactly that many columns.

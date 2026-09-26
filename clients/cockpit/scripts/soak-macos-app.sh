@@ -345,7 +345,9 @@ await_startup() {
     APP_ZOMBIE_POLLS=0
     while true; do
         if ! app_identity_matches; then
-            wait "${CURRENT_APP_PID}" 2>/dev/null || true
+            # Do not wait on the child. A live app whose ps identity no longer
+            # matches blocks here until it exits, and the startup deadline
+            # never runs. cleanup reaps the process on the way out.
             fail_cycle "app exited before its coordinator became ready ($(startup_status))"
         fi
         is_zombie "${CURRENT_APP_PID}" && fail_cycle 'app became a zombie during startup'

@@ -25,8 +25,8 @@ use crate::state::{
     TerminalInput,
 };
 use crate::terminal_actor::{
-    ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenReply,
-    ScreenRequest, TerminalActor, TerminalHandle,
+    ConsumerAckRequest, ControlRequest, ResizeRequest, ScreenReply, ScreenRequest, TerminalActor,
+    TerminalHandle,
 };
 
 /// The command-result shape of a Terminal-only request aimed at a resource
@@ -2306,8 +2306,12 @@ impl AttachResourcePumpCtx {
         );
         loop {
             let next = tokio::select! {
-                () = token.cancelled() => break,
+                biased;
+                // A ready resync must beat cooperative cancel: reap cancels
+                // this token, and taking cancel first would drop the final
+                // screen a fenced consumer is owed (phux-fpgl.28).
                 next = pump::next_event(&stream.generation, &mut stream.output_rx) => next,
+                () = token.cancelled() => break,
             };
             let msg = match next {
                 pump::PumpWait::Event(msg) => msg,
@@ -2377,6 +2381,10 @@ impl AttachResourcePumpCtx {
     }
 
     /// Forward one post-bootstrap byte delta.
+    ///
+    /// A full mailbox fences rather than parks: waiting for capacity keeps
+    /// this pump off the broadcast, so a pane that exits in that window
+    /// cannot answer the resync the pump would then ask for (phux-fpgl.28).
     async fn forward_live(
         &self,
         stream: &mut AttachResourcePumpStream,
@@ -2397,13 +2405,16 @@ impl AttachResourcePumpCtx {
                 self.stream_profile,
             ),
         };
-        if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return PumpStep::Stop;
+        match crate::runtime::pump::try_send_frame(&self.out_tx, frame) {
+            crate::runtime::pump::MailboxForward::Sent => {
+                stream.generation.note_forwarded(seq);
+                self.generation_last_seq
+                    .store(seq, std::sync::atomic::Ordering::Release);
+                PumpStep::Continue
+            }
+            crate::runtime::pump::MailboxForward::Closed => PumpStep::Stop,
+            crate::runtime::pump::MailboxForward::Full => self.resync_after_lag(stream, 0).await,
         }
-        stream.generation.note_forwarded(seq);
-        self.generation_last_seq
-            .store(seq, std::sync::atomic::Ordering::Release);
-        PumpStep::Continue
     }
 
     /// Whether an ordered native control frame belongs to this pump, and
@@ -2536,6 +2547,9 @@ impl AttachResourcePumpCtx {
         if crate::runtime::attach::enqueue_output_resync(&self.resize, pump).await {
             return PumpStep::Continue;
         }
+        if self.resize.is_closed() {
+            return PumpStep::Stop;
+        }
         self.fail_unrecoverable_gap().await
     }
 
@@ -2569,16 +2583,12 @@ impl AttachResourcePumpCtx {
         resync: &PumpResync,
     ) -> PumpStep {
         // Resync is control, so an unchanged cut still tombstones and
-        // replaces the published generation.
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let prior_bootstrap_id = stream.generation.bootstrap_id();
-        stream
-            .generation
-            .set_bootstrap_id(crate::runtime::attach::next_bootstrap_id(
-                stream.generation.bootstrap_id(),
-            ));
+        // replaces the published generation. The id advances only once the
+        // replacement frames are queued, so a deferred snapshot does not
+        // relabel live output the client has not opened.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if native_checkpoint_profile(self.stream_profile) {
+            let prior_bootstrap_id = stream.generation.bootstrap_id();
             return self
                 .republish_native_generation(stream, prior_bootstrap_id, resync)
                 .await;
@@ -2593,22 +2603,34 @@ impl AttachResourcePumpCtx {
         resync: &PumpResync,
     ) -> PumpStep {
         let payload = crate::runtime::attach::downsample_for_caps(&resync.bytes, self.client_caps);
-        if crate::runtime::attach::send_synthesized_bootstrap(
-            &self.out_tx,
+        let bootstrap_id =
+            crate::runtime::attach::next_bootstrap_id(stream.generation.bootstrap_id());
+        let Ok(frames) = crate::runtime::attach::synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
             self.stream_id,
-            stream.generation.bootstrap_id(),
+            bootstrap_id,
             self.stream_profile,
             self.bootstrap_limits,
             resync.cols,
             resync.rows,
             resync.base_seq,
             [payload],
+        ) else {
+            return PumpStep::Stop;
+        };
+        match crate::runtime::attach::queue_resync_bootstrap(
+            &self.out_tx,
+            resync.reason,
+            frames,
+            stream.generation.is_fenced(),
         )
         .await
-        .is_err()
         {
-            return PumpStep::Stop;
+            crate::runtime::attach::SnapshotQueue::Deferred => return PumpStep::Continue,
+            crate::runtime::attach::SnapshotQueue::Closed => return PumpStep::Stop,
+            crate::runtime::attach::SnapshotQueue::Queued => {
+                stream.generation.set_bootstrap_id(bootstrap_id);
+            }
         }
         stream.generation.republished_at(resync.base_seq);
         self.generation_last_seq
@@ -2640,6 +2662,7 @@ impl AttachResourcePumpCtx {
         {
             return self.abandon_connection();
         }
+        let bootstrap_id = crate::runtime::attach::next_bootstrap_id(prior_bootstrap_id);
         let (reply, reply_rx) = oneshot::channel();
         if self
             .native_bootstrap
@@ -2647,7 +2670,7 @@ impl AttachResourcePumpCtx {
                 owner: self.client_id.0,
                 terminal_id: self.wire_terminal_id.clone(),
                 stream_id: self.stream_id,
-                bootstrap_id: stream.generation.bootstrap_id(),
+                bootstrap_id,
                 limits: self.bootstrap_limits,
                 max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
                 max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
@@ -2674,12 +2697,13 @@ impl AttachResourcePumpCtx {
         else {
             return self.abandon_connection();
         };
+        stream.generation.set_bootstrap_id(bootstrap_id);
         let Ok(publication) = crate::runtime::attach::activate_native_publication(
             &self.terminal,
             self.client_id.0,
             self.wire_terminal_id.clone(),
             self.stream_id,
-            stream.generation.bootstrap_id(),
+            bootstrap_id,
             cursor,
         )
         .await
@@ -2746,7 +2770,8 @@ const fn tombstone_reason(
         crate::terminal_actor::ResyncReason::Resize => {
             phux_protocol::wire::frame::TombstoneReason::Resize
         }
-        crate::terminal_actor::ResyncReason::OutboundGap => {
+        crate::terminal_actor::ResyncReason::OutboundGap
+        | crate::terminal_actor::ResyncReason::Exit => {
             phux_protocol::wire::frame::TombstoneReason::OutboundGap
         }
     }
@@ -3507,13 +3532,14 @@ async fn relay_satellite_attach(
     // A narrowing applies before the relay, in the lock, so no input slips
     // through while it is in flight; a widening applies only once the
     // satellite has accepted the attach (ADR-0127).
-    let (was_attached, narrowed) = state.with_mut(|s| {
+    let (was_attached, was_viewer, narrowed) = state.with_mut(|s| {
         let was_attached =
             s.has_satellite_proxy_attach(target.client_id, target.host, target.terminal);
+        let was_viewer = s.is_viewer(target.client_id, &wire);
         let narrowed = role
             .is_viewer()
             .then(|| s.apply_attach_role(target.client_id, &wire, None, role, was_attached));
-        (was_attached, narrowed)
+        (was_attached, was_viewer, narrowed)
     });
     let seize = role.takes_over();
     if seize {
@@ -3533,8 +3559,13 @@ async fn relay_satellite_attach(
     )
     .await;
     if matches!(attached, CommandResult::Error { .. }) {
-        // A refused attach leaves the mark as it is: a narrowing stays
-        // declared, and a widening never happened, so nothing is journaled.
+        // A refused first narrowing must not leave a tombstone: the hub
+        // marks before the relay so no input slips through, but a satellite
+        // that then refuses never subscribed this id (phux-4z1y). A prior
+        // mark or proxy attach stays; a refused widening never applied.
+        if role.is_viewer() && !was_viewer && !was_attached {
+            state.with_mut(|s| s.set_viewer_mark(target.client_id, &wire, false));
+        }
         if seize {
             settle_satellite_seize(target, &attached, out_tx);
         }
@@ -4294,7 +4325,28 @@ pub(crate) async fn handle_get_state_federated(
         hosts.push(fold_satellite_state(&mut snapshot, host, result, out_tx).await);
     }
     hosts.sort_by(|a, b| a.host.as_str().cmp(b.host.as_str()));
+    mirror_federated_agent_metadata(state, &snapshot);
     CommandResult::OkWith(CommandValue::State(snapshot.with_hosts(hosts)))
+}
+
+/// Ask each satellite link to mirror the agent allowlist for every terminal
+/// the aggregate just listed (ADR-0136). A terminal the inventory does not
+/// name is mirrored later, when a consumer subscribes or reads it.
+fn mirror_federated_agent_metadata(
+    state: &SharedState,
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+) {
+    for resource in &snapshot.resources {
+        if !resource.kind.is_terminal() {
+            continue;
+        }
+        let phux_protocol::ids::ResourceId::Satellite { host, id } = &resource.id else {
+            continue;
+        };
+        if let Some(relay) = state.with(|s| s.hub_relay(host)) {
+            relay.mirror_terminal(*id);
+        }
+    }
 }
 
 /// Fold one satellite's `GET_STATE` answer into the hub's aggregate: merge
@@ -5591,7 +5643,11 @@ pub(crate) fn handle_report_asked(
         suggestions,
         elapsed_seconds,
     };
-    let transition = state.with_mut(|s| s.report_agent_asked(terminal, AskedSource::Hook, payload));
+    let transition = state.with_mut(|s| {
+        let transition = s.report_agent_asked(terminal, AskedSource::Hook, payload);
+        crate::hub::metadata_mirror::publish_asked_flag(s, terminal_id, s.agent_is_asked(terminal));
+        transition
+    });
     if let Some(payload) = transition.emit_payload() {
         super::client::broadcast_event(state, Some(terminal_id), &payload.into_event());
     }
@@ -6038,126 +6094,28 @@ pub(crate) fn handle_terminal_input(
     }
 }
 
-/// Route one opaque terminal-engine reply directly to the PTY byte lane.
+/// Discard one client terminal-engine reply without writing it to the PTY.
 ///
-/// These bytes are already encoded by the client's terminal emulator in
-/// response to terminal output (for example DSR or color queries). They must
-/// not pass through key/paste encoders or any text normalization. The same
-/// subscription and input-lease authority gate as ordinary input prevents an
-/// unattached client or non-holder from writing to another terminal.
+/// The server's canonical terminal already answers every query the child
+/// writes (DSR, DA, DECRQM, XTWINOPS, OSC 10/11, ...) the moment it parses
+/// the output, exactly once, whether zero or many clients are attached. A
+/// client replica parses the same bytes and generates the same reply a
+/// network round trip later; writing it too would hand the child a second
+/// answer it never asked for, which a prompt library such as `gh`'s reads
+/// as typed input (`1R` in a filter box). The frame stays accepted so a
+/// client built before this change keeps working, but its bytes are
+/// dropped here (input.md §6).
 pub(crate) fn handle_terminal_reply(
-    state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
-    bytes: Bytes,
+    bytes: &[u8],
 ) {
-    const FRAME_LABEL: &str = "INPUT_TERMINAL_REPLY";
-
-    if let ResolvedOwned::Remote(route) =
-        state.with(|s| s.resolve_resource(wire_terminal_id).into_owned())
-    {
-        relay_terminal_reply(
-            state,
-            client_id,
-            wire_terminal_id,
-            &route,
-            bytes,
-            FRAME_LABEL,
-        );
-        return;
-    }
-
-    let _ = with_attached_input_destination(
-        state,
-        client_id,
-        wire_terminal_id,
-        FRAME_LABEL,
-        |destination| {
-            let dispatched = destination
-                .handle
-                .encoded_input
-                .try_send(EncodedInputRequest::opaque(bytes));
-            log_terminal_reply_dispatch(&dispatched, client_id, wire_terminal_id);
-        },
+    trace!(
+        ?client_id,
+        ?wire_terminal_id,
+        bytes = bytes.len(),
+        "terminal reply discarded: the canonical terminal answers queries",
     );
-}
-
-/// Relay a satellite-routed terminal reply over the hub link.
-///
-/// The same subscription and input-lease authority gate as ordinary input
-/// applies: the caller needs its own `ATTACH_RESOURCE` proxy attach, and a
-/// non-holder cannot write while another hub consumer holds the lease.
-fn relay_terminal_reply(
-    state: &SharedState,
-    client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    route: &RelayRoute,
-    bytes: Bytes,
-    frame_label: &'static str,
-) {
-    if !state.with(|s| s.has_satellite_proxy_attach(client_id, &route.host, route.id)) {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            "satellite terminal reply requires this client's ATTACH_RESOURCE proxy; dropping",
-        );
-        return;
-    }
-    if state.with(|s| {
-        s.satellite_lease_holder(&route.host, route.id)
-            .is_some_and(|holder| holder != client_id)
-    }) {
-        trace!(
-            ?client_id,
-            ?wire_terminal_id,
-            "satellite terminal reply dropped: another hub consumer holds the input lease",
-        );
-        return;
-    }
-    if !relay_satellite_frame(
-        client_id,
-        wire_terminal_id,
-        route,
-        frame_label,
-        |terminal_id| FrameKind::InputTerminalReply { terminal_id, bytes },
-    ) {
-        warn!(
-            ?client_id,
-            ?wire_terminal_id,
-            "terminal reply carried an unroutable satellite terminal id; dropping",
-        );
-    }
-}
-
-/// Log the outcome of handing one opaque terminal reply to the PTY byte lane.
-fn log_terminal_reply_dispatch(
-    dispatched: &Result<(), tokio::sync::mpsc::error::TrySendError<EncodedInputRequest>>,
-    client_id: ClientId,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-) {
-    match dispatched {
-        Ok(()) => {
-            trace!(
-                ?client_id,
-                ?wire_terminal_id,
-                "opaque terminal reply routed to PTY byte lane",
-            );
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            warn!(
-                ?client_id,
-                ?wire_terminal_id,
-                "encoded-input actor mailbox full; dropping terminal reply",
-            );
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            debug!(
-                ?client_id,
-                ?wire_terminal_id,
-                "pane actor gone; dropping terminal reply",
-            );
-        }
-    }
 }
 
 /// Route an inbound `FRAME_ACK` (SPEC §7.proto.1 / §12.2) to the
@@ -6545,6 +6503,177 @@ mod hub_detach_fence_tests {
         });
         assert!(matches!(detach.await, CommandResult::Error { .. }));
         assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
+    }
+}
+
+#[cfg(test)]
+mod relay_satellite_attach_role_tests {
+    use super::*;
+    use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
+    use phux_protocol::ids::{ResourceId, SatelliteHost};
+
+    struct Fixture {
+        state: SharedState,
+        host: SatelliteHost,
+        client_id: ClientId,
+        handle: RelayHandle,
+        mailbox: RelayMailbox,
+        out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let state = SharedState::new();
+            let host = SatelliteHost::from("sat");
+            let (handle, mailbox) = RelayHandle::new(host.clone());
+            let relays = HubRelays::default();
+            relays.insert(handle.clone());
+            let client_id = ClientId(1);
+            let token = CancellationToken::new();
+            state.with_mut(|s| {
+                s.set_hub_relays(relays);
+                s.set_client_connection_cancellation(client_id, token);
+            });
+            let (out_tx, _out_rx) = tokio::sync::mpsc::channel(8);
+            Self {
+                state,
+                host,
+                client_id,
+                handle,
+                mailbox,
+                out_tx,
+            }
+        }
+
+        fn wire(&self, terminal: u32) -> ResourceId {
+            ResourceId::satellite(self.host.clone(), terminal)
+        }
+
+        async fn refuse_attach(&mut self, terminal: u32, role: RolePolicy) -> CommandResult {
+            self.settle_attach(
+                terminal,
+                role,
+                CommandResult::Error {
+                    code: ErrorCode::TerminalNotFound,
+                    message: "no such terminal".to_owned(),
+                },
+            )
+            .await
+        }
+
+        async fn settle_attach(
+            &mut self,
+            terminal: u32,
+            role: RolePolicy,
+            result: CommandResult,
+        ) -> CommandResult {
+            let local = ResourceId::local(terminal);
+            let command = Command::AttachResource {
+                terminal_id: local.clone(),
+                role_policy: Some(role),
+            };
+            let target = SatelliteLeaseTarget::new(&self.state, &self.host, self.client_id, &local);
+            let attach = relay_satellite_attach(
+                &target,
+                &self.handle,
+                &command,
+                role,
+                &self.out_tx,
+                BootstrapProfile::SynthesizedVtRaw,
+                BootstrapLimits::default(),
+            );
+            tokio::pin!(attach);
+            assert!(
+                futures_util::poll!(&mut attach).is_pending(),
+                "attach must wait on the satellite reply"
+            );
+            let RelayRequest::Command { reply, .. } = self
+                .mailbox
+                .requests
+                .try_recv()
+                .expect("attach must reach the link")
+            else {
+                panic!("expected a relayed ATTACH_RESOURCE");
+            };
+            reply.send(result).expect("attach is waiting");
+            attach.await
+        }
+    }
+
+    /// phux-4z1y: a refused first VIEWER attach must not leave a hub-side
+    /// tombstone keyed on a satellite id the hub never subscribed.
+    #[tokio::test]
+    async fn a_refused_first_satellite_viewer_attach_does_not_leave_a_tombstone() {
+        let mut fixture = Fixture::new();
+        for terminal in 1..=8 {
+            let result = fixture.refuse_attach(terminal, RolePolicy::VIEWER).await;
+            assert!(matches!(
+                result,
+                CommandResult::Error {
+                    code: ErrorCode::TerminalNotFound,
+                    ..
+                }
+            ));
+            let wire = fixture.wire(terminal);
+            assert!(
+                !fixture
+                    .state
+                    .with(|s| s.is_viewer(fixture.client_id, &wire)),
+                "refused VIEWER attach to {wire:?} must not leave a tombstone"
+            );
+            assert!(fixture.state.with(|s| s.terminal_viewers(&wire).is_empty()));
+        }
+    }
+
+    /// A prior mark or proxy attach is the restore exception: the refused
+    /// narrowing must not shed an existing tombstone, and must not undo a
+    /// mark that already had a hub-side subscription.
+    #[tokio::test]
+    async fn a_refused_satellite_viewer_attach_keeps_a_prior_mark_or_proxy() {
+        let mut fixture = Fixture::new();
+        let prior = fixture.wire(3);
+        fixture.state.with_mut(|s| {
+            s.set_viewer_mark(fixture.client_id, &prior, true);
+        });
+        let _ = fixture.refuse_attach(3, RolePolicy::VIEWER).await;
+        assert!(
+            fixture
+                .state
+                .with(|s| s.is_viewer(fixture.client_id, &prior)),
+            "a refused re-attach must not shed a prior viewer tombstone"
+        );
+
+        let attached = fixture.wire(9);
+        fixture.state.with_mut(|s| {
+            s.register_satellite_proxy_attach(fixture.client_id, fixture.host.clone(), 9);
+        });
+        let _ = fixture.refuse_attach(9, RolePolicy::VIEWER).await;
+        assert!(
+            fixture
+                .state
+                .with(|s| s.is_viewer(fixture.client_id, &attached)),
+            "a refused narrowing of an existing proxy attach keeps the mark"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_satellite_viewer_attach_keeps_the_mark() {
+        let mut fixture = Fixture::new();
+        let result = fixture
+            .settle_attach(7, RolePolicy::VIEWER, CommandResult::Ok)
+            .await;
+        assert!(matches!(result, CommandResult::Ok));
+        let wire = fixture.wire(7);
+        assert!(
+            fixture
+                .state
+                .with(|s| s.is_viewer(fixture.client_id, &wire))
+        );
+        assert!(fixture.state.with(|s| s.has_satellite_proxy_attach(
+            fixture.client_id,
+            &fixture.host,
+            7
+        )));
     }
 }
 

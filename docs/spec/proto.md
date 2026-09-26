@@ -90,10 +90,10 @@ oriented byte stream. This version defines these concrete transports:
 - **Standard I/O of an SSH command**, historically used for remote attaches and
   federation hubs dialing `ssh://` satellites ([ADR-0007]). The dialing side
   invokes `ssh host phux stdio-bridge`; the bridge splices stdin/stdout to the
-  server UDS byte-transparently. SSH still supplies transport authentication and
-  confidentiality, but exposes no independently verifiable workload channel
-  binding. Closed policy modes therefore admit no SSH-stdio
-  connection; §10 owns the superseding security rule.
+  server UDS byte-transparently. SSH supplies transport authentication and
+  confidentiality. The server sees an owner-UDS peer, so the bridged connection
+  keeps owner authority in both policy modes (an SSH peer that can run the
+  bridge already owns the host). §10 owns the security rule.
 - **QUIC** (`quic://host:port`), for remote clients ([ADR-0007]). A
   single bidirectional QUIC stream carries the identical framing — a
   reliable, ordered octet stream, satisfying the property above. TLS 1.3
@@ -419,6 +419,9 @@ ServerFeature = bitset (u32) {
                                      //   phux.approval.decide/v1/<id>, approval_requested /
                                      //   approval_decided (workload-auth.md §6.1; L3.md §3.10;
                                      //   ADR-0128)
+    // Word 0 is closed (ADR-0137). 0x80000000 is reserved-unallocated:
+    // do not assign it. 0x00000001, 0x00000002, 0x00000004, and
+    // 0x00000008 were never assigned and stay unassigned.
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -1217,9 +1220,9 @@ integrity, and baseline peer/server evidence:
   kernel-authenticated uid is the workload authority on owner UDS in both
   policy modes — there is no certificate to present and no proof to perform.
 - **SSH:** the SSH session provides transport authentication and channel
-  confidentiality, but a stdio stream exposes no independently verifiable
-  channel binding. No closed policy mode admits SSH-stdio; a later profile
-  must define a binding for it before it can return.
+  confidentiality. `phux stdio-bridge` is an owner-UDS peer, so a bridged
+  connection keeps owner authority in both policy modes. An SSH peer that can
+  run the bridge already owns the host.
 - **QUIC and WSS:** TLS 1.3 provides confidentiality and server identity. A
   routable listener also keeps its bearer-token transport gate. Under paired
   policy the server additionally requires an mTLS client certificate

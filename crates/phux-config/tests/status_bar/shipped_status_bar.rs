@@ -23,6 +23,8 @@ fn win(name: &str, active: bool) -> WindowInfo {
         zoomed: false,
         attention: false,
         branch: None,
+        exited: None,
+        badge: None,
     }
 }
 
@@ -74,19 +76,70 @@ fn the_shipped_bar_is_exactly_the_terminal_width_at_every_size() {
     }
 }
 
-/// A roomy terminal shows everything: all four padded tabs, the hints,
-/// the session name and the clock.
+/// A roomy terminal shows the quiet lineup: padded tabs, session name,
+/// and clock. No permanent action-hint strip.
 #[test]
 fn a_roomy_terminal_shows_the_whole_lineup() {
     let windows = [win("zsh", false), win("nvim", true), win("server", false)];
     let text = shipped_text(120, "phux", &windows);
 
-    assert!(text.starts_with(" 0:zsh   1:nvim   2:server "), "{text:?}");
-    assert!(text.contains("C-a  s Sessions"), "{text:?}");
-    assert!(text.contains("S Settings"), "{text:?}");
+    assert!(text.starts_with(" 0 zsh   1 nvim   2 server "), "{text:?}");
+    assert!(!text.contains("s Sessions"), "{text:?}");
+    assert!(!text.contains("S Settings"), "{text:?}");
     assert!(text.contains("phux"), "{text:?}");
     // The `switch` chip is for narrow terminals only.
     assert!(!text.contains("switch"), "{text:?}");
+}
+
+/// Inactive tabs are dim text with no fill; the active tab is the lime
+/// chip on the selection bed. The index recedes behind the name without
+/// leaving the tab's bed. Session name and clock recede to the same dim,
+/// so the bar is not a slab of filled chips.
+#[test]
+fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
+    let windows = [win("zsh", false), win("nvim", true), win("server", false)];
+    let row = shipped_row(120, "phux", &windows);
+
+    let inactive = row
+        .iter()
+        .find(|c| c.hit == Some(CellHit::Window(0)))
+        .and_then(|c| c.style.as_ref())
+        .expect("inactive tab styled");
+    assert_eq!(inactive.fg.as_deref(), Some("#9aa4b2"));
+    assert_eq!(inactive.bg, None);
+
+    let active = row
+        .iter()
+        .find(|c| c.hit == Some(CellHit::Window(1)))
+        .and_then(|c| c.style.as_ref())
+        .expect("active tab styled");
+    assert_eq!(active.fg.as_deref(), Some("#bef264"));
+    assert_eq!(active.bg.as_deref(), Some("#293628"));
+    assert!(active.bold);
+
+    let index = row
+        .iter()
+        .find(|c| c.hit == Some(CellHit::Window(1)) && c.text.first() == Some(&'1'))
+        .and_then(|c| c.style.as_ref())
+        .expect("active index styled");
+    assert_eq!(index.fg.as_deref(), Some("#7c8696"), "the index recedes");
+    assert_eq!(index.bg.as_deref(), Some("#293628"), "but keeps the bed");
+
+    let session = row
+        .iter()
+        .find(|c| c.hit.is_none() && c.text.first() == Some(&'p'))
+        .and_then(|c| c.style.as_ref())
+        .expect("session name styled");
+    assert_eq!(session.fg.as_deref(), Some("#9aa4b2"));
+    assert_eq!(session.bg, None);
+
+    let clock = row
+        .iter()
+        .find(|c| c.hit.is_none() && c.text.first() == Some(&':'))
+        .and_then(|c| c.style.as_ref())
+        .expect("clock styled");
+    assert_eq!(clock.fg.as_deref(), Some("#9aa4b2"));
+    assert_eq!(clock.bg, None);
 }
 
 /// A narrow terminal trades ambient context for an affordance: the clock
@@ -103,9 +156,9 @@ fn a_narrow_terminal_trades_context_for_an_affordance() {
     let text = shipped_text(46, "phux", &windows);
 
     assert!(text.contains(" switch "), "{text:?}");
-    assert!(!text.contains("C-a"), "hints yield first: {text:?}");
+    assert!(!text.contains("C-a"), "no teaching strip: {text:?}");
     // The active tab is always visible, whole.
-    assert!(text.contains("1:nvim"), "{text:?}");
+    assert!(text.contains("1 nvim"), "{text:?}");
     // And no tab is half-drawn: every window name present is complete.
     assert!(!text.contains('\u{2026}'), "no clipped tab: {text:?}");
 }

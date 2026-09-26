@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-22
 ---
 
 # Quality bar: testing and performance
@@ -21,7 +21,7 @@ Tests are organized in three layers. All three run today.
    integration tests under `crates/*/tests/`. The workspace pool is
    `just test` (`cargo nextest run --workspace`). CI pull requests may set
    `PHUX_NEXTEST_FILTERSET` to the classifier's `rdeps()` expression so only
-   affected crates run; the build selection stays `--workspace`. `just ci`
+   affected crates run. Library changes keep `--workspace`; a tests-only diff builds that integration test. `just ci`
    includes that pool plus compile-free contract gates (fmt, lint, rustdoc,
    deny, `just docs-check`, and others listed in CONTRIBUTING.md). It does
    not spawn real PTY-backed servers.
@@ -98,7 +98,9 @@ required mutation score.
 
 ## Performance
 
-phux does not optimize speculatively. What is measured today:
+phux does not optimize speculatively. The public [performance page](../performance.md)
+owns published end-to-end numbers, benchmark versions, caveats, and the
+reproduction command. The engineering surfaces behind it are:
 
 - Crate benches: `phux-server` (`capture`, `server_measure`),
   `phux-client-core` (`history`), `phux-tui` (`render_frame`).
@@ -114,4 +116,4 @@ of the shipped binary is a goal in its own right.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| A fixed published set of throughput, fanout, and reattach numbers as a regression gate | Benches and `perf-echo` exist; they are not a required CI check with pinned budgets. | — | not scheduled |
+| End-to-end performance as a required regression gate with pinned budgets | The benchmark and a dated public result exist; they are not a required CI check because host load and installed comparison versions are not hermetic. | — | not scheduled |

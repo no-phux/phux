@@ -2,12 +2,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
-use phux_client::attach::connection::Connection;
-use phux_client::kill::{KeyedError, KillOutcome, ShutdownOutcome};
-use phux_protocol::ResourceId;
+use phux_client::kill::{KillError, ShutdownOutcome};
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::IdempotencyKey;
-use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::server_target::{ServerSpec, ServerTarget};
@@ -209,7 +206,7 @@ pub(crate) fn run_kill(
 }
 
 /// Resolve `selector` against a fresh snapshot of `server` and kill what it
-/// names.
+/// names. Orchestration lives in [`phux_client::kill::selected`].
 async fn kill_selected(
     target: &str,
     selector: &selector::Selector,
@@ -220,264 +217,68 @@ async fn kill_selected(
         Ok(conn) => conn,
         Err(err) => return server.report_unreachable(false, &err, "kill"),
     };
-    if key.is_some() && !phux_client::kill::keyed_signal_supported(&conn) {
-        return crate::commands::spawn::unsupported_server(false, ServerFeature::KeyedSignal);
-    }
-    if let (Some(key), Some(id)) = (key, explicit_id(selector)) {
-        return kill_keyed(&mut conn, server, target, vec![id], key).await;
-    }
-
-    // Resolve the selector against a fresh snapshot, keeping what that
-    // snapshot could not see: `kill` acts on what the search finds, so an
-    // empty result has to be told apart from an unsearchable fleet.
-    let (snapshot, degradation) = match phux_client::state::get_state_on(&mut conn).await {
-        Ok(view) => view.into_parts(),
-        Err(err) => return server.report_unreachable(false, &err, "kill"),
-    };
-
-    // A whole-session target tears down in one round-trip via
-    // KILL_RESOURCES { ids } — the atomic multi-terminal op the v0.3.0
-    // "Option B" re-tier put in place of the dissolved KILL_COLLECTION
-    // verb (ADR-0019 / ADR-0027). Grouping is now client logic: we
-    // resolve the session to its full pane-id list and the server tears
-    // them down together under its single state lock. Window / pane /
-    // @id selectors address a strict subset and stay on the per-pane
-    // KILL_RESOURCE path below.
-    if let Some(session_name) = selector::whole_session_name(selector, &snapshot) {
-        let ids = selector::resolve(selector, &snapshot);
-        if ids.is_empty() && session_is_empty(&snapshot, &session_name) {
-            return kill_empty_session(&mut conn, server, &session_name).await;
-        }
-        if ids.is_empty() {
-            // A named session is hub-local by construction —
-            // `handle_get_state_federated` discards a satellite's
-            // `sessions` and `windows` because their `u32` ids would
-            // collide — so a session that resolved to a name and then to
-            // no panes is genuinely empty, degraded fleet or not.
-            eprintln!("phux: no such target: {target}");
-            return ExitCode::FAILURE;
-        }
-        // The session's own panes are all hub-local, but tearing one down
-        // while half the fleet is invisible is still worth saying out
-        // loud: the user asked to kill "everything named X".
-        partial::warn_partial_view("kill", &degradation);
-        return kill_whole_session(&mut conn, server, &session_name, ids, key).await;
-    }
-
-    let terminals = resolve_terminals(&mut conn, selector, &snapshot).await;
-    if terminals.is_empty() {
-        // `#tag` and `@id` selectors search `panes`, the one list a hub
-        // *does* aggregate. Against an unreachable satellite, "nothing
-        // matched" may mean "I could not look there" — and telling a user
-        // their pane is gone when it is merely out of sight invites
-        // exactly the wrong recovery.
-        return partial::report_target_miss(Some(target), &degradation);
-    }
-    // A hit under degradation is still narrower than the user asked for:
-    // `#tag` would have matched more panes with the fleet whole.
-    partial::warn_partial_view("kill", &degradation);
-    let code = match key {
-        Some(key) => kill_keyed(&mut conn, server, target, terminals, key).await,
-        None => kill_each_terminal(&mut conn, terminals).await,
-    };
+    let mut notices = Vec::new();
+    let result = phux_client::kill::selected(&mut conn, selector, target, key, &mut notices).await;
     drop(conn);
-    code
+    report_selected(result, &notices, server)
 }
 
-/// The one id an explicit `@N` / `host/@N` target names.
-fn explicit_id(selector: &selector::Selector) -> Option<ResourceId> {
-    match selector {
-        selector::Selector::ResourceId(id) => Some(ResourceId::local(*id)),
-        selector::Selector::SatelliteResourceId { host, id } => {
-            Some(ResourceId::satellite(host.as_str(), *id))
-        }
-        _ => None,
-    }
-}
-
-/// Kill `terminals` as one keyed command: `KILL_RESOURCE` for one,
-/// `KILL_RESOURCES` for several, so the key names the whole operation.
-async fn kill_keyed(
-    conn: &mut Connection,
+/// Print snapshot and interleaved notices, then map [`KillError`] onto the
+/// CLI's exit codes.
+fn report_selected(
+    result: Result<phux_client::kill::Selected, KillError>,
+    notices: &[String],
     server: &ServerTarget,
-    target: &str,
-    mut terminals: Vec<ResourceId>,
-    key: IdempotencyKey,
 ) -> ExitCode {
-    let reply = if terminals.len() == 1 {
-        let terminal_id = terminals.remove(0);
-        phux_client::kill::kill_resource_keyed(conn, 1, terminal_id, key).await
-    } else {
-        phux_client::kill::kill_resources_keyed(conn, 1, terminals, key).await
-    };
-    report_batch_kill(reply, server, &format!("{target:?}"))
-}
-
-/// The Terminals a non-session selector names. A `#tag` selector resolves
-/// against L3 tag metadata fetched on this same connection; every other form
-/// is pure snapshot resolution.
-async fn resolve_terminals(
-    conn: &mut Connection,
-    selector: &selector::Selector,
-    snapshot: &SessionSnapshot,
-) -> Vec<ResourceId> {
-    if matches!(selector, selector::Selector::Tag(_)) {
-        let index = phux_client::state::fetch_tag_index(conn, snapshot).await;
-        return selector::resolve_with_tags(selector, snapshot, &index);
+    for notice in notices {
+        eprintln!(
+            "{}",
+            phux_client::state::partial_view_warning("kill", notice)
+        );
     }
-    selector::resolve(selector, snapshot)
-}
-
-/// Whether the session named `name` holds no windows (ADR-0105).
-fn session_is_empty(snapshot: &SessionSnapshot, name: &str) -> bool {
-    snapshot
-        .sessions
-        .iter()
-        .any(|session| session.name == name && session.is_empty())
-}
-
-/// Kill an empty session (ADR-0105).
-///
-/// It has no pane for `KILL_RESOURCES` to name, so the kill clears its
-/// keep-empty mark, which makes the server remove a session holding no
-/// windows. `SET_METADATA` has no reply, so a `GET_STATE` on the same ordered
-/// connection confirms the session is gone. A disconnect in its place means
-/// the server self-exited after its last session went, which is success.
-async fn kill_empty_session(
-    conn: &mut Connection,
-    server: &ServerTarget,
-    session_name: &str,
-) -> ExitCode {
-    if let Err(err) = phux_client::kill::clear_session_keep_empty(conn, 1, session_name).await {
-        return server.report_unreachable(false, &err, "kill");
-    }
-    match phux_client::state::get_state_on(conn).await {
-        Ok(view)
-            if view
-                .snapshot()
-                .sessions
-                .iter()
-                .any(|s| s.name == session_name) =>
-        {
-            eprintln!("phux: kill refused for session {session_name:?}: the server kept it");
-            ExitCode::from(2)
-        }
-        Ok(_) | Err(AttachError::Disconnected) => ExitCode::SUCCESS,
-        Err(err) => server.report_unreachable(false, &err, "kill"),
-    }
-}
-
-/// Send one `KILL_RESOURCES` for a whole session and report its outcome.
-async fn kill_whole_session(
-    conn: &mut Connection,
-    server: &ServerTarget,
-    session_name: &str,
-    ids: Vec<ResourceId>,
-    key: Option<IdempotencyKey>,
-) -> ExitCode {
-    let reply = match key {
-        Some(key) => phux_client::kill::kill_resources_keyed(conn, 1, ids, key).await,
-        None => phux_client::kill::kill_resources(conn, 1, ids)
-            .await
-            .map_err(KeyedError::from),
-    };
-    report_batch_kill(reply, server, &format!("session {session_name:?}"))
-}
-
-/// Report one kill round trip that covered a whole target: exit 0 when it
-/// killed, 2 when the server refused (naming `label`), and the transport
-/// error otherwise.
-fn report_batch_kill(
-    reply: Result<(KillOutcome, phux_client::state::Degradation), KeyedError>,
-    server: &ServerTarget,
-    label: &str,
-) -> ExitCode {
-    match reply {
-        // `Killed` is the ack; a clean disconnect means the server
-        // self-exited after its last session was reaped (phux-60s),
-        // so the session is already gone — both are success.
-        Ok((KillOutcome::Killed, degradation)) => {
-            warn_interleaved_degradation(&degradation);
+    match result {
+        Ok(done) => {
+            for message in done.interleaved {
+                eprintln!("phux: warning: partial results — {message}");
+            }
             ExitCode::SUCCESS
         }
-        Err(KeyedError::Attach(AttachError::Disconnected)) => ExitCode::SUCCESS,
-        Err(KeyedError::Unsupported) => {
-            crate::commands::spawn::unsupported_server(false, ServerFeature::KeyedSignal)
-        }
-        Ok((KillOutcome::Refused(message), degradation)) => {
-            warn_interleaved_degradation(&degradation);
-            eprintln!("phux: kill refused for {label}: {message}");
-            ExitCode::from(2)
-        }
-        Ok((KillOutcome::Unexpected(other), degradation)) => {
-            warn_interleaved_degradation(&degradation);
-            eprintln!(
-                "phux: {label}: {}",
-                phux_client::explain::explain_unexpected("kill", &other)
-            );
-            ExitCode::from(2)
-        }
-        Err(KeyedError::Attach(err)) => server.report_unreachable(false, &err, "kill"),
-    }
-}
-
-/// How one `KILL_RESOURCE` ended.
-enum KillStep {
-    /// The server acknowledged the kill.
-    Killed,
-    /// The server refused it, or the reply could not confirm it. Reported.
-    Refused,
-    /// The server self-exited after its last session was reaped (phux-60s):
-    /// every remaining target is already gone.
-    ServerGone,
-}
-
-/// Kill each Terminal in turn; exit 2 if any kill was refused.
-async fn kill_each_terminal(conn: &mut Connection, terminals: Vec<ResourceId>) -> ExitCode {
-    let mut refused = false;
-    for (i, terminal_id) in terminals.into_iter().enumerate() {
-        let request_id = u32::try_from(i).unwrap_or(u32::MAX).saturating_add(1);
-        match kill_one(conn, request_id, terminal_id).await {
-            KillStep::Killed => {}
-            KillStep::Refused => refused = true,
-            KillStep::ServerGone => break,
-        }
-    }
-    if refused {
-        ExitCode::from(2)
-    } else {
-        ExitCode::SUCCESS
-    }
-}
-
-/// Send one `KILL_RESOURCE`, reporting a refusal or failure on stderr.
-async fn kill_one(conn: &mut Connection, request_id: u32, terminal_id: ResourceId) -> KillStep {
-    let label = crate::selector::format_terminal_id(&terminal_id);
-    match phux_client::kill::kill_resource(conn, request_id, terminal_id).await {
-        Ok((KillOutcome::Killed, degradation)) => {
-            warn_interleaved_degradation(&degradation);
-            KillStep::Killed
-        }
-        Ok((KillOutcome::Refused(message), degradation)) => {
-            warn_interleaved_degradation(&degradation);
-            eprintln!("phux: kill refused for {label}: {message}");
-            KillStep::Refused
-        }
-        Ok((KillOutcome::Unexpected(other), degradation)) => {
-            warn_interleaved_degradation(&degradation);
-            eprintln!(
-                "phux: {label}: {}",
-                phux_client::explain::explain_unexpected("kill", &other)
-            );
-            KillStep::Refused
-        }
-        // A clean disconnect means the server self-exited after its last
-        // session was reaped (phux-60s): the remaining target Terminals are
-        // already gone, so this is success, not failure.
-        Err(AttachError::Disconnected) => KillStep::ServerGone,
         Err(err) => {
-            eprintln!("phux: kill failed for {label}: {err}");
-            KillStep::Refused
+            for message in err.interleaved() {
+                eprintln!("phux: warning: partial results — {message}");
+            }
+            match err {
+                KillError::UnsupportedKeyedSignal => {
+                    crate::commands::spawn::unsupported_server(false, ServerFeature::KeyedSignal)
+                }
+                KillError::NoSuchTarget { target } => {
+                    eprintln!("phux: no such target: {target}");
+                    ExitCode::FAILURE
+                }
+                KillError::Unresolved {
+                    target,
+                    degradation,
+                } => partial::report_target_miss(Some(&target), &degradation),
+                KillError::Refused { label, message, .. } => {
+                    eprintln!("phux: kill refused for {label}: {message}");
+                    ExitCode::from(2)
+                }
+                KillError::Unexpected { label, message, .. } => {
+                    eprintln!("phux: {label}: {message}");
+                    ExitCode::from(2)
+                }
+                KillError::PaneRefusals { messages, .. } => {
+                    for message in messages {
+                        eprintln!("phux: {message}");
+                    }
+                    ExitCode::from(2)
+                }
+                KillError::SessionKept { session } => {
+                    eprintln!("phux: kill refused for session {session:?}: the server kept it");
+                    ExitCode::from(2)
+                }
+                KillError::Attach(err) => server.report_unreachable(false, &err, "kill"),
+            }
         }
     }
 }

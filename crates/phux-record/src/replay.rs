@@ -9,10 +9,11 @@
 //! 1. `RenderState::update` **consumes** the terminal's dirty bits — it
 //!    drains them into that one render state, where they stay until that
 //!    state clears them. The `Terminal` is therefore constructed internally,
-//!    exactly one `RenderState` lives for the replayer's whole life, and no
-//!    accessor ever hands out a `&Terminal`. A second observer of the same
-//!    terminal takes the bits this one needed, dirty-based frame coalescing
-//!    silently drops frames, and the export shows stale content.
+//!    the only observer is this replayer's `RenderPool` (rebuilt when the
+//!    grid changes size, never handed out), and no accessor ever hands out
+//!    a `&Terminal`. A second observer of the same terminal takes the bits
+//!    this one needed, dirty-based frame coalescing silently drops frames,
+//!    and the export shows stale content.
 //! 2. [`Replayer::sample`] returns `Some` on its **first** call regardless of
 //!    the dirty bit. A recording that opens on a settled screen would
 //!    otherwise render zero frames.
@@ -43,16 +44,21 @@
 //! crate hosts it because it is the only workspace member that already
 //! depends on all three.
 
+use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::render::{
     CellIteration, CellIterator, Dirty, RowIteration, RowIterator, Snapshot,
 };
 use libghostty_vt::screen::CellWide;
 use libghostty_vt::style::{RgbColor, Style, StyleColor, Underline};
-use libghostty_vt::{RenderState, Terminal as GhosttyTerminal};
 use phux_core::screen::{CellColor, CellStyle, CursorState, RenderedFrame};
+use phux_protocol::render_pool::{RenderPool, RenderWalk};
 
 use crate::error::RecordError;
 use crate::raster::Theme;
+
+/// `Replayer` owns one terminal for its whole life, so the pool's identity
+/// token never changes. A resize still rebuilds the trio on the next walk.
+const POOL_GENERATION: u128 = 0;
 
 /// One sampled frame plus the row band that changed since the last sample.
 #[derive(Debug, Clone)]
@@ -69,22 +75,17 @@ pub struct Sampled {
 /// Replays a captured byte stream through a private terminal emulator.
 ///
 /// Construct one, [`feed`](Self::feed) it the cast's `"o"` payloads in order,
-/// and [`sample`](Self::sample) on the export's fixed clock. The emulator,
-/// its render state, and both iterators are owned here and never escape —
-/// see rule 1 in the module docs for why that is structural rather than
-/// stylistic.
+/// and [`sample`](Self::sample) on the export's fixed clock. The emulator
+/// and its [`RenderPool`] are owned here and never escape — see rule 1 in
+/// the module docs for why that is structural rather than stylistic.
 #[derive(Debug)]
 pub struct Replayer {
     /// The private emulator. Never handed out, not even behind a shared
     /// reference: a second `RenderState` observing it would consume the
     /// dirty bits this replayer's frame coalescing depends on.
     term: GhosttyTerminal<'static, 'static>,
-    /// The one and only render state, alive for the replayer's whole life.
-    state: RenderState<'static>,
-    /// Pooled row iterator, reused across samples rather than reallocated.
-    rows: RowIterator<'static>,
-    /// Pooled cell iterator, likewise.
-    cells: CellIterator<'static>,
+    /// The one render trio, rebuilt when [`Self::resize`] changes geometry.
+    pool: RenderPool<'static>,
     /// Whether any sample has been taken yet; see rule 2 in the module docs.
     sampled_once: bool,
     /// The cursor as of the last emitted frame. Compared on every sample
@@ -116,9 +117,7 @@ impl Replayer {
             .map_err(|err| replay_err("terminal construction", &err))?;
         Ok(Self {
             term,
-            state: RenderState::new().map_err(|err| replay_err("render state", &err))?,
-            rows: RowIterator::new().map_err(|err| replay_err("row iterator", &err))?,
-            cells: CellIterator::new().map_err(|err| replay_err("cell iterator", &err))?,
+            pool: RenderPool::new().map_err(|err| replay_err("render pool", &err))?,
             sampled_once: false,
             last_cursor: None,
         })
@@ -139,6 +138,10 @@ impl Replayer {
     /// Cell pixel dimensions are zero: nothing in the export path reads them,
     /// and reporting a made-up cell size to the emulator would put a wrong
     /// answer into any in-band size report the replayed program asked for.
+    ///
+    /// The pooled render trio is rebuilt on the next [`sample`](Self::sample)
+    /// or [`theme`](Self::theme), when the walked geometry no longer matches
+    /// the pool's last walk.
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), RecordError> {
         self.term
             .resize(cols, rows, 0, 0)
@@ -167,9 +170,13 @@ impl Replayer {
         // not something the dirty bit can answer, and a caller who read the
         // theme first would otherwise get an empty export.
         let first = !self.sampled_once;
-        let snapshot = self
-            .state
-            .update(&self.term)
+        let RenderWalk {
+            snapshot,
+            rows,
+            cells,
+        } = self
+            .pool
+            .begin(&self.term, POOL_GENERATION)
             .map_err(|err| replay_err("snapshot", &err))?;
         let view = read_view(&snapshot)?;
         let cursor_changed = view.cursor != self.last_cursor;
@@ -184,14 +191,7 @@ impl Replayer {
         // encoder wants a whole-canvas frame for those, which `None` means.
         let whole_canvas = first || matches!(view.dirty, Dirty::Full);
 
-        let mut band = project_rows(
-            &mut self.rows,
-            &mut self.cells,
-            &snapshot,
-            view.cols,
-            view.rows,
-            &mut frame,
-        )?;
+        let mut band = project_rows(rows, cells, &snapshot, view.cols, view.rows, &mut frame)?;
 
         if cursor_changed {
             band = band_with_cursor_rows(
@@ -240,9 +240,9 @@ impl Replayer {
     /// one reports `None` — and falls back to the foreground, which is what
     /// an unstyled block cursor looks like.
     pub fn theme(&mut self) -> Result<Theme, RecordError> {
-        let snapshot = self
-            .state
-            .update(&self.term)
+        let RenderWalk { snapshot, .. } = self
+            .pool
+            .begin(&self.term, POOL_GENERATION)
             .map_err(|err| replay_err("snapshot", &err))?;
         let colors = snapshot
             .colors()
@@ -654,6 +654,28 @@ mod tests {
         replayer.resize(8, 4).expect("resize");
         let shrunk = replayer.sample().expect("sample").expect("resize is dirty");
         assert_eq!(row_text(&shrunk, 0), "hello", "content survives a shrink");
+    }
+
+    /// phux-u8zm / phux-5pyx: after a resize the pooled trio must walk the
+    /// new grid, including cells that did not exist at the old width. A
+    /// stale `RenderState` reports the new dimensions while still serving
+    /// pre-resize row bodies, so column 5 would come back blank.
+    #[test]
+    fn resize_rebuilds_the_pool_past_the_old_width() {
+        let mut replayer = Replayer::new(4, 2).expect("replayer");
+        let before = feed_then_sample(&mut replayer, b"ab");
+        assert_eq!(row_text(&before, 0), "ab");
+        replayer.resize(8, 3).expect("resize");
+        replayer.feed(b"\x1b[1;5HX");
+        let after = replayer
+            .sample()
+            .expect("sample")
+            .expect("a resize plus a write is a change");
+        assert_eq!((after.frame.cols, after.frame.rows), (8, 3));
+        assert_eq!(after.frame.cells.len(), 8 * 3);
+        assert_eq!(glyph_at(&after, 0, 0), "a");
+        assert_eq!(glyph_at(&after, 0, 4), "X");
+        assert_eq!(after.dirty_rows, None, "a resize repaints the whole canvas");
     }
 
     #[test]

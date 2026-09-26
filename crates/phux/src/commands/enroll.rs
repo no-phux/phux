@@ -302,6 +302,12 @@ pub(crate) enum EnrollEvent {
     ListenerRestartFailed { error: String },
     /// The pairing document came back.
     Paired,
+    /// A previously enrolled credential still works after the server was
+    /// brought up; no new credential was minted.
+    CredentialReused,
+    /// A previously enrolled credential was revoked while minting its
+    /// replacement.
+    CredentialReplaced,
     /// A direct route is being dialed.
     Probing { endpoint: String },
     /// A direct route answered.
@@ -330,6 +336,12 @@ impl EnrollEvent {
                 "could not restart the server after the migration ({error}); its listeners come up on the next restart"
             ),
             Self::Paired => "paired".to_owned(),
+            Self::CredentialReused => {
+                "previous credential still works; kept it (no new mint)".to_owned()
+            }
+            Self::CredentialReplaced => {
+                "minted a new credential and revoked the previous one".to_owned()
+            }
             Self::Probing { endpoint } => format!("trying {endpoint}"),
             Self::DirectReachable { endpoint } => format!("direct route reachable at {endpoint}"),
             Self::DirectUnreachable { endpoint, reason } => {
@@ -379,6 +391,14 @@ pub(crate) struct EnrollRequest<'a> {
     pub(crate) quic_port: u16,
     /// Whether to install the host's service unit.
     pub(crate) service: ServicePolicy,
+    /// Bearer token already held for this name, when re-enrolling. After the
+    /// server is up, the middle probes with it first and reuses it when a
+    /// direct route answers; otherwise it mints with `--replace-token` so the
+    /// previous credential is revoked in the same rewrite.
+    pub(crate) previous_token: Option<&'a str>,
+    /// Certificate fingerprint saved with [`Self::previous_token`], required
+    /// to probe a previous credential (ADR-0031 refuses an unpinned dial).
+    pub(crate) previous_fingerprint: Option<&'a str>,
 }
 
 /// What the shared ssh middle produced.
@@ -429,11 +449,22 @@ pub(crate) fn enroll_over_ssh(
         }
     };
 
-    // `phux pair` writes the token store the server reads at startup, so it
-    // must run after the service install — which is also what makes
-    // PHUX_QUIC_ADDR visible to the pair invocation's overlay-derived link.
-    let report = pair_over_ssh(req.ssh_host, req.remote_phux, on_event)?;
-    on_event(EnrollEvent::Paired);
+    // Prefer the credential already held for this name once the server is
+    // up: start-then-retry is cheaper and safer than minting another live
+    // bearer into remote-tokens (ADR-0122). Only mint (and revoke the old
+    // secret) when that probe fails.
+    let report = if let Some(report) = try_reuse_previous_credential(req, on_event) {
+        on_event(EnrollEvent::CredentialReused);
+        report
+    } else {
+        let report = pair_over_ssh(req.ssh_host, req.remote_phux, req.previous_token, on_event)?;
+        if req.previous_token.is_some() {
+            on_event(EnrollEvent::CredentialReplaced);
+        } else {
+            on_event(EnrollEvent::Paired);
+        }
+        report
+    };
 
     let ssh_target_host = ssh_hostname(req.ssh_host);
     let candidates = candidate_endpoints(
@@ -580,27 +611,83 @@ fn ensure_remote_server_after_version(
     )
 }
 
+/// After the server is up, dial with the previously enrolled credential.
+///
+/// Returns `Some` when a direct route answers so the caller can keep that
+/// token instead of minting another. `None` when there is no previous
+/// credential, no pin to probe with, or every candidate refuses it.
+fn try_reuse_previous_credential(
+    req: &EnrollRequest<'_>,
+    on_event: &mut dyn FnMut(EnrollEvent),
+) -> Option<PairReport> {
+    let token = req.previous_token?;
+    let fingerprint = req.previous_fingerprint.filter(|fp| !fp.is_empty())?;
+    let report = PairReport {
+        token: token.to_owned(),
+        cert_fingerprint: Some(fingerprint.to_owned()),
+        overlay_addresses: Vec::new(),
+    };
+    let ssh_target_host = ssh_hostname(req.ssh_host);
+    let candidates = candidate_endpoints(
+        &ssh_target_host,
+        &report,
+        req.endpoint_override,
+        req.quic_port,
+    );
+    for candidate in &candidates {
+        let Some(target) = candidate.strip_prefix("quic://") else {
+            // A `wss://` override cannot be probed here; keep the previous
+            // credential and let the caller register it as written.
+            return Some(report);
+        };
+        on_event(EnrollEvent::Probing {
+            endpoint: candidate.clone(),
+        });
+        match probe(target, &report.token, report.cert_fingerprint.as_deref()) {
+            Ok(()) => {
+                on_event(EnrollEvent::DirectReachable {
+                    endpoint: candidate.clone(),
+                });
+                return Some(report);
+            }
+            Err(reason) => on_event(EnrollEvent::DirectUnreachable {
+                endpoint: candidate.clone(),
+                reason,
+            }),
+        }
+    }
+    None
+}
+
 /// `phux pair --json` on the host, migrating a pre-versioned token store
-/// once if that is what refuses the mint.
+/// once if that is what refuses the mint. When `replace_token` is set, the
+/// remote mint revokes that bearer in the same rewrite.
 fn pair_over_ssh(
     ssh_host: &str,
     remote_phux: &str,
+    replace_token: Option<&str>,
     on_event: &mut dyn FnMut(EnrollEvent),
 ) -> Result<PairReport, EnrollFailure> {
-    let first = ssh_run(ssh_host, &[remote_phux, "pair", "--json"]).map_err(EnrollFailure::Pair)?;
+    let mut pair_argv = vec![remote_phux, "pair", "--json"];
+    let replace_flag;
+    let replace_value;
+    if let Some(token) = replace_token {
+        replace_flag = "--replace-token".to_owned();
+        replace_value = token.to_owned();
+        pair_argv.push(&replace_flag);
+        pair_argv.push(&replace_value);
+    }
+    let first = ssh_run(ssh_host, &pair_argv).map_err(EnrollFailure::Pair)?;
     let stdout = if first.status.success() {
         first.stdout
     } else if first.stderr.contains(LEGACY_TOKEN_STORE) {
-        let migrated = ssh_run(
-            ssh_host,
-            &[remote_phux, "pair", "--json", "--migrate-legacy"],
-        )
-        .map_err(EnrollFailure::Pair)?;
+        let mut migrated_argv = pair_argv.clone();
+        migrated_argv.push("--migrate-legacy");
+        let migrated = ssh_run(ssh_host, &migrated_argv).map_err(EnrollFailure::Pair)?;
         if !migrated.status.success() {
-            return Err(EnrollFailure::Pair(migrated.command_failure(
-                ssh_host,
-                &[remote_phux, "pair", "--json", "--migrate-legacy"],
-            )));
+            return Err(EnrollFailure::Pair(
+                migrated.command_failure(ssh_host, &migrated_argv),
+            ));
         }
         on_event(EnrollEvent::LegacyStoreMigrated);
         // The server disabled its remote listeners when the store failed to
@@ -616,7 +703,7 @@ fn pair_over_ssh(
         migrated.stdout
     } else {
         return Err(EnrollFailure::Pair(
-            first.command_failure(ssh_host, &[remote_phux, "pair", "--json"]),
+            first.command_failure(ssh_host, &pair_argv),
         ));
     };
     PairReport::parse(&stdout).map_err(EnrollFailure::Pair)

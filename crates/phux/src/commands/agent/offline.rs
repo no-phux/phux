@@ -19,14 +19,16 @@
 //!
 //! # No server, no runtime
 //!
-//! The rules engine is compiled into the binary (`phux_server::agent_explain`
+//! The rules engine is compiled into the binary (`phux_agent_rules::explain`
 //! is a facade over it), so this path allocates no tokio runtime and opens no
 //! socket. It works on a machine with no phux running.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use phux_server::agent_explain::{self, Capture, EvaluatedRule, Explanation, PredicateEvidence};
+use phux_agent_rules::explain::{
+    self as agent_explain, Capture, EvaluatedRule, Explanation, PredicateEvidence,
+};
 
 use crate::commands::json_err::{self, CliError, codes};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
@@ -193,7 +195,7 @@ fn read_capture(path: &Path) -> Result<String, CliError> {
 /// Two shapes are accepted, because two shapes are what people have: the
 /// `phux snapshot --json` document (`ScreenState`, ADR-0022) and a plain text
 /// screen, one viewport row per line — which is what a human pastes and what
-/// the committed goldens under `crates/phux-server/src/agent_detect/fixtures/`
+/// the committed goldens under `crates/phux-agent-rules/src/fixtures/`
 /// already are.
 ///
 /// The JSON form carries `title` since ADR-0077, so it is read here rather
@@ -468,9 +470,8 @@ mod tests {
     /// the detector itself is pinned against. Not a screen written for this
     /// test — a fixture invented here would test the parser against itself,
     /// which is the exact failure ADR-0046 records.
-    const CLAUDE_BLOCKED: &str = include_str!(
-        "../../../../phux-server/src/agent_detect/fixtures/claude/blocked_permission.txt"
-    );
+    const CLAUDE_BLOCKED: &str =
+        include_str!("../../../../phux-agent-rules/src/fixtures/claude/blocked_permission.txt");
 
     /// A `ScreenState` document with a `title`, as `phux snapshot --json`
     /// writes it since ADR-0077.

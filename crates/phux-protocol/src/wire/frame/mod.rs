@@ -288,6 +288,29 @@ pub const TYPE_METADATA_CHANGED: u8 = FrameType::MetadataChanged as u8;
 /// `phux.tui.layout/v1` is for TUI layout).
 pub const SESSION_NAME_KEY: &str = "phux.session.name/v1";
 
+/// Encode a [`SESSION_NAME_KEY`] value: `current\0new`.
+#[must_use]
+pub fn encode_session_rename(current: &str, new_name: &str) -> Vec<u8> {
+    let mut value = current.as_bytes().to_vec();
+    value.push(0);
+    value.extend_from_slice(new_name.as_bytes());
+    value
+}
+
+/// Decode a [`SESSION_NAME_KEY`] value into `(current, new)`.
+///
+/// `None` for anything other than UTF-8 `current\0new` with both sides
+/// non-empty and no extra NULs.
+#[must_use]
+pub fn decode_session_rename(value: &[u8]) -> Option<(&str, &str)> {
+    let text = std::str::from_utf8(value).ok()?;
+    let (current, new_name) = text.split_once('\0')?;
+    if current.is_empty() || new_name.is_empty() || new_name.contains('\0') {
+        return None;
+    }
+    Some((current, new_name))
+}
+
 /// Conventional L3 metadata key requesting creation of a named session
 /// *without* attaching.
 ///
@@ -393,6 +416,15 @@ pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 /// the fallback when the key is absent. Set via `SET_METADATA`, cleared via
 /// `DELETE_METADATA`, observed via `GET_METADATA`/`SUBSCRIBE_METADATA`.
 pub const RESOURCE_AGENT_KEY: &str = "phux.agent/v1";
+
+/// Server-owned projection of a pending `AgentEvent::Asked` (ADR-0035, ADR-0136).
+///
+/// Value is the single byte `1` while any ask source still holds, and the
+/// key is absent once none does. There is no wire event for a question
+/// going away, so this tombstone is how a consumer learns the clear. A hub
+/// copies the key read-only onto `Satellite` scopes; clients must not set
+/// or delete it.
+pub const RESOURCE_ASKED_KEY: &str = "phux.agent.asked/v1";
 
 /// Conventional Terminal-scoped provenance for provider-native session resume.
 ///

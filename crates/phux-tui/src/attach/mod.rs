@@ -54,8 +54,12 @@ pub mod paint;
 // phux-4fbs.4: `PaneSlot` and the client-local indices built over it. Shared
 // vocabulary the driver and its siblings both read; see the module doc.
 mod pane_state;
+// phux-deya: connection-lifetime review index. Shared vocabulary the driver
+// and the sidebar both read; keeping it out of `driver` preserves the
+// one-way orchestrator rule (phux-4fbs.4).
 pub mod plugin_actions;
 pub mod plugin_panes;
+mod review;
 mod sidebar_zones;
 // ADR-0060: the `phux --rec` tee. A `Write` wrapper on the one RenderSink the
 // driver already threads through the render path, so a recording is exactly

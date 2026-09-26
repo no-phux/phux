@@ -187,9 +187,7 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     // (columnar band) vs linear (text-flow, incl. whole-line Line mode). `Tab`
     // cycles it (ADR-0045).
     let geom = if sel.rectangle { "block" } else { "linear" };
-    let status = format!(
-        " copy-mode | {geom} | {cell_count} cell(s) | arrows/PgUp/PgDn scroll | Tab mode | Enter copy | Esc "
-    );
+    let status = format!(" copy-mode · {geom} · {cell_count} ");
     write_cup(out, rows - 1, 0)?;
     // Selection strip from the theme (`selection_bg`/`selection_fg`). `\x1b[K`
     // fills the rest of the row with the strip bg; then reset + hide the cursor.
@@ -292,6 +290,7 @@ pub(super) fn refresh_fleet_if_open<W: crate::attach::RenderSink>(
     vcs: &mut VcsIndex,
     foreign_layouts: &HashMap<phux_protocol::ids::SessionId, Workspace>,
     foreign_agents: &HashMap<ResourceId, AgentRecord>,
+    foreign_attention: &std::collections::HashSet<ResourceId>,
 ) -> StatusBarPaint {
     if !overlays.is_active() {
         return StatusBarPaint::NotPublished;
@@ -301,7 +300,7 @@ pub(super) fn refresh_fleet_if_open<W: crate::attach::RenderSink>(
         vcs,
         &crate::attach::agent_rows::agent_session_rows(engine_kernel),
     );
-    let items = crate::attach::fleet::fleet_items(
+    let mut items = crate::attach::fleet::fleet_items(
         workspace,
         sessions,
         focused_session,
@@ -310,6 +309,11 @@ pub(super) fn refresh_fleet_if_open<W: crate::attach::RenderSink>(
         foreign_layouts,
         foreign_agents,
     );
+    items.extend(crate::attach::fleet::satellite_agent_items(
+        foreign_agents,
+        foreign_attention,
+        workspace,
+    ));
     if overlays.refresh_items(crate::attach::fleet::FLEET_LIVE_KEY, &items) {
         paint_active_overlay(
             out,

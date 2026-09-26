@@ -42,6 +42,14 @@ pub(crate) mod codes {
     pub(crate) const SERVER_DISCONNECTED: &str = "server_disconnected";
     /// Any other transport or protocol failure while talking to the server.
     pub(crate) const TRANSPORT: &str = "transport";
+    /// The local coordinator did not become available inside the bounded
+    /// `server --ensure` startup window.
+    pub(crate) const SERVER_START_TIMEOUT: &str = "server_start_timeout";
+    /// The caller interrupted or terminated `server --ensure` while startup
+    /// coordination was in flight.
+    pub(crate) const SERVER_START_CANCELLED: &str = "server_start_cancelled";
+    /// The local coordinator could not be started for a non-timeout reason.
+    pub(crate) const SERVER_START_FAILED: &str = "server_start_failed";
     /// A selector resolved against a complete view and matched nothing.
     pub(crate) const NO_SUCH_TARGET: &str = "no_such_target";
     /// A selector miss against an incomplete fleet view — the target may

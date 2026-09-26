@@ -17,7 +17,7 @@ default = []
 # Safe native libghostty checkpoint host. The target-qualified optional
 # dependency below keeps wasm builds, including `--all-features`, off the
 # native C/Zig linkage graph.
-native-engine = ["dep:libghostty-vt"]
+native-engine = ["dep:libghostty-vt", "phux-protocol/render-pool"]
 # Criterion is only needed by the history benchmark. Keeping this feature off
 # by default prevents workspace tests from compiling the benchmark toolchain.
 history-bench = ["dep:criterion"]
@@ -25,8 +25,9 @@ history-bench = ["dep:criterion"]
 [dependencies]
 criterion = { workspace = true, optional = true }
 # Stable IDs, ungated wire/input atoms, bootstrap profiles, and layout records.
-# Engine-specific server conversions remain disabled so the default core stays
-# native/wasm portable.
+# Engine-specific server conversions stay off so the default core remains
+# native/wasm portable. `native-engine` enables `render-pool` only
+# (libghostty-vt, no png). See ADR-0086.
 phux-protocol.workspace = true
 # Kernel-side performance telemetry (`perf` module); wasm-safe, no clock on
 # wasm32, always on.

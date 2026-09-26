@@ -95,6 +95,7 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let mut out = Vec::new();
@@ -217,6 +218,7 @@ async fn bootstrapped_loop_with(
         None,
         None,
         None,
+        None,
     )
     .unwrap();
     let mut out = Vec::new();
@@ -253,6 +255,7 @@ async fn bootstrap_replay_does_not_write_until_the_recv_arm_drains() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
     let mut out = Vec::new();
@@ -283,6 +286,7 @@ async fn last_pane_close_on_first_burst_skips_deferred_bootstrap_writes() {
         negotiated,
         PredictiveConfig::disabled(),
         false,
+        None,
         None,
         None,
         None,
@@ -629,6 +633,12 @@ async fn peer_layout_broadcast_discovers_and_subscribes_new_agent_leaves() {
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
     sidebar_frames_sent(&mut client, &mut server).await;
+    // The layout key is session-scoped; production already has this session
+    // in the ATTACHED graph from the peer sweep that opened the watch.
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
     let id = ResourceId::local(10);
     let frame = FrameKind::MetadataChanged {
         scope: Scope::Group(phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID),
@@ -850,6 +860,49 @@ async fn fresh_inventory_discovers_peer_sessions_without_an_endless_sweep() {
     );
 }
 
+/// ADR-0136: a satellite terminal on an unchanged session list still
+/// schedules one discovery sweep, and a second identical inventory does not.
+#[tokio::test(flavor = "current_thread")]
+async fn satellite_terminal_on_an_unchanged_session_list_schedules_one_sweep() {
+    use phux_protocol::ids::SatelliteHost;
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::HostSessions])).await;
+    sidebar_frames_sent(&mut client, &mut server).await;
+    state.peers.sweep_pending = false;
+    let sat = ResourceId::satellite(SatelliteHost::new("edge"), 9);
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "test")])
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24),
+            ResourceInfo::new(sat.clone(), WindowId::new(1), 80, 24),
+        ]);
+    let result = CommandResult::OkWith(CommandValue::State(snapshot));
+    state.fold_host_inventory(&result, &mut RepaintAccumulator::default());
+    assert!(
+        state.peers.sweep_pending,
+        "a new satellite terminal requires discovery"
+    );
+    state.peers.sweep_pending = false;
+    state.sweep_peer_layouts(&mut client).await.unwrap();
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    assert!(
+        sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::GetMetadata { scope, key, .. }
+                if *scope == Scope::Resource(sat.clone())
+                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
+        )),
+        "satellite terminal is fetched: {sent:?}"
+    );
+    state.fold_host_inventory(&result, &mut RepaintAccumulator::default());
+    assert!(
+        !state.peers.sweep_pending,
+        "identical inventory must not loop"
+    );
+}
+
 /// Answer a host-inventory `GET_STATE` asked just now with `rows`.
 async fn answer_inventory(
     state: &mut SessionLoop,
@@ -874,6 +927,120 @@ async fn answer_inventory(
         .await
         .unwrap();
     assert!(passed.is_none(), "the inventory reply is consumed");
+}
+
+/// phux-lxov.1: a down satellite pane keeps its layout slot. An inventory
+/// that still cannot see the host does not attach it; one that can sends
+/// `ATTACH_RESOURCE` and clears the flag. A replay refusal puts the flag
+/// back without folding the leaf out.
+#[tokio::test(flavor = "current_thread")]
+async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+    use phux_protocol::wire::info::HostInventory;
+
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::HostSessions])).await;
+    let _ = sidebar_frames_sent(&mut client, &mut server).await;
+
+    let local = ResourceId::local(1);
+    let sat = ResourceId::satellite(SatelliteHost::new("devbox"), 7);
+    state.workspace = Workspace::single(local.clone());
+    let tree = state
+        .workspace
+        .active_window()
+        .and_then(|window| window.tree.clone())
+        .expect("tree");
+    state.workspace.active_window_mut().expect("window").tree = Some(
+        crate::layout::split_at(
+            &tree,
+            &local,
+            &sat,
+            crate::layout::SplitDir::Horizontal,
+            0.5,
+        )
+        .expect("split"),
+    );
+    let mut slot = PaneSlot::new().expect("slot");
+    slot.satellite_down = true;
+    state.panes.insert(sat.clone(), slot);
+
+    let leaves = |state: &SessionLoop| {
+        crate::layout::leaves(
+            state
+                .workspace
+                .active_window()
+                .and_then(|window| window.tree.as_ref())
+                .expect("tree"),
+        )
+    };
+
+    answer_inventory(
+        &mut state,
+        &mut client,
+        vec![HostInventory::unreachable(
+            SatelliteHost::new("devbox"),
+            "link is down",
+        )],
+    )
+    .await;
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    assert!(
+        !sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource { .. },
+                ..
+            }
+        )),
+        "an unreachable host is not reattached: {sent:?}"
+    );
+    assert!(state.panes[&sat].satellite_down);
+    assert_eq!(leaves(&state), vec![local.clone(), sat.clone()]);
+
+    answer_inventory(
+        &mut state,
+        &mut client,
+        vec![HostInventory::reachable(
+            SatelliteHost::new("devbox"),
+            Vec::new(),
+        )],
+    )
+    .await;
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let attach = sent.iter().find_map(|frame| match frame {
+        FrameKind::Command {
+            request_id,
+            command: Command::AttachResource { terminal_id, .. },
+        } if terminal_id == &sat => Some(*request_id),
+        _ => None,
+    });
+    let attach = attach.expect("the returned host is reattached");
+    assert!(!state.panes[&sat].satellite_down);
+    assert_eq!(leaves(&state), vec![local.clone(), sat.clone()]);
+
+    let mut out = Vec::new();
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::CommandResult {
+                request_id: attach,
+                result: CommandResult::Error {
+                    code: ErrorCode::SatelliteUnreachable,
+                    message: "link is down".to_owned(),
+                },
+            },
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        state.panes[&sat].satellite_down,
+        "a refused replay marks the pane down again"
+    );
+    assert_eq!(leaves(&state), vec![local, sat]);
 }
 
 /// The panes of every `KILL_RESOURCE` sent before a FIFO barrier.
@@ -1326,4 +1493,632 @@ fn federation_notices_use_the_degraded_wording() {
         notices[0].text,
         "federation degraded: satellite edge is unreachable: x"
     );
+}
+
+// ---- phux-4s6o: session rename confirmation and peer identity ------------
+
+#[tokio::test(flavor = "current_thread")]
+async fn bootstrap_subscribes_to_session_rename_key() {
+    let (_state, mut client, mut server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    assert!(
+        sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SubscribeMetadata { scope: Scope::Global, key }
+            if key == SESSION_NAME_KEY
+        )),
+        "attach must subscribe to SESSION_NAME_KEY so a peer rename refreshes the roster: {sent:?}"
+    );
+}
+
+#[test]
+fn apply_graph_rename_moves_the_label_not_the_id() {
+    let mut sessions = vec![
+        SessionInfo::new(SessionId::new(1), "test"),
+        SessionInfo::new(SessionId::new(2), "peer"),
+    ];
+    apply_graph_rename(&mut sessions, "peer", "notes");
+    assert_eq!(sessions[1].id, SessionId::new(2));
+    assert_eq!(sessions[1].name, "notes");
+    assert_eq!(sessions[0].name, "test");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_rename_broadcast_updates_peer_roster_without_reattach() {
+    use phux_protocol::wire::frame::encode_session_rename;
+
+    let (mut state, mut client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::MetadataChanged {
+                scope: Scope::Global,
+                key: SESSION_NAME_KEY.to_owned(),
+                value: Some(encode_session_rename("peer", "notes")),
+                actor: None,
+            },
+            true,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state.session_name, "test",
+        "a peer rename must not overwrite this client's status name"
+    );
+    let peer = state
+        .peers
+        .sessions
+        .iter()
+        .find(|session| session.id == SessionId::new(2))
+        .expect("peer row remains");
+    assert_eq!(peer.name, "notes");
+}
+
+async fn answer_rename_barrier(
+    state: &mut SessionLoop,
+    client: &mut Connection,
+    sessions: Vec<SessionInfo>,
+) {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+
+    let barrier = state
+        .rename_pending
+        .as_ref()
+        .expect("rename parked")
+        .barrier;
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(sessions);
+    let passed = state
+        .intercept_peer_reply(
+            client,
+            FrameKind::CommandResult {
+                request_id: barrier,
+                result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            },
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(passed.is_none(), "the rename GET_STATE barrier is consumed");
+}
+
+fn parked_rename(state: &mut SessionLoop, new_name: &str) {
+    state.rename_pending = Some(PendingSessionRename {
+        barrier: 4242,
+        session_id: Some(SessionId::new(1)),
+        current: "test".to_owned(),
+        new_name: new_name.to_owned(),
+    });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn refused_rename_barrier_keeps_the_current_status_name() {
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    parked_rename(&mut state, "notes");
+    answer_rename_barrier(
+        &mut state,
+        &mut client,
+        vec![
+            SessionInfo::new(SessionId::new(1), "test"),
+            SessionInfo::new(SessionId::new(2), "taken"),
+        ],
+    )
+    .await;
+    assert!(state.rename_pending.is_none());
+    assert_eq!(
+        state.session_name, "test",
+        "a refused rename must leave the current status name authoritative"
+    );
+    let names: Vec<&str> = state
+        .peers
+        .sessions
+        .iter()
+        .map(|session| session.name.as_str())
+        .collect();
+    assert_eq!(names, ["test", "taken"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn confirmed_rename_barrier_applies_the_new_name() {
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    parked_rename(&mut state, "notes");
+    answer_rename_barrier(
+        &mut state,
+        &mut client,
+        vec![
+            SessionInfo::new(SessionId::new(1), "notes"),
+            SessionInfo::new(SessionId::new(2), "peer"),
+        ],
+    )
+    .await;
+    assert!(state.rename_pending.is_none());
+    assert_eq!(state.session_name, "notes");
+    let ours = state
+        .peers
+        .sessions
+        .iter()
+        .find(|session| session.id == SessionId::new(1))
+        .expect("this session remains");
+    assert_eq!(ours.name, "notes");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rename_barrier_error_keeps_the_current_status_name() {
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    parked_rename(&mut state, "notes");
+    let passed = state
+        .intercept_peer_reply(
+            &mut client,
+            FrameKind::Error {
+                request_id: Some(4242),
+                code: phux_protocol::wire::frame::ErrorCode::InternalError,
+                message: "get-state failed".to_owned(),
+            },
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(passed.is_none());
+    assert!(state.rename_pending.is_none());
+    assert_eq!(state.session_name, "test");
+}
+
+/// phux-ah84: a CLI-created peer with an agent record but no TUI layout
+/// still paints in Agents, keyed by `ResourceId`.
+#[tokio::test(flavor = "current_thread")]
+async fn unvisited_peer_agent_paints_from_server_inventory() {
+    let (mut state, _client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.viewport_dims = (100, 24);
+    let sidebar = Some(SidebarReservation {
+        edge: crate::attach::paint::SidebarEdge::Left,
+        width: 32,
+    });
+    let peer = ResourceId::local(10);
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
+    state.peers.windows.push(
+        WindowInfo::new(WindowId::new(10), SessionId::new(2), "main")
+            .with_index(0)
+            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
+                peer.clone(),
+            )))
+            .with_active_resource(Some(peer.clone())),
+    );
+    state
+        .peers
+        .resources
+        .push(ResourceInfo::new(peer.clone(), WindowId::new(10), 80, 24));
+    state.peers.foreign_agents.insert(
+        peer,
+        AgentRecord {
+            name: "reviewer".into(),
+            state: phux_client::agent_meta::AgentMetaState::Idle,
+            ..AgentRecord::default()
+        },
+    );
+    state.peers.chrome_dirty = true;
+    out.clear();
+    state.drain_repaint(&mut out, sidebar, &mut RepaintAccumulator::default());
+    let screen = painted_sidebar_text(&out);
+    assert!(screen.contains("reviewer"), "{screen}");
+    assert!(screen.contains("peer"), "{screen}");
+}
+
+/// phux-ah84: sweeping an unvisited peer GETs/SUBSCRIBEs its graph terminals.
+#[tokio::test(flavor = "current_thread")]
+async fn sweep_discovers_graph_terminals_before_layout_persist() {
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    sidebar_frames_sent(&mut client, &mut server).await;
+    let peer = ResourceId::local(10);
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
+    state.peers.windows.push(
+        WindowInfo::new(WindowId::new(10), SessionId::new(2), "main")
+            .with_index(0)
+            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
+                peer.clone(),
+            ))),
+    );
+    state
+        .peers
+        .resources
+        .push(ResourceInfo::new(peer.clone(), WindowId::new(10), 80, 24));
+    state.peers.sweep_pending = false;
+    state.sweep_peer_layouts(&mut client).await.unwrap();
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    assert!(
+        sent.iter().any(|f| matches!(
+            f,
+            FrameKind::GetMetadata { scope, key, .. }
+                if *scope == Scope::Resource(peer.clone())
+                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
+        )),
+        "graph terminal is fetched: {sent:?}"
+    );
+    assert!(
+        sent.iter().any(|f| matches!(
+            f,
+            FrameKind::SubscribeMetadata { scope, .. }
+                if *scope == Scope::Resource(peer.clone())
+        )),
+        "graph terminal is subscribed: {sent:?}"
+    );
+}
+
+/// phux-ah84: a resource-identity pick focuses the inventory pane even when
+/// the destination still has the single-pane attach bootstrap.
+#[tokio::test(flavor = "current_thread")]
+async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
+    let (mut state, _, _, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let target = ResourceId::local(10);
+    state.peers.windows.push(
+        WindowInfo::new(WindowId::new(10), SessionId::new(1), "review")
+            .with_index(1)
+            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
+                target.clone(),
+            )))
+            .with_active_resource(Some(target.clone())),
+    );
+    state
+        .peers
+        .resources
+        .push(ResourceInfo::new(target.clone(), WindowId::new(10), 80, 24));
+    state.pending_resource = Some(target.clone());
+    state.resolve_cross_session_pick();
+    assert_eq!(state.focused_resource.as_ref(), Some(&target));
+    assert!(
+        state.workspace.windows.iter().any(|window| window
+            .state
+            .tree
+            .as_ref()
+            .is_some_and(|tree| crate::layout::leaves(tree).contains(&target))),
+        "inventory window is adopted: {:?}",
+        state.workspace.windows
+    );
+    state.pending_resource = Some(target.clone());
+    state.workspace = Workspace::single(target.clone());
+    state.workspace.windows[0].name = "review".into();
+    state.resolve_cross_session_pick();
+    assert_eq!(state.focused_resource.as_ref(), Some(&target));
+    assert_eq!(state.workspace.windows.len(), 1);
+}
+
+fn wide_sidebar() -> SidebarReservation {
+    SidebarReservation {
+        edge: crate::attach::paint::SidebarEdge::Left,
+        width: 32,
+    }
+}
+
+fn done_reviewer() -> AgentRecord {
+    AgentRecord {
+        name: "reviewer".into(),
+        state: phux_client::agent_meta::AgentMetaState::Done,
+        ..AgentRecord::default()
+    }
+}
+
+fn seed_local_agent(state: &mut SessionLoop, id: &ResourceId, record: &AgentRecord) {
+    if !state.workspace.windows.iter().any(|window| {
+        window
+            .state
+            .tree
+            .as_ref()
+            .is_some_and(|tree| crate::layout::leaves(tree).contains(id))
+    }) {
+        state.workspace.add_window("agent".to_owned(), id.clone());
+    }
+    state
+        .panes
+        .entry(id.clone())
+        .or_insert_with(|| PaneSlot::new_with_size(80, 24).unwrap());
+    state.agent_meta.records.insert(id.clone(), record.clone());
+}
+
+fn agent_line(bytes: &[u8], name: &str) -> String {
+    painted_sidebar_text(bytes)
+        .lines()
+        .find(|line| line.contains(name))
+        .unwrap_or("")
+        .to_owned()
+}
+
+fn assert_reviewed_row(bytes: &[u8], name: &str) {
+    let screen = painted_sidebar_text(bytes);
+    let line = screen
+        .lines()
+        .find(|line| line.contains(name))
+        .unwrap_or("");
+    assert!(
+        line.contains(name),
+        "missing {name} (bytes={}):\n{screen}",
+        bytes.len()
+    );
+    assert!(
+        line.contains('○'),
+        "reviewed {name} must quiet to a ring: {line}\n{screen}"
+    );
+    assert!(
+        !line.contains('◆'),
+        "reviewed {name} must not keep the unread diamond: {line}\n{screen}"
+    );
+}
+
+fn assert_unread_done_row(bytes: &[u8], name: &str) {
+    let line = agent_line(bytes, name);
+    assert!(line.contains(name), "missing {name}: {line}");
+    assert!(
+        line.contains('◆'),
+        "unreviewed done {name} must keep the diamond: {line}"
+    );
+}
+
+async fn loop_wide() -> (SessionLoop, Connection, Connection, Vec<u8>) {
+    let (mut state, client, server, out) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.viewport_dims = (100, 24);
+    (state, client, server, out)
+}
+
+async fn intercept_agent_get(
+    state: &mut SessionLoop,
+    client: &mut Connection,
+    request_id: u32,
+    id: &ResourceId,
+    record: &AgentRecord,
+) -> RepaintAccumulator {
+    let mut repaint = RepaintAccumulator::default();
+    state
+        .peers
+        .foreign_agent_pending
+        .insert(request_id, id.clone());
+    state
+        .intercept_peer_reply(
+            client,
+            FrameKind::MetadataValue {
+                request_id,
+                value: Some(record.encode()),
+            },
+            &mut repaint,
+        )
+        .await
+        .unwrap();
+    repaint
+}
+
+fn agent_broadcast(id: &ResourceId, record: &AgentRecord) -> FrameKind {
+    FrameKind::MetadataChanged {
+        scope: Scope::Resource(id.clone()),
+        key: phux_client::agent_meta::RESOURCE_AGENT_KEY.to_owned(),
+        value: Some(record.encode()),
+        actor: None,
+    }
+}
+
+/// Push the current projection into the painter and emit a chrome paint.
+/// Change detection is not the point: the tests need the glyphs the closed
+/// fleet would show, even when an identical GET correctly declined to dirty.
+fn snapshot_sidebar(state: &mut SessionLoop, out: &mut Vec<u8>, sidebar: SidebarReservation) {
+    out.clear();
+    let _ = state.refresh_chrome();
+    state.sidebar_painter.invalidate();
+    let mut repaint = RepaintAccumulator::default();
+    repaint.raise_chrome();
+    state.drain_repaint(out, Some(sidebar), &mut repaint);
+}
+
+/// phux-deya: A→B→A keeps an unchanged reviewed Done in the local queue,
+/// the peer queue, and the roster, with the fleet closed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {
+    let done_id = ResourceId::local(10);
+    let done = done_reviewer();
+    let sidebar = wide_sidebar();
+
+    let (mut session_a, _, _, _) = loop_wide().await;
+    seed_local_agent(&mut session_a, &done_id, &done);
+    session_a.focused_resource = Some(done_id.clone());
+    assert!(
+        session_a
+            .review
+            .observe_record(&done_id, Some(&done), Some(&done_id))
+    );
+    assert!(session_a.review.is_seen(&done_id));
+
+    let (mut session_b, mut client, _server, mut out) = loop_wide().await;
+    session_b.set_review(std::mem::take(&mut session_a.review));
+    seed_cached_peer(&mut session_b, &done_id);
+    assert_eq!(
+        session_b.focused_resource.as_ref(),
+        Some(&ResourceId::local(1))
+    );
+
+    let _ = intercept_agent_get(&mut session_b, &mut client, 900, &done_id, &done).await;
+    assert!(session_b.peers.foreign_agents.contains_key(&done_id));
+    assert!(session_b.peers.chrome_dirty);
+    assert!(session_b.review.is_seen(&done_id));
+    snapshot_sidebar(&mut session_b, &mut out, sidebar);
+    assert_reviewed_row(&out, "reviewer");
+    assert_eq!(session_b.sidebar_painter.click_targets().counts.roster, 2);
+
+    let mut repaint = intercept_agent_get(&mut session_b, &mut client, 901, &done_id, &done).await;
+    assert!(!session_b.peers.chrome_dirty);
+    out.clear();
+    session_b.drain_repaint(&mut out, Some(sidebar), &mut repaint);
+    assert!(out.is_empty(), "an identical GET must emit no bytes");
+    assert!(!session_b.refresh_chrome());
+    assert!(session_b.review.is_seen(&done_id));
+
+    let (mut session_a2, mut client, _server_a2, mut out) = loop_wide().await;
+    session_a2.set_review(std::mem::take(&mut session_b.review));
+    seed_local_agent(&mut session_a2, &done_id, &done);
+    snapshot_sidebar(&mut session_a2, &mut out, sidebar);
+    assert_reviewed_row(&out, "reviewer");
+
+    session_a2.agent_meta.pending.insert(42, done_id.clone());
+    let mut repaint = RepaintAccumulator::default();
+    session_a2
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            Some(sidebar),
+            FrameKind::MetadataValue {
+                request_id: 42,
+                value: Some(done.encode()),
+            },
+            true,
+            &mut repaint,
+        )
+        .await
+        .unwrap();
+    out.clear();
+    session_a2.drain_repaint(&mut out, Some(sidebar), &mut repaint);
+    assert!(out.is_empty(), "an identical local GET must emit no bytes");
+    assert!(session_a2.review.is_seen(&done_id));
+}
+
+/// A genuine change while the pane is unfocused re-arms unread, including
+/// after a session-loop rebuild.
+#[tokio::test(flavor = "current_thread")]
+async fn a_change_while_away_rearms_unread_done() {
+    let done_id = ResourceId::local(10);
+    let done = done_reviewer();
+    let sidebar = wide_sidebar();
+    let (mut state, mut client, _server, mut out) = loop_wide().await;
+    state
+        .review
+        .observe_record(&done_id, Some(&done), Some(&done_id));
+    seed_cached_peer(&mut state, &done_id);
+    let mut repaint = intercept_agent_get(&mut state, &mut client, 900, &done_id, &done).await;
+    assert!(state.review.is_seen(&done_id));
+
+    let working = AgentRecord {
+        state: phux_client::agent_meta::AgentMetaState::Working,
+        ..done.clone()
+    };
+    out.clear();
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            Some(sidebar),
+            agent_broadcast(&done_id, &working),
+            true,
+            &mut repaint,
+        )
+        .await
+        .unwrap();
+    assert!(!state.review.is_seen(&done_id));
+
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            Some(sidebar),
+            agent_broadcast(&done_id, &done_reviewer()),
+            true,
+            &mut repaint,
+        )
+        .await
+        .unwrap();
+    out.clear();
+    state.drain_repaint(&mut out, Some(sidebar), &mut repaint);
+    assert_unread_done_row(&out, "reviewer");
+    assert!(!state.review.is_seen(&done_id));
+}
+
+/// Confirmed death forgets the identity; dropping a peer from the live set
+/// (a locality change) must not.
+#[tokio::test(flavor = "current_thread")]
+async fn confirmed_death_clears_review_and_locality_does_not() {
+    let done_id = ResourceId::local(10);
+    let done = done_reviewer();
+    let (mut state, mut client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state
+        .review
+        .observe_record(&done_id, Some(&done), Some(&done_id));
+    seed_cached_peer(&mut state, &done_id);
+    state.peers.foreign_agents.insert(done_id.clone(), done);
+    prune_foreign_agents(
+        &mut state.peers.foreign_agents,
+        &mut state.peers.foreign_agent_subscribed,
+        &std::collections::HashSet::new(),
+    );
+    assert!(
+        state.review.is_seen(&done_id),
+        "pruning a peer cache is a locality change, not death"
+    );
+
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::ResourceClosed {
+                terminal_id: done_id.clone(),
+                exit_status: None,
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
+            },
+            true,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !state.review.is_seen(&done_id),
+        "ResourceClosed must forget the identity"
+    );
+}
+
+/// Kernel stream absence after a loop rebuild is not retraction; a later
+/// stream-derived completion still re-arms.
+#[tokio::test(flavor = "current_thread")]
+async fn stream_completion_invalidates_after_rebuild_without_retracting_on_gap() {
+    let pane = ResourceId::local(10);
+    let sid = ResourceId::local(99);
+    let sidebar = wide_sidebar();
+    let (mut session_a, _, _, _) = loop_wide().await;
+    seed_local_agent(&mut session_a, &pane, &done_reviewer());
+    session_a.review.observe_stream(
+        &pane,
+        &[(
+            sid.clone(),
+            phux_client::agent_meta::AgentMetaState::Working,
+        )],
+        Some(&pane),
+    );
+    assert!(session_a.review.is_seen(&pane));
+
+    let (mut session_b, _, _, mut out) = loop_wide().await;
+    session_b.set_review(std::mem::take(&mut session_a.review));
+    seed_local_agent(&mut session_b, &pane, &done_reviewer());
+    let _ = session_b.refresh_chrome();
+    assert!(
+        session_b.review.is_seen(&pane),
+        "stream absence after rebuild is not retraction"
+    );
+
+    assert!(session_b.review.observe_stream(
+        &pane,
+        &[(sid, phux_client::agent_meta::AgentMetaState::Done)],
+        None
+    ));
+    assert!(!session_b.review.is_seen(&pane));
+    snapshot_sidebar(&mut session_b, &mut out, sidebar);
+    assert_unread_done_row(&out, "reviewer");
 }

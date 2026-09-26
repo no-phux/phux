@@ -352,6 +352,9 @@ impl AgentSessionActor {
             ControlRequest::Signal { reply, .. } => {
                 let _ = reply.send(Err("an agent session has no process to signal".to_owned()));
             }
+            ControlRequest::ReplaceChild { reply, .. } => {
+                let _ = reply.send(Err("an agent session has no shell to replace".to_owned()));
+            }
             ControlRequest::LeaseChanged { .. }
             | ControlRequest::AgentRecordInvalidated
             | ControlRequest::BindAgentSession { .. }

@@ -160,3 +160,83 @@ fn default_and_environment_selected_stores_refuse_unsafe_permissions() {
         !String::from_utf8_lossy(&denied.stderr).contains(custom_minted["token"].as_str().unwrap())
     );
 }
+
+#[test]
+fn pair_ls_and_prune_report_credentials_without_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let tokens = dir.path().join("custom-credentials");
+
+    let minted = json(&phux(&state, Some(&tokens), &["pair", "--json"]));
+    let id = minted["credential_id"].as_str().unwrap().to_owned();
+    let secret = minted["token"].as_str().unwrap().to_owned();
+
+    let listed_output = phux(&state, Some(&tokens), &["pair", "ls", "--json"]);
+    let listed = json(&listed_output);
+    assert_eq!(listed["operation"], "ls");
+    assert_eq!(listed["credentials"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["credentials"][0]["id"], id);
+    assert_eq!(listed["credentials"][0]["revoked"], false);
+    assert!(listed["credentials"][0]["last_seen"].is_null());
+    let streams = format!(
+        "{}{}",
+        String::from_utf8_lossy(&listed_output.stdout),
+        String::from_utf8_lossy(&listed_output.stderr)
+    );
+    assert!(!streams.contains(&secret));
+
+    // Age the credential so prune --unused-for 1h selects it.
+    let mut store: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&tokens).unwrap()).unwrap();
+    store["credentials"][0]["issued_at"] = serde_json::json!("2000-01-01T00:00:00Z");
+    std::fs::write(&tokens, serde_json::to_vec_pretty(&store).unwrap()).unwrap();
+    std::fs::set_permissions(&tokens, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let pruned_output = phux(
+        &state,
+        Some(&tokens),
+        &["pair", "prune", "--unused-for", "1h", "--json"],
+    );
+    let pruned = json(&pruned_output);
+    assert_eq!(pruned["operation"], "prune");
+    assert_eq!(pruned["revoked"], serde_json::json!([id]));
+    assert!(!String::from_utf8_lossy(&pruned_output.stdout).contains(&secret));
+
+    let listed = json(&phux(&state, Some(&tokens), &["pair", "ls", "--json"]));
+    assert_eq!(listed["credentials"][0]["revoked"], true);
+}
+
+#[test]
+fn pair_replace_token_revokes_the_previous_bearer() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let tokens = dir.path().join("custom-credentials");
+
+    let first = json(&phux(&state, Some(&tokens), &["pair", "--json"]));
+    let old = first["token"].as_str().unwrap().to_owned();
+    let old_id = first["credential_id"].as_str().unwrap().to_owned();
+
+    let second = json(&phux(
+        &state,
+        Some(&tokens),
+        &["pair", "--json", "--replace-token", &old],
+    ));
+    let new = second["token"].as_str().unwrap().to_owned();
+    assert_ne!(old, new);
+    assert_ne!(old_id, second["credential_id"].as_str().unwrap());
+
+    let listed = json(&phux(&state, Some(&tokens), &["pair", "ls", "--json"]));
+    let rows = listed["credentials"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let old_row = rows.iter().find(|row| row["id"] == old_id).unwrap();
+    assert_eq!(old_row["revoked"], true);
+    let new_row = rows
+        .iter()
+        .find(|row| row["id"] == second["credential_id"])
+        .unwrap();
+    assert_eq!(new_row["revoked"], false);
+
+    let store = phux_server::auth::TokenStore::load(&tokens).unwrap();
+    assert!(!store.verify(&bearer(&old)));
+    assert!(store.verify(&bearer(&new)));
+}

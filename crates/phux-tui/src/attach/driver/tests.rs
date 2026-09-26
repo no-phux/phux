@@ -3,7 +3,7 @@
 //! and the chrome-under-overlay probes.
 #![allow(clippy::expect_used, reason = "tests")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self};
 use std::path::Path;
 use std::time::Duration;
@@ -660,8 +660,16 @@ fn apply_foreign_agent_reply_caches_clears_and_survives_garbage() {
         state: AgentMetaState::Working,
         ..AgentRecord::default()
     };
-    apply_foreign_agent_reply(&mut cache, id.clone(), Some(&record.encode()));
+    assert!(apply_foreign_agent_reply(
+        &mut cache,
+        id.clone(),
+        Some(&record.encode())
+    ));
     assert_eq!(cache.get(&id).map(|r| r.name.as_str()), Some("packer"));
+    assert!(
+        !apply_foreign_agent_reply(&mut cache, id.clone(), Some(&record.encode())),
+        "an identical GET must not report a cache change"
+    );
 
     // Garbage (no non-empty `name`) clears the stale entry.
     apply_foreign_agent_reply(&mut cache, id.clone(), Some(b"not json"));
@@ -767,32 +775,30 @@ async fn peer_layout_keys_are_subscribed_not_just_read() {
     );
 }
 
-/// phux-k0cw: a satellite pane's metadata scope is normatively refused
-/// (`docs/spec/L3.md`), so subscribing to one earns an
-/// `UNSUPPORTED_SATELLITE_ROUTE` per sweep — errors the correlated-refusal
-/// intercept swallows silently, which is the worst kind of wire noise.
+/// ADR-0136: a satellite pane is subscribed for the agent record and the
+/// asked flag. A local pane is not asked for the asked key here; its ask
+/// still arrives as an event.
 #[tokio::test]
-async fn satellite_panes_are_never_subscribed() {
+async fn satellite_panes_subscribe_the_agent_allowlist() {
     let (client_stream, server_stream) = UnixStream::pair().expect("pair");
     let mut client = Connection::from_stream(client_stream);
     let mut server = Connection::from_stream(server_stream);
 
     let local = ResourceId::local(1);
     let satellite = ResourceId::satellite("prod-3", 2);
-    let mut ws = Workspace::single(local.clone());
-    ws.add_window("remote".to_owned(), satellite.clone());
 
     let mut next_request_id = 1;
     let mut pending = HashMap::new();
     let mut subscribed = std::collections::HashSet::new();
 
     let sent = async {
-        sync_foreign_agent_subscriptions(
+        sync_foreign_agent_ids(
             &mut client,
-            &ws,
+            vec![local.clone(), satellite.clone()],
             &mut next_request_id,
             &mut pending,
             &mut subscribed,
+            &mut HashMap::new(),
         )
         .await
         .expect("sweep sends");
@@ -815,17 +821,35 @@ async fn satellite_panes_are_never_subscribed() {
         "the local pane is subscribed: {frames:?}"
     );
     assert!(
-        !frames.iter().any(|f| matches!(
+        frames.iter().any(|f| matches!(
             f,
-            FrameKind::SubscribeMetadata { scope, .. }
-                | FrameKind::GetMetadata { scope, .. }
+            FrameKind::SubscribeMetadata { scope, key, .. }
                 if *scope == Scope::Resource(satellite.clone())
+                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
         )),
-        "a satellite pane is never asked for or subscribed: {frames:?}"
+        "the satellite agent record is subscribed: {frames:?}"
     );
     assert!(
-        !subscribed.contains(&satellite),
-        "and it never enters the send-once bookkeeping"
+        frames.iter().any(|f| matches!(
+            f,
+            FrameKind::GetMetadata { scope, key, .. }
+                if *scope == Scope::Resource(satellite.clone())
+                    && key == phux_client::agent_meta::RESOURCE_ASKED_KEY
+        )),
+        "the satellite asked flag is read: {frames:?}"
+    );
+    assert!(
+        subscribed.contains(&satellite),
+        "the satellite enters the send-once bookkeeping"
+    );
+    assert!(
+        !frames.iter().any(|f| matches!(
+            f,
+            FrameKind::GetMetadata { scope, key, .. }
+                if *scope == Scope::Resource(local.clone())
+                    && key == phux_client::agent_meta::RESOURCE_ASKED_KEY
+        )),
+        "a local pane's asked flag stays on the event stream: {frames:?}"
     );
 }
 
@@ -833,20 +857,15 @@ async fn satellite_panes_are_never_subscribed() {
 /// bounded to the live foreign pane set.
 #[test]
 fn prune_foreign_agents_retains_only_live_foreign_panes() {
-    use phux_protocol::ids::SessionId;
     let live = ResourceId::local(1);
     let stale = ResourceId::local(2);
     let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
     cache.insert(live.clone(), AgentRecord::default());
     cache.insert(stale.clone(), AgentRecord::default());
-    let mut subscribed: std::collections::HashSet<ResourceId> =
-        [live.clone(), stale.clone()].into_iter().collect();
+    let mut subscribed: HashSet<ResourceId> = [live.clone(), stale.clone()].into_iter().collect();
 
-    // One foreign layout holds only `live`.
-    let mut foreign_layouts: HashMap<SessionId, Workspace> = HashMap::new();
-    foreign_layouts.insert(SessionId::new(9), Workspace::single(live.clone()));
-
-    prune_foreign_agents(&mut cache, &mut subscribed, &foreign_layouts);
+    let live_set: HashSet<ResourceId> = HashSet::from([live.clone()]);
+    prune_foreign_agents(&mut cache, &mut subscribed, &live_set);
     assert!(
         cache.contains_key(&live),
         "a pane still in a layout survives"
@@ -864,10 +883,89 @@ fn prune_foreign_agents_retains_only_live_foreign_panes() {
         "a dead pane's subscription marker is dropped so a re-spawn re-subscribes"
     );
 
-    // No cached layouts at all evicts everything.
-    prune_foreign_agents(&mut cache, &mut subscribed, &HashMap::new());
-    assert!(cache.is_empty(), "no foreign layouts => no foreign agents");
+    // No live terminals at all evicts everything.
+    prune_foreign_agents(&mut cache, &mut subscribed, &HashSet::new());
+    assert!(cache.is_empty(), "no live terminals => no foreign agents");
     assert!(subscribed.is_empty());
+}
+
+/// phux-ah84: a CLI-created session has no persisted TUI layout, so the
+/// live set is the server graph. Pruning must not evict those records.
+#[test]
+fn prune_foreign_agents_keeps_graph_terminals_without_a_layout() {
+    let graph = ResourceId::local(10);
+    let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
+    cache.insert(graph.clone(), AgentRecord::default());
+    let mut subscribed: HashSet<ResourceId> = HashSet::from([graph.clone()]);
+    let live: HashSet<ResourceId> = HashSet::from([graph.clone()]);
+    prune_foreign_agents(&mut cache, &mut subscribed, &live);
+    assert!(cache.contains_key(&graph));
+    assert!(subscribed.contains(&graph));
+}
+
+/// phux-ah84: graph terminals are GET/SUBSCRIBEd even with no TUI layout.
+#[tokio::test]
+async fn graph_terminals_are_subscribed_without_a_layout() {
+    let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+    let mut client = Connection::from_stream(client_stream);
+    let mut server = Connection::from_stream(server_stream);
+
+    let local = ResourceId::local(10);
+    let satellite = ResourceId::satellite("prod-3", 10);
+    let mut next_request_id = 1;
+    let mut pending = HashMap::new();
+    let mut subscribed = HashSet::new();
+
+    let sent = async {
+        sync_foreign_agent_ids(
+            &mut client,
+            vec![local.clone(), satellite.clone(), local.clone()],
+            &mut next_request_id,
+            &mut pending,
+            &mut subscribed,
+            &mut HashMap::new(),
+        )
+        .await
+        .expect("sweep sends");
+        drop(client);
+    };
+    let collect = async {
+        let mut frames = Vec::new();
+        while let Ok(frame) = server.recv().await {
+            frames.push(frame);
+        }
+        frames
+    };
+    let ((), frames) = tokio::join!(sent, collect);
+
+    let agent_gets = frames
+        .iter()
+        .filter(|f| {
+            matches!(
+                f,
+                FrameKind::GetMetadata { scope, key, .. }
+                    if *scope == Scope::Resource(local.clone())
+                        && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
+            )
+        })
+        .count();
+    assert_eq!(agent_gets, 1, "the graph pane is fetched once: {frames:?}");
+    assert!(
+        frames.iter().any(|f| matches!(
+            f,
+            FrameKind::SubscribeMetadata { scope, .. } if *scope == Scope::Resource(local.clone())
+        )),
+        "the graph pane is subscribed: {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|f| matches!(
+            f,
+            FrameKind::SubscribeMetadata { scope, key, .. }
+                if *scope == Scope::Resource(satellite.clone())
+                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
+        )),
+        "a satellite graph pane is subscribed: {frames:?}"
+    );
 }
 
 #[test]
@@ -1386,11 +1484,13 @@ fn probe_window(name: &str, active: bool) -> WindowInfo {
         zoomed: false,
         attention: false,
         branch: None,
+        exited: None,
+        badge: None,
     }
 }
 
 /// The whole composited frame at a roomy viewport: padded tab strip,
-/// hints, session name and clock, all on one bar row.
+/// session name and clock, all on one bar row. No teaching strip.
 #[test]
 fn shipped_frame_at_a_roomy_viewport() {
     let windows = [
@@ -1400,18 +1500,17 @@ fn shipped_frame_at_a_roomy_viewport() {
     ];
     let rows = shipped_frame_rows((100, 12), &windows, None);
     let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1:nvim "), "{bar:?}");
-    assert!(bar.contains("s Sessions"), "{bar:?}");
-    assert!(bar.contains("S Settings"), "{bar:?}");
+    assert!(bar.contains(" 1 nvim "), "{bar:?}");
+    assert!(!bar.contains("s Sessions"), "{bar:?}");
+    assert!(!bar.contains("S Settings"), "{bar:?}");
     assert!(bar.contains("phux"), "{bar:?}");
     assert!(!bar.contains("switch"), "{bar:?}");
     assert!(rows.join("\n").contains(PROBE_PANE_TEXT), "{rows:?}");
 }
 
 /// The same frame on a phone-sized grid. This is the shape the
-/// responsive work exists for: the hints and the clock are gone and a
-/// `switch` chip has taken their place, while every tab that is shown
-/// is shown whole.
+/// responsive work exists for: the clock is gone and a `switch` chip has
+/// taken its place, while every tab that is shown is shown whole.
 #[test]
 fn shipped_frame_at_a_phone_sized_viewport() {
     let windows = [
@@ -1422,9 +1521,9 @@ fn shipped_frame_at_a_phone_sized_viewport() {
     ];
     let rows = shipped_frame_rows((46, 12), &windows, None);
     let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
+    assert!(bar.contains(" 1 nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains("switch"), "{bar:?}");
-    assert!(!bar.contains("Space palette"), "hints yield: {bar:?}");
+    assert!(!bar.contains("Space palette"), "no teaching strip: {bar:?}");
     assert!(bar.chars().count() <= 46, "row overran: {bar:?}");
     assert!(rows.join("\n").contains(PROBE_PANE_TEXT), "{rows:?}");
     insta::assert_snapshot!("shipped_frame_phone_sized", rows.join("\n"));
@@ -1444,9 +1543,9 @@ fn shipped_frame_when_the_tab_strip_must_collapse() {
     ];
     let rows = shipped_frame_rows((36, 10), &windows, None);
     let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
+    assert!(bar.contains(" 1 nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains('\u{203a}'), "hidden tabs are marked: {bar:?}");
-    assert!(!bar.contains("3:logs"), "the far tab is dropped: {bar:?}");
+    assert!(!bar.contains("3 logs"), "the far tab is dropped: {bar:?}");
     assert!(bar.contains("switch"), "affordance survives: {bar:?}");
     assert!(bar.chars().count() <= 36, "row overran: {bar:?}");
     insta::assert_snapshot!("shipped_frame_collapsed_tabs", rows.join("\n"));
@@ -1665,6 +1764,8 @@ fn paint_overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> V
         zoomed: false,
         attention: false,
         branch: None,
+        exited: None,
+        badge: None,
     }]);
 
     let mut overlays = OverlayState::new();
@@ -1880,14 +1981,14 @@ fn copy_mode_status_block_cell_count_differs_from_linear() {
 
     // Block: 3 rows * 4 band cols = 12 (and no underflow despite 5 > 2).
     assert!(
-        status_of(corners(true)).contains("12 cell(s)"),
+        status_of(corners(true)).contains("· 12 "),
         "block count must be span_rows * band_cols = 12"
     );
     // Linear: the bounding-box arithmetic saturates the reversed columns to
     // a width of 1, giving 3 rows * 1 = 3 — a different number, proving the
     // branch is taken and that the shared corners no longer panic.
     assert!(
-        status_of(corners(false)).contains("3 cell(s)"),
+        status_of(corners(false)).contains("· 3 "),
         "linear count must differ from the block count"
     );
 
@@ -1901,7 +2002,7 @@ fn copy_mode_status_block_cell_count_differs_from_linear() {
     };
     // 3 rows * band {2..=6} (5 wide) = 15.
     assert!(
-        status_of(ordered_block).contains("15 cell(s)"),
+        status_of(ordered_block).contains("· 15 "),
         "ordered block: 3 rows * 5 band cols = 15"
     );
 }

@@ -24,15 +24,18 @@ use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKerne
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost, SessionId};
-use phux_protocol::wire::frame::{AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, Scope};
+use phux_protocol::wire::frame::{
+    AttachTarget, CONFIG_RELOAD_KEY, Command, CommandResult, CommandValue, FrameKind,
+    SESSION_NAME_KEY, Scope,
+};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::attach::actions::{ParkedAdopt, PendingSplit, PendingWindow};
 use crate::attach::connection::{Connection, NegotiatedBootstrap};
 use crate::attach::input::StdinParser;
 use crate::attach::input_dispatch::{
-    DispatchCtx, DragGrab, ReattachTarget, dispatch_input_events, encode_layout_or_log,
-    sync_overlays_to_focused_pane,
+    DispatchCtx, DragGrab, PendingSessionRename, ReattachTarget, dispatch_input_events,
+    encode_layout_or_log, sync_overlays_to_focused_pane,
 };
 
 /// The QUIC connection keeps one of its 128 bidi streams for control.
@@ -59,14 +62,14 @@ use crate::settings::TuiSettings;
 use phux_client::agent_meta::AgentRecord;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
-use super::chrome::{mark_focused_seen, peer_inputs, refresh_window_chrome};
+use super::chrome::{mark_focused_seen, refresh_window_chrome};
 
 use super::config_ui::{
     apply_initial_notice, handle_config_reload, push_which_key_overlay, update_which_key_deadline,
 };
 use super::entry::{
-    LoopExit, detached_loop_exit, finish_onboarding_claim, finish_return_onboarding_after_paint,
-    seed_sidebar_enabled,
+    CarriedSidebar, LoopExit, detached_loop_exit, finish_onboarding_claim,
+    finish_return_onboarding_after_paint, seed_sidebar_enabled,
 };
 use super::main_loop::{
     FRAME_COALESCE_CAP, coalesce_defer_flags, frame_defers_paint, frame_paint_target,
@@ -80,8 +83,7 @@ use super::session_io::{
 };
 use super::subscriptions::{
     apply_foreign_agent_reply, apply_foreign_layout_reply, prune_foreign_agents,
-    sync_agent_meta_subscriptions, sync_foreign_agent_subscriptions,
-    sync_foreign_layout_subscriptions,
+    sync_agent_meta_subscriptions, sync_foreign_agent_ids, sync_foreign_layout_subscriptions,
 };
 use super::terminal::{
     desired_mouse_capture, sync_hover_tracking, sync_mouse_capture, terminal_reset_on_signal,
@@ -101,6 +103,23 @@ mod tests;
 /// satellite query by its relay deadline (30 s); the margin covers the
 /// aggregate's own work and the transport.
 const HOST_INVENTORY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(35);
+
+/// phux-lxov.1: how long a grey satellite pane waits before the driver asks
+/// the hub which hosts are back. Armed only while a pane is down, and
+/// anchored so a busy output stream cannot postpone the replay forever.
+const SATELLITE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Rename the matching cached session in place. Identity (`SessionId`) is
+/// unchanged; only the display label moves.
+fn apply_graph_rename(
+    sessions: &mut [phux_protocol::wire::info::SessionInfo],
+    current: &str,
+    new_name: &str,
+) {
+    if let Some(session) = sessions.iter_mut().find(|session| session.name == current) {
+        new_name.clone_into(&mut session.name);
+    }
+}
 
 /// phux-c2td.3: of the `SatelliteUnreachable` notices held while a host
 /// inventory was in flight, the ones its reply does not explain.
@@ -194,7 +213,7 @@ fn unanswered_spawns(
         .map(|(id, _)| *id);
     let splits = splits
         .iter()
-        .filter(|(_, split)| split.adopt.is_none())
+        .filter(|(_, split)| split.adopt.is_none() && split.open_existing.is_none())
         .map(|(id, _)| *id);
     windows.chain(splits).collect()
 }
@@ -222,6 +241,10 @@ const ESC_FLUSH_IDLE: Duration = Duration::from_millis(10);
 const SYNC_OUTPUT_WATCHDOG: Duration = Duration::from_secs(1);
 
 /// What one [`SessionLoop::step`] decided about the loop's future.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "LoopExit is the attach-ending payload; boxing it would scatter every match"
+)]
 pub(super) enum Step {
     /// Nothing ended; park on the wake-up sources again.
     Continue,
@@ -230,6 +253,10 @@ pub(super) enum Step {
 }
 
 /// What one handled server frame decided about the burst it arrived in.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "LoopExit is the attach-ending payload; boxing it would scatter every match"
+)]
 enum FrameStep {
     /// Frame handled; move on to the next frame in the burst.
     Done,
@@ -244,8 +271,8 @@ enum FrameStep {
 /// agent-fleet dashboard project from.
 ///
 /// One struct rather than ten parallel locals: every field here is written
-/// by the same peer sweep and read by the same [`peer_inputs`] projection,
-/// so they are refreshed, pruned, and reset together.
+/// by the same peer sweep and read by the same sidebar projection, so they
+/// are refreshed, pruned, and reset together.
 #[derive(Default)]
 struct PeerCaches {
     /// Identity of the serving machine, read once through the whoami key.
@@ -259,6 +286,12 @@ struct PeerCaches {
     /// this to list peer sessions; `focused_session` marks the row the
     /// client is currently attached to (excluded from the picker).
     sessions: Vec<phux_protocol::wire::info::SessionInfo>,
+    /// Windows from the same ATTACHED/`GET_STATE` graph, joined via
+    /// `WindowInfo::session_id`. The sidebar falls back to these when a
+    /// peer has no persisted TUI layout (phux-ah84).
+    windows: Vec<phux_protocol::wire::info::WindowInfo>,
+    /// Resources from the same graph, joined via `ResourceInfo::window_id`.
+    resources: Vec<phux_protocol::wire::info::ResourceInfo>,
     /// The session this client is attached to, once ATTACHED has named it.
     focused_session: Option<SessionId>,
     /// phux-foz.8: peer sessions' persisted layouts, fetched right after the
@@ -270,18 +303,19 @@ struct PeerCaches {
     foreign_layouts: HashMap<SessionId, Workspace>,
     /// In-flight peer-layout GETs, by request id.
     foreign_layout_pending: HashMap<u32, SessionId>,
-    /// phux-jpqd: the `phux.agent/v1` records of FOREIGN panes, so the
-    /// agent-fleet dashboard shows a peer session's agent glyph/state without
-    /// attaching there. Populated lazily: when a peer's layout lands
-    /// (`apply_foreign_layout_reply`), the driver fires one `GET_METADATA` per
-    /// `ResourceId` in that workspace on the pane's agent key, correlated
-    /// through `foreign_agent_pending`. Keyed by foreign terminal id; pruned
-    /// to the union of all cached foreign layouts' leaves on each fold so it
-    /// stays bounded. No subscription — a one-shot read, same lazy-query
-    /// shape as the foreign layouts above (ADR-0018 / ADR-0030).
+    /// phux-jpqd / phux-ah84: the `phux.agent/v1` records of FOREIGN panes,
+    /// so the agent-fleet dashboard and Agents list show a peer session's
+    /// agent glyph/state without attaching there. Populated from persisted
+    /// TUI layouts when they exist, otherwise from the ATTACHED/`GET_STATE`
+    /// window/resource graph. Keyed by foreign terminal id; pruned to the
+    /// live foreign terminal set on each fold so it stays bounded.
     foreign_agents: HashMap<ResourceId, AgentRecord>,
     /// In-flight foreign agent-record GETs, by request id.
     foreign_agent_pending: HashMap<u32, ResourceId>,
+    /// In-flight `phux.agent.asked/v1` GETs for satellite terminals (ADR-0136).
+    /// Kept off [`Self::foreign_agent_pending`] so the byte `1` is not parsed
+    /// as an agent record.
+    foreign_asked_pending: HashMap<u32, ResourceId>,
     /// phux-k0cw: which peer keys this connection has already subscribed to.
     /// Send-once bookkeeping, not teardown: L3 has no `UNSUBSCRIBE_METADATA`
     /// verb, so a subscription lives as long as the connection and re-sending
@@ -334,17 +368,22 @@ struct PeerCaches {
 impl PeerCaches {
     /// The peer-wide projection zones 1 and 3 of the sidebar strip render
     /// from.
-    fn inputs(&self) -> crate::attach::sidebar_zones::PeerInputs<'_> {
-        let mut inputs = peer_inputs(
-            &self.sessions,
-            self.focused_session,
-            &self.foreign_layouts,
-            &self.foreign_agents,
-            &self.foreign_attention,
-        );
-        inputs.serving_host = self.serving_host.as_deref();
-        inputs.hosts = &self.hosts;
-        inputs
+    fn inputs<'a>(
+        &'a self,
+        review: &'a crate::attach::review::ReviewIndex,
+    ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
+        crate::attach::sidebar_zones::PeerInputs {
+            serving_host: self.serving_host.as_deref(),
+            hosts: &self.hosts,
+            sessions: &self.sessions,
+            focused_session: self.focused_session,
+            windows: &self.windows,
+            resources: &self.resources,
+            foreign_layouts: &self.foreign_layouts,
+            foreign_agents: &self.foreign_agents,
+            foreign_attention: &self.foreign_attention,
+            review,
+        }
     }
 }
 
@@ -571,6 +610,9 @@ pub(super) struct SessionLoop {
     /// phux-c2td.20: kills in flight for satellite panes this client spawned
     /// whose attach was refused; their replies are consumed and logged.
     orphan_kills: super::orphans::OrphanKills,
+    /// phux-deya: per-identity review status. Connection-lifetime; a
+    /// session switch rebuilds pane slots but not this index.
+    review: crate::attach::review::ReviewIndex,
     /// phux-c2td.25: did the server advertise
     /// [`ServerFeature::ConditionalKill`](phux_protocol::caps::ServerFeature::ConditionalKill)?
     /// Set, a bound stray satellite pane is retried through
@@ -585,6 +627,14 @@ pub(super) struct SessionLoop {
     /// the kill seam; the `ResourceClosed` arm drains them to suppress the
     /// pane-exit notice for a death the user themselves ordered.
     expected_closes: HashSet<ResourceId>,
+    /// `request_id` -> the Terminal a command this client sent named, for the
+    /// commands whose refusal is authoritative about that Terminal's
+    /// existence (`KILL_RESOURCE` from kill-pane / kill-window,
+    /// `ATTACH_RESOURCE` for a layout leaf discovered at attach). A
+    /// `TERMINAL_NOT_FOUND` reply folds the leaf out: no `RESOURCE_CLOSED` is
+    /// ever broadcast for a resource the server does not have, so the refusal
+    /// is the only evidence a stale leaf is stale.
+    pending_resource_ops: HashMap<u32, ResourceId>,
     /// ADR-0040 (phux-3ert): the structured agent-identity index. Each pane
     /// gets a one-shot `GET_METADATA` + a live `SUBSCRIBE_METADATA` on
     /// `phux.agent/v1` (see `sync_agent_meta_subscriptions`); decoded records
@@ -637,6 +687,10 @@ pub(super) struct SessionLoop {
     /// `toggle-sidebar`. Only the toggle is carried across a session switch:
     /// the strip's width and edge stay pure config, re-derived per entry.
     sidebar_enabled: bool,
+    /// `[sidebar] width` as this entry's config load read it, before any
+    /// carried or dragged width. A switch carries the live width only when
+    /// it differs, so an untouched strip keeps following the config.
+    configured_sidebar_width: u16,
     /// Track the current outer-terminal viewport so the painter knows
     /// which row is "bottom". Initialized to a sensible default and
     /// updated by SIGWINCH; the server doesn't drive client-side
@@ -647,8 +701,13 @@ pub(super) struct SessionLoop {
     /// on the same SIGWINCH edge — a monitor change can move the window to
     /// a display with a different cell size (phux-yyex).
     cell_px_dims: (u16, u16),
-    /// The attached session's name, from ATTACHED.
+    /// The attached session's name, from ATTACHED and confirmed rename broadcasts.
     session_name: String,
+    /// In-flight `rename-session` waiting on its `GET_STATE` barrier.
+    rename_pending: Option<PendingSessionRename>,
+    /// A rename refused by the shared policy before a write was sent.
+    /// Drained onto the status bar at the end of the input batch.
+    rename_notice: Option<String>,
     /// ADR-0105: whether the attached session is keep-empty, from ATTACHED
     /// and `phux.session.keep_empty/v1` broadcasts.
     keep_empty_session: bool,
@@ -660,6 +719,9 @@ pub(super) struct SessionLoop {
     /// phux-jpqd: the DFS leaf ordinal focused after the window select
     /// resolves — the pane half of a one-step cross-session pick.
     pending_pane: Option<usize>,
+    /// phux-ah84: authoritative pane identity focused after re-attach,
+    /// even when the destination has no persisted TUI layout yet.
+    pending_resource: Option<ResourceId>,
     /// The outer terminal's key/mouse decoder.
     parser: StdinParser,
     /// Predictive local echo (phux-9gw.1). State is updated alongside
@@ -745,6 +807,10 @@ pub(super) struct SessionLoop {
     /// fresher host inventory (opening the session picker). Drained after
     /// the dispatch batch into one `GET_STATE`.
     host_refresh_request: bool,
+    /// phux-lxov.1: when to next ask which down satellites are back. `None`
+    /// while every satellite pane is up, or while a host inventory is
+    /// already in flight. Anchored like [`Self::esc_deadline`].
+    satellite_probe_at: Option<tokio::time::Instant>,
     /// phux-c2td.3: a fresh host inventory landed, so a session picker that
     /// is open needs its rows rebuilt. Drained with the repaint, the same
     /// shape as the fleet dashboard's live refresh.
@@ -761,12 +827,13 @@ impl SessionLoop {
 
     /// Build every session-scoped local for one attach entry.
     ///
-    /// `carried_sidebar_enabled` is the window sidebar's on/off state carried
-    /// in from the previous entry when a `switch-session` drove this one;
-    /// `None` on the first attach — `[sidebar] enabled` seeds it, and a
+    /// `carried_sidebar` is the window sidebar's on/off state and width
+    /// carried in from the previous entry when a `switch-session` drove this
+    /// one; `None` on the first attach — `[sidebar]` seeds both, and a
     /// carried runtime value wins after that (see `seed_sidebar_enabled`).
     #[allow(
         clippy::too_many_lines,
+        clippy::too_many_arguments,
         reason = "single constructor keeps all session-loop ownership visible"
     )]
     pub(super) fn new(
@@ -776,13 +843,18 @@ impl SessionLoop {
         onboarding_claim: Option<AttachClaim>,
         initial_window: Option<usize>,
         initial_pane: Option<usize>,
-        carried_sidebar_enabled: Option<bool>,
+        initial_resource: Option<ResourceId>,
+        carried_sidebar: Option<CarriedSidebar>,
     ) -> Result<Self, AttachError> {
         let history_config = HistoryCacheConfig {
             request_max_bytes: negotiated.limits.max_history_page_bytes(),
             ..HistoryCacheConfig::default()
         };
-        let settings = TuiSettings::load_tolerant();
+        let mut settings = TuiSettings::load_tolerant();
+        let configured_sidebar_width = settings.sidebar.width;
+        if let Some(width) = carried_sidebar.and_then(|carried| carried.width) {
+            settings.sidebar.width = width;
+        }
         let server_features = negotiated.server_features;
         let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel::<PluginRunResult>();
         // phux-huhi: stamp the configured breakpoints once, before anything
@@ -809,6 +881,7 @@ impl SessionLoop {
             host_sessions_supported: server_features.contains(ServerFeature::HostSessions),
             whoami_supported: server_features.contains(ServerFeature::Whoami),
             host_refresh_request: false,
+            satellite_probe_at: None,
             session_picker_dirty: false,
             wants_state_sync,
             pending_attach_ready: None,
@@ -832,9 +905,11 @@ impl SessionLoop {
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
             orphan_kills,
+            review: crate::attach::review::ReviewIndex::new(),
             conditional_kill_supported,
             pending_directory: None,
             expected_closes: HashSet::new(),
+            pending_resource_ops: HashMap::new(),
             agent_meta: AgentMetaIndex::default(),
             vcs: VcsIndex::default(),
             sidebar_painter: SidebarPainter::new(settings.theme),
@@ -844,13 +919,16 @@ impl SessionLoop {
             attention_navigation: AttentionNavigation::default(),
             drag: None,
             mouse_optout: HashSet::new(),
+            configured_sidebar_width,
             sidebar_enabled: seed_sidebar_enabled(
-                carried_sidebar_enabled,
+                carried_sidebar.map(|carried| carried.enabled),
                 settings.sidebar.enabled,
             ),
             viewport_dims,
             cell_px_dims,
             session_name: String::new(),
+            rename_pending: None,
+            rename_notice: None,
             keep_empty_session: false,
             peers: PeerCaches {
                 sweep_pending: true,
@@ -858,6 +936,7 @@ impl SessionLoop {
             },
             pending_window: initial_window,
             pending_pane: initial_pane,
+            pending_resource: initial_resource,
             parser: StdinParser::new(),
             predict: PredictionState::new(predict_cfg, 80, 24),
             overlay: Overlay,
@@ -919,7 +998,10 @@ impl SessionLoop {
 
     /// The single chrome-refresh chokepoint, with this driver's inputs bound.
     fn refresh_chrome(&mut self) -> bool {
-        refresh_window_chrome(
+        let rows = crate::attach::agent_rows::agent_session_rows(&self.engine_kernel);
+        self.review
+            .observe_streams(&rows, self.focused_resource.as_ref());
+        let mut changed = refresh_window_chrome(
             self.settings.status_bar.as_mut(),
             &mut self.sidebar_painter,
             &self.workspace,
@@ -929,9 +1011,17 @@ impl SessionLoop {
             self.own_client_id,
             &self.agent_meta,
             &mut self.vcs,
-            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
-            self.peers.inputs(),
-        )
+            &rows,
+            self.peers.inputs(&self.review),
+        );
+        let (tab_drop, sidebar_drop) = self.drag.as_ref().map_or((None, None), |drag| {
+            (drag.tab_drop_at(), drag.sidebar_drop_at())
+        });
+        if let Some(status_bar) = self.settings.status_bar.as_mut() {
+            changed |= status_bar.set_drop_index(tab_drop);
+        }
+        changed |= self.sidebar_painter.set_drop_index(sidebar_drop);
+        changed
     }
 
     /// Commit attach onboarding once its notice has reached the render sink.
@@ -1116,7 +1206,7 @@ impl SessionLoop {
             self.own_client_id,
             &self.agent_meta,
             &mut self.vcs,
-            self.peers.inputs(),
+            self.peers.inputs(&self.review),
             self.viewport_dims,
             sidebar,
             &self.session_name,
@@ -1150,6 +1240,28 @@ impl SessionLoop {
             &mut self.next_request_id,
             &mut self.peers.foreign_layout_pending,
             &mut self.peers.foreign_layout_subscribed,
+        )
+        .await?;
+        // phux-ah84: agent watches must not wait for a persisted TUI layout.
+        // CLI-created sessions already appear in the ATTACHED graph.
+        let live =
+            crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs(&self.review));
+        prune_foreign_agents(
+            &mut self.peers.foreign_agents,
+            &mut self.peers.foreign_agent_subscribed,
+            &live,
+        );
+        self.peers.foreign_attention.retain(|id| live.contains(id));
+        self.peers
+            .foreign_asked_pending
+            .retain(|_, id| live.contains(id));
+        sync_foreign_agent_ids(
+            conn,
+            live.into_iter().collect(),
+            &mut self.next_request_id,
+            &mut self.peers.foreign_agent_pending,
+            &mut self.peers.foreign_agent_subscribed,
+            &mut self.peers.foreign_asked_pending,
         )
         .await?;
         // phux-c2td.3: the fleet's other half. Rides the same deferred
@@ -1241,10 +1353,17 @@ impl SessionLoop {
                 phux_protocol::wire::frame::CommandValue::State(snapshot),
             ) => {
                 self.peers.hosts = snapshot.hosts().to_vec();
-                if self.peers.sessions != snapshot.sessions {
+                let sessions_changed = self.peers.sessions != snapshot.sessions;
+                if sessions_changed {
                     self.peers.sessions.clone_from(&snapshot.sessions);
+                }
+                // Satellite terminals arrive on this inventory even when the
+                // session list is unchanged. Sweep only when the graph the
+                // sweep reads actually moved, so an identical reply stops.
+                if sessions_changed || self.snapshot_graph_changed(snapshot) {
                     self.peers.sweep_pending = true;
                 }
+                self.adopt_snapshot_graph(snapshot);
                 self.peers.chrome_dirty = true;
                 self.session_picker_dirty = true;
                 &self.peers.hosts
@@ -1263,6 +1382,141 @@ impl SessionLoop {
         self.peers.hosts_pending = None;
         self.peers.hosts_pending_since = None;
         std::mem::take(&mut self.peers.held_unreachable)
+    }
+
+    /// True when a snapshot carries windows or resources the sweep has not
+    /// already adopted. Empty lists are not a change: host-inventory replies
+    /// often omit the graph, and [`Self::adopt_snapshot_graph`] leaves the
+    /// previous one in place.
+    fn snapshot_graph_changed(
+        &self,
+        snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    ) -> bool {
+        (!snapshot.windows.is_empty() && self.peers.windows != snapshot.windows)
+            || (!snapshot.resources.is_empty() && self.peers.resources != snapshot.resources)
+    }
+
+    /// Cache windows/resources from a snapshot when it actually carries them.
+    /// Host-inventory tests often construct sessions-only snapshots; wiping
+    /// a previously folded ATTACHED graph would hide unvisited agents.
+    fn adopt_snapshot_graph(&mut self, snapshot: &phux_protocol::wire::info::SessionSnapshot) {
+        if !snapshot.windows.is_empty() {
+            self.peers.windows.clone_from(&snapshot.windows);
+        }
+        if !snapshot.resources.is_empty() {
+            self.peers.resources.clone_from(&snapshot.resources);
+        }
+    }
+
+    /// Fold windows/resources carried on an ATTACHED outcome.
+    fn fold_inventory(
+        &mut self,
+        inventory: Option<(
+            Vec<phux_protocol::wire::info::WindowInfo>,
+            Vec<phux_protocol::wire::info::ResourceInfo>,
+        )>,
+    ) {
+        let Some((windows, resources)) = inventory else {
+            return;
+        };
+        if !windows.is_empty() {
+            self.peers.windows = windows;
+        }
+        if !resources.is_empty() {
+            self.peers.resources = resources;
+        }
+    }
+
+    /// Apply a `phux.session.name/v1` broadcast to the cached graph and
+    /// (when it names this client's session) the status-bar name.
+    fn fold_session_rename(
+        &mut self,
+        outcome: &mut FrameOutcome,
+        repaint: &mut RepaintAccumulator,
+    ) {
+        let Some((current, new_name)) = outcome.session_rename.take() else {
+            return;
+        };
+        apply_graph_rename(&mut self.peers.sessions, &current, &new_name);
+        self.peers.chrome_dirty = true;
+        self.session_picker_dirty = true;
+        self.note_chrome_change(repaint);
+    }
+
+    /// The `GET_STATE` barrier after a local rename: the snapshot is
+    /// authoritative, so a refused write leaves the current name in place.
+    fn confirm_session_rename(&mut self, result: &CommandResult, repaint: &mut RepaintAccumulator) {
+        match result {
+            CommandResult::OkWith(CommandValue::State(snapshot)) => {
+                let Some(pending) = self.rename_pending.take() else {
+                    return;
+                };
+                self.peers.sessions.clone_from(&snapshot.sessions);
+                self.adopt_snapshot_graph(snapshot);
+                if let Some(id) = pending.session_id.or(self.peers.focused_session) {
+                    let roster: Vec<_> = snapshot
+                        .sessions
+                        .iter()
+                        .map(|session| phux_client::rename::NamedSession {
+                            id: session.id,
+                            name: session.name.as_str(),
+                        })
+                        .collect();
+                    if let Some(info) = snapshot.sessions.iter().find(|session| session.id == id) {
+                        self.session_name.clone_from(&info.name);
+                    }
+                    if let Some(reason) =
+                        phux_client::rename::barrier_verdict(&roster, id, &pending.new_name)
+                            .refusal_reason()
+                    {
+                        self.apply_notices(
+                            vec![Notice::warn(format!(
+                                "could not rename session to {}: {reason}",
+                                pending.new_name
+                            ))],
+                            repaint,
+                        );
+                    }
+                }
+                self.peers.chrome_dirty = true;
+                self.session_picker_dirty = true;
+                self.note_chrome_change(repaint);
+            }
+            CommandResult::Error { message, .. } => {
+                self.fail_session_rename(message, repaint);
+            }
+            _ => {
+                self.fail_session_rename("the server did not confirm the session rename", repaint);
+            }
+        }
+    }
+
+    /// Surface a pre-check refusal the input batch parked.
+    fn take_rename_notice(&mut self, now: std::time::Instant) -> bool {
+        let Some(line) = self.rename_notice.take() else {
+            return false;
+        };
+        if let Some(status) = self.settings.status_bar.as_mut() {
+            status.set_notice(Notice::warn(line), now)
+        } else {
+            tracing::warn!(line = %line, "session rename refused");
+            false
+        }
+    }
+
+    /// A refused or unanswered rename barrier: keep the current name.
+    fn fail_session_rename(&mut self, message: &str, repaint: &mut RepaintAccumulator) {
+        let pending = self.rename_pending.take();
+        let text = pending.as_ref().map_or_else(
+            || format!("could not rename session: {message}"),
+            |pending| {
+                format!(
+                    "could not rename session to {}: {message}",
+                    pending.new_name
+                )
+            },
+        );
+        self.apply_notices(vec![Notice::warn(text)], repaint);
     }
 
     /// phux-c2td.3: once a host-inventory request has waited past
@@ -1321,6 +1575,7 @@ impl SessionLoop {
             &mut self.pending_splits,
             &mut self.pending_windows,
             &mut self.expected_closes,
+            &mut self.pending_resource_ops,
             &mut self.agent_meta,
             self.overlays.is_active(),
             defer_paint,
@@ -1342,6 +1597,7 @@ impl SessionLoop {
             self.clear_delivery_fence_after_paint(terminal_id);
         }
         if let Some(terminal_id) = retired_terminal {
+            self.review.forget(&terminal_id);
             self.delivery_fence_paint_pending.remove(&terminal_id);
             if let Some(journal) = self.input_replay.as_ref() {
                 let reports = journal
@@ -1418,6 +1674,11 @@ impl SessionLoop {
             self.peers.sessions = list;
             self.peers.focused_session = Some(focused);
         }
+        if let Some((windows, resources)) = outcome.inventory {
+            self.peers.windows = windows;
+            self.peers.resources = resources;
+        }
+        self.resolve_cross_session_pick();
         // phux-k0cw.10: the peer sweep belongs HERE in reading order — this is
         // where the session graph it reads (`sessions` / `focused_session`) has
         // just been folded from the ATTACHED replay above — but it is issued from
@@ -1511,6 +1772,14 @@ impl SessionLoop {
         conn.send(&FrameKind::SubscribeMetadata {
             scope: Scope::Global,
             key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
+        })
+        .await?;
+        // phux-4s6o: watch session renames so the roster and status name
+        // follow `phux.session.name/v1` without a re-attach. The same
+        // subscription is how a peer learns a rename another client applied.
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: SESSION_NAME_KEY.to_owned(),
         })
         .await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
@@ -1783,7 +2052,11 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        if !mark_focused_seen(&mut self.panes, self.focused_resource.as_ref()) {
+        if !mark_focused_seen(
+            &mut self.panes,
+            &mut self.review,
+            self.focused_resource.as_ref(),
+        ) {
             return;
         }
         if self.refresh_chrome() {
@@ -1884,6 +2157,11 @@ impl SessionLoop {
                 .map(|since| since + SYNC_OUTPUT_WATCHDOG)
                 .min(),
         );
+        // phux-lxov.1: a down satellite pane probes host inventory on a
+        // fixed cadence. The deadline is set once and survives other arms,
+        // so pane output cannot starve the replay.
+        self.arm_satellite_probe(tokio::time::Instant::now());
+        let satellite_probe = sleep_until_or_pending(self.satellite_probe_at);
 
         tokio::select! {
             biased;
@@ -1946,6 +2224,15 @@ impl SessionLoop {
             // full-screen redraw.
             () = status_tick => {
                 self.on_status_tick(out, sidebar);
+                Ok(Step::Continue)
+            }
+
+            // phux-lxov.1: ask which grey satellite panes can be reattached.
+            // `request_host_inventory` is a no-op while one is in flight;
+            // the reply replays snapshots for hosts that came back.
+            () = satellite_probe => {
+                self.satellite_probe_at = None;
+                self.request_host_inventory(conn).await?;
                 Ok(Step::Continue)
             }
 
@@ -2099,8 +2386,13 @@ impl SessionLoop {
         if let Some(target) = self.switch_request.take() {
             return Ok(Step::Exit(LoopExit::SwitchTo {
                 target,
-                sidebar_enabled: self.sidebar_enabled,
+                sidebar: CarriedSidebar {
+                    enabled: self.sidebar_enabled,
+                    width: (self.settings.sidebar.width != self.configured_sidebar_width)
+                        .then_some(self.settings.sidebar.width),
+                },
                 orphan_kills: self.orphans_for_switch(),
+                review: std::mem::take(&mut self.review),
             }));
         }
         // Window changes still repaint to show the newly active window, but
@@ -2190,6 +2482,7 @@ impl SessionLoop {
             directory_support: self.directory_support,
             pending_directory: &mut self.pending_directory,
             expected_closes: &mut self.expected_closes,
+            pending_kills: &mut self.pending_resource_ops,
             overlays: &mut self.overlays,
             keybindings: self.settings.keybindings.as_ref(),
             theme: &self.settings.theme,
@@ -2198,13 +2491,16 @@ impl SessionLoop {
             host_refresh_request: &mut self.host_refresh_request,
             foreign_layouts: &self.peers.foreign_layouts,
             foreign_agents: &self.peers.foreign_agents,
+            foreign_attention: &self.peers.foreign_attention,
             focused_session: self.peers.focused_session,
             session_name: &mut self.session_name,
+            rename_pending: &mut self.rename_pending,
+            rename_notice: &mut self.rename_notice,
             switch_request: &mut self.switch_request,
             zoomed: &mut self.zoomed,
             sidebar,
             sidebar_enabled: &mut self.sidebar_enabled,
-            sidebar_width: self.settings.sidebar.width,
+            sidebar_width: &mut self.settings.sidebar.width,
             chrome: self.settings.chrome,
             sidebar_targets: &sidebar_targets,
             bar: self
@@ -2257,6 +2553,7 @@ impl SessionLoop {
                 tracing::warn!(line = %line, "acknowledged input outcome");
             }
         }
+        layout_changed |= self.take_rename_notice(now);
         Ok(layout_changed)
     }
 
@@ -2438,6 +2735,9 @@ impl SessionLoop {
             // AttachResource commands from the retired generation must not
             // open streams into it.
             self.pending_stream_binds.clear();
+            // Replies to the retired generation's commands can no longer be
+            // attributed; a stale entry would fold a live leaf.
+            self.pending_resource_ops.clear();
         }
         if let FrameKind::Error {
             request_id: Some(request_id),
@@ -2537,10 +2837,28 @@ impl SessionLoop {
             FrameKind::MetadataValue { request_id, value }
                 if self.peers.foreign_agent_pending.contains_key(&request_id) =>
             {
-                if let Some(id) = self.peers.foreign_agent_pending.remove(&request_id) {
-                    apply_foreign_agent_reply(&mut self.peers.foreign_agents, id, value.as_deref());
+                if let Some(id) = self.peers.foreign_agent_pending.remove(&request_id)
+                    && self.fold_foreign_agent(&id, value.as_deref())
+                {
                     self.peers.chrome_dirty = true;
                     repaint.raise_fleet();
+                }
+                Ok(None)
+            }
+            FrameKind::MetadataValue { request_id, value }
+                if self.peers.foreign_asked_pending.contains_key(&request_id) =>
+            {
+                if let Some(id) = self.peers.foreign_asked_pending.remove(&request_id) {
+                    let asked = value.as_deref() == Some(b"1");
+                    let changed = if asked {
+                        self.peers.foreign_attention.insert(id)
+                    } else {
+                        self.peers.foreign_attention.remove(&id)
+                    };
+                    if changed {
+                        self.peers.chrome_dirty = true;
+                        repaint.raise_fleet();
+                    }
                 }
                 Ok(None)
             }
@@ -2562,10 +2880,12 @@ impl SessionLoop {
                 request_id: Some(request_id),
                 ..
             } if self.peers.foreign_layout_pending.contains_key(&request_id)
-                || self.peers.foreign_agent_pending.contains_key(&request_id) =>
+                || self.peers.foreign_agent_pending.contains_key(&request_id)
+                || self.peers.foreign_asked_pending.contains_key(&request_id) =>
             {
                 self.peers.foreign_layout_pending.remove(&request_id);
                 self.peers.foreign_agent_pending.remove(&request_id);
+                self.peers.foreign_asked_pending.remove(&request_id);
                 Ok(None)
             }
             other => Ok(Some(other)),
@@ -2580,6 +2900,27 @@ impl SessionLoop {
         repaint: &mut RepaintAccumulator,
     ) -> Result<Option<FrameKind>, AttachError> {
         match frame {
+            FrameKind::CommandResult { request_id, result }
+                if self
+                    .rename_pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.barrier == request_id) =>
+            {
+                self.confirm_session_rename(&result, repaint);
+                Ok(None)
+            }
+            FrameKind::Error {
+                request_id: Some(request_id),
+                message,
+                ..
+            } if self
+                .rename_pending
+                .as_ref()
+                .is_some_and(|pending| pending.barrier == request_id) =>
+            {
+                self.fail_session_rename(&message, repaint);
+                Ok(None)
+            }
             // phux-c2td.3: the reply to our own host-inventory GET_STATE.
             // Picker display data only, same intercept shape as the peer
             // replies above.
@@ -2590,6 +2931,7 @@ impl SessionLoop {
                 // forgets its strays; one it reached gets their kills.
                 let asked_at = self.peers.hosts_pending_since;
                 let answers = self.fold_host_inventory(&result, repaint);
+                self.replay_returned_satellites(conn, &answers).await?;
                 self.retry_after_inventory(conn, &answers, asked_at).await?;
                 Ok(None)
             }
@@ -2615,6 +2957,12 @@ impl SessionLoop {
                 code: phux_protocol::wire::frame::ErrorCode::SatelliteUnreachable,
                 message,
             } if self.peers.hosts_pending.is_some() => {
+                // phux-lxov.1: grey the panes now. The inventory reply still
+                // decides the notice, but the layout slot is already down.
+                if crate::attach::pane_state::note_satellite_unreachable(&mut self.panes, &message)
+                {
+                    self.peers.chrome_dirty = true;
+                }
                 self.peers.held_unreachable.push(message);
                 Ok(None)
             }
@@ -2650,34 +2998,36 @@ impl SessionLoop {
             return Ok(());
         };
         apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value);
-        self.reconcile_peer_layout(conn, session).await?;
+        self.reconcile_peer_agents(conn).await?;
         self.peers.chrome_dirty = true;
         repaint.raise_fleet();
         Ok(())
     }
 
     /// GET and broadcast layouts discover agent watches through the same path.
-    async fn reconcile_peer_layout(
-        &mut self,
-        conn: &mut Connection,
-        session: SessionId,
-    ) -> Result<(), AttachError> {
+    /// Live terminals come from a persisted TUI layout when one exists,
+    /// otherwise from the server session/resource graph (phux-ah84).
+    async fn reconcile_peer_agents(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
+        let live =
+            crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs(&self.review));
         prune_foreign_agents(
             &mut self.peers.foreign_agents,
             &mut self.peers.foreign_agent_subscribed,
-            &self.peers.foreign_layouts,
+            &live,
         );
-        if let Some(ws) = self.peers.foreign_layouts.get(&session) {
-            sync_foreign_agent_subscriptions(
-                conn,
-                ws,
-                &mut self.next_request_id,
-                &mut self.peers.foreign_agent_pending,
-                &mut self.peers.foreign_agent_subscribed,
-            )
-            .await?;
-        }
-        Ok(())
+        self.peers.foreign_attention.retain(|id| live.contains(id));
+        self.peers
+            .foreign_asked_pending
+            .retain(|_, id| live.contains(id));
+        sync_foreign_agent_ids(
+            conn,
+            live.into_iter().collect(),
+            &mut self.next_request_id,
+            &mut self.peers.foreign_agent_pending,
+            &mut self.peers.foreign_agent_subscribed,
+            &mut self.peers.foreign_asked_pending,
+        )
+        .await
     }
 
     /// Hand one frame to the server-frame handler and act on everything its
@@ -2734,6 +3084,7 @@ impl SessionLoop {
         self.settle_orphans(conn, &mut outcome, &answered).await?;
         let fleet_dirty = fleet_projection_dirty(&outcome);
         self.fold_peer_outcome(conn, &mut outcome, repaint).await?;
+        self.fold_session_rename(&mut outcome, repaint);
         self.finish_paint(outcome.status_bar_painted);
         self.resync_watches(conn, &mut outcome).await?;
         self.fold_chrome_and_notices(&mut outcome, repaint);
@@ -2809,6 +3160,12 @@ impl SessionLoop {
         for terminal_id in terminal_ids {
             let request_id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1);
+            // A leaf restored from persisted layout metadata can name a
+            // resource that died with a previous server. The refusal is the
+            // only way we ever learn that, so correlate it: otherwise the
+            // leaf paints a blank pane that no kill can remove.
+            self.pending_resource_ops
+                .insert(request_id, terminal_id.clone());
             if conn.multistream_enabled() {
                 self.track_pending_stream_bind(request_id, terminal_id.clone())?;
             }
@@ -2919,6 +3276,47 @@ impl SessionLoop {
     /// phux-c2td.23: a host inventory asked at `asked_at` could not list
     /// `answers.unreachable`, whose strays are forgotten, and reached
     /// `answers.reachable`, whose strays recorded before it asked are killed.
+    /// phux-lxov.1: an inventory reply is also the satellite-pane recovery
+    /// signal. Hosts it could not list stay grey in their layout slots.
+    /// Hosts it reached have their down flag cleared and are
+    /// `ATTACH_RESOURCE`d so the snapshot replays into the same leaf.
+    async fn replay_returned_satellites(
+        &mut self,
+        conn: &mut Connection,
+        answers: &HostAnswers,
+    ) -> Result<(), AttachError> {
+        let mut changed = false;
+        for host in &answers.unreachable {
+            changed |=
+                crate::attach::pane_state::mark_satellite_down(&mut self.panes, host.as_str());
+        }
+        let mut replay = Vec::new();
+        for host in &answers.reachable {
+            replay.extend(crate::attach::pane_state::satellite_panes_returned(
+                &mut self.panes,
+                host.as_str(),
+            ));
+        }
+        if changed || !replay.is_empty() {
+            self.peers.chrome_dirty = true;
+        }
+        self.attach_discovered_panes(conn, &replay).await
+    }
+
+    /// phux-lxov.1: arm [`SATELLITE_PROBE_INTERVAL`] while any satellite pane
+    /// is down and no host inventory is already in flight.
+    fn arm_satellite_probe(&mut self, now: tokio::time::Instant) {
+        if self.host_sessions_supported
+            && self.peers.hosts_pending.is_none()
+            && self.panes.values().any(|slot| slot.satellite_down)
+        {
+            self.satellite_probe_at
+                .get_or_insert(now + SATELLITE_PROBE_INTERVAL);
+        } else {
+            self.satellite_probe_at = None;
+        }
+    }
+
     async fn retry_after_inventory(
         &mut self,
         conn: &mut Connection,
@@ -2996,6 +3394,26 @@ impl SessionLoop {
         self.orphan_kills = kills;
     }
 
+    /// phux-deya: take over the review index an earlier entry on this
+    /// connection handed out at a session switch.
+    pub(super) fn set_review(&mut self, review: crate::attach::review::ReviewIndex) {
+        self.review = review;
+    }
+
+    /// Fold a foreign GET or broadcast into the fleet cache and the
+    /// connection-lifetime review index. Returns whether either actually
+    /// moved, so an identical read does not dirty chrome.
+    fn fold_foreign_agent(&mut self, id: &ResourceId, value: Option<&[u8]>) -> bool {
+        let cache_changed =
+            apply_foreign_agent_reply(&mut self.peers.foreign_agents, id.clone(), value);
+        let review_changed = self.review.observe_record(
+            id,
+            self.peers.foreign_agents.get(id),
+            self.focused_resource.as_ref(),
+        );
+        cache_changed || review_changed
+    }
+
     /// phux-c2td.23: hand the orphan record to the next loop entry. The
     /// switch drops every window and split still opening, and sends no kill
     /// on the way out (the hub would hold the re-attach behind it), so their
@@ -3039,14 +3457,13 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         let layout_folded = if let Some((session, value)) = outcome.foreign_layout.take() {
             apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value.as_deref());
-            self.reconcile_peer_layout(conn, session).await?;
+            self.reconcile_peer_agents(conn).await?;
             true
         } else {
             false
         };
         let agent_folded = if let Some((id, value)) = outcome.foreign_agent.take() {
-            apply_foreign_agent_reply(&mut self.peers.foreign_agents, id, value.as_deref());
-            true
+            self.fold_foreign_agent(&id, value.as_deref())
         } else {
             false
         };
@@ -3056,9 +3473,18 @@ impl SessionLoop {
             .foreign_attention
             .take()
             .is_some_and(|id| self.peers.foreign_attention.insert(id));
+        let cleared_folded = outcome
+            .foreign_attention_clear
+            .take()
+            .is_some_and(|id| self.peers.foreign_attention.remove(&id));
         // Lifecycle changes owe a real graph/layout sweep after this burst.
         self.peers.sweep_pending |= outcome.foreign_pane_set_dirty;
-        if layout_folded || agent_folded || asked_folded || outcome.foreign_pane_set_dirty {
+        if layout_folded
+            || agent_folded
+            || asked_folded
+            || cleared_folded
+            || outcome.foreign_pane_set_dirty
+        {
             self.peers.chrome_dirty = true;
             repaint.raise_fleet();
         }
@@ -3099,6 +3525,7 @@ impl SessionLoop {
         if let Some((list, focused)) = outcome.sessions.take() {
             self.peers.sessions = list;
             self.peers.focused_session = Some(focused);
+            self.fold_inventory(std::mem::take(&mut outcome.inventory));
             // phux-k0cw.10: a graph refresh in the SAME batch
             // that satisfies the deferred bootstrap sweep does
             // its whole job — same call, same arguments, and
@@ -3109,6 +3536,8 @@ impl SessionLoop {
             // nothing dedupes the GET).
             self.peers.sweep_pending = false;
             self.sweep_peer_layouts(conn).await?;
+        } else {
+            self.fold_inventory(std::mem::take(&mut outcome.inventory));
         }
         Ok(())
     }
@@ -3332,6 +3761,10 @@ impl SessionLoop {
     ) {
         if outcome.layout_replaced {
             self.on_layout_replaced(sidebar, repaint);
+        } else if outcome.layout_get_answered {
+            // No persisted layout: still resolve a resource-identity pick
+            // against the ATTACHED graph (phux-ah84).
+            self.resolve_cross_session_pick();
         }
         // ADR-0040: a `phux.agent/v1` record changed (GET
         // reply or subscribed broadcast). The window labels
@@ -3350,7 +3783,18 @@ impl SessionLoop {
         // fix are required: gate on `refresh_window_chrome`'s
         // change report, AND route to the in-place chrome
         // painter via the accumulator.
-        if outcome.agent_meta_changed {
+        // ADR-0040 + phux-deya: fold the Terminal even when the stored
+        // record was identical, so a repeat GET after a switch cannot
+        // re-arm a reviewed completion. Chrome paints only when the
+        // cache or the review index actually moved.
+        let review_changed = outcome.agent_meta_terminal.as_ref().is_some_and(|id| {
+            self.review.observe_record(
+                id,
+                self.agent_meta.records.get(id),
+                self.focused_resource.as_ref(),
+            )
+        });
+        if outcome.agent_meta_changed || review_changed {
             self.note_chrome_change(repaint);
         }
         // phux-foz.5: the `phux config reload` doorbell
@@ -3415,12 +3859,16 @@ impl SessionLoop {
         }
     }
 
-    /// phux-foz.8: a one-step cross-session window pick drove this attach;
-    /// the multi-window layout just landed, so resolve the deferred select
-    /// against it before the repaint. Out-of-range (a peer mutated the layout
-    /// between pick and load) keeps the session's restored focus with a
-    /// warning.
+    /// phux-foz.8 / phux-ah84: a one-step cross-session pick drove this
+    /// attach. Prefer a `ResourceId` from the server graph; otherwise apply
+    /// the layout-backed window/pane indices once a TUI workspace exists.
     fn resolve_cross_session_pick(&mut self) {
+        if let Some(id) = self.pending_resource.take() {
+            self.pending_window = None;
+            self.pending_pane = None;
+            self.focus_pending_resource(&id);
+            return;
+        }
         let Some(idx) = self.pending_window.take() else {
             return;
         };
@@ -3444,6 +3892,91 @@ impl SessionLoop {
         if let Some(fid) = self.focused_resource.as_ref() {
             reanchor_predict_to_pane(&mut self.predict, &self.panes, fid);
         }
+    }
+
+    /// Focus `id` in the current workspace, adopting a server-graph window
+    /// when the TUI layout does not yet name it.
+    fn focus_pending_resource(&mut self, id: &ResourceId) {
+        if self.focus_resource_in_workspace(id) {
+            return;
+        }
+        if !self.adopt_inventory_resource(id) {
+            tracing::warn!(
+                resource = %id,
+                "cross-session resource pick not in workspace or inventory; keeping restored focus",
+            );
+            return;
+        }
+        if !self.focus_resource_in_workspace(id) {
+            tracing::warn!(
+                resource = %id,
+                "cross-session resource pick adopted but not focusable",
+            );
+        }
+    }
+
+    fn focus_resource_in_workspace(&mut self, id: &ResourceId) -> bool {
+        let Some(idx) = self.workspace.windows.iter().position(|window| {
+            window
+                .state
+                .tree
+                .as_ref()
+                .is_some_and(|tree| crate::layout::leaves(tree).iter().any(|leaf| leaf == id))
+        }) else {
+            return false;
+        };
+        let _ = self.workspace.select(idx);
+        if let Some(ls) = self.workspace.active_window_mut() {
+            ls.focus = Some(id.clone());
+        }
+        self.focus_history
+            .transition(&mut self.focused_resource, Some(id.clone()));
+        reanchor_predict_to_pane(&mut self.predict, &self.panes, id);
+        true
+    }
+
+    fn adopt_inventory_resource(&mut self, id: &ResourceId) -> bool {
+        let Some(window) = self.peers.windows.iter().find(|window| {
+            self.peers
+                .focused_session
+                .is_none_or(|session| window.session_id == session)
+                && crate::attach::sidebar_zones::window_contains_terminal(
+                    window,
+                    &self.peers.resources,
+                    id,
+                )
+        }) else {
+            return false;
+        };
+        let layout = window
+            .layout
+            .clone()
+            .unwrap_or_else(|| crate::layout::LayoutNode::Leaf(id.clone()));
+        let name = window.name.clone();
+        let inventory_leaves = crate::layout::leaves(&layout);
+        if self.workspace.windows.len() == 1 {
+            let bootstrap = self.workspace.windows[0]
+                .state
+                .tree
+                .as_ref()
+                .map(crate::layout::leaves)
+                .unwrap_or_default();
+            if bootstrap.len() == 1 && inventory_leaves.iter().any(|leaf| bootstrap.contains(leaf))
+            {
+                let w = &mut self.workspace.windows[0];
+                w.name = name;
+                w.state.tree = Some(layout);
+                w.state.focus = Some(id.clone());
+                self.workspace.active = 0;
+                return true;
+            }
+        }
+        self.workspace.add_window(name, id.clone());
+        if let Some(ls) = self.workspace.active_window_mut() {
+            ls.tree = Some(layout);
+            ls.focus = Some(id.clone());
+        }
+        true
     }
 
     /// phux-jpqd: the pane half of a one-step cross-session pane pick — move
@@ -3652,6 +4185,7 @@ impl SessionLoop {
             &mut self.vcs,
             &self.peers.foreign_layouts,
             &self.peers.foreign_agents,
+            &self.peers.foreign_attention,
         );
         self.finish_paint(painted);
     }

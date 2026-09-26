@@ -5,6 +5,8 @@ target/
 target-*/
 # Release tarballs staged by scripts/dist.sh before upload.
 dist/
+# Local checkout of the no-phux/skills publish mirror.
+.skills-mirror/
 result
 result-*
 .direnv/

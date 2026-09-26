@@ -130,9 +130,14 @@ phux gen-reference-docs
 phux give
 phux host
 phux host add
+phux host attach
+phux host disable
+phux host enable
 phux host enroll
 phux host ls
+phux host rename
 phux host rm
+phux host show
 phux insert-pane
 phux kill
 phux launch
@@ -142,6 +147,8 @@ phux mcp
 phux move-pane
 phux new
 phux pair
+phux pair ls
+phux pair prune
 phux pair revoke
 phux pair rotate
 phux paste
@@ -261,7 +268,7 @@ fn short_help_is_a_small_start_here_view() {
 
 /// The groups the root inventory is laid out in, in page order. Every
 /// visible verb declares exactly one of them; the renderer prints the
-/// groups in this order because the verbs' `display_order` values are
+/// groups in this order because the verbs' `extra.display_order` values are
 /// numbered by group.
 const GROUPS: &[&str] = &[
     "Sessions", "Panes", "Agents", "Machines", "Maintain", "More",
@@ -274,6 +281,7 @@ fn every_visible_verb_declares_one_of_the_root_groups() {
             continue;
         }
         let heading = sub
+            .extra
             .help_heading
             .unwrap_or_else(|| panic!("`phux {}` declares no help_heading", sub.cmd.name));
         assert!(
@@ -282,7 +290,7 @@ fn every_visible_verb_declares_one_of_the_root_groups() {
             sub.cmd.name
         );
         assert!(
-            sub.display_order.is_some(),
+            sub.extra.display_order.is_some(),
             "`phux {}` declares no display_order; the groups would interleave",
             sub.cmd.name
         );

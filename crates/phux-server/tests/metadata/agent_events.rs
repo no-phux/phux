@@ -73,8 +73,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, FrameKind, StateScope, TYPE_ATTACHED,
+    AgentEvent, Command, CommandResult, FrameKind, SpawnResult, StateScope, TYPE_ATTACHED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -84,7 +85,7 @@ use tokio::time::timeout;
 use phux_server_testkit::tracing_capture::TracingCapture;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
-    recv_command_result, recv_typed, run_local, send_frame, spawn_server_with_seed_cmd,
+    recv_command_result, recv_typed, recv_until, run_local, send_frame, spawn_server_with_seed_cmd,
     wait_for_socket,
 };
 
@@ -147,6 +148,43 @@ async fn subscribe_then_release(stream: &mut UnixStream, request_id: u32, releas
     std::fs::write(release, b"go").expect("release the seed pane");
 }
 
+/// Last-shell natural exit is replaced in place (ADR-0131). Keep a sibling
+/// live so the seed can actually close and emit `pane_closed`.
+async fn spawn_live_sibling(stream: &mut UnixStream, request_id: u32) -> ResourceId {
+    send_frame(
+        stream,
+        &FrameKind::SpawnResource {
+            request_id,
+            group: GroupId::new(1),
+            command: Some(vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "sleep 600".to_owned(),
+            ]),
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: None,
+            owner_terminal: None,
+            agent_session: None,
+            initial_size: None,
+            resource: None,
+        },
+    )
+    .await;
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::ResourceSpawned {
+            request_id: got,
+            result,
+        } if got == request_id => match result {
+            SpawnResult::Ok(id) => Some(id),
+            other => panic!("sibling spawn failed: {other:?}"),
+        },
+        _ => None,
+    })
+    .await
+}
+
 /// Drain `EVENT` frames until `complete(&seen)` says every event the caller
 /// is waiting on has arrived, or `deadline` elapses. Non-`EVENT` frames
 /// (`ATTACHED`, `TERMINAL_SNAPSHOT`, `RESOURCE_OUTPUT`, `RESOURCE_CLOSED`,
@@ -198,7 +236,8 @@ fn subscribed_client_receives_title_bell_and_pane_closed_events() {
         let release = tmp.path().join("release");
 
         // `printf` is POSIX. `\033]2;...\007` is OSC 2 set-title; `\007`
-        // alone is the BEL. Then exit 0 -> PTY EOF -> pane_closed.
+        // alone is the BEL. Then exit 0 -> PTY EOF -> pane_closed, but only
+        // if this seed is not the session's last shell (ADR-0131).
         let cmd = gated_seed(
             &release,
             "printf '\\033]2;phux-watch\\007'; printf '\\007'; exit 0",
@@ -216,6 +255,7 @@ fn subscribed_client_receives_title_bell_and_pane_closed_events() {
             type_byte, TYPE_ATTACHED,
             "first server-to-client frame must be ATTACHED",
         );
+        let _sibling = spawn_live_sibling(&mut stream, 2).await;
 
         // ---- SUBSCRIBE_EVENTS (server-wide), barrier, release ----
         subscribe_then_release(&mut stream, 1, &release).await;
@@ -271,14 +311,24 @@ fn unattached_subscriber_receives_events() {
         let release = tmp.path().join("release");
 
         // A seed that stays silent until released, then exits -> PTY EOF ->
-        // pane_closed.
+        // pane_closed. A sibling must stay live first: last-shell natural
+        // exit is replaced in place (ADR-0131) and would never close.
         let cmd = gated_seed(&release, "exit 0");
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
 
+        let mut owner = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut owner, &attach_by_name("demo")).await;
+        let (type_byte, _attached) = recv_typed(&mut owner).await;
+        assert_eq!(
+            type_byte, TYPE_ATTACHED,
+            "SPAWN_RESOURCE requires an attached owner",
+        );
+        let _sibling = spawn_live_sibling(&mut owner, 2).await;
+
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
-        // NO ATTACH. Subscribe server-wide straight away, barrier, release.
+        // NO ATTACH on the watcher. Subscribe server-wide, barrier, release.
         subscribe_then_release(&mut stream, 1, &release).await;
 
         // `pane_closed` is the ONLY event this seed produces, so it is also
@@ -296,7 +346,7 @@ fn unattached_subscriber_receives_events() {
             "an unattached subscriber must still receive pane_closed; got {events:?}",
         );
 
-        drop(stream);
+        drop((stream, owner));
         join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

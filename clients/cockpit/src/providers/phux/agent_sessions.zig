@@ -139,6 +139,43 @@ pub const Entry = struct {
     state: []const u8 = "",
 };
 
+/// Agent identity declared on a Terminal resource. Unlike Session, this is
+/// descriptive metadata only: it has no independent resource id or evidence
+/// stream, and must never be projected as a durable AgentSession.
+pub const IdentityEntry = struct {
+    terminal: RemoteId,
+    provider_name: []const u8,
+    native_id: []const u8 = "",
+    state: []const u8 = "",
+};
+
+/// Owned copy of the agent facet on one Terminal resource.
+pub const Identity = struct {
+    terminal: RemoteId,
+    provider_name: []u8 = &.{},
+    native_id: []u8 = &.{},
+    state: []u8 = &.{},
+    provider_id: provider.ProviderId = .phux,
+
+    pub fn ref(identity: *const Identity) provider.TerminalRef {
+        return .{ .provider_id = identity.provider_id, .terminal_id = .{ .phux = identity.terminal } };
+    }
+
+    fn deinit(identity: *Identity, gpa: std.mem.Allocator) void {
+        gpa.free(identity.provider_name);
+        gpa.free(identity.native_id);
+        gpa.free(identity.state);
+        identity.* = .{ .terminal = identity.terminal, .provider_id = identity.provider_id };
+    }
+
+    fn matches(identity: *const Identity, entry: IdentityEntry) bool {
+        return identity.terminal.eql(entry.terminal) and
+            std.mem.eql(u8, identity.provider_name, entry.provider_name) and
+            std.mem.eql(u8, identity.native_id, entry.native_id) and
+            std.mem.eql(u8, identity.state, entry.state);
+    }
+};
+
 /// One projected agent session. Owns its text; borrows nothing.
 pub const Session = struct {
     id: RemoteId,
@@ -200,22 +237,34 @@ pub const Session = struct {
 /// streams have since established.
 pub const Registry = struct {
     sessions: std.ArrayListUnmanaged(Session) = .empty,
+    identities: std.ArrayListUnmanaged(Identity) = .empty,
     /// The coordinator the roster belongs to (`Host.provider_id`).
     provider_id: provider.ProviderId = .phux,
 
     pub fn deinit(registry: *Registry, gpa: std.mem.Allocator) void {
         registry.clear(gpa);
         registry.sessions.deinit(gpa);
+        registry.identities.deinit(gpa);
         registry.* = .{ .provider_id = registry.provider_id };
     }
 
     pub fn clear(registry: *Registry, gpa: std.mem.Allocator) void {
         for (registry.sessions.items) |*session| session.deinit(gpa);
         registry.sessions.items.len = 0;
+        registry.clearIdentities(gpa);
     }
 
     pub fn all(registry: *const Registry) []const Session {
         return registry.sessions.items;
+    }
+
+    pub fn allIdentities(registry: *const Registry) []const Identity {
+        return registry.identities.items;
+    }
+
+    pub fn clearIdentities(registry: *Registry, gpa: std.mem.Allocator) void {
+        for (registry.identities.items) |*identity| identity.deinit(gpa);
+        registry.identities.items.len = 0;
     }
 
     pub fn find(registry: *Registry, id: RemoteId) ?*Session {
@@ -234,6 +283,28 @@ pub const Registry = struct {
             if (!session.matchesEntry(entry)) return false;
         }
         return true;
+    }
+
+    pub fn identitiesMatch(registry: *const Registry, entries: []const IdentityEntry) bool {
+        if (registry.identities.items.len != entries.len) return false;
+        for (registry.identities.items, entries) |*identity, entry| {
+            if (!identity.matches(entry)) return false;
+        }
+        return true;
+    }
+
+    pub fn adoptIdentities(registry: *Registry, gpa: std.mem.Allocator, entries: []const IdentityEntry) Error!void {
+        if (entries.len > max_sessions) return error.Protocol;
+        var next: std.ArrayListUnmanaged(Identity) = .empty;
+        errdefer {
+            for (next.items) |*identity| identity.deinit(gpa);
+            next.deinit(gpa);
+        }
+        try next.ensureTotalCapacity(gpa, entries.len);
+        for (entries) |entry| next.appendAssumeCapacity(try copyIdentity(gpa, entry, registry.provider_id));
+        registry.clearIdentities(gpa);
+        registry.identities.deinit(gpa);
+        registry.identities = next;
     }
 
     /// Replace the roster from one catalog snapshot, all or nothing.
@@ -261,6 +332,24 @@ pub const Registry = struct {
         registry.clear(gpa);
         registry.sessions.deinit(gpa);
         registry.sessions = next;
+    }
+
+    /// Replace both views from one attached resource catalog. Prepare detected
+    /// identities before adopting sessions so allocation/protocol failure
+    /// leaves the previous published roster intact.
+    pub fn adoptCatalog(registry: *Registry, gpa: std.mem.Allocator, entries: []const Entry, identity_entries: []const IdentityEntry) Error!void {
+        var next: std.ArrayListUnmanaged(Identity) = .empty;
+        errdefer {
+            for (next.items) |*identity| identity.deinit(gpa);
+            next.deinit(gpa);
+        }
+        try next.ensureTotalCapacity(gpa, identity_entries.len);
+        for (identity_entries) |entry| next.appendAssumeCapacity(try copyIdentity(gpa, entry, registry.provider_id));
+
+        try registry.adopt(gpa, entries);
+        registry.clearIdentities(gpa);
+        registry.identities.deinit(gpa);
+        registry.identities = next;
     }
 
     /// Generation-less compatibility seam for existing registry consumers and
@@ -372,6 +461,17 @@ fn copyEntry(gpa: std.mem.Allocator, entry: Entry, provider_id: provider.Provide
         .catalog_state = State.parse(entry.state),
         .provider_id = provider_id,
     };
+}
+
+fn copyIdentity(gpa: std.mem.Allocator, entry: IdentityEntry, provider_id: provider.ProviderId) Error!Identity {
+    if (entry.provider_name.len == 0) return error.Protocol;
+    const provider_name = try copyText(gpa, entry.provider_name);
+    errdefer gpa.free(provider_name);
+    const native_id = try copyText(gpa, entry.native_id);
+    errdefer gpa.free(native_id);
+    const state = try copyText(gpa, entry.state);
+    errdefer gpa.free(state);
+    return .{ .terminal = entry.terminal, .provider_name = provider_name, .native_id = native_id, .state = state, .provider_id = provider_id };
 }
 
 fn copyText(gpa: std.mem.Allocator, value: []const u8) Error![]u8 {
@@ -886,4 +986,27 @@ test "catalog text is copied, bounded, and validated" {
     // A refused adoption leaves the last good roster standing.
     try testing.expectEqual(@as(usize, 1), registry.all().len);
     try testing.expectEqualStrings("claude", registry.all()[0].provider_name);
+}
+
+test "terminal agent identities are copied with catalog replacement and never become sessions" {
+    const gpa = testing.allocator;
+    var registry: Registry = .{};
+    defer registry.deinit(gpa);
+    var provider_name = "opencode".*;
+    try registry.adoptCatalog(gpa, &.{}, &.{.{ .terminal = localId(7), .provider_name = &provider_name, .state = "idle" }});
+    provider_name[0] = 'x';
+    try testing.expectEqual(@as(usize, 0), registry.all().len);
+    try testing.expectEqual(@as(usize, 1), registry.allIdentities().len);
+    try testing.expectEqualStrings("opencode", registry.allIdentities()[0].provider_name);
+    try testing.expectEqualStrings("idle", registry.allIdentities()[0].state);
+    try testing.expect(registry.allIdentities()[0].ref().terminal_id.phux.eql(localId(7)));
+
+    try testing.expectError(error.Protocol, registry.adoptCatalog(gpa, &.{.{ .id = localId(9) }}, &.{.{ .terminal = localId(8), .provider_name = "" }}));
+    try testing.expectEqual(@as(usize, 0), registry.all().len);
+    try testing.expectEqual(@as(usize, 1), registry.allIdentities().len);
+    try testing.expectEqualStrings("opencode", registry.allIdentities()[0].provider_name);
+
+    try registry.adoptCatalog(gpa, &.{.{ .id = localId(9), .parent = localId(7), .provider_name = "opencode", .state = "working" }}, &.{});
+    try testing.expectEqual(@as(usize, 1), registry.all().len);
+    try testing.expectEqual(@as(usize, 0), registry.allIdentities().len);
 }

@@ -1,0 +1,27 @@
+[package]
+name = "phux-agent-rules"
+description = "Agent-detection manifests: region extraction, rule compilation, and offline explanation."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Manifest predicates are data compiled at load (ADR-0046). `regex` compiles
+# each leaf once; evaluation is a linear scan. Already in Cargo.lock via
+# `tracing-subscriber`, so this names a crate the workspace already builds.
+regex = "1"
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# Region parsing tests deserialize the manifest spelling through JSON.
+# Already a workspace dependency; tests only.
+serde_json.workspace = true

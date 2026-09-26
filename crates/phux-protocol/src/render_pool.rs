@@ -61,10 +61,11 @@
 //! individual replica generations. Owning it would be wrong at both ends.
 //!
 //! This module carries no wire types and does not participate in protocol
-//! versioning. It lives in `phux-protocol` behind the `server` feature for the
-//! same reason [`crate::sgr`] and [`crate::kitty_replay`] do: it is a
-//! libghostty-backed render helper that both `phux-server` and `phux-client`
-//! need, and `phux-core` (the only other crate both could import) deliberately
+//! versioning. It lives in `phux-protocol` behind the `render-pool` feature
+//! (`libghostty-vt` only; the `server` feature enables it along with png and
+//! the rest of the libghostty surface). `sgr` and `kitty_replay` stay on
+//! `server`: they are the image/replay helpers this pool deliberately does
+//! not pull in. `phux-core` (the only other crate every walker could import)
 //! carries no `libghostty-vt` dependency. See [ADR-0086].
 //!
 //! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md

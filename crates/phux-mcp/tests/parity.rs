@@ -169,13 +169,6 @@ fn every_tool_names_its_verb_or_is_automation_only() {
                 assert!(!reason.is_empty(), "{} needs a reason", row.name);
             }
         }
-        if let Exec::InProcessMirror(reason) = row.exec {
-            assert!(
-                !reason.is_empty(),
-                "mirrored tool {} needs a reason",
-                row.name
-            );
-        }
         if let Exec::Cli(reason) = row.exec {
             assert!(
                 !reason.is_empty(),

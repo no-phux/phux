@@ -15,7 +15,7 @@ use libghostty_vt::{
     Error as SnapshotError, Terminal as GhosttyTerminal,
     screen::{CellContentTag, CellWide, TrackedGridRef},
     selection::{FormatOptions, Selection},
-    snapshot::{Decoder, FeedDecoder, FeedIncrementalDecoder},
+    snapshot::{CaptureEvent, CaptureOptions, Decoder, FeedDecoder, FeedIncrementalDecoder},
     terminal::{Point, PointCoordinate, PointSpace, ScrollViewport},
 };
 use phux_protocol::{
@@ -33,6 +33,8 @@ use crate::history::DocumentAnchorId;
 
 const SYNTH_SCROLLBACK_ROWS: usize = 10_000;
 const CONTINUATION_LIMIT: usize = 64 * 1024 * 1024;
+
+mod selection;
 
 /// Return the client bootstrap capabilities supported by the linked engine.
 ///
@@ -62,8 +64,20 @@ fn official_snapshot_available() -> bool {
         return false;
     }
     terminal.vt_write(b"ok");
-    let mut encoded = Vec::new();
-    terminal.encode_snapshot(&mut encoded).is_ok() && !encoded.is_empty()
+    let Ok(mut capture) = terminal.capture_snapshot(CaptureOptions {
+        max_record_bytes: 4096,
+        max_pages: 8,
+    }) else {
+        return false;
+    };
+    let mut buffer = vec![0; 4096];
+    loop {
+        match capture.next(&mut buffer) {
+            Ok(CaptureEvent::Ready { written }) => return written > 0,
+            Ok(CaptureEvent::Record { .. }) => {}
+            _ => return false,
+        }
+    }
 }
 
 /// Concrete, current-thread libghostty engine host.
@@ -821,6 +835,15 @@ impl EngineDocumentAdapter for GhosttyAdapter {
                 .with_trim(true),
         )?;
         Ok(formatted.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    fn format_selection_bounded(
+        &self,
+        replica: &Self::Replica,
+        selection: EngineDocumentSelection,
+        max_bytes: usize,
+    ) -> Result<super::BoundedSelectionText, Self::Error> {
+        selection::format_bounded(replica, selection, max_bytes)
     }
 }
 

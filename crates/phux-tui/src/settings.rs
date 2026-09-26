@@ -192,6 +192,7 @@ impl TuiSettings {
         // phux-foz.1: the attention chip rides the theme even on the error
         // line, as the attach-time seed always did.
         status_bar.set_attention_color(theme.attention);
+        status_bar.set_fill(theme.surface);
         Self {
             keybindings: None,
             resolver: None,
@@ -294,6 +295,7 @@ impl TuiSettings {
         // `attention` slot rather than a hardcoded SGR in the painter.
         if let Some(sb) = status_bar.as_mut() {
             sb.set_attention_color(theme.attention);
+            sb.set_fill(theme.surface);
         }
         Self {
             which_key: WhichKey {

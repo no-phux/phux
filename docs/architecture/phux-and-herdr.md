@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-16
 nav-order: 2
 ---
 
@@ -18,6 +18,10 @@ boundary in different places.
 This is not a feature scorecard. Features move too quickly, and both projects
 are active. The useful comparison is the boundary each system asks the rest of
 its architecture to preserve.
+
+For a short product decision, start with [When to use phux](../when-to-use.md#compared-with-herdr).
+For measured latency, throughput, and memory from one controlled host, see
+[Performance](../performance.md).
 
 ## herdr: the workspace is the product boundary
 

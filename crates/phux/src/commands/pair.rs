@@ -15,6 +15,16 @@ const DEFAULT_ROTATION_OVERLAP_SECONDS: i64 = 300;
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum PairAction {
+    /// List credentials in the store (id, minted, last seen, revoked).
+    Ls,
+    /// Revoke credentials unused for at least DURATION.
+    Prune {
+        /// How long a credential may sit idle before prune revokes it
+        /// (`30d`, `24h`, `90m`, or a bare number of seconds). Idle time is
+        /// `last_seen` when recorded, otherwise the mint time.
+        #[usage(long = "unused-for", value_name = "DURATION")]
+        unused_for: String,
+    },
     /// Replace a credential's bearer secret with a bounded overlap.
     Rotate {
         /// Stable credential ID printed when the credential was minted.
@@ -45,7 +55,7 @@ pub(crate) enum PairAction {
 /// encodes it). A device that opens or scans it gets the server URL, the
 /// cert fingerprint (MITM defense), and the token (credential) in one shot —
 /// no typing a 32-byte hex token by hand:
-/// `https://phux.phall.io/connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`,
+/// `https://phux.sh/connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`,
 /// where `url` is mandatory — without it the device has nothing to dial and
 /// rejects the link — so a link is only emitted when an address is known.
 ///
@@ -67,7 +77,17 @@ pub(crate) enum PairAction {
 /// update, never a silent edit here.
 ///
 /// [ADR-0031]: ../../../../docs/adr/0031-remote-consumer-auth-and-encryption.md
-const CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
+const CONNECT_URI_PREFIX: &str = "https://phux.sh/connect";
+
+/// The host this link used before the public site moved to `phux.sh`.
+///
+/// It is still accepted by [`parse_connect_link`], because a link already
+/// printed, screenshotted, or saved in a password manager must keep pairing a
+/// laptop via `--code`. It is no longer *emitted*: `phux.phall.io` only
+/// redirects to `phux.sh`, and a redirect is fatal to a Universal Link —
+/// iOS treats any 3xx on the declared domain as no association at all, which
+/// silently sent every scanned QR to a browser instead of the app.
+const LEGACY_HOST_CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
 
 /// The custom-scheme spelling of the same link. The query is identical;
 /// only the prefix differs. [`parse_connect_link`] accepts it so that a
@@ -78,7 +98,7 @@ const CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
 /// https form only.
 const LEGACY_CONNECT_URI_PREFIX: &str = "phux://connect";
 
-/// Build the `https://phux.phall.io/connect?...` one-tap link. `url` is a
+/// Build the `https://phux.sh/connect?...` one-tap link. `url` is a
 /// ws(s):// URL, `token` lowercase hex, and `fingerprint` colon-separated
 /// hex — all query-safe as-is (RFC 3986 `pchar` allows `:` and `/` in query
 /// strings, and the mobile parser reads them unencoded). `name` is free-form
@@ -167,6 +187,7 @@ pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
     let trimmed = link.trim().trim_matches(|c| c == '\'' || c == '"');
     let query = trimmed
         .strip_prefix(CONNECT_URI_PREFIX)
+        .or_else(|| trimmed.strip_prefix(LEGACY_HOST_CONNECT_URI_PREFIX))
         .or_else(|| trimmed.strip_prefix(LEGACY_CONNECT_URI_PREFIX))
         .and_then(|rest| rest.strip_prefix('?'))
         .ok_or_else(|| {
@@ -349,7 +370,7 @@ fn render_qr(payload: &str) -> Result<String, String> {
 ///
 /// When the server address is known (`--host`, or a detected overlay address
 /// plus the `PHUX_WS_ADDR` port), the credentials are also printed as an
-/// `https://phux.phall.io/connect` one-tap link, and `--qr` renders that
+/// `https://phux.sh/connect` one-tap link, and `--qr` renders that
 /// same link as a scannable terminal QR (ADR-0031's "shown as a QR" pairing
 /// idiom).
 #[allow(
@@ -369,6 +390,7 @@ pub(crate) fn run_pair(
     name: Option<String>,
     json: bool,
     migrate_legacy: bool,
+    replace_token: Option<String>,
 ) -> ExitCode {
     let tokens = tokens
         .or_else(|| std::env::var_os("PHUX_WS_TOKENS").map(PathBuf::from))
@@ -385,7 +407,7 @@ pub(crate) fn run_pair(
     let addresses = resolve_pair_addresses(host.as_deref());
     provision_pairing_certificate(&certificate, &addresses.advertised);
 
-    let Some(minted) = mint_pairing_credential(&tokens) else {
+    let Some(minted) = mint_pairing_credential(&tokens, replace_token.as_deref()) else {
         return ExitCode::FAILURE;
     };
     let token = minted.secret().to_owned();
@@ -524,10 +546,19 @@ fn provision_pairing_certificate(certificate: &CertificatePaths, advertised: &[S
 
 /// Mint a credential into the store, reporting a failure and the non-durable
 /// case on stderr. `None` means the caller must exit with a failure code.
+///
+/// When `replace_token` is set, any live credential matching that bearer is
+/// revoked in the same rewrite that mints the new one (`phux host add`
+/// re-enrollment).
 fn mint_pairing_credential(
     tokens: &std::path::Path,
+    replace_token: Option<&str>,
 ) -> Option<phux_server::auth::MintedCredential> {
-    let minted = match phux_server::auth::mint_token(tokens) {
+    let minted = replace_token.map_or_else(
+        || phux_server::auth::mint_token(tokens),
+        |previous| phux_server::auth::mint_token_replacing(tokens, previous),
+    );
+    let minted = match minted {
         Ok(minted) => minted,
         Err(err) => {
             eprintln!("phux pair: failed to mint token: {err}");
@@ -544,7 +575,7 @@ fn mint_pairing_credential(
 
 /// Print the credential ID and its secret for a human operator.
 fn print_credential_block(credential_id: &str, token: &str) {
-    outln!("Credential ID (use with `phux pair rotate|revoke`):");
+    outln!("Credential ID (use with `phux pair ls|prune|rotate|revoke`):");
     outln!("  {credential_id}");
     outln!();
     outln!("Pairing token (a secret — give it to the device once):");
@@ -624,79 +655,214 @@ fn print_connect_link(link: Option<&str>, qr: bool) {
 
 fn run_credential_action(tokens: &std::path::Path, action: PairAction, json: bool) -> ExitCode {
     match action {
+        PairAction::Ls => run_pair_ls(tokens, json),
+        PairAction::Prune { unused_for } => run_pair_prune(tokens, &unused_for, json),
         PairAction::Rotate {
             credential_id,
             overlap_seconds,
-        } => {
-            let overlap = chrono::Duration::seconds(overlap_seconds);
-            let rotated =
-                match phux_server::auth::rotate_credential(tokens, &credential_id, overlap) {
-                    Ok(rotated) => rotated,
-                    Err(error) => {
-                        eprintln!("phux pair rotate: {error}");
-                        return ExitCode::FAILURE;
-                    }
-                };
-            if !rotated.is_durable() {
-                eprintln!(
-                    "phux pair rotate: warning: rotation is active, but the store directory could not be synced; do not retry"
-                );
-            }
-            if json {
-                return print_action_json(&serde_json::json!({
-                    "schema_version": 1,
-                    "operation": "rotate",
-                    "credential_id": rotated.id,
-                    "generation": rotated.generation,
-                    "token": rotated.secret(),
-                    "overlap_seconds": overlap_seconds,
-                    "tokens_path": tokens.display().to_string(),
-                }));
-            }
-            outln!(
-                "Rotated credential {} to generation {}.",
-                rotated.id,
-                rotated.generation
-            );
-            outln!(
-                "Previous generations remain valid for at most {overlap_seconds} seconds and never beyond their absolute expiry."
-            );
-            outln!(
-                "Live sessions still on a previous generation are disconnected when that overlap ends; rotate with --overlap-seconds (up to 86400) to give devices longer to pick up the new token."
-            );
-            outln!();
-            outln!("Pairing token (a secret — give it to the device once):");
-            outln!("  {}", rotated.secret());
-            outln!();
-            outln!("Token written to {}", tokens.display());
-            ExitCode::SUCCESS
+        } => run_pair_rotate(tokens, &credential_id, overlap_seconds, json),
+        PairAction::Revoke { credential_id } => run_pair_revoke(tokens, &credential_id, json),
+    }
+}
+
+fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
+    let rows = match phux_server::auth::list_credentials(tokens) {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("phux pair ls: {error}");
+            return ExitCode::FAILURE;
         }
-        PairAction::Revoke { credential_id } => {
-            let outcome = match phux_server::auth::revoke_credential(tokens, &credential_id) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    eprintln!("phux pair revoke: {error}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            if !outcome.is_durable() {
-                eprintln!(
-                    "phux pair revoke: warning: revocation is active, but the store directory could not be synced; do not retry"
-                );
-            }
-            if json {
-                return print_action_json(&serde_json::json!({
-                    "schema_version": 1,
-                    "operation": "revoke",
-                    "credential_id": credential_id,
-                    "tokens_path": tokens.display().to_string(),
-                }));
-            }
-            outln!("Revoked credential {credential_id} for new connections.");
-            outln!("Established sessions remain active until disconnected.");
-            ExitCode::SUCCESS
+    };
+    if json {
+        let credentials: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "id": row.id,
+                    "issued_at": row.issued_at.to_rfc3339(),
+                    "last_seen": row.last_seen.map(|t| t.to_rfc3339()),
+                    "revoked": row.revoked,
+                    "generation": row.generation,
+                })
+            })
+            .collect();
+        return print_action_json(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "ls",
+            "tokens_path": tokens.display().to_string(),
+            "credentials": credentials,
+        }));
+    }
+    if rows.is_empty() {
+        outln!("No credentials in {}.", tokens.display());
+        return ExitCode::SUCCESS;
+    }
+    outln!(
+        "{:<36}  {:<20}  {:<20}  {}",
+        "ID",
+        "MINTED",
+        "LAST SEEN",
+        "STATUS"
+    );
+    for row in rows {
+        let minted = row.issued_at.format("%Y-%m-%d %H:%M:%S").to_string();
+        let seen = row.last_seen.map_or_else(
+            || "never".to_owned(),
+            |t| t.format("%Y-%m-%d %H:%M:%S").to_string(),
+        );
+        let status = if row.revoked { "revoked" } else { "active" };
+        outln!("{:<36}  {:<20}  {:<20}  {}", row.id, minted, seen, status);
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_pair_prune(tokens: &std::path::Path, unused_for: &str, json: bool) -> ExitCode {
+    let duration = match parse_unused_for(unused_for) {
+        Ok(duration) => duration,
+        Err(error) => {
+            eprintln!("phux pair prune: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let outcome = match phux_server::auth::prune_unused(tokens, duration) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            eprintln!("phux pair prune: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !outcome.is_durable() {
+        eprintln!(
+            "phux pair prune: warning: revocation is active, but the store directory could not be synced; do not retry"
+        );
+    }
+    if json {
+        return print_action_json(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "prune",
+            "unused_for": unused_for,
+            "revoked": outcome.revoked_ids,
+            "tokens_path": tokens.display().to_string(),
+        }));
+    }
+    if outcome.revoked_ids.is_empty() {
+        outln!("No unused credentials to prune in {}.", tokens.display());
+    } else {
+        outln!(
+            "Revoked {} unused credential(s):",
+            outcome.revoked_ids.len()
+        );
+        for id in &outcome.revoked_ids {
+            outln!("  {id}");
         }
     }
+    ExitCode::SUCCESS
+}
+
+fn run_pair_rotate(
+    tokens: &std::path::Path,
+    credential_id: &str,
+    overlap_seconds: i64,
+    json: bool,
+) -> ExitCode {
+    let overlap = chrono::Duration::seconds(overlap_seconds);
+    let rotated = match phux_server::auth::rotate_credential(tokens, credential_id, overlap) {
+        Ok(rotated) => rotated,
+        Err(error) => {
+            eprintln!("phux pair rotate: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !rotated.is_durable() {
+        eprintln!(
+            "phux pair rotate: warning: rotation is active, but the store directory could not be synced; do not retry"
+        );
+    }
+    if json {
+        return print_action_json(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "rotate",
+            "credential_id": rotated.id,
+            "generation": rotated.generation,
+            "token": rotated.secret(),
+            "overlap_seconds": overlap_seconds,
+            "tokens_path": tokens.display().to_string(),
+        }));
+    }
+    outln!(
+        "Rotated credential {} to generation {}.",
+        rotated.id,
+        rotated.generation
+    );
+    outln!(
+        "Previous generations remain valid for at most {overlap_seconds} seconds and never beyond their absolute expiry."
+    );
+    outln!(
+        "Live sessions still on a previous generation are disconnected when that overlap ends; rotate with --overlap-seconds (up to 86400) to give devices longer to pick up the new token."
+    );
+    outln!();
+    outln!("Pairing token (a secret — give it to the device once):");
+    outln!("  {}", rotated.secret());
+    outln!();
+    outln!("Token written to {}", tokens.display());
+    ExitCode::SUCCESS
+}
+
+fn run_pair_revoke(tokens: &std::path::Path, credential_id: &str, json: bool) -> ExitCode {
+    let outcome = match phux_server::auth::revoke_credential(tokens, credential_id) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            eprintln!("phux pair revoke: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !outcome.is_durable() {
+        eprintln!(
+            "phux pair revoke: warning: revocation is active, but the store directory could not be synced; do not retry"
+        );
+    }
+    if json {
+        return print_action_json(&serde_json::json!({
+            "schema_version": 1,
+            "operation": "revoke",
+            "credential_id": credential_id,
+            "tokens_path": tokens.display().to_string(),
+        }));
+    }
+    outln!("Revoked credential {credential_id} for new connections.");
+    outln!("Established sessions remain active until disconnected.");
+    ExitCode::SUCCESS
+}
+
+/// Parse `--unused-for`: `30d`, `24h`, `90m`, `45s`, or a bare number of seconds.
+fn parse_unused_for(raw: &str) -> Result<chrono::Duration, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("--unused-for needs a duration (e.g. 30d, 24h, 90m)".to_owned());
+    }
+    let split = raw.find(|c: char| !c.is_ascii_digit()).unwrap_or(raw.len());
+    let (digits, unit) = raw.split_at(split);
+    if digits.is_empty() {
+        return Err(format!("invalid --unused-for duration: {raw:?}"));
+    }
+    let value: i64 = digits
+        .parse()
+        .map_err(|_| format!("invalid --unused-for duration: {raw:?}"))?;
+    if value <= 0 {
+        return Err("--unused-for must be greater than zero".to_owned());
+    }
+    let seconds = match unit {
+        "" | "s" => value,
+        "m" => value.saturating_mul(60),
+        "h" => value.saturating_mul(3600),
+        "d" => value.saturating_mul(86400),
+        _ => {
+            return Err(format!(
+                "invalid --unused-for unit in {raw:?}; use s, m, h, or d"
+            ));
+        }
+    };
+    Ok(chrono::Duration::seconds(seconds))
 }
 
 fn print_action_json(document: &serde_json::Value) -> ExitCode {
@@ -836,7 +1002,7 @@ mod tests {
             &overlay,
             Some("0.0.0.0:8787"),
             Some("0.0.0.0:8788"),
-            Some("https://phux.phall.io/connect?url=wss://100.64.0.2:8787&token=deadbeef"),
+            Some("https://phux.sh/connect?url=wss://100.64.0.2:8787&token=deadbeef"),
             Path::new("/state/remote-tokens"),
             "credential-a",
             1,
@@ -849,7 +1015,7 @@ mod tests {
         assert_eq!(doc["quic_addr"], "0.0.0.0:8788");
         assert_eq!(
             doc["connect_link"],
-            "https://phux.phall.io/connect?url=wss://100.64.0.2:8787&token=deadbeef"
+            "https://phux.sh/connect?url=wss://100.64.0.2:8787&token=deadbeef"
         );
         assert_eq!(doc["tokens_path"], "/state/remote-tokens");
         assert_eq!(doc["credential_id"], "credential-a");
@@ -880,7 +1046,7 @@ mod tests {
         // url + token are the floor.
         assert_eq!(
             build_connect_link("wss://h:1", None, None, "deadbeef"),
-            "https://phux.phall.io/connect?url=wss://h:1&token=deadbeef"
+            "https://phux.sh/connect?url=wss://h:1&token=deadbeef"
         );
         // Full house, in the order the mobile parser documents.
         assert_eq!(
@@ -890,12 +1056,12 @@ mod tests {
                 Some("AB:CD"),
                 "deadbeef"
             ),
-            "https://phux.phall.io/connect?url=wss://10.0.0.2:8787&name=mini&fp=AB:CD&token=deadbeef"
+            "https://phux.sh/connect?url=wss://10.0.0.2:8787&name=mini&fp=AB:CD&token=deadbeef"
         );
         // No fingerprint — the fp param is absent, not empty.
         assert_eq!(
             build_connect_link("wss://h:1", Some("mini"), None, "deadbeef"),
-            "https://phux.phall.io/connect?url=wss://h:1&name=mini&token=deadbeef"
+            "https://phux.sh/connect?url=wss://h:1&name=mini&token=deadbeef"
         );
     }
 
@@ -906,7 +1072,7 @@ mod tests {
         assert_eq!(percent_encode("a&b=c"), "a%26b%3Dc");
         assert_eq!(
             build_connect_link("wss://h:1", Some("studio mini"), None, "aa"),
-            "https://phux.phall.io/connect?url=wss://h:1&name=studio%20mini&token=aa"
+            "https://phux.sh/connect?url=wss://h:1&name=studio%20mini&token=aa"
         );
     }
 
@@ -1062,7 +1228,7 @@ mod tests {
     #[test]
     fn connect_link_tolerates_unknown_query_keys() {
         let parsed = parse_connect_link(
-            "https://phux.phall.io/connect?url=wss://mini:8787&brand_new=42&token=tok",
+            "https://phux.sh/connect?url=wss://mini:8787&brand_new=42&token=tok",
         )
         .expect("parse");
         assert_eq!(parsed.token, "tok");
@@ -1092,6 +1258,27 @@ mod tests {
         assert_eq!(legacy_connect_link("https://example.com/connect?x=1"), None);
     }
 
+    /// A link minted before the site moved to `phux.sh` still pairs.
+    ///
+    /// The emitted host changed because `phux.phall.io` is a zone redirect,
+    /// and a redirect is fatal to a Universal Link. The *parser* must not
+    /// follow: a link already printed, screenshotted, or saved in a password
+    /// manager is still a valid credential, and `--code` has to take it.
+    #[test]
+    fn connect_link_still_parses_the_legacy_host() {
+        let parsed = parse_connect_link(
+            "https://phux.phall.io/connect?url=wss://10.0.0.2:8787&name=mini&fp=AB:CD&token=deadbeef",
+        )
+        .expect("a link on the pre-move host must still pair");
+        assert_eq!(parsed.url, "wss://10.0.0.2:8787");
+        assert_eq!(parsed.name.as_deref(), Some("mini"));
+        assert_eq!(parsed.cert_fingerprint.as_deref(), Some("AB:CD"));
+        assert_eq!(parsed.token, "deadbeef");
+
+        // But it is no longer what we emit.
+        assert!(build_connect_link("wss://h:1", None, None, "tok").starts_with("https://phux.sh/"));
+    }
+
     /// The two fields a dial cannot proceed without are rejected loudly,
     /// and a non-ws scheme is refused rather than dialed.
     #[test]
@@ -1101,22 +1288,17 @@ mod tests {
         assert!(parse_connect_link("https://example.com").is_err());
         assert!(parse_connect_link("https://example.com/connect?url=wss://m:1&token=t").is_err());
         assert!(parse_connect_link("https://phux.phall.io/other?url=wss://m:1&token=t").is_err());
-        assert!(
-            parse_connect_link("https://phux.phall.io/connected?url=wss://m:1&token=t").is_err()
-        );
+        assert!(parse_connect_link("https://phux.sh/connected?url=wss://m:1&token=t").is_err());
         // No token: grants no access.
-        assert!(parse_connect_link("https://phux.phall.io/connect?url=wss://mini:8787").is_err());
+        assert!(parse_connect_link("https://phux.sh/connect?url=wss://mini:8787").is_err());
         // No url: names no server.
-        assert!(parse_connect_link("https://phux.phall.io/connect?token=tok").is_err());
+        assert!(parse_connect_link("https://phux.sh/connect?token=tok").is_err());
         // A scheme the WebSocket dialer cannot use.
         assert!(
-            parse_connect_link("https://phux.phall.io/connect?url=quic://mini:8788&token=tok")
-                .is_err()
+            parse_connect_link("https://phux.sh/connect?url=quic://mini:8788&token=tok").is_err()
         );
         // Empty values are the same as absent, under either prefix.
-        assert!(
-            parse_connect_link("https://phux.phall.io/connect?url=wss://mini:8787&token=").is_err()
-        );
+        assert!(parse_connect_link("https://phux.sh/connect?url=wss://mini:8787&token=").is_err());
         assert!(parse_connect_link("phux://connect?url=wss://mini:8787&token=").is_err());
     }
 }

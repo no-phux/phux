@@ -68,7 +68,7 @@ fn sidebar_row_text(frame: &RenderedFrame, row: u16, width: u16) -> String {
 
 /// `true` when any sidebar row of `frame` carries the fixture branch.
 fn frame_shows_branch(frame: &RenderedFrame) -> bool {
-    (0..frame.rows).any(|row| sidebar_row_text(frame, row, 20).contains(BRANCH))
+    (0..frame.rows).any(|row| sidebar_row_text(frame, row, frame.cols).contains(BRANCH))
 }
 
 #[test]

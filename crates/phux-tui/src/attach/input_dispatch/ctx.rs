@@ -1,5 +1,5 @@
 //! The mutable dispatch context (`DispatchCtx`) and the in-flight
-//! divider-drag state (`DragGrab`).
+//! chrome-drag state (`DragGrab`: dividers, the sidebar edge, window tabs).
 
 //! Input dispatcher: translates parser-emitted events into wire frames
 //! or layout-action effects.
@@ -111,6 +111,14 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// id and suppresses the pane-exit notice — the user ordered that
     /// death, so reporting it would be noise.
     pub expected_closes: &'a mut HashSet<ResourceId>,
+    /// `request_id` -> the Terminal a `KILL_RESOURCE` this client sent
+    /// named. [`apply_action_effects`] parks them at the kill-dispatch seam;
+    /// `handle_server_frame` drains the entry when the reply lands. A
+    /// `TerminalNotFound` refusal means the resource was already gone, so
+    /// no `RESOURCE_CLOSED` will ever arrive for it and the layout leaf has
+    /// to be folded out on the strength of the refusal alone — otherwise a
+    /// pane left behind by a dead resource can never be closed.
+    pub pending_kills: &'a mut HashMap<u32, ResourceId>,
     /// phux-5ke.4: overlay stack. When non-empty the dispatcher routes
     /// key events to the active overlay (no resolver, no predict, no
     /// pane forwarding) and discovery actions push onto it.
@@ -161,23 +169,32 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// pane with no entry renders `?`/"no agent" (no live subscription, so
     /// no asked flag or cwd/branch).
     pub foreign_agents: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
+    /// Satellite terminals whose mirrored asked flag is set (ADR-0136).
+    pub foreign_attention: &'a std::collections::HashSet<ResourceId>,
     /// phux-4li.20: id of the session this client is attached to. The
     /// picker places this row first and marks it `current`; selecting it
     /// dismisses the picker without reattaching. `None` before the first
     /// snapshot.
     pub focused_session: Option<phux_protocol::ids::SessionId>,
     /// phux-eb0: the name of the session this client is attached to,
-    /// resolved from the latest ATTACHED snapshot. A `switch-session`
-    /// targeting this name without a window/pane target is a silent no-op
-    /// (guarded in [`apply_action_effects`]). Empty before the first snapshot.
+    /// resolved from the latest ATTACHED snapshot (and from a confirmed
+    /// `phux.session.name/v1` change). A `switch-session` targeting this
+    /// session without a window/pane target is a silent no-op (guarded in
+    /// [`apply_action_effects`]). Empty before the first snapshot.
     ///
-    /// Mutable so the `rename-session` action can optimistically update it
-    /// the moment the user commits a rename: the client sends the
-    /// `RENAME_SESSION` command and reflects the new name in its own status
-    /// bar immediately, rather than waiting a round-trip. The server is
-    /// authoritative — the next `ATTACHED` snapshot overwrites this with the
-    /// server's value (and is how other attached clients learn the rename).
+    /// Mutable so a confirmed rename can update the status bar. The write
+    /// itself is fire-and-forget (`SET_METADATA` has no reply); the driver
+    /// applies the new name only from the correlated `GET_STATE` barrier or
+    /// a `METADATA_CHANGED` broadcast, so a refused rename cannot lie.
     pub session_name: &'a mut String,
+    /// In-flight `rename-session` confirmation, parked by
+    /// [`apply_action_effects`] until the driver consumes the `GET_STATE`
+    /// barrier. `None` when no rename is outstanding.
+    pub rename_pending: &'a mut Option<super::effects::PendingSessionRename>,
+    /// A rename the shared policy refused before any write. The driver
+    /// surfaces it on the status bar after this batch. `None` when the
+    /// batch did not refuse a rename.
+    pub rename_notice: &'a mut Option<String>,
     /// phux-eb0: out-channel for a committed `switch-session { name }`.
     /// `apply_action_effects` sets this to `Some(target)` when the user
     /// picks a peer session; the driver's `main_loop` reads it after the
@@ -199,12 +216,14 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// the per-frame `sidebar` reservation after dispatch so the toggle repaint
     /// reflects the new state. Owned by the driver like `zoomed`.
     pub sidebar_enabled: &'a mut bool,
-    /// The configured sidebar width in columns, whether or not the strip
-    /// is currently shown. `toggle-sidebar` needs it to answer "would
+    /// The sidebar width in columns, whether or not the strip is currently
+    /// shown. Borrowed from the driver's settings so a sidebar-edge drag
+    /// resizes the strip in place; the driver re-folds the reservation after
+    /// dispatch and reflows the panes. `toggle-sidebar` needs it to answer "would
     /// turning this on actually change anything at this terminal size?"
     /// before flipping a flag whose effect the driver would then fold
     /// away — see the `toggle-sidebar` arm of [`run_action`].
-    pub sidebar_width: u16,
+    pub sidebar_width: &'a mut u16,
     /// phux-huhi: the attach's `[chrome]` breakpoints. `toggle-sidebar`
     /// consults [`ChromeBreakpoints::min_pane_cols`] for the same
     /// "would this actually change anything?" arithmetic the driver's
@@ -234,10 +253,10 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// or in fixtures that don't exercise bar clicks (the row is still
     /// claimed as chrome; every click on it is a no-op).
     pub status_bar: Option<&'a crate::render::chrome::status_bar::StatusBarPainter>,
-    /// ADR-0048: the in-flight divider drag, or `None` when no divider is
-    /// grabbed. A press on a divider cell records the grabbed split here;
-    /// subsequent button-motion events re-tune that split's ratio from the
-    /// pointer position; a release clears it. Owned by `main_loop` (it
+    /// The in-flight chrome drag, or `None` when nothing is grabbed: a pane
+    /// divider (ADR-0048), the sidebar edge, or a window tab or row. A press
+    /// records the grab here, button-motion advances it, and a release
+    /// commits and clears it. Owned by `main_loop` (it
     /// must survive across dispatch batches) and threaded in by reference.
     pub drag: &'a mut Option<DragGrab>,
     /// phux-npb3 (ADR-0048 decision 3 follow-up): panes that opted out of
@@ -288,17 +307,80 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub vcs: &'a mut crate::attach::pane_state::VcsIndex,
 }
 
+/// An in-flight pointer drag over client chrome.
+///
+/// Press records the grab; button-motion while held advances it; release
+/// commits it and clears the grab. Only one grab is live at a time, and
+/// while one is live no pointer event reaches a pane (ADR-0048).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::attach) enum DragGrab {
+    /// A pane divider: motion re-tunes the controlling split's ratio.
+    Divider(DividerGrab),
+    /// The left-docked sidebar's separator rule: motion resizes the strip. The width
+    /// is runtime chrome like `toggle-sidebar`: it lasts for the attach and
+    /// is never written to `config.toml` (ADR-0101 decision 2).
+    SidebarEdge,
+    /// A window tab or sidebar window row: motion paints an insertion
+    /// marker at [`WindowGrab::drop_at`]; the release reorders the
+    /// window to the slot it was dropped on.
+    Window(WindowGrab),
+}
+
+impl DragGrab {
+    /// Insertion index on the status-bar tab strip, when this grab is a
+    /// live tab drag over a tab.
+    #[must_use]
+    pub(in crate::attach) const fn tab_drop_at(&self) -> Option<usize> {
+        match self {
+            Self::Window(grab) if matches!(grab.strip, WindowStrip::Tabs) => grab.drop_at,
+            _ => None,
+        }
+    }
+
+    /// Insertion index on the sidebar window rows, when this grab is a
+    /// live sidebar-row drag over a window row.
+    #[must_use]
+    pub(in crate::attach) const fn sidebar_drop_at(&self) -> Option<usize> {
+        match self {
+            Self::Window(grab) if matches!(grab.strip, WindowStrip::Sidebar) => grab.drop_at,
+            _ => None,
+        }
+    }
+}
+
 /// An active divider drag (ADR-0048).
 ///
-/// Press on a divider cell records the controlling split (`node_path`) and
-/// its `axis`; while held, each button-motion event sets that split's
-/// ratio so the divider tracks the pointer; release drops it. The grab is
-/// keyed by split identity, not by cursor cell, so a fast drag that
-/// outruns the divider still re-tunes the right split.
+/// The grab is keyed by split identity, not by cursor cell, so a fast drag
+/// that outruns the divider still re-tunes the right split.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::attach) struct DragGrab {
+pub(in crate::attach) struct DividerGrab {
     /// Path to the grabbed [`crate::layout::LayoutNode::Split`].
     pub node_path: crate::layout::NodePath,
     /// The grabbed split's axis (drives x vs y of the pointer).
     pub axis: SplitDir,
+}
+
+/// A window picked up from one of the two window strips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::attach) struct WindowGrab {
+    /// The grabbed window's durable layout id. The drop re-resolves its
+    /// position, so a reorder, close, or peer layout that lands mid-drag
+    /// cannot redirect the move onto a different window.
+    pub window: [u8; 16],
+    /// Which strip it was picked up from; the drop resolves against the
+    /// same strip, so a tab dropped on the sidebar is a no-op.
+    pub strip: WindowStrip,
+    /// Slot under the pointer on [`Self::strip`], painted as the live
+    /// insertion marker. `None` when the pointer is off that strip (the
+    /// drop would be a no-op).
+    pub drop_at: Option<usize>,
+}
+
+/// The two chrome surfaces that list windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::attach) enum WindowStrip {
+    /// The status bar's window tabs.
+    Tabs,
+    /// The sidebar's window rows.
+    Sidebar,
 }

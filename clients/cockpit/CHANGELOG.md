@@ -3,6 +3,78 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0](https://github.com/no-phux/phux/compare/cockpit-v0.29.0...cockpit-v0.30.0) (2026-09-23)
+
+
+### Features
+
+* **cockpit:** make the header tab-first with grouped workspace actions ([#846](https://github.com/no-phux/phux/issues/846)) ([5589e8e](https://github.com/no-phux/phux/commit/5589e8e96fa62610f4c76d431298f35a1ac5f2d0))
+* **cockpit:** refine native tab interaction and recovery ([#850](https://github.com/no-phux/phux/issues/850)) ([6393503](https://github.com/no-phux/phux/commit/6393503d400347fad65e8c353697ab64b400493a))
+* **release:** ship Cockpit on the next channel and switch it with phux channel ([#851](https://github.com/no-phux/phux/issues/851)) ([56c7a3e](https://github.com/no-phux/phux/commit/56c7a3e8df8a980103c29394da8d9f323d3cc91f))
+
+
+### Bug Fixes
+
+* **ci:** keep ReleaseSafe and fat LTO off pull requests ([#842](https://github.com/no-phux/phux/issues/842)) ([0303d38](https://github.com/no-phux/phux/commit/0303d3872676d400e78735ec3359d68f1fac3625))
+* **cockpit:** align switcher shortcuts and agent discovery ([#848](https://github.com/no-phux/phux/issues/848)) ([55c635b](https://github.com/no-phux/phux/commit/55c635b698f38473efe7ca1097a4a1892e55185c))
+
+## [0.29.0](https://github.com/no-phux/phux/compare/cockpit-v0.28.0...cockpit-v0.29.0) (2026-09-22)
+
+
+### Features
+
+* **cockpit:** add identity-safe native tab context actions ([#840](https://github.com/no-phux/phux/issues/840)) ([3b64ad2](https://github.com/no-phux/phux/commit/3b64ad2ae56e0e04c6575ddfa634e4fcce113c07))
+
+
+### Bug Fixes
+
+* **ci:** ship drafts from one publish workflow ([#833](https://github.com/no-phux/phux/issues/833)) ([bf37d88](https://github.com/no-phux/phux/commit/bf37d88bbbee3ecbd0fc0e57cde7d197c517b74b))
+* **ci:** stop relinking artifacts the diff did not change ([#837](https://github.com/no-phux/phux/issues/837)) ([fe6f95f](https://github.com/no-phux/phux/commit/fe6f95fc1b32dd872cc93fd67742c8784e9b8ca2))
+* **cockpit:** finish native interaction and presentation craft pass ([#839](https://github.com/no-phux/phux/issues/839)) ([a7e06ee](https://github.com/no-phux/phux/commit/a7e06ee2931ee88dd69b3a12b1bbbbb11d9c730c))
+
+## [0.28.0](https://github.com/no-phux/phux/compare/cockpit-v0.27.1...cockpit-v0.28.0) (2026-09-22)
+
+
+### Features
+
+* **cockpit:** add native glass and polish terminal chrome ([#815](https://github.com/no-phux/phux/issues/815)) ([8e323fb](https://github.com/no-phux/phux/commit/8e323fbdc4accd554438b2df23f973e33fedc7e2))
+* **cockpit:** make settings controls direct and authoritative ([2d2f20e](https://github.com/no-phux/phux/commit/2d2f20e2740b8ed5de4379ed1aaa6d3e24df5725))
+* **ffi:** cockpit on the runtime's connected client (ADR-0133 rung 10) ([#809](https://github.com/no-phux/phux/issues/809)) ([f67f2ee](https://github.com/no-phux/phux/commit/f67f2ee3b798d6f8c97c6a4454721d0055f7cb86))
+
+
+### Bug Fixes
+
+* **client-ffi:** close the mobile-artifact and CI gaps review found in [#822](https://github.com/no-phux/phux/issues/822) (phux-ase2.1) ([84d5fd9](https://github.com/no-phux/phux/commit/84d5fd96145514892a725cbd7fb55c710797e189))
+* **cockpit:** skip Hybrid C last-N crop when measured splits fit (phux-gto8) ([#814](https://github.com/no-phux/phux/issues/814)) ([40b7b53](https://github.com/no-phux/phux/commit/40b7b53b4d8d32e1ff1811420a491634a38a107e))
+
+## [0.27.1](https://github.com/no-phux/phux/compare/cockpit-v0.27.0...cockpit-v0.27.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **cockpit:** pick newest rlib after fixture-generator version bump ([#783](https://github.com/no-phux/phux/issues/783)) ([41057d7](https://github.com/no-phux/phux/commit/41057d76c52be191d114dfaf200f86bae0e35692))
+
+## [0.27.0](https://github.com/no-phux/phux/compare/cockpit-v0.26.0...cockpit-v0.27.0) (2026-09-20)
+
+
+### Features
+
+* **cli:** add a JSON contract for phux server --ensure ([4e3610b](https://github.com/no-phux/phux/commit/4e3610b651c18c2fac46f59bcf2b05331847a980))
+* **protocol:** attach roles as intent on the input lease ([#717](https://github.com/no-phux/phux/issues/717)) ([bbccc3a](https://github.com/no-phux/phux/commit/bbccc3ad88739d6c37aec985d2407dc41b92631a))
+
+
+### Bug Fixes
+
+* **ci:** retry Cockpit DMG hdiutil on GitHub macOS runners ([#708](https://github.com/no-phux/phux/issues/708)) ([23c4071](https://github.com/no-phux/phux/commit/23c4071dd79494d2d772192e85cc100a39bc1ffe))
+* **ci:** use PATH sync when packaging the Cockpit DMG ([#716](https://github.com/no-phux/phux/issues/716)) ([01db63c](https://github.com/no-phux/phux/commit/01db63c365bc348089a0d3d689221ba6919fe39e))
+* **cockpit:** pin seamless cell backgrounds ([#732](https://github.com/no-phux/phux/issues/732)) ([2af4066](https://github.com/no-phux/phux/commit/2af40668066ede5034a62d6c44daa62cd8e44eac))
+* **protocol:** preserve keep-empty on explicit Close Tab ([#718](https://github.com/no-phux/phux/issues/718)) ([df8bb87](https://github.com/no-phux/phux/commit/df8bb87543e2f1d4a1f00e567ac62456cabdc20a))
+
+
+### Documentation
+
+* **adr:** swarm members are coordinator clients ([#757](https://github.com/no-phux/phux/issues/757)) ([b93f0ef](https://github.com/no-phux/phux/commit/b93f0ef5d1f3d1e67c8986eb5599504293c089bd))
+
 ## [0.26.0](https://github.com/no-phux/phux/compare/cockpit-v0.25.0...cockpit-v0.26.0) (2026-09-15)
 
 

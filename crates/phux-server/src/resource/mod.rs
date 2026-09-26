@@ -132,6 +132,10 @@ pub enum ResyncReason {
     Resize,
     /// A bounded output subscriber observed a sequence gap.
     OutboundGap,
+    /// The pane's child has exited. This snapshot is the final grid: a
+    /// fenced pump with a full mailbox must queue it before `RESOURCE_CLOSED`
+    /// and must not stay parked on an earlier snapshot (phux-fpgl.28).
+    Exit,
 }
 
 /// One output pump on a pane: the server-local client that owns it and the
@@ -360,6 +364,24 @@ pub enum ControlRequest {
     /// has no process to watch), and refuse input from now on. The grid,
     /// history, and consumers stay. No reply: the exit is a fact.
     Retire,
+    /// Replace the exited child with a fresh default shell in this same
+    /// Terminal. The identity, layout slot, and subscribers stay; clients
+    /// receive a resync of the new grid. Reply is the next-exit receiver.
+    ReplaceChild {
+        /// Default-shell command for the replacement child.
+        command: ReplacementCommand,
+        /// The next PTY-EOF receiver, or why the replacement could not start.
+        reply: oneshot::Sender<Result<oneshot::Receiver<phux_core::process::ExitOutcome>, String>>,
+    },
+}
+
+/// `CommandBuilder` wrapper so [`ControlRequest`] can stay `Debug`.
+pub struct ReplacementCommand(pub portable_pty::CommandBuilder);
+
+impl std::fmt::Debug for ReplacementCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReplacementCommand")
+    }
 }
 
 // ---- handle -----------------------------------------------------------------
@@ -608,6 +630,14 @@ impl ResourceCore {
         if let Some(tx) = self.exit_notify.take() {
             let _ = tx.send(outcome);
         }
+    }
+
+    /// Arm a new exit oneshot after a child replacement. The previous
+    /// receiver has already fired.
+    pub fn arm_exit_notify(&mut self) -> oneshot::Receiver<phux_core::process::ExitOutcome> {
+        let (tx, rx) = oneshot::channel();
+        self.exit_notify = Some(tx);
+        rx
     }
 }
 

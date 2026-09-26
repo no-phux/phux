@@ -928,6 +928,11 @@ impl Default for LayerSet {
 // -----------------------------------------------------------------------------
 // ServerFeature — one declarative list. The consts, enum, known-bits mask,
 // and names are generated from it so a new bit cannot land in only one copy.
+//
+// Word 0 is closed (ADR-0137). Do not add a variant at `0x8000_0000` or in
+// the never-assigned low gaps (`0x1`, `0x2`, `0x4`, `0x8`). `0x1000` stays
+// retired-unshipped. The next feature is a trailing `features_ext` u32 in
+// `HELLO_OK` server caps; that word is not on the wire yet.
 // -----------------------------------------------------------------------------
 
 macro_rules! define_server_features {
@@ -1596,7 +1601,9 @@ impl Default for ClientCapabilities {
 /// concerns carried by [`ClientCapabilities`], so they have no server-side
 /// counterpart. Future server-owned capabilities append as additive
 /// trailing fields (the encoding grows monotonically, same discipline as
-/// [`ClientCapabilities`]).
+/// [`ClientCapabilities`]). The next field is a second feature word; the
+/// `u32` in `features` is closed
+/// ([ADR-0137](../../../docs/adr/0137-server-feature-word-extends.md)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerCapabilities {
     /// The conformance tiers (SPEC §6.2 / §16) the server mounts. L1 is
@@ -2035,6 +2042,11 @@ mod tests {
         assert_eq!(snakes.len(), ServerFeature::ALL.len());
         assert_eq!(ServerFeatureSet::all().as_wire(), union);
         assert_eq!(ServerFeatureSet::from_wire(u32::MAX).as_wire(), union);
+        // ADR-0137: word 0 stays closed. These masks are the inventory of
+        // holes (never assigned, retired-unshipped, reserved-unallocated).
+        assert_eq!(union & 0x0000_000F, 0, "low nibble stays unassigned");
+        assert_eq!(union & 0x0000_1000, 0, "0x1000 stays retired-unshipped");
+        assert_eq!(union & 0x8000_0000, 0, "0x80000000 stays unallocated");
         assert_eq!(EVENT_JOURNAL, 0x0100_0000);
         assert_eq!(RETAIN_ON_EXIT, 0x0200_0000);
         assert_eq!(SPAWN_IDEMPOTENCY, 0x0400_0000);

@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-17
+last-reviewed: 2026-09-22
 ---
 
 # 0086 — The pooled libghostty render trio lives in `phux-protocol`
@@ -10,12 +10,11 @@ last-reviewed: 2026-08-17
 `RowIterator` + `CellIterator`, and a pooled state serves stale rows when the
 grid it cached is no longer the grid it walks. That trio plus its rebuild —
 on a geometry change, and on a caller-named identity change — lives in one
-type, `phux_protocol::render_pool::RenderPool`, behind the existing `server`
-feature, with a single entry point (`begin(terminal, generation)`). The
-walkers that reach `RenderPool` are `phux-server`'s `SnapshotSynthesizer` and
-`phux-client`'s `TerminalRenderer`; `phux-record`, `phux-client-ffi`, and
-`phux-server-testkit` still hold private copies (see Tradeoffs).
-Dirty-bit policy stays at the call sites, which legitimately differ.
+type, `phux_protocol::render_pool::RenderPool`, behind the `render-pool`
+feature (`libghostty-vt` only; `server` enables it), with one entry point
+(`begin(terminal, generation)`). Every long-lived walker uses it:
+`SnapshotSynthesizer`, `TerminalRenderer`, `Replayer`, `GridProjector`, and
+the testkit `Screen`. Dirty-bit policy stays at the call sites.
 
 Status: Accepted
 Date: 2026-08-15
@@ -65,7 +64,9 @@ terminal and its token travel together as one `attach::render::ReplicaWalk`
 produced solely by `attach::pane_state::published_replica`, so a paint path
 cannot pair a terminal with a token that disagrees.
 
-It lives in `phux-protocol` behind the `server` feature. It carries no wire
+It lives in `phux-protocol` behind the `render-pool` feature, which is
+`dep:libghostty-vt` and nothing else. `server` enables `render-pool`, then
+adds png and the rest of the libghostty surface. The pool carries no wire
 types and does not participate in protocol versioning.
 
 The pool owns **allocation, geometry, and caller-named terminal identity**.
@@ -77,10 +78,10 @@ Dirty-bit policy stays at the call sites.
 deliberately carries no `libghostty-vt` dependency — moving a libghostty type
 there would force the domain crate onto the emulator, a trade this repo has
 already declined once (see `phux-record/src/replay.rs`'s "third copy,
-knowingly" note). `phux-protocol` behind `server` is where the existing
-libghostty-backed render helpers that both ends need already live:
-`crate::sgr` and `crate::kitty_replay`. `RenderPool` is the same shape of
-thing, so this follows a settled precedent rather than opening a new one.
+knowingly" note). `phux-protocol` is where the libghostty-backed render
+helpers already live (`sgr` and `kitty_replay`, on `server`). `RenderPool`
+is the same shape of thing, on the narrower `render-pool` feature so a
+walker can share it without taking png.
 
 Dirty policy is excluded because the call sites genuinely disagree, and each
 disagreement is deliberate: `SnapshotSynthesizer::mark_synced` clears both the
@@ -93,29 +94,21 @@ unified those four would erase four decisions.
 
 ## Tradeoffs
 
-`phux-protocol` grows a module that is not about the wire. The `server`
-feature gate and the module docs say so explicitly, but a reader who assumes
-everything in the protocol crate is normative will be briefly wrong.
+`phux-protocol` grows a module that is not about the wire. The
+`render-pool` feature gate and the module docs say so explicitly, but a
+reader who assumes everything in the protocol crate is normative will be
+briefly wrong.
 
 Adopting the pool gives `TerminalRenderer` the geometry rebuild it did not
 have. That is the intended fix, but it is a behaviour change on the client's
 hottest path, justified by a hazard that has never been reproduced
 deterministically (the `phux-5pyx` bead records "No repro today").
 
-`phux-record`, `phux-client-ffi`, and `phux-server-testkit` are **not**
-adopted here. They depend on `phux-protocol` without the `server` feature, and
-turning it on pulls `png` and the full libghostty type surface into crates
-whose feature hygiene deliberately excludes them. Three copies of the trio
-therefore remain; each is tracked separately.
-
-**Not yet migrated, concretely.** `phux-client-ffi`'s `RenderCache`
-(`crates/phux-client-ffi/src/client.rs`) still holds a raw private
-`RenderState` + `RowIterator` + `CellIterator` and has never adopted
-`RenderPool` — so "the trio lives in one type" is true of the walkers named
-above and not yet of the whole workspace. Migrating it requires the
-feature-graph decision described in the paragraph above; that is tracked in
-bead `phux-u8zm`, whose id is also carried as a comment on the type itself so
-the deferral is findable from the code rather than only from this ADR.
+`Replayer`, `GridProjector` (the post-ADR-0135 home of the FFI render
+cache), and the testkit `Screen` enable `render-pool` rather than `server`
+(phux-u8zm). `Replayer` and `Screen` pass a constant generation. The
+runtime owner passes `ReplicaKey::generation_token` into
+`GridProjector::project`.
 
 ## Alternatives
 

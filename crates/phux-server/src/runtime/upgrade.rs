@@ -68,9 +68,12 @@ pub(super) enum UpgradeError {
     HandoffDeadline,
 }
 
-/// A private executable snapshot copied from one opened source inode. Both
-/// validation and exec use the snapshot, so replacing the installed path
-/// cannot swap in a different image between the two operations.
+/// A private executable snapshot copied from one opened source inode.
+/// Validation uses the snapshot so replacing the installed path cannot
+/// swap in a different image between copy and check. Re-exec uses the
+/// installed path when it still matches the snapshot (phux-9lj9): macOS
+/// Application Firewall allowlists the running image's path, and a
+/// tempfile that is then deleted can never be allowlisted.
 struct PinnedExecutable {
     path: PathBuf,
     source_path: PathBuf,
@@ -98,6 +101,20 @@ impl PinnedExecutable {
             source_path: path.to_path_buf(),
             dir,
         })
+    }
+
+    /// Path to `execve`: the installed source, so the running image is a
+    /// path operators can allowlist. The snapshot stays for validation; if
+    /// the source no longer matches, refuse rather than exec the tempfile.
+    fn exec_path(&self) -> std::io::Result<&Path> {
+        if files_have_same_bytes(&self.source_path, &self.path)? {
+            Ok(self.source_path.as_path())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "installed binary changed after validation; aborting upgrade so the old image keeps serving",
+            ))
+        }
     }
 }
 
@@ -431,7 +448,11 @@ impl UpgradePlan {
     /// was closed, so the old image keeps serving and the children stay
     /// attached.
     pub(super) fn exec(self) -> std::io::Error {
-        let mut command = Command::new(&self.executable.path);
+        let exe = match self.executable.exec_path() {
+            Ok(path) => path.to_path_buf(),
+            Err(err) => return err,
+        };
+        let mut command = Command::new(&exe);
         command
             .env(UPGRADE_SOURCE_EXE, &self.executable.source_path)
             .env(UPGRADE_SNAPSHOT_DIR, self.executable.dir.path())
@@ -517,6 +538,28 @@ fn probe_binary(exe: &Path, args: &[&str]) -> Result<(), UpgradeError> {
     } else {
         format!("`{} {}` failed: {detail}", exe.display(), args.join(" "))
     }))
+}
+
+fn files_have_same_bytes(a: &Path, b: &Path) -> std::io::Result<bool> {
+    use std::io::Read as _;
+
+    let mut fa = std::fs::File::open(a)?;
+    let mut fb = std::fs::File::open(b)?;
+    if fa.metadata()?.len() != fb.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut ba = [0_u8; 8192];
+    let mut bb = [0_u8; 8192];
+    loop {
+        let na = fa.read(&mut ba)?;
+        let nb = fb.read(&mut bb)?;
+        if na != nb || ba[..na] != bb[..na] {
+            return Ok(false);
+        }
+        if na == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -827,6 +870,32 @@ mod tests {
         assert!(
             validate_binary(&path).is_err(),
             "the replaced filesystem path now names a different image"
+        );
+        assert!(
+            pinned.exec_path().is_err(),
+            "a swapped install path must abort rather than re-exec the tempfile"
+        );
+    }
+
+    #[test]
+    fn upgrade_reexec_uses_the_installed_path_when_it_still_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phux");
+        std::fs::copy("/usr/bin/true", &path).unwrap();
+        std::fs::set_permissions(
+            &path,
+            std::fs::metadata("/usr/bin/true").unwrap().permissions(),
+        )
+        .unwrap();
+        let pinned = PinnedExecutable::open(&path).unwrap();
+        assert_ne!(
+            pinned.path, pinned.source_path,
+            "the snapshot is a different path from the install"
+        );
+        assert_eq!(
+            pinned.exec_path().unwrap(),
+            pinned.source_path.as_path(),
+            "re-exec must land on the allowlistable install path (phux-9lj9)"
         );
     }
 

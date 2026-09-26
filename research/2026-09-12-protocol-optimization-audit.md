@@ -110,7 +110,7 @@ Two current production callers already have this shape:
   ([link.rs](../crates/phux-server/src/hub/link.rs), lines 1248–1258,
   1330–1349, 1375–1395).
 - The FFI remote tunnel copies its embedder socket onto one QUIC stream
-  ([pump.rs](../crates/phux-client-ffi/src/remote/pump.rs), lines 145–170).
+  ([tunnel.rs](../crates/phux-client-runtime/src/tunnel.rs), `serve_quic`; the tunnel moved out of `phux-client-ffi` under ADR-0133).
   Cockpit uses this tunnel; a raw byte-copy adapter cannot represent
   independent streams without an additional stream-aware layer.
 

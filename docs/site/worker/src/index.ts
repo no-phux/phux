@@ -26,6 +26,7 @@ import {
   nativeUpstreamRequest,
   parseDemoMode,
   isNativeEnabled,
+  trustedClientIp,
 } from "./native-routing";
 import { startNative } from "./native-start";
 import {
@@ -138,16 +139,6 @@ function recordSession(
   );
 }
 
-function clientIp(request: Request): string {
-  // Cloudflare sets CF-Connecting-IP on every edge request; it cannot be
-  // spoofed by the client (the edge overwrites it). Fall back defensively.
-  return (
-    request.headers.get("CF-Connecting-IP") ??
-    request.headers.get("X-Forwarded-For")?.split(",")[0].trim() ??
-    "unknown"
-  );
-}
-
 // Reject an upgrade attempt with a real 101 + immediate close carrying a code +
 // reason, so the browser terminal can surface "demo at capacity" rather than a
 // bare network error. (A plain HTTP 4xx on a WS upgrade is opaque to the client.)
@@ -214,7 +205,7 @@ export default {
       return rejectUpgrade(CLOSE.BAD_REQUEST, "origin not allowed");
     }
 
-    const ip = clientIp(request);
+    const ip = trustedClientIp(request);
 
     // ── (2) per-IP rate limit ────────────────────────────────────────────────
     // A secret-keyed object per source address keeps each sliding window

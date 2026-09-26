@@ -1237,9 +1237,8 @@ async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
 /// What the hub offers a satellite: the default capability set plus L3, so
 /// the satellite answers the relayed `LIST_DIRECTORY` (`docs/spec/L3.md`
 /// §4.1), which a server drops from a consumer that never negotiated L3
-/// (§1.2). The hub sends no metadata frames of its own on the link (L3
-/// metadata does not federate, §1.3), so the extra layer changes nothing
-/// else the satellite does for it.
+/// (§1.2). The hub also subscribes the two agent-metadata keys it mirrors
+/// (ADR-0136). It sends no other metadata frames on the link.
 fn hub_link_capabilities() -> ClientCapabilities {
     ClientCapabilities::default().with_layers(phux_protocol::caps::LayerSet::with(&[
         phux_protocol::caps::Layer::L3,

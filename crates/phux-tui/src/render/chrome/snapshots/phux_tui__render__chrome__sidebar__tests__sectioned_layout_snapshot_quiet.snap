@@ -1,22 +1,23 @@
 ---
 source: crates/phux-tui/src/render/chrome/sidebar.rs
+assertion_line: 2525
 expression: "strip_text(&p, rect)"
 ---
  Agents                  │
-   none running yet      │
+   —                     │
                          │
                          │
                          │
                          │
                          │
                          │
- Sessions                │
+ Sessions              3 │
  ○ development           │
-   on mini               │
-   ● phux main           │
- ◐ feat-auth          *1 │
-   on mini               │
+   mini                  │
+   ● phux           main │
+ ◐ feat-auth          ◐1 │
+   mini                  │
  ○ prod-3             ?2 │
-   on devbox             │
- + new window            │
- = commands  S settings  ‹
+   devbox                │
+                         │
+ + new window            ‹

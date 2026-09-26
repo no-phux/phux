@@ -29,9 +29,10 @@ def main():
     full = dependency_features("-p", "phux")
     lean = dependency_features("-p", "phux", "-p", "phux-mcp", "--no-default-features")
     mcp = dependency_features("-p", "phux-mcp")
-    assert "wtransport" in full, "the default executable must retain browser HTTP/3"
+    assert "wtransport-proto" in full, "the default executable must retain browser HTTP/3"
+    assert "wtransport" not in full, "wtransport is the test dialer; production uses wtransport-proto"
     assert "layout-cache" not in full["ratatui-core"], "unused layout cache re-enabled"
-    assert "wtransport" not in lean, "the lean executable must not inherit server defaults"
+    assert "wtransport-proto" not in lean, "the lean executable must not inherit server defaults"
     assert "ratatui" not in mcp, "headless MCP must not compile TUI chrome"
     for name, graph in (("full", full), ("lean", lean), ("mcp", mcp)):
         assert "ratatui-crossterm" not in graph, f"{name}: unused terminal backend"

@@ -15,7 +15,14 @@ field() {
 }
 
 make_bundle() {
-  local dest=$1 version=$2
+  local dest=$1 version=$2 channel=${3:-} sha=${4:-}
+  local channel_keys=""
+  if [[ -n $channel ]]; then
+    channel_keys="  <key>PhuxChannel</key>
+  <string>${channel}</string>
+  <key>PhuxBuildSHA</key>
+  <string>${sha}</string>"
+  fi
   mkdir -p "$dest/Contents/MacOS"
   cat > "$dest/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -26,6 +33,7 @@ make_bundle() {
   <string>${version}</string>
   <key>CFBundleIdentifier</key>
   <string>dev.phux.cockpit</string>
+${channel_keys}
 </dict>
 </plist>
 EOF
@@ -60,6 +68,14 @@ mv "$TMP/$COCKPIT_ZIP" "$FIXTURE/cockpit.zip"
   fi
 )
 
+NEXT_SHA=0123456789abcdef0123456789abcdef01234567
+OLD_SHA=89abcdef0123456789abcdef0123456789abcdef
+NEXT_ZIP="phux-cockpit-next.${NEXT_SHA}-macos-arm64.zip"
+sed "s/$COCKPIT_ZIP\$/$NEXT_ZIP/" "$FIXTURE/cockpit.SHA256SUMS" > "$FIXTURE/next.sha256"
+cat > "$FIXTURE/cockpit-channel.json" <<EOF
+{"schema_version":1,"channel":"next","product":"cockpit","sha":"${NEXT_SHA}","version":"9.8.7"}
+EOF
+
 cat > "$FAKE_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -75,6 +91,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$url" in
+  */download/next/cockpit-channel.json)
+    if [[ -n $out ]]; then cp "$INSTALL_FIXTURE/cockpit-channel.json" "$out"
+    else cat "$INSTALL_FIXTURE/cockpit-channel.json"; fi
+    ;;
+  */download/next/phux-cockpit-next.*.zip.sha256) cp "$INSTALL_FIXTURE/next.sha256" "$out" ;;
+  */download/next/phux-cockpit-next.*.zip) cp "$INSTALL_FIXTURE/cockpit.zip" "$out" ;;
   *SHA256SUMS)
     if [[ ${BAD_CHECKSUM:-0} == 1 ]]; then
       printf '0000000000000000000000000000000000000000000000000000000000000000  %s\n' \
@@ -204,6 +226,53 @@ run_driver --install --bundle "$APPS/Phux Cockpit.app" --home "$TMP" \
 [[ $(field status "$TMP/install.out") == installed ]]
 [[ $(field relaunch "$TMP/install.out") == yes ]]
 grep -Fxq 'new cockpit' "$APPS/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
+
+# --- channels ----------------------------------------------------------------
+# A stable bundle asked for next is a switch, whatever the versions say.
+make_bundle "$APPS/Phux Cockpit.app" "9.8.7"
+run_driver --check --channel next --bundle "$APPS/Phux Cockpit.app" --home "$TMP" \
+  --latest "next.${NEXT_SHA}" > "$TMP/switch.out"
+[[ $(field status "$TMP/switch.out") == newer ]]
+[[ $(field channel "$TMP/switch.out") == next ]]
+[[ $(field latest "$TMP/switch.out") == 9.8.7+next.0123456 ]]
+grep -Fq 'Switching Phux Cockpit to the next channel' "$TMP/switch.out"
+
+# A next bundle follows next on its own and compares SHAs, not versions.
+make_bundle "$APPS/Phux Cockpit.app" "9.8.7" next "$NEXT_SHA"
+run_driver --check --bundle "$APPS/Phux Cockpit.app" --home "$TMP" \
+  --latest "next.${NEXT_SHA}" > "$TMP/next-current.out"
+[[ $(field status "$TMP/next-current.out") == current ]]
+[[ $(field channel "$TMP/next-current.out") == next ]]
+[[ $(field current "$TMP/next-current.out") == 9.8.7+next.0123456 ]]
+make_bundle "$APPS/Phux Cockpit.app" "9.8.7" next "$OLD_SHA"
+run_driver --check --bundle "$APPS/Phux Cockpit.app" --home "$TMP" \
+  --latest "next.${NEXT_SHA}" > "$TMP/next-newer.out"
+[[ $(field status "$TMP/next-newer.out") == newer ]]
+[[ $(field current "$TMP/next-newer.out") == 9.8.7+next.89abcde ]]
+
+# Back to stable at the same version is still a switch.
+run_driver --check --channel latest --bundle "$APPS/Phux Cockpit.app" --home "$TMP" \
+  --latest "$COCKPIT_VERSION" > "$TMP/to-stable.out"
+[[ $(field status "$TMP/to-stable.out") == newer ]]
+[[ $(field channel "$TMP/to-stable.out") == stable ]]
+
+# End to end: resolve the pointer through the installer and install next.
+run_driver --install --channel next --bundle "$APPS/Phux Cockpit.app" --home "$TMP" \
+  > "$TMP/next-install.out"
+[[ $(field status "$TMP/next-install.out") == installed ]]
+[[ $(field latest "$TMP/next-install.out") == 9.8.7+next.0123456 ]]
+grep -Fxq 'new cockpit' "$APPS/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
+
+# The next archive is verified against its own sidecar before placement.
+make_bundle "$APPS/Phux Cockpit.app" "9.8.7"
+printf '0000000000000000000000000000000000000000000000000000000000000000  %s\n' \
+  "$NEXT_ZIP" > "$FIXTURE/next.sha256"
+if run_driver --install --channel next --bundle "$APPS/Phux Cockpit.app" --home "$TMP" \
+  > "$TMP/next-bad.out" 2>"$TMP/next-bad.err"; then
+  echo "driver installed a next build with a bad checksum" >&2
+  exit 1
+fi
+grep -Fxq 'old cockpit' "$APPS/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
 
 # Prove the driver invoked the real installer rather than unpacking itself.
 grep -Fq 'install-cockpit.sh' "$DRIVER"

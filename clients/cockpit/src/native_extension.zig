@@ -84,13 +84,14 @@ fn allocatePeerHandleThroughEngine() !u64 {
     try engine.model.ensurePeerSlots(1);
     return engine.model.peers.items[0].channel_key;
 }
+const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const core = @import("core");
 const cockpit = @import("cockpit_engine");
 
 const Engine = cockpit.Engine;
 const protocol = cockpit.protocol;
-const Adapter = native_sdk.TsUiApp(core);
+const Adapter = native_sdk.TsUiAppWithFeatures(core, .{ .runtime_markup = builtin.mode == .Debug });
 const Effects = Adapter.Effects;
 const canvas = native_sdk.canvas;
 const canvas_label = "phux-cockpit-canvas";
@@ -303,7 +304,7 @@ fn WorkflowReply(comptime capacity: usize) type {
 const Bridge = struct {
     const Keybindings = cockpit.keybindings_runtime.State(native_sdk.platform);
     const Admission = cockpit.keybindings_runtime.replay.Journal(native_sdk);
-    const InteractionMode = enum { terminal, palette, settings };
+    const InteractionMode = enum { terminal, palette, settings, menu };
     /// Mirrors committed core modality, never the most recently painted view.
     /// Flattened per-window overlay flags decide which native window owns it.
     interaction_mode: InteractionMode = .terminal,
@@ -419,6 +420,10 @@ const Bridge = struct {
             self.commitInteraction(Adapter.Host.model());
             return;
         }
+        if (std.mem.eql(u8, name, cockpit.engine.clipboard.command_name)) {
+            self.sendClipboard(payload);
+            return;
+        }
         if (!std.mem.eql(u8, name, protocol.intent_command)) return;
         const engine = self.engine orelse return;
         if (engineFx()) |fx| {
@@ -431,6 +436,13 @@ const Bridge = struct {
         self.announce(engine);
     }
 
+    fn sendClipboard(self: *Bridge, payload: []const u8) void {
+        if (self.replayInteraction()) return;
+        const engine = self.engine orelse return;
+        const fx = engineFx() orelse return;
+        if (engine.applyClipboard(fx, payload)) self.announce(engine);
+    }
+
     /// The SDK commits Host.model before walking the returned command batch.
     /// Core modality transitions place this marker before their other effects;
     /// app_state.model is still the OLD mirror here and must never be read.
@@ -438,10 +450,11 @@ const Bridge = struct {
         self.interaction_mode = interactionMode(model);
         const engine = self.engine orelse return;
         const fx = engineFx() orelse return;
-        engine.setInputSuspended(fx, windowOwnsOverlay(model, engine.model.active_window));
+        engine.setInputSuspended(fx, self.interaction_mode != .terminal);
     }
 
     fn interactionMode(model: *const core.Model) InteractionMode {
+        if (model.headerMenuWindow >= 0) return .menu;
         // Connect to Host and Rename Session take text like the switcher;
         // none may type into a terminal behind it.
         return if (model.paletteOpen or model.hostOpen or model.dirOpen or model.renameOpen) .palette else if (model.settingsOpen) .settings else .terminal;
@@ -993,13 +1006,19 @@ const Bridge = struct {
             self.result_len = result_wire.encodeResult(source, result, &self.result_buffer).len;
             return;
         }
+        if (engine.peer_edits.peekCompletion()) |result| {
+            self.result_len = result_wire.encodeResult(.shared, result, &self.result_buffer).len;
+            return;
+        }
         self.result_len = copyInto(&self.result_buffer, &result_wire.empty);
     }
 
     fn ackResult(_: *Bridge, engine: *Engine, ack: result_wire.Ack) void {
         switch (ack.source) {
             .creation => _ = engine.creation.ackCompletion(ack.command_id),
-            .shared => _ = engine.model.shared_mutations.ackCompletion(ack.command_id),
+            .shared => {
+                if (!engine.model.shared_mutations.ackCompletion(ack.command_id)) _ = engine.peer_edits.ackCompletion(ack.command_id);
+            },
             .native_shared => _ = engine.model.shared_mutations.ackNativeCompletion(ack.command_id),
         }
     }
@@ -1484,12 +1503,21 @@ fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
 
 fn onKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     const replaying = bridge.replayInteraction();
+    if (bridge.interaction_mode == .menu) return headerMenuKey(event);
     if (overlayOwnsOrigin()) return overlayKey(event);
     if (primaryChord(event)) |msg| return msg;
     if (replaying) return null;
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     deliverTerminalKey(engine, fx, event);
+    return null;
+}
+
+fn headerMenuKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
+    if (event.phase == .key_up) return null;
+    if (std.ascii.eqlIgnoreCase(event.key, "Escape")) return .header_menu_close;
+    // Arrow/Enter navigation belongs to the SDK dropdown. Unclaimed text
+    // must never reach the terminal behind it.
     return null;
 }
 
@@ -1509,10 +1537,54 @@ fn emptyInteraction(ui: *Adapter.Ui) Adapter.Ui.Node {
     return ui.el(.stack, .{ .grow = 1, .semantics = .{ .hidden = true } }, .{});
 }
 
+fn shippingSplitResizeHandler(comptime window_index: usize, comptime node: cockpit.layout.NodeId) Adapter.Ui.ValueMsgFn {
+    return struct {
+        fn make(value: f32) core.Msg {
+            if (bridge.replayInteraction()) return .engine_wake;
+            if (bridge.engine) |engine| {
+                if (engine.applyNativeSplitResize(window_index, node, value)) bridge.announce(engine);
+            }
+            return .engine_wake;
+        }
+    }.make;
+}
+
+const shipping_split_resize_handlers: [1 + cockpit.scene.max_secondary_windows][cockpit.layout.max_nodes]Adapter.Ui.ValueMsgFn = blk: {
+    var table: [1 + cockpit.scene.max_secondary_windows][cockpit.layout.max_nodes]Adapter.Ui.ValueMsgFn = undefined;
+    for (0..table.len) |window_index| {
+        for (0..cockpit.layout.max_nodes) |node_index| {
+            table[window_index][node_index] = shippingSplitResizeHandler(window_index, @intCast(node_index));
+        }
+    }
+    break :blk table;
+};
+
+fn clipboardMenu(ui: *Adapter.Ui, engine: *Engine, tree: *const cockpit.layout.Tree, window_index: usize, ref: cockpit.TerminalRef) []const Adapter.Ui.ContextMenuItem {
+    const target = cockpit.engine.clipboard.Target.capture(engine.model, tree, window_index, ref, .copy) orelse return &.{};
+    const copy_enabled = engine.clipboardEnabled(target.owner, .copy);
+    const paste_enabled = engine.clipboardEnabled(target.owner, .paste);
+    // Mouse-reporting applications own secondary click. An empty selection in
+    // an ended terminal likewise has no clipboard action to offer.
+    if (!copy_enabled and !paste_enabled) return &.{};
+    const items = ui.arena.alloc(Adapter.Ui.ContextMenuItem, 2) catch @panic("out of memory");
+    items[0] = .{ .label = "Copy", .msg = clipboardMenuMessage(ui, target, .copy), .enabled = copy_enabled };
+    items[1] = .{ .label = "Paste", .msg = clipboardMenuMessage(ui, target, .paste), .enabled = paste_enabled };
+    return items;
+}
+
+fn clipboardMenuMessage(ui: *Adapter.Ui, captured: cockpit.engine.clipboard.Target, action: cockpit.engine.clipboard.Action) core.Msg {
+    var target = captured;
+    target.action = action;
+    var packet: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const bytes = ui.arena.dupe(u8, target.encode(&packet)) catch @panic("out of memory");
+    return .{ .clipboard_action = bytes };
+}
+
 fn paneInteraction(
     ui: *Adapter.Ui,
-    engine: *const Engine,
+    engine: *Engine,
     workspace: anytype,
+    window_index: usize,
     node: cockpit.layout.NodeId,
 ) Adapter.Ui.Node {
     const current = workspace.selectedTreeConst() orelse return emptyInteraction(ui);
@@ -1525,10 +1597,11 @@ fn paneInteraction(
             const title = cockpit.projection.terminalTitleInto(engine.model, terminal, &title_room);
             const screen = if (engine.model.provider.terminalConst(terminal)) |pane|
                 pane.session.screenText()
-            else if (engine.model.remotePresentation(terminal)) |presentation|
+            else if (engine.model.remotePaintPresentationIn(current, terminal)) |presentation|
                 presentation.grid.screen_text
             else
                 "";
+            const menu = clipboardMenu(ui, engine, current, window_index, terminal);
             return ui.el(.stack, .{
                 // Focus belongs to the selected terminal, not the toolbar
                 // control that created it. A provider-qualified key gives a
@@ -1541,6 +1614,12 @@ fn paneInteraction(
                 .min_height = cockpit.projection.split_pane_min_height,
                 .opacity = 0,
                 .text = screen,
+                // A semantic stack is focusable but not hit-testable until it
+                // claims presses. Native routing already owns pane focus;
+                // this opts the same leaf into SDK context-menu hit testing.
+                .on_press = .engine_wake,
+                .context_menu = menu,
+                .context_menu_policy = if (menu.len == 0) .disabled else .automatic,
                 .semantics = .{
                     .role = .textbox,
                     .label = ui.fmt("{s}", .{title}),
@@ -1549,8 +1628,9 @@ fn paneInteraction(
             }, .{});
         },
         .branch => {
-            const first = paneInteraction(ui, engine, workspace, entry.first);
-            const second = paneInteraction(ui, engine, workspace, entry.second);
+            engine.captureNativeSplitResize(window_index, node);
+            const first = paneInteraction(ui, engine, workspace, window_index, entry.first);
+            const second = paneInteraction(ui, engine, workspace, window_index, entry.second);
             return ui.split(.{
                 .grow = 1,
                 .min_width = cockpit.projection.split_pane_min_width,
@@ -1561,6 +1641,7 @@ fn paneInteraction(
                     .vertical => .vertical,
                 },
                 .value = entry.fraction,
+                .on_resize = shipping_split_resize_handlers[window_index][node],
                 .opacity = 0,
                 .semantics = .{ .label = "Terminal split" },
             }, .{ first, second });
@@ -1572,11 +1653,12 @@ fn paneInteraction(
 /// authoritative projection gives the grid painter. Compiled `.native`
 /// markup owns all visible chrome; this layer contributes pane semantics and
 /// split topology over the app-owned libghostty surfaces beneath it.
-fn terminalInteraction(ui: *Adapter.Ui, engine: *const Engine, window_index: usize) Adapter.Ui.Node {
+fn terminalInteraction(ui: *Adapter.Ui, engine: *Engine, window_index: usize) Adapter.Ui.Node {
     const workspace = engine.model.wsAtConst(window_index) orelse return emptyInteraction(ui);
     const chrome = cockpit.projection.workspaceChromeIn(engine.model, workspace, workspace.surface_size);
+    engine.clearNativeSplitResizeCaptures(window_index);
     const panes = if (workspace.selectedTreeConst()) |tree|
-        paneInteraction(ui, engine, workspace, tree.root)
+        paneInteraction(ui, engine, workspace, window_index, tree.root)
     else
         emptyInteraction(ui);
     const content = ui.row(.{ .height = chrome.content.height }, .{
@@ -1798,11 +1880,9 @@ fn configureOptionsValue(options: *Adapter.Options) void {
     options.view = mainView;
     options.markup = null;
     options.window_view = windowView;
-    options.tokens_fn = struct {
-        fn tokens(_: *const core.Model) canvas.DesignTokens {
-            return cockpit.projection.baseTokens();
-        }
-    }.tokens;
+    // Chrome uses the manifest's Geist theme and follows system appearance,
+    // contrast and reduced motion, in step with its native material. Terminal
+    // colors and font metrics remain configured by terminalTokensFrom.
     // Register the complete terminal family before the first frame. The TS
     // runner has no Zig host phase that can add the weighted faces later.
     options.fonts = &cockpit.scene.cockpit_fonts;
@@ -1891,6 +1971,9 @@ const PointerHost = struct {
     // outside target, then canvas_widget_pointer. Settings must consume that
     // command; other overlays keep light-dismiss.
     settings_clickthrough: SettingsClickthrough = .{},
+    menu_dismiss_pending: bool = false,
+    menu_dismiss_pointer: ?u64 = null,
+    menu_dismiss_window: u64 = 0,
 
     fn wrap(self: *PointerHost, inner: native_sdk.App) native_sdk.App {
         self.* = .{ .inner = inner };
@@ -1932,6 +2015,8 @@ const PointerHost = struct {
         const self: *PointerHost = @ptrCast(@alignCast(context));
         try bridge.takeNativeReplayError();
         if (try bridge.nativeReplayEvent(value)) return;
+        if (self.consumeMenuDismissal(runtime, value)) return;
+        if (tabOwnsNavigation(value)) return;
         const previous_origin = bridge.fallback_origin;
         const previous_admission = bridge.command_admission;
         defer bridge.fallback_origin = previous_origin;
@@ -1977,6 +2062,57 @@ const PointerHost = struct {
             },
             else => return false,
         }
+    }
+
+    /// SDK light-dismiss is published before the same cycle's routed pointer
+    /// and raw input. Closing the model resumes input immediately, but that
+    /// dismissal gesture still belongs to the menu, including its release.
+    fn consumeMenuDismissal(self: *PointerHost, runtime: *native_sdk.Runtime, value: native_sdk.Event) bool {
+        switch (value) {
+            .canvas_widget_dismiss => {
+                // Physical input keeps the SDK refresh batch open through
+                // dismissal and raw delivery. Accessibility/automation dismiss
+                // is standalone and must not swallow the NEXT real gesture.
+                self.menu_dismiss_pending = bridge.interaction_mode == .menu and
+                    runtime.canvas_widget_display_list_refresh_batch_depth > 0;
+            },
+            .canvas_widget_pointer => |routed| {
+                if (routed.pointer.phase == .down and !self.menu_dismiss_pending) self.menu_dismiss_pointer = null;
+                return self.menu_dismiss_pending or self.dismissalPointerMatches(routed.window_id, routed.pointer.pointer_id);
+            },
+            .gpu_surface_input => |raw| return self.consumeMenuDismissRaw(raw),
+            else => {},
+        }
+        return false;
+    }
+
+    fn dismissalPointerMatches(self: *const PointerHost, window: u64, pointer: u64) bool {
+        return self.menu_dismiss_pointer == pointer and self.menu_dismiss_window == window;
+    }
+
+    fn resetMenuDismissal(self: *PointerHost) void {
+        self.menu_dismiss_pending = false;
+        self.menu_dismiss_pointer = null;
+        self.menu_dismiss_window = 0;
+    }
+
+    fn consumeMenuDismissRaw(self: *PointerHost, raw: native_sdk.platform.GpuSurfaceInputEvent) bool {
+        const dismissed = self.menu_dismiss_pending;
+        self.menu_dismiss_pending = false;
+        if (raw.kind == .pointer_down) {
+            self.menu_dismiss_pointer = null;
+            if (dismissed) {
+                self.menu_dismiss_pointer = raw.pointer_id;
+                self.menu_dismiss_window = raw.window_id;
+            }
+        }
+        if (!self.dismissalPointerMatches(raw.window_id, raw.pointer_id)) return false;
+        switch (raw.kind) {
+            .pointer_up, .pointer_cancel => self.menu_dismiss_pointer = null,
+            .pointer_down, .pointer_move, .pointer_drag => {},
+            else => return false,
+        }
+        return true;
     }
 
     fn refreshNativeState(runtime: *native_sdk.Runtime, value: native_sdk.Event) void {
@@ -2072,6 +2208,7 @@ const PointerHost = struct {
         try bridge.takeNativeReplayError();
         switch (control) {
             .arm => {
+                self.resetMenuDismissal();
                 bridge.admission.deinit();
                 try bridge.admission.armReplay();
                 if (bridge.runtime) |runtime| try bridge.admission.start(std.heap.page_allocator, admission_channel_key, runtime.options.session_recorder);
@@ -2091,6 +2228,7 @@ const PointerHost = struct {
     /// Every ledger checks its own leftovers. All three run before the first
     /// failure is reported, so one ledger's refusal never hides another's.
     fn finishReplay(self: *PointerHost) !void {
+        self.resetMenuDismissal();
         defer bridge.admission.deinit();
         defer bridge.resetNativeReplay();
         const admission = bridge.admission.finishReplay();
@@ -2322,6 +2460,25 @@ fn activatedControl(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
 
 var pointer_host = PointerHost{};
 
+/// The SDK moves tab focus, but reports an unmoved edge as unhandled. Those
+/// keys (including release) still belong to the tab, never to the terminal.
+fn tabOwnsNavigation(value: native_sdk.Event) bool {
+    if (value != .canvas_widget_keyboard) return false;
+    const routed = value.canvas_widget_keyboard;
+    const target = routed.target orelse return false;
+    if (target.kind != .segmented_control) return false;
+    // Match SDK traversal: arrows allow Shift; Home/End require no modifiers.
+    var modifiers = routed.keyboard.modifiers;
+    modifiers.shift = false;
+    if (!std.meta.eql(modifiers, canvas.WidgetKeyboardModifiers{})) return false;
+    for ([_][]const u8{ "ArrowLeft", "ArrowRight" }) |key| {
+        if (std.ascii.eqlIgnoreCase(routed.keyboard.key, key)) return true;
+    }
+    if (routed.keyboard.modifiers.shift) return false;
+    return std.ascii.eqlIgnoreCase(routed.keyboard.key, "Home") or
+        std.ascii.eqlIgnoreCase(routed.keyboard.key, "End");
+}
+
 fn activatedTab(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
     const target = routed.press_target orelse return false;
     return routed.pointer.phase == .up and routed.pointer.button == 0 and
@@ -2347,7 +2504,7 @@ test "shared workspace refresh timer starts with the shipping event-only adapter
 }
 
 const test_views = [_]native_sdk.ShellView{
-    .{ .label = canvas_label, .kind = .gpu_surface, .fill = true, .gpu_backend = .metal },
+    .{ .label = canvas_label, .kind = .gpu_surface, .fill = true, .gpu_backend = .metal, .gpu_material = .glass },
 };
 const test_windows = [_]native_sdk.ShellWindow{.{
     .label = "main",
@@ -2358,7 +2515,7 @@ const test_windows = [_]native_sdk.ShellWindow{.{
 }};
 const test_scene: native_sdk.ShellConfig = .{ .windows = &test_windows };
 
-test "shipping TypeScript graph registers the terminal family and Cockpit token ids" {
+test "shipping TypeScript graph registers terminal fonts without overriding native chrome appearance" {
     var options: Adapter.Options = .{
         .name = "phux-cockpit",
         .scene = test_scene,
@@ -2378,12 +2535,32 @@ test "shipping TypeScript graph registers the terminal family and Cockpit token 
         try std.testing.expect(registration.ttf.len > 4);
         try std.testing.expectEqualSlices(u8, &.{ 0, 1, 0, 0 }, registration.ttf[0..4]);
     }
-    var unused_model: core.Model = undefined;
-    const tokens = options.tokens_fn.?(&unused_model);
+    try std.testing.expect(options.tokens_fn == null);
+    var rig = try Rig.start();
+    defer rig.stop();
+    const tokens = cockpit.projection.terminalTokens(bridge.engine.?.model);
     try std.testing.expectEqual(cockpit.scene.terminal_font_id, tokens.typography.mono_font_id);
     try std.testing.expectEqual(cockpit.scene.terminal_bold_font_id, tokens.typography.mono_bold_font_id);
     try std.testing.expectEqual(cockpit.scene.terminal_italic_font_id, tokens.typography.mono_italic_font_id);
     try std.testing.expectEqual(cockpit.scene.terminal_bold_italic_font_id, tokens.typography.mono_bold_italic_font_id);
+}
+
+test "chrome follows native appearance without changing terminal defaults" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    const engine = bridge.engine.?;
+    engine.model.config.follow_system_theme = false;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .appearance_changed = .{ .color_scheme = .light } });
+    const light = rig.app_state.effectiveTokens();
+    const terminal_before = cockpit.projection.terminalTokensFrom(light, engine.model).colors;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .appearance_changed = .{ .color_scheme = .dark } });
+    const dark = rig.app_state.effectiveTokens();
+    try std.testing.expect(!std.meta.eql(light.colors.text, dark.colors.text));
+    try std.testing.expect(!std.meta.eql(light.colors.background, dark.colors.background));
+    const terminal_after = cockpit.projection.terminalTokensFrom(dark, engine.model).colors;
+    try std.testing.expectEqualDeep(terminal_before.background, terminal_after.background);
+    try std.testing.expectEqualDeep(terminal_before.text, terminal_after.text);
+    try std.testing.expectEqualDeep(terminal_before.accent, terminal_after.accent);
 }
 
 /// What the generated runner's src/windows registry does, for the rig: each
@@ -2438,6 +2615,36 @@ const Rig = struct {
 
     fn attachFixture(self: *Rig) !cockpit.TerminalRef {
         return self.attachFixtureWithHello(@embedFile("tests/fixtures/hello.bin"));
+    }
+
+    fn attachSharedSplitFixture(self: *Rig) !void {
+        _ = try self.attachFixture();
+        const engine = bridge.engine.?;
+        const remote = engine.model.phux().?;
+        const before = engine.model.shared_workspace.revision;
+        _ = (try remote.requestWorkspaceRefresh()).?;
+        // FFI operation IDs and internal wire request IDs are distinct.
+        // Initial attach used wire 0/1; this refresh uses 2/3.
+        try stageWorkspaceReply(remote, "workspace_split_metadata.bin", 8, 3);
+        try stageWorkspaceReply(remote, "workspace_split_state.bin", 7, 2);
+        _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+        try std.testing.expect(engine.model.shared_workspace.revision > before);
+        try std.testing.expectEqual(@as(usize, 2), engine.model.ws().selectedTree().?.paneCount());
+        remote.bridge.outgoing.reset();
+    }
+
+    fn attachSharedTabFixture(self: *Rig) !void {
+        _ = try self.attachFixture();
+        const engine = bridge.engine.?;
+        const remote = engine.model.phux().?;
+        const before = engine.model.shared_workspace.revision;
+        _ = (try remote.requestWorkspaceRefresh()).?;
+        try stageWorkspaceReply(remote, "workspace_add_metadata.bin", 14, 3);
+        try stageWorkspaceReply(remote, "workspace_add_state.bin", 13, 2);
+        _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+        try std.testing.expect(engine.model.shared_workspace.revision > before);
+        try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+        remote.bridge.outgoing.reset();
     }
 
     fn attachFixtureWithHello(self: *Rig, hello: []const u8) !cockpit.TerminalRef {
@@ -2516,6 +2723,8 @@ const Rig = struct {
             .name = "phux-cockpit",
             .scene = test_scene,
             .canvas_label = canvas_label,
+            .theme = .geist,
+            .theme_accent = canvas.Color.rgb8(190, 242, 100),
             .markup = .{ .source = @embedFile("app.native") },
             .window_view = testWindowView,
             // The generated runner wires the core's exported commandMsg; a
@@ -3247,6 +3456,381 @@ test "held painted tab action follows identity after metadata and reorder" {
     try std.testing.expectEqual(expected_command, rig.app_state.model.tabCommands.lastId.lo);
 }
 
+const TabMenuHost = struct {
+    id: canvas.ObjectId,
+    frame: native_sdk.geometry.RectF,
+    window_id: native_sdk.platform.WindowId,
+    label: []const u8,
+};
+
+fn matchesTabMenu(menu: []const canvas.WidgetContextMenuItem, previous_disabled: bool, next_disabled: bool) bool {
+    if (menu.len != 4) return false;
+    if (!std.mem.eql(u8, menu[0].label, "Move Left")) return false;
+    if (previous_disabled != !menu[0].enabled) return false;
+    if (next_disabled != !menu[1].enabled) return false;
+    if (!std.mem.eql(u8, menu[1].label, "Move Right")) return false;
+    if (!menu[2].separator) return false;
+    return std.mem.eql(u8, menu[3].label, "Close Tab");
+}
+
+fn tabMenuHost(rig: *Rig, previous_disabled: bool, next_disabled: bool) !TabMenuHost {
+    return tabMenuHostIn(rig, 1, canvas_label, previous_disabled, next_disabled);
+}
+
+fn tabMenuHostIn(rig: *Rig, window_id: native_sdk.platform.WindowId, label: []const u8, previous_disabled: bool, next_disabled: bool) !TabMenuHost {
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(window_id, label);
+    for (layout.nodes) |node| {
+        if (!matchesTabMenu(node.widget.context_menu, previous_disabled, next_disabled)) continue;
+        return .{ .id = node.widget.id, .frame = node.frame, .window_id = window_id, .label = label };
+    }
+    return error.TestExpectedTabMenu;
+}
+
+fn openTabMenu(rig: *Rig, host: TabMenuHost) !u64 {
+    const before = rig.harness.null_platform.context_menu_request_count;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = host.window_id,
+        .label = host.label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = host.frame.x + host.frame.width / 2,
+        .y = host.frame.y + host.frame.height / 2,
+    } });
+    try std.testing.expectEqual(before + 1, rig.harness.null_platform.context_menu_request_count);
+    return rig.harness.null_platform.context_menu_token;
+}
+
+fn chooseTabMenuItem(rig: *Rig, host: TabMenuHost, token: u64, item: u32) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+        .window_id = host.window_id,
+        .view_label = host.label,
+        .token = token,
+        .item_id = item,
+    } });
+    for (0..8) |_| {
+        if (rig.app_state.model.tabCommands.queue.len == 0) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.model.tabCommands.queue.len);
+}
+
+const ShippingSameCoordinator = struct {
+    primary: *cockpit.PhuxProvider,
+    secondary: *cockpit.PhuxProvider,
+
+    fn project(engine: *Engine) !ShippingSameCoordinator {
+        const endpoint = "/shipping-captured-tab-same-coordinator";
+        if (engine.model.phux_provider) |previous| previous.destroy();
+        engine.model.phux_provider = null;
+        engine.model.shared_workspace.deinit();
+        engine.model.shared_workspace = .{};
+        engine.model.shared_mutations = .{};
+        const primary = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = endpoint }, null, "primary");
+        engine.model.phux_provider = primary;
+        try engine.model.ensurePeerSlots(1);
+        const secondary = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = endpoint }, null, "secondary");
+        engine.model.peers.items[0].provider = secondary;
+        try secondary.show(2);
+        try cockpit.PhuxProvider.test_support.attachHost(primary.host);
+        try cockpit.PhuxProvider.test_support.attachSiblingHost(secondary.host);
+        try std.testing.expectEqual(primary.providerId(), secondary.providerId());
+        try std.testing.expect(primary.context_id != secondary.context_id);
+
+        const model = engine.model;
+        _ = model.openWindow(1) orelse return error.NoWindow;
+        model.shared_workspace.authority = primary.providerId();
+        model.shared_workspace.attachment_id = primary.context_id;
+        model.shared_workspace.placement_hint = .{
+            .shared_id = primary.workspaceSnapshot().windows[0].id,
+            .window = 0,
+            .window_epoch = model.window_epochs[0],
+        };
+        _ = try model.shared_workspace.apply(model, primary.workspaceSnapshot(), primary.connectionEpoch());
+        const state = &model.peers.items[0].workspace;
+        state.authority = secondary.providerId();
+        state.attachment_id = secondary.context_id;
+        state.placement_hint = .{
+            .shared_id = secondary.workspaceSnapshot().windows[0].id,
+            .window = 1,
+            .window_epoch = model.window_epochs[1],
+        };
+        _ = try state.apply(model, secondary.workspaceSnapshot(), secondary.connectionEpoch());
+        try std.testing.expectEqual(@as(usize, 1), model.primary.tab_count);
+        try std.testing.expectEqual(@as(usize, 1), model.wsAt(1).?.tab_count);
+        try std.testing.expectEqual(primary.context_id, model.primary.tabs[0].attachment_id.?);
+        try std.testing.expectEqual(secondary.context_id, model.wsAt(1).?.tabs[0].attachment_id.?);
+        model.active_window = 0;
+        model.primary.selected_tab = 0;
+        primary.bridge.outgoing.reset();
+        secondary.bridge.outgoing.reset();
+        return .{ .primary = primary, .secondary = secondary };
+    }
+};
+
+test "shipping background peer tab action keeps primary selected and completes through exact acknowledgement" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const siblings = try ShippingSameCoordinator.project(engine);
+    const selected = engine.model.focusedTerminalRef().?;
+    const selected_attachment = engine.model.primary.tabs[0].attachment_id.?;
+    const primary_id = engine.model.primary.shared_ids[0].?;
+    const secondary_id = engine.model.wsAt(1).?.shared_ids[0].?;
+    engine.sequence +%= 1;
+    engine.revision +%= 1;
+    bridge.announce(engine);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const secondary_window_id: native_sdk.platform.WindowId = 2;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = secondary_window_id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    const peer_menu = try tabMenuHostIn(&rig, secondary_window_id, "phux-cockpit-canvas-1", true, true);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    const token = try openTabMenu(&rig, peer_menu);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try chooseTabMenuItem(&rig, peer_menu, token, 4);
+    try std.testing.expectEqual(@as(u8, 0), bridge.command_buffer[2]);
+    try std.testing.expectEqual(@as(u8, 3), bridge.command_buffer[1]);
+    try std.testing.expectEqual(@as(i64, 7), rig.app_state.model.tabCommands.outcome);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.primary.selected_tab);
+    try std.testing.expect(selected.eql(engine.model.wsAt(0).?.focusedTerminalRef().?));
+    try std.testing.expectEqual(selected_attachment, engine.model.primary.tabs[0].attachment_id.?);
+    try std.testing.expectEqualDeep(primary_id, engine.model.primary.shared_ids[0].?);
+    try std.testing.expectEqualDeep(secondary_id, engine.model.wsAt(1).?.shared_ids[0].?);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.primary.tab_count);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsAt(1).?.tab_count);
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), engine.peer_edits.states.items.len);
+    const pending = engine.peer_edits.states.items[0].mutations.pending[0].?;
+    try std.testing.expectEqual(.remove_window, pending.mutation.kind);
+    try std.testing.expectEqualDeep(secondary_id, pending.mutation.window_id);
+    try std.testing.expect(pending.command_id != null);
+    try std.testing.expectEqual(@as(usize, 0), countOutgoingCommands(siblings.primary));
+    try std.testing.expect(countOutgoingCommands(siblings.secondary) >= 1);
+
+    try cockpit.PhuxProvider.test_support.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_session2_close_metadata.bin");
+    _ = try siblings.secondary.drainReadiness();
+    try cockpit.PhuxProvider.test_support.stageWorkspaceFixture(siblings.secondary.bridge, "workspace_session2_close_state.bin");
+    _ = try siblings.secondary.drainReadiness();
+    _ = engine.peer_edits.pump(engine.model, 0);
+    try std.testing.expectEqual(pending.command_id.?, engine.peer_edits.peekCompletion().?.command_id);
+
+    if (bridge.result_pending) Bridge.cancel(&bridge, bridge.result_key);
+    Bridge.request(&bridge, result_wire.request_name, 871, &result_wire.empty);
+    const completion = Bridge.poll(&bridge).?;
+    try std.testing.expectEqual(@as(u64, 871), completion.key);
+    var owned: [result_wire.max_bytes]u8 = undefined;
+    @memcpy(owned[0..completion.bytes.len], completion.bytes);
+    try rig.dispatch(.{ .command_result_loaded = owned[0..completion.bytes.len] });
+    try std.testing.expect(engine.peer_edits.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.commandResults.recent.len);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.commandResults.recent[0].operation);
+}
+
+test "shipping peer disconnect result survives slot reuse and only its exact bridge acknowledgement" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const siblings = try ShippingSameCoordinator.project(engine);
+    const command_id: u64 = 0xfedcba9876543210;
+    const target = cockpit.engine.tab_commands.capture(engine.model, 1, 0).?;
+    var request: [cockpit.engine.tab_commands.request_len]u8 = undefined;
+    request[0] = 1;
+    request[1] = @intFromEnum(cockpit.engine.tab_commands.Action.close);
+    std.mem.writeInt(u64, request[2..10], command_id, .little);
+    @memcpy(request[10..], &target.encode());
+    try std.testing.expectEqual(cockpit.engine.tab_commands.Status.accepted_pending, engine.applyTabCommand(&request).status);
+
+    engine.peer_edits.forget(engine.model, 0);
+    const unknown = engine.peer_edits.peekCompletion().?;
+    try std.testing.expectEqual(command_id, unknown.command_id);
+    try std.testing.expectEqual(.unknown, unknown.operation);
+    try std.testing.expectEqual(.disconnected, unknown.reason);
+
+    const old_context = siblings.secondary.context_id;
+    engine.model.peers.items[0].provider = null;
+    siblings.secondary.destroy();
+    const replacement = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/shipping-captured-tab-same-coordinator" }, null, "replacement");
+    engine.model.peers.items[0].provider = replacement;
+    try std.testing.expect(replacement.context_id != old_context);
+    engine.model.peers.items[0].workspace.attachment_id = replacement.context_id;
+    engine.peer_edits.forget(engine.model, 0);
+    try std.testing.expectEqualDeep(unknown, engine.peer_edits.peekCompletion().?);
+
+    if (bridge.result_pending) Bridge.cancel(&bridge, bridge.result_key);
+    Bridge.request(&bridge, result_wire.request_name, 881, &result_wire.empty);
+    const first = Bridge.poll(&bridge).?;
+    try std.testing.expectEqual(@as(u64, 881), first.key);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(result_wire.Source.shared)), first.bytes[1]);
+    try std.testing.expectEqual(@as(u8, 3), first.bytes[2]);
+    try std.testing.expectEqual(command_id, std.mem.readInt(u64, first.bytes[6..14], .little));
+
+    var stale_ack = [_]u8{0} ** 10;
+    stale_ack[0] = 1;
+    stale_ack[1] = @intFromEnum(result_wire.Source.shared);
+    std.mem.writeInt(u64, stale_ack[2..10], command_id - 1, .little);
+    Bridge.request(&bridge, result_wire.request_name, 882, &stale_ack);
+    const repeated = Bridge.poll(&bridge).?;
+    try std.testing.expectEqual(command_id, std.mem.readInt(u64, repeated.bytes[6..14], .little));
+    try std.testing.expectEqualDeep(unknown, engine.peer_edits.peekCompletion().?);
+
+    var exact_ack = stale_ack;
+    std.mem.writeInt(u64, exact_ack[2..10], command_id, .little);
+    Bridge.request(&bridge, result_wire.request_name, 883, &exact_ack);
+    const consumed = Bridge.poll(&bridge).?;
+    try std.testing.expectEqualSlices(u8, &result_wire.empty, consumed.bytes);
+    try std.testing.expect(engine.peer_edits.peekCompletion() == null);
+    try std.testing.expect(!engine.peer_edits.ackCompletion(command_id));
+}
+
+fn countOutgoingCommands(remote: *cockpit.PhuxProvider) usize {
+    var count: usize = 0;
+    while (remote.bridge.outgoing.take()) |frame| {
+        if (frame[4] == 0x31) count += 1;
+        remote.bridge.outgoing.release(frame);
+    }
+    return count;
+}
+
+test "shipping tab context menu retains a background target across rebuild move and close" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const first = engine.model.focusedTerminalRef().?;
+    try rig.dispatch(.new_terminal);
+    try rig.settleCurrent();
+    try rig.dispatch(.new_terminal);
+    try rig.settleCurrent();
+    const selected = engine.model.focusedTerminalRef().?;
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().selected_tab);
+
+    const first_menu = try tabMenuHost(&rig, true, false);
+    const move_token = try openTabMenu(&rig, first_menu);
+    // The host owns the menu's static dispatch bytes after both build arenas
+    // have been replaced; a later frame cannot retarget this action.
+    for (0..2) |_| {
+        try rig.dispatch(.engine_wake);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    }
+    try chooseTabMenuItem(&rig, first_menu, move_token, 2);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tabOfTerminal(first).?);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().selected_tab);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+
+    const middle_menu = try tabMenuHost(&rig, false, false);
+    const close_token = try openTabMenu(&rig, middle_menu);
+    try chooseTabMenuItem(&rig, middle_menu, close_token, 4);
+    try std.testing.expect(engine.model.locateTerminal(first) == null);
+    try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
+    _ = try tabMenuHost(&rig, true, false);
+}
+
+test "direct close buttons preserve the selected terminal when closing a background tab" {
+    inline for (.{ .top, .side }) |placement| {
+        var rig = try Rig.start();
+        defer rig.stop();
+        try rig.settle(0, "READY");
+        const engine = bridge.engine.?;
+        const first = engine.model.focusedTerminalRef().?;
+        try rig.reach(.{ .label = "direct background close", .tabs = 3, .placement = placement });
+        try rig.dispatch(.{ .select_tab = 2 });
+        try rig.settleCurrent();
+        const selected = engine.model.focusedTerminalRef().?;
+        try std.testing.expect(!selected.eql(first));
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var close: ?native_sdk.geometry.RectF = null;
+        for (layout.nodes) |node| {
+            if (std.mem.eql(u8, node.widget.semantics.label, "Close tab: Terminal 1")) close = node.frame;
+        }
+        const frame = close orelse return error.MissingCloseTabButton;
+        try std.testing.expectApproxEqAbs(@as(f32, 32), frame.width, 0.01);
+        try std.testing.expectApproxEqAbs(@as(f32, 32), frame.height, 0.01);
+        try pressCanvasFrame(&rig, frame);
+        try rig.settleCurrent();
+        try std.testing.expect(engine.model.locateTerminal(first) == null);
+        try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
+        try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    }
+}
+
+test "captured tab actions reject malformed expired and nonexistent targets without changing focus" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const commands = cockpit.engine.tab_commands;
+    const focused = engine.model.focusedTerminalRef().?;
+    const target = commands.capture(engine.model, 0, 0).?;
+    var packet: [commands.request_len]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = @intFromEnum(commands.Action.close);
+
+    try std.testing.expect(commands.decode(packet[0 .. packet.len - 1]) == null);
+    var bad_kind = packet;
+    bad_kind[1] = 7;
+    std.mem.writeInt(u64, bad_kind[2..10], 1, .little);
+    @memcpy(bad_kind[10..], &target.encode());
+    try std.testing.expect(commands.decode(&bad_kind) == null);
+
+    var stale = target;
+    stale.window_epoch +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 1, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    stale = target;
+    stale.tab_generation +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 2, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    stale = target;
+    stale.tab_id +%= 1;
+    std.mem.writeInt(u64, packet[2..10], 3, .little);
+    @memcpy(packet[10..], &stale.encode());
+    try std.testing.expectEqual(commands.Reason.stale_target, engine.applyTabCommand(&packet).reason);
+    try std.testing.expect(focused.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+}
+
+test "captured shared tab close queues pending without changing presentation" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const engine = try cockpit.durable_tests.start();
+    defer engine.destroy();
+    const commands = cockpit.engine.tab_commands;
+    const target = commands.capture(engine.model, 0, 0).?;
+    var packet: [commands.request_len]u8 = undefined;
+    packet[0] = 1;
+    packet[1] = @intFromEnum(commands.Action.close);
+    std.mem.writeInt(u64, packet[2..10], 41, .little);
+    @memcpy(packet[10..], &target.encode());
+    const receipt = engine.applyTabCommand(&packet);
+    try std.testing.expectEqual(commands.Status.accepted_pending, receipt.status);
+    try std.testing.expectEqual(commands.Reason.none, receipt.reason);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    var pending: usize = 0;
+    for (engine.model.shared_mutations.pending) |entry| if (entry != null) {
+        pending += 1;
+    };
+    try std.testing.expectEqual(@as(usize, 1), pending);
+    try std.testing.expectEqual(commands.Reason.invalid_command, engine.applyTabCommand(&packet).reason);
+    try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tab_count);
+}
+
 test "tab command receipt survives snapshot and navigation requests and rejects reused windows" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -3721,6 +4305,567 @@ test "shipping final pane close retires main while a secondary keeps running" {
     try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
 }
 
+test "shipping local terminal declares Copy and Paste context actions" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.phase = .live;
+    pane.session.feed("context selection");
+    try std.testing.expect(pane.session.selectAllHistory());
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expectEqual(@as(usize, 2), node.widget.context_menu.len);
+        try std.testing.expectEqualStrings("Copy", node.widget.context_menu[0].label);
+        try std.testing.expectEqualStrings("Paste", node.widget.context_menu[1].label);
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expect(node.widget.context_menu[1].enabled);
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+test "shipping Phux terminal declares Copy and Paste context actions" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .select_all, &fx));
+    const selection_reads_before_build = remote.host.selectionTextRequestCount();
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    try std.testing.expectEqual(selection_reads_before_build, remote.host.selectionTextRequestCount());
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expectEqual(@as(usize, 2), node.widget.context_menu.len);
+        try std.testing.expectEqualStrings("Copy", node.widget.context_menu[0].label);
+        try std.testing.expectEqualStrings("Paste", node.widget.context_menu[1].label);
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expect(node.widget.context_menu[1].enabled);
+        const owner = engine.model.phux().?.owner(engine.model.focusedTerminalRef().?).?;
+        const frame = node.frame;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = .pointer_down,
+            .button = 1,
+            .x = frame.x + frame.width / 2,
+            .y = frame.y + frame.height / 2,
+        } });
+        const token = rig.harness.null_platform.context_menu_token;
+        try std.testing.expect(token != 0);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+            .window_id = 1,
+            .view_label = canvas_label,
+            .token = token,
+            .item_id = 1,
+        } });
+        try std.testing.expect(engine.model.copy_owner.eql(owner));
+        var clipboard: [256]u8 = undefined;
+        for (0..8) |_| {
+            const text = try rig.harness.runtime.readClipboard(&clipboard);
+            if (std.mem.indexOf(u8, text, "COCKPIT FIXTURE") != null) break;
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        }
+        try std.testing.expect(std.mem.indexOf(u8, try rig.harness.runtime.readClipboard(&clipboard), "COCKPIT FIXTURE") != null);
+        try std.testing.expectEqual(selection_reads_before_build + 1, remote.host.selectionTextRequestCount());
+
+        remote.bridge.outgoing.reset();
+        try rig.harness.runtime.options.platform.services.writeClipboard("paste through captured Phux owner");
+        var command: [128]u8 = undefined;
+        try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-context-menu {s} {d} 1", .{ canvas_label, node.widget.id }));
+        for (0..8) |_| {
+            if (engine.model.phux().?.bridge.outgoing.hasPending()) break;
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        }
+        try std.testing.expect(engine.model.paste_owner.eql(owner));
+        try expectOutgoingTag(engine.model.phux().?, 0x11);
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+const MenuAttachmentFx = struct {
+    restarted: ?usize = null,
+
+    pub fn restartPeer(self: *@This(), _: anytype, slot: usize) bool {
+        self.restarted = slot;
+        return true;
+    }
+    pub fn restartPhux(_: *@This(), _: anytype) bool {
+        return false;
+    }
+    pub fn openChannel(_: *@This(), _: anytype) native_sdk.ChannelHandle {
+        return .{};
+    }
+    pub fn closeChannel(_: *@This(), _: u64) void {}
+    pub fn showNotification(_: *@This(), _: anytype) void {}
+};
+
+test "shipping secondary Phux menu retains the captured attachment after focus moves" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const model = engine.model;
+    const fixture = cockpit.PhuxProvider.test_support;
+    const first = try cockpit.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused-provider-menu.sock" }, null, "menus");
+    model.phux_provider = first;
+    model.primary = .{};
+    first.standBy();
+    try first.host.start("menus");
+    try fixture.stageFixture(first.bridge, "hello.bin");
+    _ = try first.drainReadiness();
+    try fixture.stageFixture(first.bridge, "standby_state.bin");
+    _ = try first.drainReadiness();
+    try first.show(1);
+    _ = try first.drainReadiness();
+    try fixture.stageFixture(first.bridge, "attached.bin");
+    _ = try first.drainReadiness();
+    try fixture.stageWorkspaceFixture(first.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageFixture(first.bridge, "workspace_sessions_a_state.bin");
+    _ = try first.drainReadiness();
+    model.shared_workspace.attachment_id = first.context_id;
+    model.shared_workspace.showInWindow(0, model.window_epochs[0]);
+    _ = try model.shared_workspace.apply(model, first.workspaceSnapshot(), first.connectionEpoch());
+    model.bindWindowAttachment(0, first.context_id);
+    _ = model.openWindow(1) orelse return error.TestExpectedSecondaryWindow;
+    const ref = model.primary.focusedTerminalRef().?;
+    const first_owner = first.owner(ref).?;
+    var setup_fx: MenuAttachmentFx = .{};
+    try engine.showSessionFromInWindow(first, 2, 1, model.window_epochs[1], &setup_fx);
+    const slot = setup_fx.restarted.?;
+    const second = model.phuxPeerAt(slot).?;
+    try second.host.start("independent-menu-attachment");
+    try fixture.stageFixture(second.bridge, "hello.bin");
+    _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
+    try fixture.stageFixture(second.bridge, "attached_session_b.bin");
+    _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
+    try fixture.stageWorkspaceFixture(second.bridge, "workspace_initial_metadata.bin");
+    try fixture.stageFixture(second.bridge, "workspace_session_b_state.bin");
+    _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
+    const second_owner = second.owner(ref).?;
+    try std.testing.expect(!first_owner.eql(second_owner));
+    try stageRemoteOutput(second, "SECOND ATTACHMENT", 1);
+    _ = engine.onPeerChannel(&setup_fx, .{ .key = engine.peerChannelKey(slot), .kind = .data }, null);
+
+    model.active_window = 0;
+    const first_state = model.remoteUi(ref).?;
+    first_state.selecting = true;
+    model.active_window = 1;
+    const second_state = model.remoteUi(ref).?;
+    const presentation = second.presentation(ref).?;
+    const start_anchor = try second.createAnchor(second_owner, .{ .space = .history, .row = 0, .column = 0 });
+    const end_anchor = try second.createAnchor(second_owner, .{
+        .space = .history,
+        .row = @intCast(presentation.history_total_rows - 1),
+        .column = presentation.cols - 1,
+    });
+    try second.setSelection(second_owner, start_anchor, end_anchor, false);
+    second_state.start_anchor = start_anchor.opaque_id;
+    second_state.end_anchor = end_anchor.opaque_id;
+    second_state.selecting = true;
+    model.active_window = 0;
+    const second_tree = model.wsAtConst(1).?.selectedTreeConst().?;
+    const direct_target = cockpit.engine.clipboard.Target.capture(model, second_tree, 1, ref, .copy).?;
+    try std.testing.expect(direct_target.resolve(model).?.owner.eql(second_owner));
+    try std.testing.expect(engine.clipboardEnabled(second_owner, .copy));
+    engine.revision += 1;
+    engine.sequence += 1;
+    bridge.announce(engine);
+    try rig.settle(@intCast(engine.sequence), "READY");
+
+    const secondary = model.wsAt(1).?;
+    const window_id = secondary.window_id;
+    const label = "phux-cockpit-canvas-1";
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = window_id,
+        .label = label,
+        .size = .init(1100, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(window_id, label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expectEqual(@as(usize, 2), node.widget.context_menu.len);
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expect(node.widget.context_menu[1].enabled);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = window_id,
+            .label = label,
+            .kind = .pointer_down,
+            .button = 1,
+            .x = node.frame.x + node.frame.width / 2,
+            .y = node.frame.y + node.frame.height / 2,
+        } });
+        const token = rig.harness.null_platform.context_menu_token;
+        try std.testing.expect(token != 0);
+        model.active_window = 0;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+            .window_id = window_id,
+            .view_label = label,
+            .token = token,
+            .item_id = 1,
+        } });
+        try std.testing.expect(engine.model.copy_owner.eql(second_owner));
+        for (0..8) |_| {
+            if (!engine.model.copy_inflight) break;
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        }
+        try std.testing.expect(!engine.model.copy_inflight);
+        try std.testing.expect(!second_state.selecting);
+        try std.testing.expect(first_state.selecting);
+
+        first.bridge.outgoing.reset();
+        second.bridge.outgoing.reset();
+        try rig.harness.runtime.options.platform.services.writeClipboard("second attachment paste");
+        var command: [128]u8 = undefined;
+        try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-context-menu {s} {d} 1", .{ label, node.widget.id }));
+        for (0..8) |_| {
+            if (second.bridge.outgoing.hasPending()) break;
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+        }
+        try std.testing.expect(engine.model.paste_owner.eql(second_owner));
+        try std.testing.expect(!first.bridge.outgoing.hasPending());
+        try expectOutgoingTag(second, 0x11);
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+test "shipping Phux menu recognizes an owner-qualified selection outside the viewport without reading it" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const owner = remote.owner(ref).?;
+    try stageRemoteOutput(remote, "\r\nrow" ** 40, 1);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try remote.scrollViewport(owner, .{ .kind = .top });
+    const start = try remote.createAnchor(owner, .{ .space = .history, .row = 0, .column = 0 });
+    const end = try remote.createAnchor(owner, .{ .space = .history, .row = 0, .column = 7 });
+    try remote.setSelection(owner, start, end, false);
+    const state = engine.model.remoteUi(ref).?;
+    try std.testing.expect(state.owner.eql(owner));
+    state.start_anchor = start.opaque_id;
+    state.end_anchor = end.opaque_id;
+    try remote.scrollViewport(owner, .{ .kind = .bottom });
+    try std.testing.expect(!remote.presentation(ref).?.grid.selection_active);
+
+    const selection_reads_before_build = remote.host.selectionTextRequestCount();
+    try std.testing.expect(engine.clipboardEnabled(owner, .copy));
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        try std.testing.expect(node.widget.context_menu[0].enabled);
+        try std.testing.expectEqual(selection_reads_before_build, remote.host.selectionTextRequestCount());
+        return;
+    }
+    return error.TestExpectedTerminal;
+}
+
+fn clipboardSourceWidget(rig: *Rig) !u64 {
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        if (std.mem.indexOf(u8, node.widget.text, "clipboard source") != null) return node.widget.id;
+    }
+    return error.TestExpectedClipboardSource;
+}
+
+test "shipping context clipboard actions retain the clicked split pane after focus moves" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const source_ref = engine.model.focusedTerminalRef().?;
+    const source = engine.model.provider.terminal(source_ref).?;
+    source.phase = .live;
+    source.session.feed("clipboard source");
+    try std.testing.expect(source.session.selectAllHistory());
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const other_ref = engine.model.focusedTerminalRef().?;
+    try std.testing.expect(!source_ref.eql(other_ref));
+    const other = engine.model.provider.terminal(other_ref).?;
+    const widget = try clipboardSourceWidget(&rig);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const frame = layout.findById(widget).?.frame;
+    try std.testing.expectEqual(widget, layout.hitTest(.init(frame.x + frame.width / 2, frame.y + frame.height / 2)).?.id);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = frame.x + frame.width / 2,
+        .y = frame.y + frame.height / 2,
+    } });
+    try std.testing.expectEqual(@as(usize, 1), rig.harness.null_platform.context_menu_request_count);
+    const token = rig.harness.null_platform.context_menu_token;
+    try std.testing.expect(token != 0);
+    _ = engine.model.ws().selectedTree().?.focusTerminal(other_ref);
+    // Force both build arenas to turn over while the native presenter retains
+    // the original menu. Its static bytes must still name the source pane.
+    for (0..2) |_| {
+        try rig.dispatch(.engine_wake);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    }
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .token = token,
+        .item_id = 1,
+    } });
+    var command: [128]u8 = undefined;
+    try std.testing.expect(engine.model.copy_owner.terminal_ref.eql(source_ref));
+    var clipboard: [256]u8 = undefined;
+    for (0..8) |_| {
+        const text = try rig.harness.runtime.readClipboard(&clipboard);
+        if (std.mem.indexOf(u8, text, "clipboard source") != null) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, try rig.harness.runtime.readClipboard(&clipboard), "clipboard source") != null);
+
+    try rig.harness.runtime.options.platform.services.writeClipboard("paste to source");
+    const current_widget = try clipboardSourceWidget(&rig);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, try std.fmt.bufPrint(&command, "widget-context-menu {s} {d} 1", .{ canvas_label, current_widget }));
+    try std.testing.expect(engine.model.paste_owner.terminal_ref.eql(source_ref));
+    for (0..8) |_| {
+        if (source.outbound_len > 0) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    try std.testing.expect(source.outbound_len > 0);
+    try std.testing.expectEqual(@as(usize, 0), other.outbound_len);
+}
+
+test "captured local clipboard targets refuse stale generations mouse reporting and replay" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const ref = engine.model.focusedTerminalRef().?;
+    const pane = engine.model.provider.terminal(ref).?;
+    pane.phase = .live;
+    const tree = engine.model.ws().selectedTreeConst().?;
+    const target = cockpit.engine.clipboard.Target.capture(engine.model, tree, 0, ref, .paste).?;
+    var packet_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const packet = target.encode(&packet_storage);
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet[0 .. packet.len - 1]));
+    var invalid = packet_storage;
+    invalid[1] = 255;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, invalid[0..packet.len]));
+    invalid = packet_storage;
+    invalid[0] = 255;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, invalid[0..packet.len]));
+    var stale = target;
+    stale.owner.generation.bootstrap_id +%= 1;
+    var stale_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, stale.encode(&stale_storage)));
+    stale = target;
+    stale.provider_context +%= 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, stale.encode(&stale_storage)));
+    const create = protocol.encodeIntent(.{ .kind = .new_terminal, .expected_revision = engine.revision, .argument = 0 });
+    try std.testing.expect(engine.applyIntent(&create, &cockpit.NoShells{}));
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    engine.model.ws().selected_tab = 0;
+    pane.session.feed("\x1b[?1000h");
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    pane.session.feed("\x1b[?1000l");
+    try std.testing.expect(!engine.model.paste_inflight);
+    try rig.decorated.replayControl(.arm);
+    bridge.sendClipboard(packet);
+    try std.testing.expect(!engine.model.paste_inflight);
+}
+
+test "captured Phux clipboard targets refuse malformed stale hidden and replayed actions" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const ref = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTreeConst().?;
+    const target = cockpit.engine.clipboard.Target.capture(engine.model, tree, 0, ref, .paste).?;
+    var storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const packet = target.encode(&storage);
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet[0 .. packet.len - 1]));
+    var malformed = storage;
+    malformed[0] = 255;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, malformed[0..packet.len]));
+    malformed = storage;
+    malformed[1] = 255;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, malformed[0..packet.len]));
+    malformed = storage;
+    malformed[3] = 0;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, malformed[0..packet.len]));
+
+    var stale = target;
+    var stale_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    stale.owner.generation.bootstrap_id +%= 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, stale.encode(&stale_storage)));
+    stale = target;
+    stale.provider_context +%= 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, stale.encode(&stale_storage)));
+
+    const remote = engine.model.phux().?;
+    remote.host.terminals.items[0].generation.bootstrap_id +%= 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    remote.host.terminals.items[0].generation.bootstrap_id -%= 1;
+    workspace.tab_generation += 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    workspace.tab_generation -= 1;
+    engine.model.window_epochs[0] += 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    engine.model.window_epochs[0] -= 1;
+    var local_refs: [2]cockpit.TerminalRef = undefined;
+    try std.testing.expect(engine.model.provider.terminalRefs(&local_refs) != 0);
+    try std.testing.expect(workspace.admitTab(local_refs[0]));
+    workspace.selected_tab = 1;
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, packet));
+    workspace.dropTab(1);
+    workspace.selected_tab = 0;
+
+    try rig.decorated.replayControl(.arm);
+    bridge.sendClipboard(packet);
+    try std.testing.expect(!engine.model.paste_inflight);
+}
+
+test "shipping terminal context menu respects live TUI and ended shell ownership" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.phase = .live;
+    pane.session.feed("clipboard source\x1b[?1000h");
+    try std.testing.expect(pane.session.selectAllHistory());
+    var widget = try clipboardSourceWidget(&rig);
+    var layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    try std.testing.expectEqual(@as(usize, 0), layout.findById(widget).?.widget.context_menu.len);
+    try std.testing.expectEqual(.disabled, layout.contextMenuPolicyById(widget));
+    const frame = layout.findById(widget).?.frame;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = frame.x + frame.width / 2,
+        .y = frame.y + frame.height / 2,
+    } });
+    try std.testing.expect(pane.outbound_len > 0);
+    try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.context_menu_request_count);
+    pane.phase = .ended;
+    widget = try clipboardSourceWidget(&rig);
+    layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const menu = layout.findById(widget).?.widget.context_menu;
+    try std.testing.expectEqual(@as(usize, 2), menu.len);
+    try std.testing.expect(menu[0].enabled);
+    try std.testing.expect(!menu[1].enabled);
+}
+
+test "shipping Phux context menu leaves TUI secondary click owned and refuses actions after a C-FFI exit" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .select_all, &fx));
+    try stageRemoteOutput(remote, "\x1b[?1000h", 1);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    var widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var found_live = false;
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role != .textbox) continue;
+        found_live = true;
+        try std.testing.expectEqual(@as(usize, 0), node.widget.context_menu.len);
+        try std.testing.expectEqual(.disabled, widgets.contextMenuPolicyById(node.widget.id));
+        remote.bridge.outgoing.reset();
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = .pointer_down,
+            .button = 1,
+            .x = node.frame.x + node.frame.width / 2,
+            .y = node.frame.y + node.frame.height / 2,
+        } });
+        try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.context_menu_request_count);
+        try expectOutgoingTag(remote, 0x12);
+        break;
+    }
+    try std.testing.expect(found_live);
+
+    try stageRemoteOutput(remote, "\x1b[?1000l", 2);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    const owner = remote.owner(engine.model.focusedTerminalRef().?).?;
+    const tree = engine.model.ws().selectedTreeConst().?;
+    const paste_target = cockpit.engine.clipboard.Target.capture(engine.model, tree, 0, owner.terminal_ref, .paste).?;
+    var paste_storage: [cockpit.engine.clipboard.max_packet_len]u8 = undefined;
+    const paste_packet = paste_target.encode(&paste_storage);
+    try rig.dispatch(.engine_wake);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var menu_frame: ?native_sdk.geometry.RectF = null;
+    for (widgets.nodes) |node| {
+        if (node.widget.semantics.role == .textbox) menu_frame = node.frame;
+    }
+    const frame = menu_frame orelse return error.TestExpectedTerminal;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .button = 1,
+        .x = frame.x + frame.width / 2,
+        .y = frame.y + frame.height / 2,
+    } });
+    const token = rig.harness.null_platform.context_menu_token;
+    try std.testing.expect(token != 0);
+    try rig.harness.runtime.options.platform.services.writeClipboard("leave the clipboard alone");
+    const reads = remote.host.selectionTextRequestCount();
+    try cockpit.PhuxProvider.test_support.stageFixture(remote.bridge, "remote-exited.bin");
+    _ = try remote.drainReadiness();
+    // Phux closes an exited replica; unlike an ephemeral local shell, it does
+    // not retain an ended presentation on which a menu could remain valid.
+    try std.testing.expect(remote.presentation(owner.terminal_ref) == null);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .context_menu_action = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .token = token,
+        .item_id = 1,
+    } });
+    try std.testing.expect(!engine.applyClipboard(&cockpit.NoShells{}, paste_packet));
+    try std.testing.expect(!engine.model.copy_inflight);
+    try std.testing.expect(!engine.model.paste_inflight);
+    try std.testing.expectEqual(reads, remote.host.selectionTextRequestCount());
+    var clipboard: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("leave the clipboard alone", try rig.harness.runtime.readClipboard(&clipboard));
+}
+
 test "shipping clipboard completion belongs to its requesting replica after focus moves" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -3774,11 +4919,34 @@ test "shipping Phux callbacks emit structured key text paste and focus frames" {
 }
 
 fn expectOutgoingTag(remote: anytype, tag: u8) !void {
+    try takeOutgoingTag(remote, tag);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+fn takeOutgoingTag(remote: anytype, tag: u8) !void {
     const frame = remote.bridge.outgoing.take() orelse return error.TestExpectedOutgoingFrame;
     defer remote.bridge.outgoing.release(frame);
     try std.testing.expect(frame.len > 4);
     try std.testing.expectEqual(tag, frame[4]);
-    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+}
+
+fn stageRemoteOutput(remote: anytype, text: []const u8, seq: u64) !void {
+    var storage: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&storage);
+    try writer.writeAll(&.{ 0, 0, 0, 0, 0x90, 1, 4, 5, 0, 0, 0, 0, 7, 2, 4, 8 });
+    try writer.writeInt(u64, seq, .big);
+    try writer.writeAll(&.{ 3, 4 });
+    var remaining = text.len;
+    while (remaining >= 128) : (remaining >>= 7) try writer.writeByte(@as(u8, @intCast(remaining & 0x7f)) | 0x80);
+    try writer.writeByte(@intCast(remaining));
+    try writer.writeAll(text);
+    try writer.writeAll(&.{ 4, 4, 8 });
+    try writer.writeInt(u64, 7, .big);
+    try writer.writeAll(&.{ 5, 4, 8 });
+    try writer.writeInt(u64, 1, .big);
+    const bytes = writer.buffered();
+    std.mem.writeInt(u32, bytes[0..4], @intCast(bytes.len - 4), .big);
+    try std.testing.expect(remote.bridge.incoming.stage(bytes));
 }
 
 /// Decode the small KEY fixture's positional event inside its two TLV fields.
@@ -3876,6 +5044,66 @@ test "shipping platform shortcut executes once and rejects the superseded regist
     try bridge.editKeybindings(&.{ 1, 1, 0, 5, 'C', 'm', 'd', '+', 'r' });
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = shortcut });
     try std.testing.expectEqual(before + 1, bridge.engine.?.model.ws().tab_count);
+}
+
+test "shipping Cmd W confirms a shared non-last tab close and remains responsive" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedTabFixture();
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    try rig.dispatch(.{ .select_tab = 1 });
+    try rig.settleCurrent();
+    const closing = engine.model.focusedTerminalRef().?;
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "w") and item.modifiers.command) break item;
+    } else return error.TestExpectedCloseShortcut;
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
+        .id = shortcut.id,
+        .key = shortcut.key,
+        .modifiers = shortcut.modifiers,
+        .window_id = 1,
+    } });
+    try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
+    const pending = engine.model.shared_mutations.pending[0] orelse return error.TestExpectedSharedClose;
+    try std.testing.expectEqual(.remove, pending.mutation.kind);
+    try std.testing.expect(pending.mutation.terminal_ref.?.eql(closing));
+    try std.testing.expectEqual(.pending, remote.workspaceSnapshot().status);
+    const request = remote.workspaceSnapshot().request_id;
+    try std.testing.expectEqual(pending.mutation_request, request);
+    remote.bridge.outgoing.reset();
+
+    // Initial attach used wire requests 0/1 and the setup refresh used 2/3.
+    // The mutation confirmation reads use 4/5; the host's aggregate request
+    // ID above intentionally belongs to a different namespace.
+    try stageWorkspaceReply(remote, "workspace_refresh_metadata.bin", 3, 5);
+    try stageWorkspaceReply(remote, "workspace_refresh_state.bin", 2, 4);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+    try rig.settleCurrent();
+
+    try std.testing.expectEqual(@as(usize, 1), engine.model.ws().tab_count);
+    try std.testing.expect(engine.model.locateTerminal(closing) == null);
+    try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
+    try std.testing.expect(!Bridge.hasPending(&bridge));
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.commandResults.recent.len);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.commandResults.recent[0].operation);
+
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var terminal_count: usize = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role == .textbox) terminal_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), terminal_count);
+    remote.bridge.outgoing.reset();
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas z z");
+    try takeOutgoingTag(remote, 0x10);
+    try expectOutgoingTag(remote, 0x10);
 }
 
 test "first chord in another window obeys that window's search ownership" {
@@ -4091,6 +5319,122 @@ test "shipping Phux macOS editing gestures target word and line bindings" {
     try expectOutgoingKey(remote, 76, 0);
     _ = onKey(.{ .phase = .key_up, .key = "arrowleft" });
     try expectOutgoingKey(remote, 76, 0);
+}
+
+test "workspace menu owns terminal input until dismissal or command handoff" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try std.testing.expect(!engine.input_suspended);
+    try rig.dispatch(.header_menu_toggle);
+    try std.testing.expect(engine.input_suspended);
+    try std.testing.expectEqual(.menu, bridge.interaction_mode);
+    try std.testing.expect(onKey(.{ .phase = .key_down, .key = "a" }) == null);
+    const escape = onKey(.{ .phase = .key_down, .key = "Escape" }).?;
+    try std.testing.expectEqual(core.Msg.header_menu_close, escape);
+    try rig.dispatch(escape);
+    try std.testing.expect(!engine.input_suspended);
+    try rig.dispatch(.header_menu_toggle);
+    try rig.dispatch(.header_tab_placement);
+    try std.testing.expectEqual(.side, rig.app_state.model.tabPlacement);
+    try std.testing.expect(!engine.input_suspended);
+}
+
+test "workspace menu keyboard and outside dismissal use retained SDK routing" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.header_menu_toggle);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "Escape",
+    } });
+    try std.testing.expectEqual(@as(i64, -1), rig.app_state.model.headerMenuWindow);
+    try std.testing.expect(!bridge.engine.?.input_suspended);
+    try rig.dispatch(.header_menu_toggle);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.session.feed("selected terminal content");
+    try std.testing.expect(pane.session.selectAllHistory());
+    try pressCanvasFrame(&rig, .init(400, 300, 2, 2));
+    try std.testing.expectEqual(@as(i64, -1), rig.app_state.model.headerMenuWindow);
+    try std.testing.expect(!bridge.engine.?.input_suspended);
+    try std.testing.expect(pane.session.selectionActive());
+}
+
+test "workspace menu trigger and rows work through SDK keyboard focus" {
+    const Keys = struct {
+        fn press(rig: *Rig, key: []const u8) !void {
+            inline for (.{ .key_down, .key_up }) |kind| {
+                try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+                    .window_id = 1,
+                    .label = canvas_label,
+                    .kind = kind,
+                    .key = key,
+                } });
+            }
+        }
+    };
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var trigger: ?native_sdk.geometry.RectF = null;
+    var trigger_id: u64 = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .button and std.mem.eql(u8, node.widget.semantics.label, "Workspace actions")) {
+            trigger = node.frame;
+            trigger_id = node.widget.id;
+        }
+    }
+    try pressCanvasFrame(&rig, trigger orelse return error.MissingMenuTrigger);
+    try std.testing.expect(rig.app_state.model.mainHeaderMenuOpen);
+    try Keys.press(&rig, "Escape");
+    try std.testing.expect(!rig.app_state.model.mainHeaderMenuOpen);
+    // Seed keyboard focus on the trigger; all activation/traversal below
+    // goes through the retained SDK tree, rather than dispatching core Msgs.
+    rig.harness.runtime.views[0].canvas_widget_focused_id = trigger_id;
+    try Keys.press(&rig, "Enter");
+    try std.testing.expect(rig.app_state.model.mainHeaderMenuOpen);
+    try Keys.press(&rig, "ArrowDown");
+    try Keys.press(&rig, "ArrowUp");
+    try Keys.press(&rig, "Enter");
+    try std.testing.expect(!rig.app_state.model.mainHeaderMenuOpen);
+    try std.testing.expect(rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.navigatorView);
+}
+
+test "standalone menu dismissal does not consume the next terminal click" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.header_menu_toggle);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var menu: ?u64 = null;
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .dropdown_menu) menu = node.widget.id;
+    }
+    // Accessibility and automation publish a standalone dismiss, without a
+    // physical input refresh batch or a subsequent raw event in that cycle.
+    try rig.decorated.event(&rig.harness.runtime, .{ .canvas_widget_dismiss = .{
+        .window_id = 1,
+        .view_label = canvas_label,
+        .id = menu orelse return error.MissingMenu,
+    } });
+    try std.testing.expectEqual(@as(i64, -1), rig.app_state.model.headerMenuWindow);
+    const engine = bridge.engine.?;
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    pane.session.feed("selected terminal content");
+    try std.testing.expect(pane.session.selectAllHistory());
+    try pressCanvasFrame(&rig, .init(400, 300, 2, 2));
+    try std.testing.expect(!pane.session.selectionActive());
 }
 
 test "committed palette owns input even when an older model is painted" {
@@ -4344,6 +5688,211 @@ test "native divider drag updates engine geometry without crossing the TypeScrip
         .x = divider.rect.x,
         .y = y,
     } });
+}
+
+test "shipping divider keyboard and accessibility resizes survive a rebuild" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const branch = engine.model.ws().selectedTree().?.root;
+    const initial = engine.model.ws().selectedTree().?.node(branch).fraction;
+    var divider = try shippingSplitDivider(&rig);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    const after_arrow = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_arrow > initial);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    divider = try shippingSplitDivider(&rig);
+
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas end");
+    const after_end = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_end > after_arrow);
+
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas home");
+    const after_home = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_home < after_arrow);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .increment },
+    );
+    const after_increment = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_increment > after_home);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .decrement },
+    );
+    const after_decrement = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try std.testing.expect(after_decrement < after_increment);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(after_decrement, engine.model.ws().selectedTree().?.node(branch).fraction);
+}
+
+fn stageWorkspaceReply(remote: anytype, comptime name: []const u8, expected: u32, request: u32) !void {
+    // Canonical Rust-generated replies, changing only request correlation.
+    var bytes = @embedFile("providers/phux/fixtures/" ++ name).*;
+    try std.testing.expectEqualSlices(u8, &.{ 1, 4, 4 }, bytes[5..8]);
+    try std.testing.expectEqual(0x8000_0000 + expected, std.mem.readInt(u32, bytes[8..12], .big));
+    std.mem.writeInt(u32, bytes[8..12], 0x8000_0000 + request, .big);
+    try std.testing.expect(remote.bridge.incoming.stage(&bytes));
+}
+
+fn stageResizeStepReply(remote: anytype, fraction: f32) !void {
+    var bytes = @embedFile("providers/phux/fixtures/workspace_resize_metadata.bin").*;
+    // Keep the Rust-generated topology, confirming the SDK's actual step
+    // rather than the generator's 0.7 example. CBOR encodes this as float32.
+    const sample = [_]u8{ 0xfa, 0x3f, 0x33, 0x33, 0x33 };
+    const offset = std.mem.indexOf(u8, &bytes, &sample) orelse return error.TestExpectedResizeRatio;
+    try std.testing.expectEqual(offset, std.mem.lastIndexOf(u8, &bytes, &sample).?);
+    std.mem.writeInt(u32, bytes[offset + 1 ..][0..4], @bitCast(fraction), .big);
+    try std.testing.expectEqual(@as(u32, 0x8000_000b), std.mem.readInt(u32, bytes[8..12], .big));
+    std.mem.writeInt(u32, bytes[8..12], 0x8000_0005, .big);
+    try std.testing.expect(remote.bridge.incoming.stage(&bytes));
+}
+
+test "shipping shared divider accessibility resize requests and confirms through Phux" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedSplitFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const tree = engine.model.ws().selectedTree().?;
+    const branch = tree.root;
+    const initial = tree.node(branch).fraction;
+    const initial_revision = engine.model.shared_workspace.revision;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), initial, 0.001);
+    try rig.dispatch(.engine_wake);
+    const divider = try shippingSplitDivider(&rig);
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    const ticket = engine.model.shared_mutations.next_ticket + 1;
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .increment },
+    );
+
+    // The published shared layout stays authoritative until confirmation.
+    try std.testing.expectEqual(initial, tree.node(branch).fraction);
+    try std.testing.expect(remote.bridge.outgoing.hasPending());
+    try std.testing.expectEqual(.pending, remote.workspaceSnapshot().status);
+    const pending = engine.model.shared_mutations.pending[0].?;
+    try std.testing.expectEqual(.native, pending.origin);
+    try std.testing.expectEqual(ticket, pending.ticket);
+    try std.testing.expectEqual(.resize, pending.mutation.kind);
+    try std.testing.expectEqualDeep(engine.model.ws().shared_ids[engine.model.ws().selected_tab].?, pending.mutation.window_id);
+    try std.testing.expectEqual(@as(u64, 0), pending.mutation.path_bits);
+    try std.testing.expectEqual(@as(u32, 0), pending.mutation.path_len);
+    try std.testing.expect(pending.mutation.ratio > initial);
+    try std.testing.expect(pending.mutation_request != 0);
+    const request = remote.workspaceSnapshot().request_id;
+    try std.testing.expectEqual(pending.mutation_request, request);
+    try stageResizeStepReply(remote, pending.mutation.ratio);
+    try stageWorkspaceReply(remote, "workspace_resize_state.bin", 10, 4);
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
+
+    const confirmed = engine.model.shared_mutations.peekCompletion().?;
+    try std.testing.expectEqual(.native, confirmed.origin);
+    try std.testing.expectEqual(ticket, confirmed.command_id);
+    try std.testing.expectEqual(ticket, confirmed.mutation_ticket);
+    try std.testing.expectEqual(.success, confirmed.operation);
+    try std.testing.expectEqual(request, confirmed.request_id);
+    try std.testing.expect(engine.model.shared_workspace.revision > initial_revision);
+    try std.testing.expectEqual(pending.mutation.ratio, engine.model.ws().selectedTree().?.node(branch).fraction);
+    bridge.ackResult(engine, .{ .source = .native_shared, .command_id = ticket });
+    try std.testing.expect(engine.model.shared_mutations.peekCompletion() == null);
+}
+
+test "shipping vertical divider uses up and down but ignores cross-axis keys" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+
+    try rig.dispatch(core.commandMsg("pane.split-down").?);
+    try rig.settle(1, "READY");
+    const branch = engine.model.ws().selectedTree().?.root;
+    const divider = try shippingSplitDivider(&rig);
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    const initial = engine.model.ws().selectedTree().?.node(branch).fraction;
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    try std.testing.expectEqual(initial, engine.model.ws().selectedTree().?.node(branch).fraction);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
+    try std.testing.expect(engine.model.ws().selectedTree().?.node(branch).fraction > initial);
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowup");
+    try std.testing.expectEqual(initial, engine.model.ws().selectedTree().?.node(branch).fraction);
+}
+
+test "shipping replay ignores keyboard and accessibility split resizes" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(core.commandMsg("pane.split-right").?);
+    try rig.settle(1, "READY");
+    const workspace = engine.model.ws();
+    const tree = workspace.selectedTree().?;
+    workspace.shared_ids[workspace.selected_tab] = @splat(1);
+    engine.model.shared_workspace.revision = 10;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const divider = try shippingSplitDivider(&rig);
+    const root = tree.root;
+    const fraction = tree.node(root).fraction;
+    const sequence = engine.sequence;
+    const ticket = engine.model.shared_mutations.next_ticket;
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .focus },
+    );
+    try rig.decorated.replayControl(.arm);
+
+    _ = try rig.harness.runtime.dispatchCanvasWidgetAccessibilityAction(
+        rig.decorated,
+        1,
+        canvas_label,
+        .{ .id = divider, .action = .increment },
+    );
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowright");
+    try std.testing.expectEqual(fraction, tree.node(root).fraction);
+    try std.testing.expectEqual(sequence, engine.sequence);
+    try std.testing.expectEqual(ticket, engine.model.shared_mutations.next_ticket);
+}
+
+fn shippingSplitDivider(rig: *Rig) !canvas.ObjectId {
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .split_divider) return node.widget.id;
+    }
+    return error.TestExpectedSplitDivider;
 }
 
 fn beginShippingDividerDrag(rig: *Rig) !cockpit.layout.Divider {
@@ -4925,7 +6474,7 @@ test "clicking the selected tab returns Enter to its focused split pane in strip
         const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
         var tab: ?native_sdk.geometry.RectF = null;
         for (layout.nodes) |node| {
-            if (node.widget.state.selected and (node.widget.kind == .toggle_button or node.widget.kind == .list_item)) tab = node.frame;
+            if (node.widget.state.selected and node.widget.semantics.role == .tab) tab = node.frame;
         }
         const frame = tab orelse return error.TestExpectedTab;
         inline for (.{ .pointer_down, .pointer_up }) |kind| {
@@ -5206,6 +6755,7 @@ const parity_states = [_]ChromeState{
     .{ .label = "scrollable palette beyond one transport page", .palette = true, .tabs = 5 },
     .{ .label = "settings over rail", .settings = true, .placement = .side },
     .{ .label = "workspace settings", .settings = true, .settings_section = 1 },
+    .{ .label = "window settings", .settings = true, .settings_section = 3 },
     .{ .label = "keyboard settings", .settings = true, .settings_section = 2 },
     .{ .label = "connection settings", .settings = true, .settings_section = 4 },
     .{ .label = "about settings", .settings = true, .settings_section = 5 },
@@ -5280,6 +6830,230 @@ test "the markup chrome passes the layout audit at every declared size, density 
     try std.testing.expectEqual(@as(usize, 0), total);
 }
 
+test "tab-first header fills its measured strip and actions menu stays within the window" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    for ([_]usize{ 1, 3, 16 }) |count| {
+        try rig.reach(.{ .label = "tab-first header", .tabs = count });
+        for (parity_sizes) |size| {
+            try rig.resize(size);
+            const run = bridge.engine.?.currentRun();
+            const strip = bridge.engine.?.model.wsConst().shipping_tab_strip_width;
+            const gaps = @as(f32, @floatFromInt(run.count - 1)) * 4;
+            const used = @as(f32, @floatFromInt(run.count * run.extent)) + gaps;
+            const cue: f32 = if (run.count < count) 36 else 0;
+            // Extents cross the wire as whole points; at most one point per
+            // tab is lost to quantization, never hundreds to a fixed cap.
+            try std.testing.expect(used + cue <= strip);
+            try std.testing.expect(strip - used - cue < @as(f32, @floatFromInt(run.count)) + 1);
+            const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+            var action_center: ?f32 = null;
+            for (layout.nodes) |node| {
+                if (std.mem.eql(u8, node.widget.semantics.label, "New Tab")) action_center = node.frame.y + node.frame.height / 2;
+            }
+            for (layout.nodes) |node| {
+                if (node.widget.semantics.role != .tab) continue;
+                try std.testing.expectApproxEqAbs(action_center orelse return error.MissingNewTab, node.frame.y + node.frame.height / 2, 0.01);
+            }
+            try rig.dispatch(.header_menu_toggle);
+            try std.testing.expect(rig.app_state.model.mainHeaderMenuOpen);
+            for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
+                try std.testing.expectEqual(@as(usize, 0), try auditChromeAt(&rig.app_state.model, size, density, "workspace menu"));
+            }
+            try rig.dispatch(.header_menu_close);
+        }
+    }
+}
+
+fn pressCanvasFrame(rig: *Rig, frame: native_sdk.geometry.RectF) !void {
+    return pressCanvasFrameOn(rig, frame, 1, canvas_label);
+}
+
+fn pressCanvasFrameOn(rig: *Rig, frame: native_sdk.geometry.RectF, window_id: u64, label: []const u8) !void {
+    inline for (.{ .pointer_down, .pointer_up }) |kind| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = window_id,
+            .label = label,
+            .kind = kind,
+            .x = frame.x + frame.width / 2,
+            .y = frame.y + frame.height / 2,
+        } });
+    }
+}
+
+test "Settings widget controls dispatch and reflect authoritative selections" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    var widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var font_radios: [2]native_sdk.geometry.RectF = undefined;
+    var fonts: usize = 0;
+    var selected_fonts: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind != .radio) continue;
+        if (node.widget.state.selected) selected_fonts += 1;
+        font_radios[fonts] = node.frame;
+        fonts += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), fonts);
+    try std.testing.expectEqual(@as(usize, 1), selected_fonts);
+    try std.testing.expect(!rig.app_state.model.fontChoices[1].selected);
+    try pressCanvasFrame(&rig, font_radios[1]);
+    try std.testing.expect(rig.app_state.model.appearanceBusy);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio) try std.testing.expect(node.widget.state.disabled);
+    }
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.fontChoices[1].selected);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var selected_font: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind != .radio) continue;
+        if (node.widget.state.selected) selected_font += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), selected_font);
+
+    try rig.dispatch(.{ .settings_section = 1 });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var cursor_radios: [3]native_sdk.geometry.RectF = undefined;
+    var cursor_count: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio and (std.mem.eql(u8, node.widget.text, "Block") or
+            std.mem.eql(u8, node.widget.text, "Bar") or std.mem.eql(u8, node.widget.text, "Underline")))
+        {
+            cursor_radios[cursor_count] = node.frame;
+            cursor_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), cursor_count);
+    try pressCanvasFrame(&rig, cursor_radios[1]);
+    try std.testing.expect(rig.app_state.model.appearanceBusy);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio) try std.testing.expect(node.widget.state.disabled);
+    }
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.cursorChoices[1].selected);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var selected_cursor: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio and std.mem.eql(u8, node.widget.text, "Bar") and node.widget.state.selected) selected_cursor += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), selected_cursor);
+
+    // Search brings each boolean into the viewport; clicking the unscrolled
+    // frame of an offscreen row must not accidentally activate it.
+    for ([_][]const u8{ "Cursor blink", "Inherit working directory" }) |query| {
+        try rig.dispatch(.{ .settings_query = .clear });
+        try rig.dispatch(.{ .settings_query = .{ .insert_text = query } });
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var off: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (node.widget.kind == .radio and std.mem.eql(u8, node.widget.text, "Off")) off = node.frame;
+        }
+        try std.testing.expect(rig.app_state.model.settingRows[0].checked);
+        try pressCanvasFrame(&rig, off orelse return error.TestExpectedBooleanChoice);
+        try std.testing.expect(rig.app_state.model.appearanceBusy);
+        try rig.settleAppearance();
+        try std.testing.expect(!rig.app_state.model.settingRows[0].checked);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var off_selected = false;
+        for (widgets.nodes) |node| {
+            if (node.widget.kind == .radio and std.mem.eql(u8, node.widget.text, "Off")) off_selected = node.widget.state.selected;
+        }
+        try std.testing.expect(off_selected);
+    }
+
+    // A generic setting's Edit control makes its input and Preview action
+    // reachable through the compiled widget tree.
+    try rig.dispatch(.{ .settings_query = .clear });
+    try rig.dispatch(.{ .settings_query = .{ .insert_text = "Shell command" } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var edit: ?native_sdk.geometry.RectF = null;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .button and std.mem.eql(u8, node.widget.text, "Edit")) edit = node.frame;
+    }
+    try pressCanvasFrame(&rig, edit orelse return error.TestExpectedSettingsEdit);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var has_value_input = false;
+    var has_preview = false;
+    for (widgets.nodes) |node| {
+        has_value_input = has_value_input or (node.widget.kind == .input and std.mem.eql(u8, node.widget.semantics.label, "Setting value"));
+        has_preview = has_preview or (node.widget.kind == .button and std.mem.eql(u8, node.widget.text, "Preview"));
+    }
+    try std.testing.expect(has_value_input);
+    try std.testing.expect(has_preview);
+
+    try rig.dispatch(.{ .settings_query = .clear });
+    try rig.dispatch(.{ .settings_section = 3 });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var placement_radios: [2]native_sdk.geometry.RectF = undefined;
+    var placements: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind != .radio) continue;
+        placement_radios[placements] = node.frame;
+        placements += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), placements);
+    try pressCanvasFrame(&rig, placement_radios[1]);
+    try std.testing.expect(rig.app_state.model.appearanceBusy);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.placementChoices[1].selected);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var selected_placement: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio and node.widget.state.selected) selected_placement += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), selected_placement);
+
+    try rig.dispatch(.settings_close);
+    try rig.settleAppearance();
+    try rig.dispatch(.new_window);
+    const engine = bridge.engine.?;
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.window1SettingsOpen);
+    const secondary = engine.model.wsAt(1) orelse return error.TestExpectedSecondaryWindow;
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = secondary.window_id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(900, 420),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const secondary_widgets = try rig.harness.runtime.canvasWidgetLayout(secondary.window_id, "phux-cockpit-canvas-1");
+    var rendered_settings = false;
+    for (secondary_widgets.nodes) |node| rendered_settings = rendered_settings or std.mem.eql(u8, node.widget.semantics.label, "Cancel settings");
+    try std.testing.expect(rendered_settings);
+    try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(
+        &rig.app_state.model,
+        native_sdk.geometry.SizeF.init(900, 420),
+        .regular,
+        "secondary settings minimum size",
+        1,
+    ));
+}
+
 /// The shipping hidden-inset header must itself be the drag surface.
 /// Parking `window-drag` on the 78pt traffic-light spacer leaves no
 /// usable grab handle: the lights occupy that reserve, and the rest of
@@ -5319,19 +7093,170 @@ fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: nativ
     }
     try std.testing.expect(widest >= size.width - 16);
 
-    var settings_index: ?usize = null;
+    var actions_index: ?usize = null;
     var leading_index: ?usize = null;
     for (layout.nodes, 0..) |entry, index| {
-        if (std.mem.eql(u8, entry.widget.semantics.label, "Settings")) settings_index = index;
+        if (std.mem.eql(u8, entry.widget.semantics.label, "Workspace actions")) actions_index = index;
         if (entry.frame.y < 60 and entry.frame.x < 16 and @abs(entry.frame.width - 78) < 0.5) {
             leading_index = index;
         }
     }
-    const settings = settings_index orelse return error.TestExpectedSettingsControl;
-    try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, settings) == null);
+    const actions = actions_index orelse return error.TestExpectedActionsControl;
+    try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, actions) == null);
     const leading = leading_index orelse return error.TestExpectedTitlebarLeadingReserve;
     try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, leading) != null);
     try std.testing.expectEqual(drag_index, canvas.widgetWindowDragTargetIndexFromNode(layout, leading));
+}
+
+test "top tabs use native sibling arrow and edge traversal without selecting on focus" {
+    const Keys = struct {
+        fn press(rig: *Rig, key: []const u8) !void {
+            inline for (.{ .key_down, .key_up }) |kind| {
+                try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+                    .window_id = 1,
+                    .label = canvas_label,
+                    .kind = kind,
+                    .key = key,
+                } });
+            }
+        }
+    };
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "keyboard tabs", .tabs = 3 });
+    try rig.dispatch(.{ .select_tab = 2 });
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var ids: [3]u64 = undefined;
+    var count: usize = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role != .tab) continue;
+        if (count == ids.len) return error.TooManyTabs;
+        try std.testing.expectEqual(.segmented_control, node.widget.kind);
+        try std.testing.expectEqual(.tabs, layout.nodes[node.parent_index.?].widget.kind);
+        try std.testing.expectApproxEqAbs(@as(f32, 32), node.frame.height, 0.01);
+        ids[count] = node.widget.id;
+        count += 1;
+    }
+    try std.testing.expectEqual(ids.len, count);
+    const engine = bridge.engine.?;
+    const selected = engine.model.focusedTerminalRef().?;
+    rig.harness.runtime.views[0].canvas_widget_focused_id = ids[0];
+    try Keys.press(&rig, "ArrowRight");
+    try std.testing.expectEqual(ids[1], rig.harness.runtime.views[0].canvas_widget_focused_id);
+    try Keys.press(&rig, "End");
+    try std.testing.expectEqual(ids[2], rig.harness.runtime.views[0].canvas_widget_focused_id);
+    try Keys.press(&rig, "ArrowLeft");
+    try std.testing.expectEqual(ids[1], rig.harness.runtime.views[0].canvas_widget_focused_id);
+    try Keys.press(&rig, "Home");
+    try std.testing.expectEqual(ids[0], rig.harness.runtime.views[0].canvas_widget_focused_id);
+    try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try Keys.press(&rig, "Enter");
+    try rig.settleCurrent();
+    try std.testing.expectEqual(@as(usize, 0), engine.model.wsConst().selected_tab);
+}
+
+test "tab traversal at an edge never leaks navigation keys to the terminal" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.attachSharedTabFixture();
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const remote = bridge.engine.?.model.phux().?;
+    const layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var ids: [2]u64 = undefined;
+    var count: usize = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.semantics.role != .tab) continue;
+        if (count == ids.len) return error.TooManyTabs;
+        ids[count] = node.widget.id;
+        count += 1;
+    }
+    try std.testing.expectEqual(ids.len, count);
+    const cases = .{
+        .{ 0, "ArrowLeft", false, 0 },
+        .{ 0, "Home", false, 0 },
+        .{ 1, "ArrowRight", false, 1 },
+        .{ 1, "End", false, 1 },
+        .{ 0, "ArrowLeft", true, 0 },
+        .{ 1, "ArrowRight", true, 1 },
+        .{ 0, "ArrowRight", true, 1 },
+        .{ 1, "ArrowLeft", true, 0 },
+    };
+    inline for (cases) |case| {
+        rig.harness.runtime.views[0].canvas_widget_focused_id = ids[case[0]];
+        remote.bridge.outgoing.reset();
+        inline for (.{ .key_down, .key_up }) |kind| {
+            try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+                .window_id = 1,
+                .label = canvas_label,
+                .kind = kind,
+                .key = case[1],
+                .modifiers = .{ .shift = case[2] },
+            } });
+        }
+        try std.testing.expectEqual(ids[case[3]], rig.harness.runtime.views[0].canvas_widget_focused_id);
+        try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    }
+    // Modified terminal navigation retains its existing owner.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "ArrowLeft",
+        .modifiers = .{ .option = true },
+    } });
+    try expectOutgoingKey(remote, 21, 4);
+}
+
+test "empty session action stays below the header beside the rail and on a chrome surface" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    inline for (.{ core.TabPlacement.top, core.TabPlacement.side }) |placement| {
+        for ([_]bool{ false, true }) |busy| {
+            var model = rig.app_state.model;
+            model.mainEmptyOpen = true;
+            model.tabPlacement = placement;
+            model.emptyBusy = busy;
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var ui = Adapter.Ui.init(arena.allocator());
+            const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+            const tree = try ui.finalizeWithTokens(chromeViewAt(&ui, &model, 0), tokens);
+            const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+            const layout = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, 900, 420), tokens, nodes);
+            var found = false;
+            for (layout.nodes) |node| {
+                if (!std.mem.eql(u8, node.widget.text, if (busy) "Opening…" else "New Tab")) continue;
+                found = true;
+                try std.testing.expect(node.frame.y >= 50);
+                try std.testing.expect(node.frame.x >= if (placement == .side) @as(f32, 224) else 0);
+                try std.testing.expectEqual(busy, node.widget.state.disabled);
+                const row = layout.nodes[node.parent_index.?];
+                const group = layout.nodes[row.parent_index.?];
+                try std.testing.expectEqualDeep(tokens.colors.surface, group.widget.style.background.?);
+            }
+            try std.testing.expect(found);
+        }
+    }
+}
+
+test "connection recovery stays available alongside retained command feedback" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    var model = rig.app_state.model;
+    model.canReconnect = true;
+    try std.testing.expect(try compiledViewHasText(&model, "Reconnect"));
+    model.commandNotice = "Outcome unknown; check the session before retrying.";
+    try std.testing.expect(try compiledViewHasText(&model, "Reconnect"));
+    model.canReconnect = false;
+    try std.testing.expect(try compiledViewHasText(&model, model.commandNotice));
 }
 
 test "titlebar chrome is a window-drag surface in every window and placement" {
@@ -5453,6 +7378,34 @@ fn expectParentAttentionChrome(rig: *Rig, label: []const u8, shown: bool) !void 
     }
 }
 
+fn compiledFirstTabFrame(model: *const core.Model, size: native_sdk.geometry.SizeF) !native_sdk.geometry.RectF {
+    return compiledFirstTabFrameAtWidth(model, size, model);
+}
+
+/// Compare attention states against one measured tab slot. Snapshot refreshes
+/// may legitimately carry a new projection width; that is a different
+/// geometry decision from the local attention marker and must not be allowed
+/// to masquerade as tab-label reflow in this assertion.
+fn compiledFirstTabFrameAtWidth(model: *const core.Model, size: native_sdk.geometry.SizeF, width_source: *const core.Model) !native_sdk.geometry.RectF {
+    var scoped = model.*;
+    scoped.tabWidth = width_source.tabWidth;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tree = try ui.finalizeWithTokens(chromeViewAt(&ui, &scoped, 0), cockpit.projection.cockpitTokens(bridge.engine.?.model));
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const layout = try canvas.layoutWidgetTreeWithTokens(
+        tree.root,
+        native_sdk.geometry.RectF.init(0, 0, size.width, size.height),
+        cockpit.projection.cockpitTokens(bridge.engine.?.model),
+        nodes,
+    );
+    for (layout.nodes) |entry| {
+        if (entry.widget.semantics.role == .tab) return entry.frame;
+    }
+    return error.TestExpectedTab;
+}
+
 fn expectParentAttentionAt(model: core.Model, label: []const u8, shown: bool, size: native_sdk.geometry.SizeF) !void {
     var scoped = model;
     scoped.window1Tabs = model.visibleTabs;
@@ -5484,6 +7437,11 @@ test "shipping tab chrome exposes attention for a blocked nonfocused split" {
     try std.testing.expect(local.eql(engine.model.focusedTerminalRef().?));
     var bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
     try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
+    const tab_size = native_sdk.geometry.SizeF.init(1100, 640);
+    const tab_before_attention = try compiledFirstTabFrame(&rig.app_state.model, tab_size);
+    const tab_size_min = native_sdk.geometry.SizeF.init(900, 420);
+    const tab_before_attention_min = try compiledFirstTabFrame(&rig.app_state.model, tab_size_min);
+    const width_source = rig.app_state.model;
     var label_buffer: [128]u8 = undefined;
     const label = try std.fmt.bufPrint(&label_buffer, "Needs attention: {s}", .{rig.app_state.model.visibleTabs[0].title});
     try expectParentAttentionChrome(&rig, label, false);
@@ -5494,6 +7452,12 @@ test "shipping tab chrome exposes attention for a blocked nonfocused split" {
     });
     try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
     try std.testing.expect(rig.app_state.model.visibleTabs[0].attention);
+    const tab_with_attention = try compiledFirstTabFrameAtWidth(&rig.app_state.model, tab_size, &width_source);
+    try std.testing.expectApproxEqAbs(tab_before_attention.x, tab_with_attention.x, 0.01);
+    try std.testing.expectApproxEqAbs(tab_before_attention.width, tab_with_attention.width, 0.01);
+    const tab_with_attention_min = try compiledFirstTabFrameAtWidth(&rig.app_state.model, tab_size_min, &width_source);
+    try std.testing.expectApproxEqAbs(tab_before_attention_min.x, tab_with_attention_min.x, 0.01);
+    try std.testing.expectApproxEqAbs(tab_before_attention_min.width, tab_with_attention_min.width, 0.01);
     try expectParentAttentionChrome(&rig, label, true);
     try std.testing.expect(try fixture.feedAgentRecords(remote.host, 9100, .closed, ""));
     try rig.dispatch(.{ .snapshot_loaded = try engine.snapshot(&bytes) });
@@ -5521,10 +7485,213 @@ test "crowded tab strip keeps every tab and overflow cue inside its allocated ch
             if (node.widget.semantics.role != .tab and !std.mem.eql(u8, node.widget.semantics.label, "Tabs not shown")) continue;
             seen += 1;
             try std.testing.expect(node.frame.x >= frame.x);
-            try std.testing.expect(node.frame.x + node.frame.width <= frame.x + frame.width);
+            // Equal-share grow layout has fractional edges at some widths.
+            try std.testing.expect(node.frame.x + node.frame.width <= frame.x + frame.width + 0.01);
         }
         try std.testing.expect(seen > 1);
     }
+}
+
+test "crowded tab strip holds its anchor when selecting a visible earlier tab" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "anchored crowded strip", .tabs = 16 });
+    try rig.resize(.init(1100, 640));
+    try rig.dispatch(.{ .select_tab = 15 });
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    const before = engine.currentRun();
+    try std.testing.expect(before.first > 0);
+    try std.testing.expect(before.count > 1);
+    try rig.dispatch(.{ .select_tab = 14 });
+    try rig.settleCurrent();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try rig.settleCurrent();
+    try std.testing.expectEqual(@as(usize, 14), engine.model.wsConst().selected_tab);
+    const after = engine.currentRun();
+    try std.testing.expectEqual(before.first, after.first);
+    try std.testing.expectEqual(before.count, after.count);
+    try std.testing.expectEqual(before.extent, after.extent);
+    // Leaving the run should scroll only far enough to reveal the selection.
+    try rig.dispatch(.{ .select_tab = @intCast(before.first - 1) });
+    try rig.settleCurrent();
+    try std.testing.expectEqual(before.first - 1, engine.currentRun().first);
+}
+
+test "shipping chrome keeps command access and elided tab titles discoverable" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "discoverable crowded strip", .tabs = 16 });
+    try rig.resize(.init(900, 420));
+
+    // One persistent actions trigger exposes commands, independently of overflow.
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Workspace actions"));
+    // Tab buttons expose the complete title as their semantic label even when
+    // the fixed-width visible title is elided by the toolkit.
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Terminal 1"));
+    // The cue keeps a stable semantic purpose while its visible text carries
+    // the current count (for example, +11).
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Tabs not shown"));
+
+    try rig.reach(.{ .label = "discoverable rail", .tabs = 16, .placement = .side });
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Workspace actions"));
+}
+
+fn pressHeaderCommands(rig: *Rig, window_id: u64, label: []const u8) !void {
+    for ([_][]const u8{ "Workspace actions", "All commands" }) |target| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const widgets = try rig.harness.runtime.canvasWidgetLayout(window_id, label);
+        var frame: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (std.mem.eql(u8, node.widget.semantics.label, target)) frame = node.frame;
+        }
+        try pressCanvasFrameOn(rig, frame orelse return error.TestExpectedMenuControl, window_id, label);
+    }
+}
+
+test "Commands menu action is pointer reachable in primary and secondary chrome" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try pressHeaderCommands(&rig, 1, canvas_label);
+    try std.testing.expect(rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(@as(i64, 4), rig.app_state.model.navigatorView);
+
+    try rig.dispatch(.palette_close);
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const secondary = bridge.engine.?.model.wsAt(1) orelse return error.TestExpectedSecondaryWindow;
+    // A real primary-canvas press establishes the primary native window before
+    // the secondary control is inspected; otherwise this test could pass while
+    // the secondary was already active and never exercise window targeting.
+    try pressCanvasFrame(&rig, .init(396, 296, 8, 8));
+    try std.testing.expectEqual(@as(usize, 0), bridge.engine.?.model.active_window);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = secondary.window_id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(900, 420),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try pressHeaderCommands(&rig, secondary.window_id, "phux-cockpit-canvas-1");
+    try std.testing.expect(rig.app_state.model.window1PaletteOpen);
+    try std.testing.expect(!rig.app_state.model.mainPaletteOpen);
+    try std.testing.expectEqual(@as(usize, 1), bridge.engine.?.model.active_window);
+    try std.testing.expectEqual(@as(i64, 4), rig.app_state.model.navigatorView);
+}
+
+test "terminal ground stays opaque inside measured content and leaves material chrome exposed" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    for ([_]bool{ false, true }) |side| {
+        if (side) try rig.dispatch(.toggle_tab_placement);
+        try rig.resize(.init(900, 420));
+        const engine = bridge.engine.?;
+        const space = engine.model.wsAtConst(0).?.shipping_terminal_space orelse return error.TestExpectedMeasuredContent;
+        try std.testing.expect(space.y > 0);
+        if (side) try std.testing.expect(space.x > 0);
+        builder.initAt(commands);
+        try engine.paint(builder, .init(900, 420), cockpit.projection.cockpitTokens(engine.model));
+        const ground = switch (builder.displayList().commands[0]) {
+            .fill_rect => |fill| fill,
+            else => return error.TestExpectedOpaqueContentGround,
+        };
+        try std.testing.expectEqualDeep(space, ground.rect);
+        try std.testing.expectEqual(@as(f32, 1), ground.fill.color.a);
+    }
+}
+
+test "selected tab underline stays inside its button rather than the attention slot" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var tab: ?native_sdk.geometry.RectF = null;
+        var underline: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (node.widget.semantics.role == .tab and node.widget.state.selected) tab = node.frame;
+        }
+        builder.initAt(commands);
+        try canvas.emitWidgetLayout(builder, widgets, cockpit.projection.cockpitTokens(bridge.engine.?.model));
+        for (builder.displayList().commands) |command| {
+            if (command != .fill_rect) continue;
+            const rect = command.fill_rect.rect;
+            if (rect.y < 50 and rect.height == 2) underline = rect;
+        }
+        const button = tab orelse return error.TestExpectedSelectedTab;
+        const bar = underline orelse return error.TestExpectedTabUnderline;
+        try std.testing.expect(bar.x > button.x);
+        try std.testing.expect(bar.x + bar.width < button.x + button.width);
+    }
+}
+
+test "navigator command shortcuts align to the row trailing edge" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.commands_open);
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var row: ?native_sdk.geometry.RectF = null;
+        var shortcut: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (node.widget.kind == .list_item and std.mem.eql(u8, node.widget.semantics.label, "New Window")) row = node.frame;
+            if (node.widget.kind == .text and std.mem.eql(u8, node.widget.text, "Cmd+n")) shortcut = node.frame;
+        }
+        const row_frame = row orelse return error.TestExpectedCommandRow;
+        const shortcut_frame = shortcut orelse return error.TestExpectedCommandShortcut;
+        // A variable title must not determine where the shortcut column sits.
+        try std.testing.expectApproxEqAbs(row_frame.x + row_frame.width, shortcut_frame.x + shortcut_frame.width, 1);
+    }
+}
+
+test "navigator modal dismisses outside without activating the underlying toolbar" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.resize(.init(900, 420));
+    const tab_count = bridge.engine.?.model.wsAt(0).?.tab_count;
+    try rig.dispatch(.commands_open);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var dialog: ?native_sdk.geometry.RectF = null;
+    var toolbar: ?native_sdk.geometry.RectF = null;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .dialog) dialog = node.frame;
+        if (node.widget.kind == .button and std.mem.eql(u8, node.widget.semantics.label, "New Tab")) toolbar = node.frame;
+    }
+    const frame = dialog orelse return error.TestExpectedNavigatorDialog;
+    try std.testing.expect(frame.x >= 0 and frame.y >= 0);
+    try std.testing.expect(frame.x + frame.width <= 900);
+    try std.testing.expect(frame.y + frame.height <= 420);
+    const button = toolbar orelse return error.TestExpectedNewTabControl;
+    try std.testing.expect(button.x + button.width / 2 > frame.x + frame.width);
+    try pressCanvasFrame(&rig, button);
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(tab_count, bridge.engine.?.model.wsAt(0).?.tab_count);
+    // The dismissal owns only its gesture: the next deliberate click works.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    try pressCanvasFrame(&rig, button);
+    try std.testing.expectEqual(tab_count + 1, bridge.engine.?.model.wsAt(0).?.tab_count);
 }
 
 test "secondary windows expose every tab in the shared workspace rail" {
@@ -6536,6 +8703,20 @@ test "shipping config probe survives title-only churn without adopting a window"
     try std.testing.expect(!engine.intent_refused);
 }
 
+fn compiledViewHasText(model: *const core.Model, text: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const tree = try ui.finalizeWithTokens(chromeViewAt(&ui, model, 0), tokens);
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const layout = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, 1100, 640), tokens, nodes);
+    for (layout.nodes) |node| {
+        if (std.mem.eql(u8, node.widget.text, text)) return true;
+    }
+    return false;
+}
+
 fn compiledViewHasLabel(model: *const core.Model, window_index: usize, label: []const u8) !bool {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -6650,20 +8831,6 @@ fn emittedWidgetColor(widget: canvas.Widget, tokens: canvas.DesignTokens, part: 
     };
 }
 
-fn runtimeWidgetColor(rig: *Rig, id: canvas.ObjectId, part: u4) !canvas.Color {
-    _ = try rig.harness.runtime.emitCanvasWidgetDisplayListWithStoredTokens(1, canvas_label);
-    const display_list = try rig.harness.runtime.canvasDisplayList(1, canvas_label);
-    const command = display_list.findCommandById(canvas.widgetPartId(id, part)) orelse
-        return error.TestExpectedWidgetPaint;
-    return switch (command.command) {
-        .fill_rect => |fill| emittedFillColor(fill.fill),
-        .fill_rounded_rect => |fill| emittedFillColor(fill.fill),
-        .stroke_rect => |stroke| emittedFillColor(stroke.stroke.fill),
-        .draw_text => |text| text.color,
-        else => error.TestExpectedWidgetPaint,
-    };
-}
-
 fn emittedFillColor(fill: canvas.Fill) !canvas.Color {
     return switch (fill) {
         .color => |color| color,
@@ -6673,7 +8840,7 @@ fn emittedFillColor(fill: canvas.Fill) !canvas.Color {
 
 fn selectedTabWidget(measured: canvas.WidgetLayoutTree) ?canvas.Widget {
     for (measured.nodes) |entry| {
-        if (entry.widget.kind != .toggle_button or entry.widget.semantics.role != .tab or !entry.widget.state.selected) continue;
+        if (entry.widget.semantics.role != .tab or !entry.widget.state.selected) continue;
         var widget = entry.widget;
         widget.frame = entry.frame;
         return widget;
@@ -6690,8 +8857,7 @@ fn labeledWidget(measured: canvas.WidgetLayoutTree, kind: canvas.WidgetKind, lab
 
 fn tabWidgetWithSelection(measured: canvas.WidgetLayoutTree, selected: bool) ?canvas.WidgetLayoutNode {
     for (measured.nodes) |entry| {
-        if (entry.widget.kind == .toggle_button and entry.widget.semantics.role == .tab and
-            entry.widget.state.selected == selected) return entry;
+        if (entry.widget.semantics.role == .tab and entry.widget.state.selected == selected) return entry;
     }
     return null;
 }
@@ -6703,28 +8869,21 @@ fn widgetWithId(measured: canvas.WidgetLayoutTree, id: canvas.ObjectId) ?canvas.
     return null;
 }
 
-fn expectPairwiseDistinct(colors: []const canvas.Color) !void {
-    for (colors, 0..) |color, index| {
-        for (colors[index + 1 ..]) |other| try std.testing.expect(!std.meta.eql(color, other));
-    }
-}
-
-test "compiled shipping tabs consume the ghost pressed channel with readable pairwise distinct states" {
+test "compiled shipping tabs retain readable ink through selection and pointer focus" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
     try rig.dispatch(.new_terminal);
     try rig.settle(1, "READY");
     try rig.resize(.init(1100, 640));
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
     const rest_layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
     const rest_node = tabWidgetWithSelection(rest_layout, false) orelse return error.TestExpectedUnselectedTab;
     try std.testing.expect(!rest_node.widget.state.selected);
     try std.testing.expectEqual(canvas.WidgetVariant.ghost, rest_node.widget.variant);
     const stable_id = rest_node.widget.id;
-    var fills: [4]canvas.Color = undefined;
     var text_colors: [4]canvas.Color = undefined;
-    fills[0] = try runtimeWidgetColor(&rig, stable_id, 1);
-    text_colors[0] = try runtimeWidgetColor(&rig, stable_id, 4);
+    text_colors[0] = try emittedWidgetColor(rest_node.widget, tokens, 3);
     const x = rest_node.frame.x + rest_node.frame.width * 0.5;
     const y = rest_node.frame.y + rest_node.frame.height * 0.5;
 
@@ -6733,16 +8892,18 @@ test "compiled shipping tabs consume the ghost pressed channel with readable pai
         return error.TestExpectedHoveredTab;
     try std.testing.expectEqual(stable_id, hover_node.widget.id);
     try std.testing.expectEqual(stable_id, rig.harness.runtime.views[0].canvas_widget_hovered_id);
-    fills[1] = try runtimeWidgetColor(&rig, stable_id, 1);
-    text_colors[1] = try runtimeWidgetColor(&rig, stable_id, 4);
+    var hovered = hover_node.widget;
+    hovered.state.hovered = true;
+    text_colors[1] = try emittedWidgetColor(hovered, tokens, 3);
 
     try dispatchPointer(&rig, .pointer_down, x, y);
     const press_node = widgetWithId(try rig.harness.runtime.canvasWidgetLayout(1, canvas_label), stable_id) orelse
         return error.TestExpectedPressedTab;
     try std.testing.expectEqual(stable_id, press_node.widget.id);
     try std.testing.expectEqual(stable_id, rig.harness.runtime.views[0].canvas_widget_pressed_id);
-    fills[3] = try runtimeWidgetColor(&rig, stable_id, 1);
-    text_colors[3] = try runtimeWidgetColor(&rig, stable_id, 4);
+    var pressed = press_node.widget;
+    pressed.state.pressed = true;
+    text_colors[3] = try emittedWidgetColor(pressed, tokens, 3);
 
     const sequence = rig.app_state.model.engineSequence.lo;
     try dispatchPointer(&rig, .pointer_up, x, y);
@@ -6761,19 +8922,17 @@ test "compiled shipping tabs consume the ghost pressed channel with readable pai
         const view = &rig.harness.runtime.views[0];
         if (view.canvas_widget_focused_id == stable_id and view.canvas_widget_focus_visible_id == stable_id) break;
     } else return error.TestTabDidNotReachSelectedTab;
-    fills[2] = try runtimeWidgetColor(&rig, stable_id, 1);
-    text_colors[2] = try runtimeWidgetColor(&rig, stable_id, 4);
-    const focus = try runtimeWidgetColor(&rig, stable_id, 3);
-    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.focus, focus);
+    text_colors[2] = try emittedWidgetColor(selected_node.widget, tokens, 3);
+    try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(
+        tokens.colors.focus_ring, tokens.colors.surface,
+    ) >= 3.0);
 
-    for (fills, text_colors) |fill, text| {
-        try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(text, fill) >= 4.5);
+    for (text_colors) |text| {
+        try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(
+            text,
+            tokens.colors.surface_subtle,
+        ) >= 4.5);
     }
-    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.surface, fills[0]);
-    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.hover, fills[1]);
-    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.selected, fills[2]);
-    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.pressed, fills[3]);
-    try expectPairwiseDistinct(&fills);
 }
 
 fn findSelectedListItem(measured: canvas.WidgetLayoutTree, label: []const u8) ?canvas.WidgetLayoutNode {
@@ -6883,7 +9042,8 @@ test "compiled navigator destinations are one exclusive segmented control in the
         for (built.measured.nodes) |entry| {
             if (entry.widget.kind == .segmented_control) segments += 1;
         }
-        try std.testing.expectEqual(@as(usize, 4), segments);
+        // Five destination buttons plus their one owning Tabs register.
+        try std.testing.expectEqual(@as(usize, 6), segments);
         const selected = findWidgetByText(built.measured, .segmented_control, case.label) orelse
             return error.TestExpectedNavigatorDestination;
         try std.testing.expect(selected.widget.state.selected);
@@ -6892,7 +9052,7 @@ test "compiled navigator destinations are one exclusive segmented control in the
     }
 }
 
-test "compiled top strip and side rail tabs share one register and render shipping attention" {
+test "compiled top strip and side rail tabs share one control register and render shipping attention" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
@@ -6908,8 +9068,8 @@ test "compiled top strip and side rail tabs share one register and render shippi
     var side = try measureWindow(&side_model, 0, .init(1100, 640));
     defer side.arena.deinit();
     const side_tab = selectedTabWidget(side.measured) orelse return error.TestExpectedSelectedTab;
-    try std.testing.expectEqual(top_tab.kind, side_tab.kind);
-    try std.testing.expectEqual(top_tab.variant, side_tab.variant);
+    try std.testing.expect(top_tab.semantics.role == .tab);
+    try std.testing.expect(side_tab.semantics.role == .tab);
     try std.testing.expectApproxEqAbs(top_tab.frame.height, side_tab.frame.height, 0.01);
 
     var attention_tab = rig.app_state.model.visibleTabs[0].*;
@@ -6932,7 +9092,7 @@ test "compiled titlebar chrome starts after the declared traffic-light reserve a
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
-    const labels = [_][]const u8{ "Sessions", "Inspect agents", "Machines", "New Tab", "Move tabs to top or side", "Settings" };
+    const labels = [_][]const u8{ "New Tab", "Workspace actions" };
     for (parity_sizes) |size| {
         var built = try measureWindow(&rig.app_state.model, 0, size);
         defer built.arena.deinit();
@@ -6942,7 +9102,7 @@ test "compiled titlebar chrome starts after the declared traffic-light reserve a
         }
         const tabs = tabs_frame orelse return error.TestExpectedTabStrip;
         try std.testing.expectApproxEqAbs(
-            cockpit.projection.titlebar_tab_leading_reserve + cockpit.projection.chrome_gap,
+            cockpit.projection.chrome_band_inset + cockpit.projection.titlebar_tab_leading_reserve + cockpit.projection.chrome_gap,
             tabs.x,
             0.01,
         );
@@ -6974,7 +9134,7 @@ test "shipping menus cap every group at seven and name navigator destinations co
     const destinations = [_]struct { command: []const u8, label: []const u8 }{
         .{ .command = "navigator.sessions", .label = "Sessions…" },
         .{ .command = "navigator.machines", .label = "Machines…" },
-        .{ .command = "navigator.windows", .label = "Windows…" },
+        .{ .command = "navigator.windows", .label = "Show All Windows…" },
         .{ .command = "commands.open", .label = "Commands…" },
     };
     for (destinations) |destination| {
@@ -8042,11 +10202,14 @@ test "each window header names its own session, machine and state from window co
     const model = &rig.app_state.model;
     try std.testing.expect(model.window1Open and model.window2Open);
 
+    // Session identity now lives inside the window's actions menu.
+    rig.app_state.model.mainHeaderMenuOpen = true;
     try Chrome.expect(model, 0, "alpha", true);
     try Chrome.expect(model, 0, "studio", true);
     try Chrome.expect(model, 0, "beta", false);
     try Chrome.expect(model, 0, "primary-global", false);
 
+    rig.app_state.model.window1HeaderMenuOpen = true;
     try Chrome.expect(model, 1, "beta", true);
     try Chrome.expect(model, 1, "mini \u{b7} Offline", true);
     try Chrome.expect(model, 1, "alpha", false);
@@ -8056,6 +10219,7 @@ test "each window header names its own session, machine and state from window co
     try Chrome.expect(model, 0, "Empty session on mini", false);
 
     // Open without a record: an explicit unknown, never the primary's labels.
+    rig.app_state.model.window2HeaderMenuOpen = true;
     try Chrome.expect(model, 2, "Session unknown", true);
     try Chrome.expect(model, 2, "Window context unavailable", true);
     try Chrome.expect(model, 2, "alpha", false);

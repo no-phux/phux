@@ -27,11 +27,10 @@ use phux_protocol::wire::frame::{FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN}
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, recv_until,
+    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 /// Kitty graphics transmit-and-display, base64 payload (`ESC _ G ... ESC \`).
@@ -130,12 +129,10 @@ async fn attach_with_caps(
     assert_eq!(tb, TYPE_ATTACHED, "expected ATTACHED after ATTACH");
     let (tb, _) = recv_typed(&mut stream).await;
     assert_eq!(tb, TYPE_BOOTSTRAP_BEGIN, "expected opening snapshot");
-    loop {
-        let (_, frame) = recv_typed(&mut stream).await;
-        if matches!(frame, FrameKind::BootstrapReady { .. }) {
-            break;
-        }
-    }
+    recv_until(&mut stream, |_, frame| {
+        matches!(frame, FrameKind::BootstrapReady { .. }).then_some(())
+    })
+    .await;
     stream
 }
 
@@ -224,12 +221,7 @@ fn no_image_escapes_forwarded_to_client_advertising_none() {
 
         drop(web);
         drop(control);
-        shutdown_tx.send(()).ok();
-        timeout(std::time::Duration::from_secs(5), server_handle)
-            .await
-            .expect("server did not shut down within 5s")
-            .expect("server task join")
-            .expect("server run_async ok");
+        join_after_shutdown(shutdown_tx, server_handle).await;
         assert!(
             !socket_path.exists(),
             "socket file leaked after shutdown: {} still on disk",

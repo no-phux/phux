@@ -444,11 +444,11 @@ fn run_journey(harness: &mut Harness) {
     });
     first.wait_for_prose(
         "the first-use persistence promise",
-        "phux keeps this session alive",
+        "This session stays alive when you leave.",
     );
     first.wait_for("the active default detach binding", |text| {
         text.lines()
-            .any(|line| line.contains("C-a d") && line.contains("leave this view"))
+            .any(|line| line.contains("C-a d") && line.contains("leave"))
     });
 
     // The marker is not present in the input bytes as one contiguous string;

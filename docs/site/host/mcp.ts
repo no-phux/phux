@@ -48,6 +48,7 @@ interface ToolDef {
 const INSTALL_COMMANDS = {
   cli: "curl -fsSL https://phux.sh/install | sh",
   cockpit: "curl -fsSL https://phux.sh/install-cockpit | sh",
+  skills: "npx skills add no-phux/skills",
 } as const;
 
 const TOOLS: ToolDef[] = [
@@ -98,6 +99,11 @@ const TOOLS: ToolDef[] = [
           return "Only phux.sh and docs.phux.sh pages can be fetched.";
         }
         pathname = url.pathname;
+        // `https://phux.sh//evil.example/x` has hostname phux.sh and pathname
+        // `//evil.example/x`; re-parsing that pathname is scheme-relative.
+        if (!pathname.startsWith("/") || pathname.startsWith("//")) {
+          return "Only phux.sh and docs.phux.sh pages can be fetched.";
+        }
       } catch {
         return `Could not parse path: ${raw}`;
       }
@@ -118,20 +124,23 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_install_command",
     description:
-      "Get the one-line shell installer for phux (the CLI) or Cockpit (the native GUI).",
+      "Get the one-line installer for the phux CLI, Cockpit (the native GUI), or the agent skills package.",
     inputSchema: {
       type: "object",
       properties: {
         target: {
           type: "string",
-          enum: ["cli", "cockpit"],
+          enum: ["cli", "cockpit", "skills"],
           description: "What to install. Defaults to the phux CLI.",
         },
       },
     },
     run: async (params) => {
-      const target = params.target === "cockpit" ? "cockpit" : "cli";
-      return INSTALL_COMMANDS[target];
+      const target = params.target;
+      if (target === "cockpit" || target === "skills") {
+        return INSTALL_COMMANDS[target];
+      }
+      return INSTALL_COMMANDS.cli;
     },
   },
   {

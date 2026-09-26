@@ -76,6 +76,23 @@ impl CellStyle {
     pub fn is_plain(&self) -> bool {
         *self == Self::default()
     }
+
+    /// `over` layered onto `self`: colours `over` sets replace, and each
+    /// attribute is on when either side turns it on. Lets one part of a
+    /// segment (a tab's index, its badge) change its ink while keeping the
+    /// segment's bed.
+    #[must_use]
+    pub fn layered(&self, over: &Self) -> Self {
+        Self {
+            fg: over.fg.clone().or_else(|| self.fg.clone()),
+            bg: over.bg.clone().or_else(|| self.bg.clone()),
+            bold: self.bold || over.bold,
+            dim: self.dim || over.dim,
+            italic: self.italic || over.italic,
+            underline: self.underline || over.underline,
+            reverse: self.reverse || over.reverse,
+        }
+    }
 }
 
 /// phux-foz.12: the interactive target a composed cell carries.
@@ -127,7 +144,7 @@ pub struct Cell {
 /// A window as the `windows` widget sees it: a display name and whether
 /// it is the client's active window. Positional index in the slice is the
 /// window's selector (matches `select-window index=N`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WindowInfo {
     /// Window display name (the editable label).
     pub name: String,
@@ -149,6 +166,41 @@ pub struct WindowInfo {
     /// dim branch line under the window label (herdr-style); the status-bar
     /// `windows` widget ignores it.
     pub branch: Option<String>,
+    /// ADR-0124: compact exit status when any pane in this window is
+    /// retained after its process exited (`"3"`, `"sig9"`, or `""` when
+    /// neither code nor signal is known). `None` when every pane is still
+    /// live. The sidebar and `windows` widget append a dim `x` marker so a
+    /// retained pane is visible without focusing it.
+    pub exited: Option<String>,
+    /// The agent badge of the window's focused pane: one glyph and its
+    /// style, resolved by the host from the same vocabulary its other
+    /// agent surfaces use (phux-config carries no theme, ADR-0020). `None`
+    /// for a window whose focused pane runs no declared agent. The
+    /// `windows` widget paints it ahead of the name, so a tab reads
+    /// `◐ claude` rather than `claude (working)`.
+    pub badge: Option<WindowBadge>,
+}
+
+/// A pre-resolved agent badge for a [`WindowInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowBadge {
+    /// The single-cell glyph (`●`, `◆`, `◐`, `○`).
+    pub glyph: String,
+    /// Its style, layered over the tab segment's own style.
+    pub style: CellStyle,
+}
+
+impl WindowInfo {
+    /// Compact chrome suffix for a retained pane: ` x`, ` x3`, or ` xsig9`.
+    #[must_use]
+    pub fn exited_marker(&self) -> Option<String> {
+        let status = self.exited.as_ref()?;
+        Some(if status.is_empty() {
+            " x".to_owned()
+        } else {
+            format!(" x{status}")
+        })
+    }
 }
 
 /// Context passed to a [`StatusWidget`] at render time.

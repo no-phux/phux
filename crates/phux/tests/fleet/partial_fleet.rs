@@ -47,10 +47,14 @@ const OUTAGE: &str = "satellite build-box is unreachable: link is down";
 /// satellite's panes are absent, which is the entire point: nothing in this
 /// value says they are missing.
 fn fleet() -> SessionSnapshot {
+    fleet_named("work")
+}
+
+fn fleet_named(name: &str) -> SessionSnapshot {
     let session = SessionId::new(1);
     let window = WindowId::new(10);
     SessionSnapshot::new(session, window, ResourceId::local(100))
-        .with_sessions(vec![SessionInfo::new(session, "work")])
+        .with_sessions(vec![SessionInfo::new(session, name)])
         .with_windows(vec![
             WindowInfo::new(window, session, "shell").with_index(0),
         ])
@@ -232,7 +236,15 @@ fn rename_warns_but_still_renames_under_a_partial_fleet() {
     // right answer is a warning and a full success — deliberately *not* the
     // exit-3 refusal `kill` and `tag` give, because the reason for that
     // refusal does not exist here.
-    let output = run_verb(partial_fleet(), &["rename", "work", "play"]);
+    //
+    // The scripted server stores `SET_METADATA` without rewriting its
+    // snapshot. The real server applies the registry rename before the
+    // barrier reply, so the second `GET_STATE` is scripted as that applied
+    // roster.
+    let spec = ScriptSpec::new()
+        .degradation_notice(OUTAGE)
+        .states([fleet(), fleet_named("play")]);
+    let output = run_verb(spec, &["rename", "work", "play"]);
     assert!(
         output.status.success(),
         "stderr was: {}",

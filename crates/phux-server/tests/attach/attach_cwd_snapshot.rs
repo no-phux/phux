@@ -33,8 +33,8 @@ use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, run_local,
+    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 #[test]
@@ -86,8 +86,7 @@ fn attached_snapshot_carries_pane_cwd() {
         }
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -142,7 +141,6 @@ fn attached_snapshot_reflects_post_spawn_cd() {
         }
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

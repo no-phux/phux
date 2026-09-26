@@ -7,23 +7,11 @@
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
+use crate::common::run_with_xdg;
+
 /// The stderr build banner, now a plain `phux <version>` line, matched in
 /// full so the absence assertions below stay meaningful.
 const BANNER_FRAGMENT: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
-
-fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(PHUX)
-        .env("XDG_CONFIG_HOME", xdg_config_home)
-        .args(args)
-        .output()
-        .expect("run phux binary");
-    (
-        out.status.code().expect("phux exited via code, not signal"),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
 
 #[test]
 fn add_list_update_remove_json_is_machine_readable() {

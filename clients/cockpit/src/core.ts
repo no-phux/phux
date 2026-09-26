@@ -1,12 +1,12 @@
 import { Cmd, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
 import { type WindowDescriptor, type ScrollState } from "@native-sdk/core/events";
 import { applyTextInputEvent, type TextEditState, type TextInputEvent } from "@native-sdk/core/text";
-import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, enqueueOperationCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
+import { type TabCommandState, type TabCommandDecision, initialTabCommands, enqueueTabCommand, enqueueCatalogCommand, enqueueOperationCommand, enqueueTabActionCommand, receiveTabReceipt, unknownTabCommand } from "./tab-commands.ts";
 import { type CommandResults, type ResultDecision, initialCommandResults, requestCommandResults, receiveCommandResult, failedCommandResults } from "./command-results.ts";
 import { type Appearance, initialAppearance, appearanceRequest, appearanceResponse } from "./appearance.ts";
 import { type ActionRow, commandRows, commandDefinition, contextualCommand, containsQuery } from "./commands.ts";
 import { type KeybindingPage, type KeybindingRow, initialKeybindings, keybindingRequest, keybindingResponse } from "./keybindings.ts";
-import { type Setting, settingsRows, settingRequest, resetSettingRequest, reloadSettingsRequest } from "./settings.ts";
+import { type Setting, type SettingChoice, settingsRows, selectedSettingChoices, settingRequest, resetSettingRequest, reloadSettingsRequest } from "./settings.ts";
 import { type SelfUpdate, initialSelfUpdate, selfUpdateRequest, selfUpdateResponse } from "./self-update.ts";
 import { windowTarget, windowCommand, windowReceipt } from "./window-navigation.ts";
 import {
@@ -97,7 +97,6 @@ import {
   sameBytes,
   type SnapshotAgentRow,
   type EngineSnapshot,
-  type ThemeEntry,
 } from "./protocol.ts";
 
 /// One agent session drawn under the terminal tab it runs in. It is not a
@@ -121,6 +120,7 @@ export interface RailRow {
   readonly id: number;
   readonly index: number;
   readonly label: Uint8Array;
+  readonly closeLabel: Uint8Array;
   readonly state: Uint8Array;
   readonly mark: Uint8Array;
   readonly selected: boolean;
@@ -128,6 +128,8 @@ export interface RailRow {
   readonly target: Uint8Array;
   readonly parentIndex: number;
   readonly attentionLabel: Uint8Array;
+  readonly movePreviousDisabled: boolean;
+  readonly moveNextDisabled: boolean;
 }
 
 export interface Tab {
@@ -135,6 +137,7 @@ export interface Tab {
   readonly index: number;
   readonly slot: number;
   readonly title: Uint8Array;
+  readonly closeLabel: Uint8Array;
   readonly cwd: Uint8Array;
   readonly selected: boolean;
   readonly attention: boolean;
@@ -143,6 +146,8 @@ export interface Tab {
   /// sent, so a session that closed is simply absent from the next one.
   readonly agents: readonly AgentRow[];
   readonly target: Uint8Array;
+  readonly movePreviousDisabled: boolean;
+  readonly moveNextDisabled: boolean;
 }
 
 /// One catalog row: display bookkeeping and label beside the captured native
@@ -246,6 +251,12 @@ export interface Model {
   /// Native projection slot for the platform window that owns modal chrome.
   /// Platform ids never cross the seam; the snapshot carries only 0..4.
   readonly activeWindow: number;
+  readonly headerMenuWindow: number;
+  readonly mainHeaderMenuOpen: boolean;
+  readonly window1HeaderMenuOpen: boolean;
+  readonly window2HeaderMenuOpen: boolean;
+  readonly window3HeaderMenuOpen: boolean;
+  readonly window4HeaderMenuOpen: boolean;
   readonly paletteOpen: boolean;
   readonly agentsMode: boolean;
   readonly inspectedResource: Uint8Array;
@@ -455,8 +466,9 @@ export interface Model {
   readonly settingsSection: number;
   readonly settingsFooterSave: boolean;
   readonly settingsSections: readonly SettingsChoice[];
-  readonly cursorChoices: readonly SettingsChoice[];
-  readonly placementChoices: readonly SettingsChoice[];
+  readonly cursorChoices: readonly SettingChoice[];
+  readonly placementChoices: readonly SettingChoice[];
+  readonly fontChoices: readonly SettingChoice[];
   readonly fontDecrease: number;
   readonly fontIncrease: number;
   readonly navigationAfterSettings: boolean;
@@ -507,6 +519,9 @@ export type Msg =
   | { readonly kind: "command_result_loaded"; readonly body: Uint8Array }
   | { readonly kind: "command_result_failed"; readonly error: Uint8Array }
   | { readonly kind: "select_target"; readonly target: Uint8Array }
+  | { readonly kind: "close_tab_target"; readonly target: Uint8Array }
+  | { readonly kind: "move_tab_previous_target"; readonly target: Uint8Array }
+  | { readonly kind: "move_tab_next_target"; readonly target: Uint8Array }
   | { readonly kind: "tab_command_completed"; readonly body: Uint8Array }
   | { readonly kind: "tab_command_failed"; readonly error: Uint8Array }
   | { readonly kind: "select_tab"; readonly index: number }
@@ -522,6 +537,15 @@ export type Msg =
   | { readonly kind: "agent_parent"; readonly index: number }
   | { readonly kind: "navigator_open"; readonly view: number }
   | { readonly kind: "commands_open" }
+  | { readonly kind: "header_menu_toggle" }
+  | { readonly kind: "header_menu_close" }
+  | { readonly kind: "header_sessions" }
+  | { readonly kind: "header_machines" }
+  | { readonly kind: "header_agents" }
+  | { readonly kind: "header_new_window" }
+  | { readonly kind: "header_tab_placement" }
+  | { readonly kind: "header_commands" }
+  | { readonly kind: "header_settings" }
   | { readonly kind: "commands_pick"; readonly index: number }
   | { readonly kind: "keybindings_loaded"; readonly body: Uint8Array }
   | { readonly kind: "new_session_cancelled"; readonly body: Uint8Array }
@@ -625,6 +649,9 @@ export type Msg =
   | { readonly kind: "settings_reveal" }
   | { readonly kind: "settings_section"; readonly section: number }
   | { readonly kind: "settings_font"; readonly direction: number }
+  | { readonly kind: "settings_font_family"; readonly index: number }
+  | { readonly kind: "settings_enable"; readonly id: number }
+  | { readonly kind: "settings_disable"; readonly id: number }
   | { readonly kind: "settings_cursor"; readonly index: number }
   | { readonly kind: "settings_placement"; readonly index: number }
   | { readonly kind: "appearance_loaded"; readonly body: Uint8Array }
@@ -634,6 +661,7 @@ export type Msg =
   | { readonly kind: "update_loaded"; readonly body: Uint8Array }
   | { readonly kind: "update_failed"; readonly error: Uint8Array }
   | { readonly kind: "native_command"; readonly command: number }
+  | { readonly kind: "clipboard_action"; readonly target: Uint8Array }
   // Posted by the native engine for every shell event it consumed: no bytes
   // ride along, the core only learns that the grids beneath it moved.
   | { readonly kind: "engine_wake" }
@@ -731,6 +759,7 @@ export const viewUnbound = [
   "snapshot_loaded",
   "snapshot_failed",
   "native_command",
+  "clipboard_action",
   "hostOpen",
   "hostAnchor",
   "hostFocus",
@@ -830,17 +859,19 @@ function decimalBytes(value: number): Uint8Array {
   return out.subarray(first);
 }
 
+function copyInto(dest: Uint8Array, at: number, src: Uint8Array): number {
+  for (let i = 0; i < src.length; i += 1) {
+    const value = src.subarray(i, i + 1)[0];
+    if (value === undefined) break;
+    dest[at] = value;
+    at += 1;
+  }
+  return at;
+}
+
 function joinBytes(head: Uint8Array, mid: Uint8Array, tail: Uint8Array): Uint8Array {
-  // ScriptC 0.1.1 models the middle parameter as a runtime-optional capture;
-  // narrowing it keeps the typed-array copy on the supported same-kind path.
-  const middle = mid === undefined ? new Uint8Array(0) : mid;
-  const out = new Uint8Array(head.length + middle.length + tail.length);
-  let at = 0;
-  out.set(head, at);
-  at += head.length;
-  out.set(middle, at);
-  at += middle.length;
-  out.set(tail, at);
+  const out = new Uint8Array(head.length + mid.length + tail.length);
+  copyInto(out, copyInto(out, copyInto(out, 0, head), mid), tail);
   return out;
 }
 
@@ -861,6 +892,62 @@ const NO_ACTION_ROWS: readonly ActionRow[] = [];
 const NO_MACHINE_ROWS: readonly MachineRow[] = [];
 const NO_SETTING_ROWS: readonly Setting[] = [];
 const NO_BINDING_ROWS: readonly KeybindingRow[] = [];
+const EMPTY_SWITCHER_ROW: SwitcherRow = {
+  id: 0, index: 0, label: NO_BYTES, target: NO_BYTES, highlighted: false, current: false,
+  detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, disabled: true, renamable: false,
+  resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES,
+};
+const EMPTY_TAB_AGENTS: readonly AgentRow[] = [];
+const EMPTY_AGENT_ROW: AgentRow = {
+  id: 0, provider: NO_BYTES, state: NO_BYTES, attention: false,
+  resource: NO_BYTES, parent: NO_BYTES, parentIndex: 65535,
+};
+const EMPTY_TAB: Tab = {
+  id: 0, index: 0, slot: 0, title: NO_BYTES, cwd: NO_BYTES, selected: false, attention: false,
+  attentionLabel: NO_BYTES, closeLabel: NO_BYTES, agents: EMPTY_TAB_AGENTS, target: NO_BYTES,
+  movePreviousDisabled: true, moveNextDisabled: true,
+};
+const EMPTY_ACTION_ROW: ActionRow = {
+  index: 0, label: NO_BYTES, shortcut: NO_BYTES, detail: NO_BYTES, highlighted: false, disabled: true,
+};
+
+function copySwitcher(row: SwitcherRow, highlighted: boolean): SwitcherRow {
+  const id = row.id;
+  const index = row.index;
+  const kind = row.kind;
+  return {
+    id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
+    index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+    kind: kind >= 0 && kind <= 9007199254740991 ? Math.trunc(kind) : 0,
+    label: row.label, target: row.target, highlighted, current: row.current,
+    detail: row.detail, host: row.host, selectable: row.selectable, disabled: row.disabled,
+    renamable: row.renamable, resource: row.resource, parent: row.parent,
+    nativeId: row.nativeId, evidence: row.evidence,
+  };
+}
+
+function copyTab(tab: Tab, selected: boolean): Tab {
+  const id = tab.id;
+  const index = tab.index;
+  const slot = tab.slot;
+  return {
+    id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
+    index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+    slot: slot >= 0 && slot <= 9007199254740991 ? Math.trunc(slot) : 0,
+    title: tab.title, closeLabel: tab.closeLabel, cwd: tab.cwd, selected, attention: tab.attention,
+    attentionLabel: tab.attentionLabel, agents: tab.agents, target: tab.target,
+    movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled,
+  };
+}
+
+function copyAction(row: ActionRow, disabled: boolean, detail: Uint8Array): ActionRow {
+  const index = row.index;
+  return {
+    index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+    label: row.label, shortcut: row.shortcut,
+    detail, highlighted: row.highlighted, disabled,
+  };
+}
 
 function paletteState(model: Model): TextEditState {
   return {
@@ -991,7 +1078,9 @@ function reconcileNavigationSelection(model: Model): Model {
     if (sameBytes(model.paletteRows[i].target, model.paletteSelection)) return highlightNavigation(model, i);
   }
   const rows: SwitcherRow[] = [];
-  for (const row of model.paletteRows) rows.push(highlightedSwitcherRow(row, false));
+  for (const row of model.paletteRows) {
+    if (row !== undefined) rows.push(copySwitcher(row, false));
+  }
   return { ...model, paletteRows: rows, paletteCursor: 65535 };
 }
 
@@ -1014,14 +1103,11 @@ function currentNavigationPage(model: Model, page: NavigationPage): boolean {
 
 function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
   const result: SwitcherRow[] = [];
-  for (const candidate of rows) {
-    const row: NavigationRow = candidate === undefined
-      ? { id: 0, index: 0, label: NO_BYTES, target: NO_BYTES, highlighted: false,
-        detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, current: false,
-        resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES }
-      : candidate;
-    const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
-    const kind = row.kind >= 0 && row.kind <= 5 ? Math.trunc(row.kind) : 0;
+  for (const row of rows) {
+    const rawIndex = row.index;
+    const rawKind = row.kind;
+    const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
+    const kind = rawKind >= 0 && rawKind <= 5 ? Math.trunc(rawKind) : 0;
     result.push({ id: index, index, kind, label: row.label, detail: row.detail, host: row.host,
       highlighted: row.highlighted, current: row.current && row.kind !== 5, selectable: row.selectable, disabled: !row.selectable, target: row.target,
       renamable: kind === 2 && row.selectable && sessionRowTarget(row.target),
@@ -1032,7 +1118,7 @@ function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
 
 function navigationNotice(agents: boolean, scope: number, total: number, offset: number): Uint8Array {
   if (agents) {
-    if (total === 0) return asciiBytes("No agent resources in the attached catalog");
+    if (total === 0) return asciiBytes("No agent identities or AgentSessions are reported.");
     return joinBytes(asciiBytes("Agent "), decimalBytes(offset + 1), joinBytes(asciiBytes(" of "), decimalBytes(total), asciiBytes(" / Last reported state")));
   }
   if (scope === 4) return total === 0 ? asciiBytes("No matching windows") : asciiBytes("Choose a window or tab to bring existing work forward");
@@ -1080,7 +1166,7 @@ function highlightNavigation(model: Model, next: number): Model {
   const rows: SwitcherRow[] = [];
   for (let i = 0; i < model.paletteRows.length; i += 1) {
     const row = model.paletteRows[i];
-    rows.push(highlightedSwitcherRow(row, i === cursor));
+    if (row !== undefined) rows.push(copySwitcher(row, i === cursor));
   }
   return revealNavigator({ ...model, paletteCursor: cursor, paletteRows: rows, paletteSelection: rows[cursor].target }, cursor * 40, 40);
 }
@@ -1142,6 +1228,17 @@ export interface DirRow {
 }
 
 const NO_DIR_ROWS: readonly DirRow[] = [];
+const EMPTY_DIR_ROW: DirRow = { id: 0, index: 0, label: NO_BYTES, highlighted: false };
+
+function copyDirRow(row: DirRow, highlighted: boolean): DirRow {
+  const id = row.id;
+  const index = row.index;
+  return {
+    id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
+    index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+    label: row.label, highlighted,
+  };
+}
 
 /// What one Go to Directory message leaves: the model, the request to send
 /// (empty for none), and whether the modal slot changed hands. `update`
@@ -1379,11 +1476,9 @@ function relistDirectory(model: Model, connected: boolean): Model {
 
 function directoryRows(page: DirectoryPage): readonly DirRow[] {
   const rows: DirRow[] = [];
-  for (const candidate of page.rows) {
-    const row: DirectoryRow = candidate === undefined
-      ? { index: 0, symlink: false, name: NO_BYTES }
-      : candidate;
-    const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
+  for (const row of page.rows) {
+    const rawIndex = row.index;
+    const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
     rows.push({ id: index, index, label: directoryRowLabel(row), highlighted: false });
   }
   return rows.length === 0 ? NO_DIR_ROWS : rows;
@@ -1395,7 +1490,7 @@ function highlightDirectory(model: Model, next: number): Model {
   const rows: DirRow[] = [];
   for (let i = 0; i < model.dirRows.length; i += 1) {
     const row = model.dirRows[i];
-    rows.push({ id: row.id, index: row.index, label: row.label, highlighted: i === cursor });
+    if (row !== undefined) rows.push(copyDirRow(row, i === cursor));
   }
   return { ...model, dirCursor: cursor, dirRows: rows };
 }
@@ -1772,32 +1867,69 @@ function scopeOverlays(model: Model): Model {
   if (model.window4Open) openWindows |= 16;
   const lifecycle = reconcilePresentation(model.presentation, presentationIntent(model), model.activeWindow, openWindows);
   const projected = projectPresentation(lifecycle);
-  return {
+  return scopeHeaderMenu({
     ...model,
     ...projected,
     presentation: lifecycle,
     creatingSession: model.renameOpen && model.creatingSession,
     newSessionAwaiting: model.renameOpen && model.newSessionAwaiting,
-  };
+  });
+}
+
+function setHeaderMenu(model: Model, rawWindow: number): Model {
+  const window = rawWindow >= 0 && rawWindow <= 4 ? Math.trunc(rawWindow) : -1;
+  return { ...model, headerMenuWindow: window,
+    mainHeaderMenuOpen: window === 0, window1HeaderMenuOpen: window === 1,
+    window2HeaderMenuOpen: window === 2, window3HeaderMenuOpen: window === 3,
+    window4HeaderMenuOpen: window === 4 };
+}
+
+function scopeHeaderMenu(model: Model): Model {
+  if (model.headerMenuWindow !== model.activeWindow) return setHeaderMenu(model, -1);
+  if (model.paletteOpen || model.settingsOpen || model.hostOpen || model.dirOpen || model.renameOpen) return setHeaderMenu(model, -1);
+  return model;
+}
+
+function headerMenuAction(msg: Msg): Msg | null {
+  switch (msg.kind) {
+    case "header_sessions": return { kind: "sessions_open" };
+    case "header_machines": return { kind: "machines_open" };
+    case "header_agents": return { kind: "agents_open" };
+    case "header_new_window": return { kind: "new_window" };
+    case "header_tab_placement": return { kind: "toggle_tab_placement" };
+    case "header_commands": return { kind: "commands_open" };
+    case "header_settings": return { kind: "settings_open" };
+    default: return null;
+  }
+}
+
+function prepareHeaderMenu(model: Model, msg: Msg): PreparedMessage {
+  const action = headerMenuAction(msg);
+  if (action === null) return { model, msg };
+  if (model.headerMenuWindow !== model.activeWindow) return { model, msg: { kind: "header_menu_close" } };
+  return { model: setHeaderMenu(model, -1), msg: action };
+}
+
+function headerMenuTransition(model: Model, msg: Msg): NavigatorDecision | null {
+  if (msg.kind === "header_menu_close") return navigatorDecision(setHeaderMenu(model, -1), 1, NO_BYTES);
+  if (msg.kind !== "header_menu_toggle") return null;
+  const window = model.headerMenuWindow === model.activeWindow ? -1 : model.activeWindow;
+  return navigatorDecision(scopeHeaderMenu(setHeaderMenu(model, window)), 1, NO_BYTES);
 }
 
 const IN_EFFECT = asciiBytes("  (in effect)");
 
-function themeRows(themes: readonly ThemeEntry[], active: number, cursor: number): readonly ThemeRow[] {
-  const rows: ThemeRow[] = [];
-  for (const candidate of themes) {
-    const theme: ThemeEntry = candidate === undefined
-      ? { index: 0, name: NO_BYTES }
-      : candidate;
-    const index = theme.index >= 0 && theme.index <= 32 ? Math.trunc(theme.index) : 0;
-    rows.push({
+function themeRows(themes: readonly { readonly index: number; readonly name: Uint8Array }[], active: number, cursor: number): readonly ThemeRow[] {
+  return themes.map((theme) => {
+    const rawIndex = theme.index;
+    const index = rawIndex >= 0 && rawIndex <= 32 ? Math.trunc(rawIndex) : 0;
+    return {
       index,
       label: index === active ? joinBytes(theme.name, IN_EFFECT, NO_BYTES) : theme.name,
       active: index === active,
       highlighted: index === cursor,
-    });
-  }
-  return rows;
+    };
+  });
 }
 
 /// Re-highlight the catalog at `cursor`. A loop rather than a map with a
@@ -1834,8 +1966,6 @@ const AGENT_STATE_WORDS: readonly Uint8Array[] = [
   asciiBytes("gone"),
 ];
 
-const EMPTY_AGENT_ROW: AgentRow = { id: 0, provider: NO_BYTES, state: NO_BYTES,
-  attention: false, resource: NO_BYTES, parent: NO_BYTES, parentIndex: 65535 };
 const NO_AGENT_ROWS: readonly AgentRow[] = [];
 const NO_AGENTS: readonly SnapshotAgentRow[] = [];
 const NO_RAIL_ROWS: readonly RailRow[] = [];
@@ -1843,33 +1973,46 @@ const NO_RAIL_ROWS: readonly RailRow[] = [];
 /// The agent rows this window's tab owns, in the order the snapshot listed
 /// them. A row whose state ordinal is outside the closed vocabulary is
 /// dropped rather than shown as a word the engine never said.
+function copyAgent(row: SnapshotAgentRow, counted: SwitcherRow, connection: number): AgentRow {
+  const id = counted.id;
+  const parentRaw = counted.index;
+  const state = row.state;
+  const picked = state >= 0 && state < AGENT_STATE_WORDS.length ? AGENT_STATE_WORDS[Math.trunc(state)] : undefined;
+  const word = picked === undefined ? NO_BYTES : picked;
+  return {
+    ...EMPTY_AGENT_ROW,
+    id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
+    parentIndex: parentRaw >= 0 && parentRaw <= 9007199254740991 ? Math.trunc(parentRaw) : 65535,
+    provider: row.provider,
+    state: reportedAgentState(word, connection),
+    attention: row.attention && connection === 2,
+    resource: row.resource,
+    parent: row.parent,
+  };
+}
+
 function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: number, connection: number): readonly AgentRow[] {
   const out: AgentRow[] = [];
-  let ordinal = 0;
+  let counted = copySwitcher(EMPTY_SWITCHER_ROW, false);
   for (let i = 0; i < agents.length; i += 1) {
-    const candidate = agents[i];
-    const row: SnapshotAgentRow = candidate === undefined
-      ? { window: 0, tab: 0, state: 0, attention: false, provider: NO_BYTES,
-        resource: NO_BYTES, parent: NO_BYTES, parentIndex: 65535 }
-      : candidate;
-    if (row.window !== window || row.tab !== tab) continue;
-    const state = row.state;
-    if (state >= 0 && state < AGENT_STATE_WORDS.length && ordinal >= 0 && ordinal <= 255) {
-      const rawParentIndex = row.parentIndex;
-      const candidateStateWord = AGENT_STATE_WORDS[Math.trunc(state)];
-      const stateWord = candidateStateWord === undefined ? NO_BYTES : candidateStateWord;
-      const reportedState = reportedAgentState(stateWord, connection);
-      if (rawParentIndex >= 0 && rawParentIndex < 65535) {
-        out.push({ ...EMPTY_AGENT_ROW, id: Math.trunc(ordinal), provider: row.provider, state: reportedState,
-          attention: row.attention && connection === 2, resource: row.resource,
-          parent: row.parent, parentIndex: Math.trunc(rawParentIndex) });
-      } else {
-        out.push({ ...EMPTY_AGENT_ROW, id: Math.trunc(ordinal), provider: row.provider, state: reportedState,
-          attention: row.attention && connection === 2, resource: row.resource,
-          parent: row.parent, parentIndex: 65535 });
-      }
-      ordinal += 1;
-    }
+    const row = agents[i];
+    if (row === undefined || row.window !== window || row.tab !== tab) continue;
+    const parentRaw = row.parentIndex;
+    counted = copySwitcher({
+      id: counted.id >= 0 && counted.id <= 9007199254740991 ? Math.trunc(counted.id) : 0,
+      index: parentRaw >= 0 && parentRaw <= 9007199254740991 ? Math.trunc(parentRaw) : 65535,
+      label: NO_BYTES, target: NO_BYTES, highlighted: false, current: false,
+      detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, disabled: true,
+      renamable: false, resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES,
+    }, false);
+    out.push(copyAgent(row, counted, connection));
+    const nextId = counted.id;
+    counted = copySwitcher({
+      id: nextId >= 0 && nextId < 9007199254740991 ? Math.trunc(nextId) + 1 : 0,
+      index: 0, label: NO_BYTES, target: NO_BYTES, highlighted: false, current: false,
+      detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, disabled: true,
+      renamable: false, resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES,
+    }, false);
   }
   return out.length === 0 ? NO_AGENT_ROWS : out;
 }
@@ -1893,7 +2036,9 @@ function stampSlots(tabs: readonly SnapshotTab[], window: number, agents: readon
     if (!(rawIndex >= 0 && rawIndex <= 31) || !(rawId >= 1 && rawId <= 4294967295)) continue;
     const index = Math.trunc(rawIndex);
     const id = Math.trunc(rawId);
-    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, attentionLabel: attentionLabel(t.title, t.attention), agents: agentRowsFor(agents, w, index, connection), target: t.target });
+    out.push({ id, index, slot: w * 32 + index, title: t.title, cwd: t.cwd, selected: t.selected, attention: t.attention, attentionLabel: attentionLabel(t.title, t.attention), agents: agentRowsFor(agents, w, index, connection), target: t.target,
+      closeLabel: joinBytes(asciiBytes("Close tab: "), t.title, NO_BYTES),
+      movePreviousDisabled: index === 0, moveNextDisabled: index + 1 === tabs.length });
   }
   return out;
 }
@@ -1907,14 +2052,16 @@ function railRows(tabs: readonly Tab[]): readonly RailRow[] {
   for (let i = 0; i < tabs.length; i += 1) {
     const tab = tabs[i];
     if (!(ordinal >= 0 && ordinal <= 65535)) break;
-    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: tab.attention ? ATTENTION_MARK : NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target, attentionLabel: tab.attentionLabel });
+    out.push({ id: Math.trunc(ordinal), index: tab.index, label: tab.title, state: NO_BYTES, mark: tab.attention ? ATTENTION_MARK : NO_BYTES, selected: tab.selected, agent: false, parentIndex: 65535, target: tab.target, attentionLabel: tab.attentionLabel,
+      closeLabel: tab.closeLabel, movePreviousDisabled: tab.movePreviousDisabled, moveNextDisabled: tab.moveNextDisabled });
     ordinal += 1;
     const rows = tab.agents;
     for (let j = 0; j < rows.length; j += 1) {
       const row = rows[j];
       if (!(ordinal >= 0 && ordinal <= 65535)) break;
       const label = row.resource.length === 0 ? row.provider : joinBytes(row.provider, asciiBytes(" / "), joinBytes(row.resource, asciiBytes(" under "), row.parent));
-      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: NO_BYTES });
+      out.push({ id: Math.trunc(ordinal), index: tab.index, label, state: row.state, mark: row.attention ? ATTENTION_MARK : NO_BYTES, selected: false, agent: true, parentIndex: row.parentIndex, target: NO_BYTES, attentionLabel: attentionLabel(label, row.attention),
+        closeLabel: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true });
       ordinal += 1;
     }
   }
@@ -2174,8 +2321,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
       presentation: initialPresentation(),
-      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
-      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
+      tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
+      visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), closeLabel: asciiBytes("Close tab: Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES, movePreviousDisabled: true, moveNextDisabled: true }],
       tabWidth: 168,
       hasOverflow: false,
       overflowLabel: new Uint8Array(0),
@@ -2200,6 +2347,12 @@ export function initialModel(): [Model, Cmd<Msg>] {
       window3RailRows: NO_RAIL_ROWS,
       window4RailRows: NO_RAIL_ROWS,
       activeWindow: 0,
+      headerMenuWindow: -1,
+      mainHeaderMenuOpen: false,
+      window1HeaderMenuOpen: false,
+      window2HeaderMenuOpen: false,
+      window3HeaderMenuOpen: false,
+      window4HeaderMenuOpen: false,
       paletteOpen: false,
       agentsMode: false,
       inspectedResource: NO_BYTES,
@@ -2381,9 +2534,10 @@ export function initialModel(): [Model, Cmd<Msg>] {
         { index: 0, label: asciiBytes("Appearance") }, { index: 1, label: asciiBytes("Terminal") }, { index: 2, label: asciiBytes("Keyboard") }, { index: 3, label: asciiBytes("Window") }, { index: 4, label: asciiBytes("Connection") }, { index: 5, label: asciiBytes("About") },
       ],
       cursorChoices: [
-        { index: 0, label: asciiBytes("Block") }, { index: 1, label: asciiBytes("Bar") }, { index: 2, label: asciiBytes("Underline") },
+        { index: 0, label: asciiBytes("Block"), value: asciiBytes("block"), selected: true }, { index: 1, label: asciiBytes("Bar"), value: asciiBytes("bar"), selected: false }, { index: 2, label: asciiBytes("Underline"), value: asciiBytes("underline"), selected: false },
       ],
-      placementChoices: [{ index: 0, label: asciiBytes("Top strip") }, { index: 1, label: asciiBytes("Workspace rail") }],
+      placementChoices: [{ index: 0, label: asciiBytes("Top strip"), value: asciiBytes("top"), selected: true }, { index: 1, label: asciiBytes("Workspace rail"), value: asciiBytes("side"), selected: false }],
+      fontChoices: [{ index: 0, label: asciiBytes("JetBrains Mono NL Nerd Font Mono"), value: asciiBytes(""), selected: true }, { index: 1, label: asciiBytes("Geist Mono"), value: asciiBytes("Geist Mono"), selected: false }],
       fontDecrease: 0,
       fontIncrease: 1,
       navigationAfterSettings: false,
@@ -2441,9 +2595,11 @@ export function initialModel(): [Model, Cmd<Msg>] {
 }
 
 function selectTab(tabs: readonly Tab[], selected: number): readonly Tab[] {
-  return tabs.map((tab) => ({ id: tab.id, index: tab.index, slot: tab.slot, title: tab.title,
-    cwd: tab.cwd, selected: tab.index === selected, attention: tab.attention,
-    attentionLabel: tab.attentionLabel, agents: tab.agents, target: tab.target }));
+  const next: Tab[] = [];
+  for (const tab of tabs) {
+    if (tab !== undefined) next.push(copyTab(tab, tab.index === selected));
+  }
+  return next;
 }
 
 function speculateTabTarget(model: Model, target: Uint8Array): Model {
@@ -2491,10 +2647,21 @@ function tabCommandTransition(model: Model, msg: Msg): TabCommandTransition | nu
   if (msg.kind === "tab_command_failed") {
     return { model: tabCommandModel(model, unknownTabCommand(model.tabCommands)), request: NO_BYTES };
   }
+  if (msg.kind === "close_tab_target" || msg.kind === "move_tab_previous_target" || msg.kind === "move_tab_next_target") {
+    const decision = enqueueTabActionCommand(model.tabCommands, msg.target, tabAction(msg));
+    return { model: freshCommandModel(model, decision), request: decision.request };
+  }
   const operation = operationIntent(model, msg);
   if (operation.length === 0) return null;
   const decision = enqueueOperationCommand(model.tabCommands, operation);
   return { model: freshCommandModel(model, decision), request: decision.request };
+}
+
+function tabAction(msg: Msg): number {
+  if (msg.kind === "close_tab_target") return 4;
+  if (msg.kind === "move_tab_previous_target") return 5;
+  if (msg.kind === "move_tab_next_target") return 6;
+  return 0;
 }
 
 function operationIntent(model: Model, msg: Msg): Uint8Array {
@@ -2690,21 +2857,38 @@ function togglePreviewPlacement(model: Model): AppearanceDecision {
 }
 
 function previewTheme(model: Model, index: number): AppearanceDecision {
+  if (model.settingsSection !== 0) return appearanceDecision(model);
   if (!(index >= 0 && index < model.themes.length && index <= 32)) return appearanceDecision(model);
   const cursor = Math.trunc(index);
   return requestAppearance({ ...model, settingsCursor: cursor, themes: highlightThemes(model.themes, cursor) }, 1, cursor);
+}
+
+function requestVisibleAppearance(model: Model, id: number, control: number, action: number, argument: number): AppearanceDecision {
+  if (visibleSetting(model, id, control) === null) return appearanceDecision(model);
+  return requestAppearance(model, action, argument);
+}
+
+function directAppearanceControl(model: Model, msg: Msg): AppearanceDecision | null {
+  switch (msg.kind) {
+    case "settings_font": return requestVisibleAppearance(model, 1, 5, msg.direction > 0 ? 2 : 3, 0);
+    case "settings_cursor": return requestVisibleAppearance(model, 4, 3, 4, msg.index);
+    case "settings_placement": return requestVisibleAppearance(model, 9, 4, 5, msg.index);
+    default: return null;
+  }
+}
+
+function commitAppearance(model: Model): AppearanceDecision {
+  if (!model.settingsFooterSave) return appearanceDecision(model);
+  return requestAppearance(model, 7, 0);
 }
 
 function editAppearance(model: Model, msg: Msg): AppearanceDecision | null {
   switch (msg.kind) {
     case "settings_pick": return previewTheme(model, msg.index);
     case "settings_move": return moveThemePreview(model, msg.delta);
-    case "settings_font": return requestAppearance(model, msg.direction > 0 ? 2 : 3, 0);
-    case "settings_cursor": return requestAppearance(model, 4, msg.index);
-    case "settings_placement": return requestAppearance(model, 5, msg.index);
     case "toggle_tab_placement": return togglePreviewPlacement(model);
-    case "settings_commit": return requestAppearance(model, 7, 0);
-    default: return null;
+    case "settings_commit": return commitAppearance(model);
+    default: return directAppearanceControl(model, msg);
   }
 }
 
@@ -2769,14 +2953,15 @@ function commandContextCurrent(model: Model): boolean {
 }
 
 function refreshActions(model: Model, cursor: number): Model {
-  const rows = commandRows(model.paletteQuery, cursor, model.engineConnected && activeTabs(model).length > 0, model.workspaceLabel, model.bindings);
+  const rows = commandRows(model.paletteQuery, cursor, model.engineConnected && activeTabs(model).length > 0, model.bindings);
   const available: ActionRow[] = [];
   for (const row of rows) {
     const command = commandDefinition(row.index);
     const implemented = command !== null && commandMsg(command.name) !== null;
-    available.push({ index: row.index, label: row.label, shortcut: row.shortcut,
-      highlighted: row.highlighted, disabled: row.disabled || !implemented,
-      detail: implemented ? row.detail : asciiBytes("Unavailable in this connection") });
+    if (row !== undefined) {
+      available.push(copyAction(row, row.disabled || !implemented,
+        implemented ? row.detail : asciiBytes("Unavailable in this connection")));
+    }
   }
   const selected = cursor >= 0 && cursor <= 65535 ? Math.trunc(cursor) : 0;
   return { ...model, actionRows: available, paletteCursor: selected,
@@ -2834,10 +3019,12 @@ interface NavigatorDecision {
 }
 
 function applySettingsChrome(model: Model): Model {
-  // Connection and About are status surfaces: no generic empty-row copy, no Save.
+  // A dirty preview keeps explicit Save/Cancel even on a status section.
   const generic = model.settingsSection !== 2 && model.settingsSection !== 4 && model.settingsSection !== 5;
-  return { ...model, noSettingRows: generic && model.settingRows.length === 0,
-    settingsFooterSave: model.settingsSection >= 0 && model.settingsSection <= 3 };
+  return { ...model, cursorChoices: selectedSettingChoices(model.appearance, 4, model.cursorChoices),
+    placementChoices: selectedSettingChoices(model.appearance, 9, model.placementChoices),
+    fontChoices: selectedSettingChoices(model.appearance, 0, model.fontChoices), noSettingRows: generic && model.settingRows.length === 0,
+    settingsFooterSave: model.appearance.dirty || (model.settingsSection >= 0 && model.settingsSection <= 3) };
 }
 
 function navigatorDecision(model: Model, effect: number, request: Uint8Array): NavigatorDecision {
@@ -2973,6 +3160,7 @@ function loadedKeybindings(model: Model, body: Uint8Array): NavigatorDecision {
   if (model.settingsOpen && (!described || bindings.rejected)) {
     return navigatorDecision({ ...next, appearanceBusy: true, bindingsOwnsBusy: false }, 7, appearanceRequest(0, 0));
   }
+  if (!model.paletteOpen || model.navigatorView !== 4) return navigatorDecision(next, 0, NO_BYTES);
   return navigatorDecision(refreshActions(next, model.paletteCursor), 0, NO_BYTES);
 }
 
@@ -3031,6 +3219,8 @@ function commandsTransition(model: Model, msg: Msg): NavigatorDecision | null {
 }
 
 function navigatorTransition(incoming: Model, msg: Msg): NavigatorDecision | null {
+  const menu = headerMenuTransition(incoming, msg);
+  if (menu !== null) return menu;
   const departure = departureTransition(incoming, msg);
   if (departure !== null) return departure;
   if (msg.kind === "navigator_scrolled") return navigatorDecision({ ...incoming, navigatorScroll: msg.scroll.offsetY, navigatorViewport: msg.scroll.viewportExtentY }, 0, NO_BYTES);
@@ -3198,7 +3388,7 @@ function editSettingsSearch(model: Model, edit: TextInputEvent): Model {
 function selectSetting(model: Model, id: number): Model {
   if (!model.settingsFooterSave) return model;
   for (const row of model.settingRows) {
-    if (row.id !== id || !row.editable) continue;
+    if (row.id !== id || !row.editable || !row.available) continue;
     const selected = id >= 0 && id <= 10 ? Math.trunc(id) : 65535;
     const length = row.value.length;
     const end = length >= 0 && length <= 1024 ? Math.trunc(length) : 0;
@@ -3251,16 +3441,51 @@ function reloadSettings(model: Model): NavigatorDecision {
     settingsReloadStage: 1 }, 7, appearanceRequest(6, 0));
 }
 
+function directSetting(model: Model, id: number, value: Uint8Array): NavigatorDecision {
+  return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }, 7, settingRequest(id, value));
+}
+
+function visibleSetting(model: Model, id: number, control: number): Setting | null {
+  for (const row of model.settingRows) if (row.id === id && row.editable && row.available && row.control === control) return row;
+  return null;
+}
+
+function visibleEditableSetting(model: Model, id: number): Setting | null {
+  for (const row of model.settingRows) if (row.id === id && row.editable && row.available) return row;
+  return null;
+}
+
+function directFontFamily(model: Model, index: number): NavigatorDecision {
+  if (model.appearanceBusy || (index !== 0 && index !== 1)) return navigatorDecision(model, 0, NO_BYTES);
+  const row = visibleSetting(model, 0, 2);
+  if (row === null) return navigatorDecision(model, 0, NO_BYTES);
+  return directSetting(model, 0, index === 0 ? asciiBytes("") : asciiBytes("Geist Mono"));
+}
+
+function directBoolean(model: Model, id: number, enabled: boolean): NavigatorDecision {
+  if (model.appearanceBusy || id < 0 || id > 14) return navigatorDecision(model, 0, NO_BYTES);
+  const row = visibleSetting(model, id, 1);
+  if (row === null) return navigatorDecision(model, 0, NO_BYTES);
+  return directSetting(model, id, asciiBytes(enabled ? "true" : "false"));
+}
+
+function applySettingDraft(model: Model): NavigatorDecision {
+  if (model.appearanceBusy || visibleSetting(model, model.settingEditId, 0) === null) return navigatorDecision(model, 0, NO_BYTES);
+  return directSetting(model, model.settingEditId, model.settingEditValue);
+}
+
+function resetVisibleSetting(model: Model, id: number): NavigatorDecision {
+  if (model.appearanceBusy || visibleEditableSetting(model, id) === null) return navigatorDecision(model, 0, NO_BYTES);
+  return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }, 7, resetSettingRequest(id));
+}
+
 function settingControlTransition(model: Model, msg: Msg): NavigatorDecision | null {
   switch (msg.kind) {
-    case "settings_apply": {
-      if (model.appearanceBusy || model.settingEditId > 10) return navigatorDecision(model, 0, NO_BYTES);
-      return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }, 7, settingRequest(model.settingEditId, model.settingEditValue));
-    }
-    case "settings_reset": {
-      if (model.appearanceBusy || msg.id > 10) return navigatorDecision(model, 0, NO_BYTES);
-      return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }, 7, resetSettingRequest(msg.id));
-    }
+    case "settings_font_family": return directFontFamily(model, msg.index);
+    case "settings_enable": return directBoolean(model, msg.id, true);
+    case "settings_disable": return directBoolean(model, msg.id, false);
+    case "settings_apply": return applySettingDraft(model);
+    case "settings_reset": return resetVisibleSetting(model, msg.id);
     case "settings_reload": return reloadSettings(model);
     default: return null;
   }
@@ -3839,7 +4064,8 @@ function abandonFailedSessionDeparture(model: Model, msg: Msg): Model {
 }
 
 function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
-  const session = resumeSessionAction(model, msg);
+  const menu = prepareHeaderMenu(model, msg);
+  const session = resumeSessionAction(menu.model, menu.msg);
   const settings = resumeSettingsAction(session.model, session.msg);
   let next = abandonFailedSessionDeparture(settings.model, settings.msg);
   const action = settings.msg;
@@ -3869,6 +4095,7 @@ function observeNativeLifecycle(model: Model, msg: Msg): Model {
 }
 
 function commandDeparture(previous: Model, next: Model): boolean {
+  if (previous.headerMenuWindow >= 0 && next.headerMenuWindow < 0) return true;
   if (previous.settingsOpen && !next.settingsOpen) return true;
   return next.paletteOpen && next.navigatorView === 4;
 }
@@ -4438,6 +4665,11 @@ function loadedSnapshotUpdate(model: Model, body: Uint8Array): UpdatePlan {
   if (loaded === null) return modelPlan(engineUnavailable(model, asciiBytes("BAD SNAPSHOT")));
   if (loaded.stale) return modelPlan(model);
   const routed = routeSnapshot(model, loaded);
+  // Menus cannot coexist with the editors/pickers below. Native focus may
+  // retire one via a snapshot; release input before refreshing host status.
+  if (model.headerMenuWindow >= 0 && routed.scoped.headerMenuWindow < 0) return committedRequestPlan(routed.scoped,
+    plannedRequest("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES),
+      "cockpit-remote", "remote_loaded", "remote_failed"));
   const machinePoll = refreshMachineSnapshot(routed.scoped);
   if (machinePoll !== null) return requestPlan(machinePoll.model,
     plannedRequest("cockpit.machines", machinePoll.request, "cockpit-machines", "machines_loaded", "machines_failed"));
@@ -4503,6 +4735,8 @@ function applicationMessageUpdate(model: Model, msg: Msg, fromCommands: boolean)
       if (fromCommands) return committedHostPlan(model, "cockpit.intent", payload);
       return hostPlan(model, "cockpit.intent", payload);
     }
+    case "clipboard_action":
+      return hostPlan(model, "cockpit.clipboard", msg.target);
     case "engine_wake":
       return modelPlan({ ...model });
     case "snapshot_failed":

@@ -373,6 +373,28 @@ output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
 grep -Fq "tag: $COCKPIT_VERSION" <<<"$output"
 grep -Fq "zip_url: https://github.com/no-phux/phux/releases/download/${COCKPIT_VERSION}/${COCKPIT_ZIP}" <<<"$output"
 grep -Fq "bin_dir: $TMP/cockpit-bin" <<<"$output"
+grep -Fxq 'channel: stable' <<<"$output"
+
+# `--channel next` follows the moving pointer; a stable pin contradicts it,
+# including when next comes from $PHUX_CHANNEL.
+for args in "--channel next" ""; do
+  # shellcheck disable=SC2086
+  if PATH="$FAKE_BIN:/usr/bin:/bin" PHUX_CHANNEL=next \
+    "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" $args --version "$COCKPIT_VERSION" \
+      --os darwin --arch arm64 --applications-dir "$TMP/unused" --dry-run \
+      >"$TMP/cockpit-next-conflict.out" 2>"$TMP/cockpit-next-conflict.err"; then
+    echo "cockpit installer accepted a next channel with --version" >&2
+    exit 1
+  fi
+  grep -Fq -- '--version pins a stable tag' "$TMP/cockpit-next-conflict.err"
+done
+if PATH="$FAKE_BIN:/usr/bin:/bin" \
+  "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --channel nightly --dry-run \
+    >/dev/null 2>"$TMP/cockpit-bad-channel.err"; then
+  echo "cockpit installer accepted an unknown channel" >&2
+  exit 1
+fi
+grep -Fq -- '--channel must be stable, latest, or next' "$TMP/cockpit-bad-channel.err"
 
 # A failed placement restores the previous install and leaves no lock behind.
 COCKPIT_ROLLBACK="$TMP/cockpit-rollback"

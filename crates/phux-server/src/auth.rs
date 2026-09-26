@@ -169,6 +169,43 @@ struct CredentialRecord {
     expires_at: Option<DateTime<Utc>>,
     revoked_at: Option<DateTime<Utc>>,
     generation: u64,
+    /// When a bearer presentation last authenticated this generation.
+    /// Absent on credentials never used since mint (or minted before this
+    /// field existed). Older stores without the key deserialize as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_seen: Option<DateTime<Utc>>,
+}
+
+/// One credential as listed by `phux pair ls`: identity, mint time, last
+/// successful authentication, and whether every generation is revoked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialSummary {
+    /// Stable credential identifier shared by its rotated generations.
+    pub id: String,
+    /// Earliest `issued_at` across generations (when the credential was minted).
+    pub issued_at: DateTime<Utc>,
+    /// Latest `last_seen` across generations, when any authentication recorded one.
+    pub last_seen: Option<DateTime<Utc>>,
+    /// True when every generation carries a `revoked_at`.
+    pub revoked: bool,
+    /// Highest generation number currently on disk for this id.
+    pub generation: u64,
+}
+
+/// Outcome of [`prune_unused`]: which credential ids were revoked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PruneOutcome {
+    /// Credential ids revoked by this prune.
+    pub revoked_ids: Vec<String>,
+    durable: bool,
+}
+
+impl PruneOutcome {
+    /// Whether the store directory reached stable storage after the rewrite.
+    #[must_use]
+    pub const fn is_durable(&self) -> bool {
+        self.durable
+    }
 }
 
 /// Identity and policy metadata captured when a connection is established.
@@ -825,6 +862,18 @@ impl ReloadingTokenStore {
         self.with_current(|store| store.authenticate(presented))
     }
 
+    /// Authenticate and, on success, record `last_seen` for the credential.
+    ///
+    /// Connection admission uses this so `phux pair ls` / `prune` see real
+    /// activity; [`Self::authenticate`] stays read-only for standing checks
+    /// and tests that must not rewrite the store.
+    #[must_use]
+    pub fn authenticate_and_touch(&self, presented: &[u8]) -> Option<AuthenticatedCredential> {
+        let authenticated = self.authenticate(presented)?;
+        record_credential_seen(&self.path, &authenticated.id);
+        Some(authenticated)
+    }
+
     /// Whether a bearer secret authenticates against the current generation.
     #[must_use]
     pub fn verify(&self, presented: &[u8]) -> bool {
@@ -913,6 +962,7 @@ fn mint_credential_unlocked(
         expires_at,
         revoked_at: None,
         generation: 1,
+        last_seen: None,
     });
     let commit = atomic_write(path, &file)?;
     Ok(MintedCredential {
@@ -980,6 +1030,7 @@ fn rotate_credential_at(
         expires_at: latest.expires_at,
         revoked_at: None,
         generation,
+        last_seen: None,
     });
     let commit = atomic_write_with_fault(path, &file, fault)?;
     Ok(MintedCredential {
@@ -988,6 +1039,186 @@ fn rotate_credential_at(
         secret: hex::encode(secret),
         durable: commit.is_durable(),
     })
+}
+
+/// Mint a generation-one credential, revoking any live credential whose
+/// current bearer matches `previous_secret_hex` first.
+///
+/// Used by `phux host add` when re-enrolling a name that already holds a
+/// token: the new secret replaces the old one in a single store rewrite so
+/// the remote-tokens file does not accumulate abandoned live credentials.
+pub fn mint_token_replacing(
+    path: &Path,
+    previous_secret_hex: &str,
+) -> Result<MintedCredential, AuthError> {
+    with_store_lock(path, || {
+        let previous = decode_secret(previous_secret_hex)?;
+        let mut file = load_file_for_update(path)?;
+        let now = Utc::now();
+        if let Some(id) = credential_id_for_secret(&file, &previous) {
+            for record in file.credentials.iter_mut().filter(|record| record.id == id) {
+                if record.revoked_at.is_none() {
+                    record.revoked_at = Some(now);
+                }
+            }
+        }
+        let (id, secret) = random_identity_and_secret()?;
+        file.credentials.push(CredentialRecord {
+            id: id.clone(),
+            verifier: verifier(&secret),
+            principal: format!("remote-consumer:{id}"),
+            scopes: vec![TERMINAL_CONTROL_SCOPE.to_owned()],
+            issued_at: now,
+            expires_at: None,
+            revoked_at: None,
+            generation: 1,
+            last_seen: None,
+        });
+        let commit = atomic_write(path, &file)?;
+        Ok(MintedCredential {
+            id,
+            generation: 1,
+            secret: hex::encode(secret),
+            durable: commit.is_durable(),
+        })
+    })
+}
+
+/// List credentials aggregated by id (mint time, last seen, revoked).
+pub fn list_credentials(path: &Path) -> Result<Vec<CredentialSummary>, AuthError> {
+    let store = TokenStore::load(path)?;
+    Ok(summarize_credentials(&store.file))
+}
+
+/// Revoke every still-live credential whose last activity is at least
+/// `unused_for` ago.
+///
+/// Last activity is `last_seen` when recorded, otherwise `issued_at` (a
+/// credential never presented since mint is unused from the moment it was
+/// created). Already-revoked credentials are left alone.
+pub fn prune_unused(path: &Path, unused_for: Duration) -> Result<PruneOutcome, AuthError> {
+    with_store_lock(path, || {
+        let mut file = load_file_for_update(path)?;
+        let now = Utc::now();
+        let cutoff = now - unused_for.max(Duration::zero());
+        let mut revoked_ids = Vec::new();
+        for summary in summarize_credentials(&file) {
+            if summary.revoked {
+                continue;
+            }
+            let activity = summary.last_seen.unwrap_or(summary.issued_at);
+            if activity > cutoff {
+                continue;
+            }
+            for record in file
+                .credentials
+                .iter_mut()
+                .filter(|record| record.id == summary.id)
+            {
+                if record.revoked_at.is_none() {
+                    record.revoked_at = Some(now);
+                }
+            }
+            revoked_ids.push(summary.id);
+        }
+        if revoked_ids.is_empty() {
+            return Ok(PruneOutcome {
+                revoked_ids,
+                durable: true,
+            });
+        }
+        let commit = atomic_write(path, &file)?;
+        Ok(PruneOutcome {
+            revoked_ids,
+            durable: commit.is_durable(),
+        })
+    })
+}
+
+fn summarize_credentials(file: &CredentialFile) -> Vec<CredentialSummary> {
+    let mut by_id: std::collections::BTreeMap<String, CredentialSummary> =
+        std::collections::BTreeMap::new();
+    for record in &file.credentials {
+        let entry = by_id
+            .entry(record.id.clone())
+            .or_insert_with(|| CredentialSummary {
+                id: record.id.clone(),
+                issued_at: record.issued_at,
+                last_seen: record.last_seen,
+                revoked: record.revoked_at.is_some(),
+                generation: record.generation,
+            });
+        if record.issued_at < entry.issued_at {
+            entry.issued_at = record.issued_at;
+        }
+        entry.last_seen = match (entry.last_seen, record.last_seen) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        entry.revoked &= record.revoked_at.is_some();
+        entry.generation = entry.generation.max(record.generation);
+    }
+    by_id.into_values().collect()
+}
+
+fn credential_id_for_secret(file: &CredentialFile, secret: &[u8; TOKEN_LEN]) -> Option<String> {
+    let candidate = Sha256::digest(secret);
+    let mut matched = None;
+    for record in &file.credentials {
+        let Ok(verifier) = decode_verifier(&record.verifier) else {
+            continue;
+        };
+        if bool::from(verifier.ct_eq(candidate.as_slice())) {
+            matched = Some(record.id.clone());
+        }
+    }
+    matched
+}
+
+/// Record that credential `id` authenticated successfully.
+///
+/// Best-effort and rate-limited: a write at most once per minute per
+/// credential so reconnect storms do not rewrite the store on every dial.
+/// Failures are swallowed — admission already succeeded.
+pub fn record_credential_seen(path: &Path, id: &str) {
+    let _ = with_store_lock(path, || {
+        record_credential_seen_unlocked(path, id, Utc::now())
+    });
+}
+
+fn record_credential_seen_unlocked(
+    path: &Path,
+    id: &str,
+    now: DateTime<Utc>,
+) -> Result<(), AuthError> {
+    let mut file = load_file_for_update(path)?;
+    let Some(latest) = file
+        .credentials
+        .iter()
+        .filter(|record| record.id == id && record.revoked_at.is_none())
+        .max_by_key(|record| record.generation)
+        .map(|record| record.generation)
+    else {
+        return Ok(());
+    };
+    let Some(record) = file
+        .credentials
+        .iter_mut()
+        .find(|record| record.id == id && record.generation == latest)
+    else {
+        return Ok(());
+    };
+    if record
+        .last_seen
+        .is_some_and(|seen| now - seen < Duration::seconds(60))
+    {
+        return Ok(());
+    }
+    record.last_seen = Some(now);
+    let _ = atomic_write(path, &file)?;
+    Ok(())
 }
 
 /// Revoke every generation of a credential for future connection attempts.
@@ -1044,6 +1275,7 @@ pub fn migrate_legacy_store(path: &Path) -> Result<MigrationOutcome, AuthError> 
                 expires_at: None,
                 revoked_at: None,
                 generation: 1,
+                last_seen: None,
             });
         }
         let count = file.credentials.len();
@@ -1363,6 +1595,7 @@ pub(crate) fn write_test_credential(path: &Path, secret: &[u8; TOKEN_LEN]) {
             expires_at: None,
             revoked_at: None,
             generation: 1,
+            last_seen: None,
         }],
     };
     atomic_write(path, &file).unwrap();
@@ -1517,6 +1750,7 @@ mod tests {
             expires_at: Some(now + Duration::seconds(1)),
             revoked_at: None,
             generation: 1,
+            last_seen: None,
         };
         let store = TokenStore {
             file: CredentialFile {
@@ -2139,5 +2373,93 @@ mod tests {
         assert!(!output.contains(minted.secret()));
         assert!(!output.contains(verifier));
         assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn list_summarizes_credentials_and_prune_revokes_unused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials");
+        let fresh = mint_token(&path).unwrap();
+        let stale = mint_token(&path).unwrap();
+
+        // Age the second credential so prune --unused-for 1h selects it.
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        for cred in file["credentials"].as_array_mut().unwrap() {
+            if cred["id"] == stale.id {
+                cred["issued_at"] = serde_json::json!("2000-01-01T00:00:00Z");
+            }
+        }
+        fs::write(&path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        // Restore owner-only mode after the raw rewrite.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let listed = list_credentials(&path).unwrap();
+        assert_eq!(listed.len(), 2);
+        let stale_row = listed.iter().find(|row| row.id == stale.id).unwrap();
+        assert!(stale_row.last_seen.is_none());
+        assert!(!stale_row.revoked);
+
+        let pruned = prune_unused(&path, Duration::hours(1)).unwrap();
+        assert_eq!(pruned.revoked_ids, vec![stale.id.clone()]);
+        assert!(
+            list_credentials(&path)
+                .unwrap()
+                .iter()
+                .find(|row| row.id == stale.id)
+                .unwrap()
+                .revoked
+        );
+        assert!(
+            !list_credentials(&path)
+                .unwrap()
+                .iter()
+                .find(|row| row.id == fresh.id)
+                .unwrap()
+                .revoked
+        );
+        assert!(TokenStore::load(&path).unwrap().verify(&secret(&fresh)));
+        assert!(!TokenStore::load(&path).unwrap().verify(&secret(&stale)));
+    }
+
+    #[test]
+    fn mint_replacing_revokes_the_previous_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials");
+        let first = mint_token(&path).unwrap();
+        let second = mint_token_replacing(&path, first.secret()).unwrap();
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.secret(), second.secret());
+        let store = TokenStore::load(&path).unwrap();
+        assert!(!store.verify(&secret(&first)));
+        assert!(store.verify(&secret(&second)));
+        let listed = list_credentials(&path).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed
+                .iter()
+                .find(|row| row.id == first.id)
+                .unwrap()
+                .revoked
+        );
+        assert!(
+            !listed
+                .iter()
+                .find(|row| row.id == second.id)
+                .unwrap()
+                .revoked
+        );
+    }
+
+    #[test]
+    fn authenticate_and_touch_records_last_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials");
+        let minted = mint_token(&path).unwrap();
+        let store = ReloadingTokenStore::load(path.clone()).unwrap();
+        assert!(store.authenticate_and_touch(&secret(&minted)).is_some());
+        let listed = list_credentials(&path).unwrap();
+        let row = listed.iter().find(|row| row.id == minted.id).unwrap();
+        assert!(row.last_seen.is_some());
     }
 }

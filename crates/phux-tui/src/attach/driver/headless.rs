@@ -201,6 +201,14 @@ struct HeadlessSession {
     /// phux-i0e8.2.2: headless composite dispatches no kill actions, so the
     /// expected-close set stays empty; threaded for the shared signature.
     expected_closes: HashSet<ResourceId>,
+    /// `request_id` -> the Terminal a command this client sent named, for the
+    /// commands whose refusal is authoritative about that Terminal's
+    /// existence (`KILL_RESOURCE` from kill-pane / kill-window,
+    /// `ATTACH_RESOURCE` for a layout leaf discovered at attach). A
+    /// `TERMINAL_NOT_FOUND` reply folds the leaf out: no `RESOURCE_CLOSED` is
+    /// ever broadcast for a resource the server does not have, so the refusal
+    /// is the only evidence a stale leaf is stale.
+    pending_resource_ops: HashMap<u32, ResourceId>,
     /// ADR-0040: one-shot `phux.agent/v1` reads so the composited window
     /// labels prefer structured agent records, matching a live attach.
     agent_meta: AgentMetaIndex,
@@ -239,6 +247,7 @@ impl HeadlessSession {
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
             expected_closes: HashSet::new(),
+            pending_resource_ops: HashMap::new(),
             agent_meta: AgentMetaIndex::default(),
             vcs: VcsIndex::default(),
         }
@@ -275,6 +284,7 @@ impl HeadlessSession {
             &mut self.pending_splits,
             &mut self.pending_windows,
             &mut self.expected_closes,
+            &mut self.pending_resource_ops,
             &mut self.agent_meta,
             false,
             true,
@@ -315,13 +325,21 @@ impl HeadlessSession {
     fn compose(&mut self) -> phux_core::screen::RenderedFrame {
         use std::time::SystemTime;
 
-        let windows = window_infos(
+        let mut windows = window_infos(
             &self.workspace,
             &self.panes,
             self.zoomed.as_ref(),
             &self.agent_meta.records,
             &mut self.vcs,
         );
+        let local = agent_entries(
+            &self.workspace,
+            &self.panes,
+            &self.agent_meta,
+            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
+            &crate::attach::review::ReviewIndex::new(),
+        );
+        super::chrome::badge_windows(&mut windows, &self.workspace, &local, &self.sidebar_theme);
         if let Some(sb) = self.status_bar.as_mut() {
             sb.set_windows(windows.clone());
         }
@@ -329,12 +347,6 @@ impl HeadlessSession {
         // composited frame shows the sidebar tabs when `[sidebar]` is enabled.
         let mut sidebar_painter = SidebarPainter::new(self.sidebar_theme);
         sidebar_painter.set_windows(windows);
-        let local = agent_entries(
-            &self.workspace,
-            &self.panes,
-            &self.agent_meta,
-            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
-        );
         let mut session = crate::render::chrome::sidebar::SessionRosterEntry {
             name: self.session_name.clone(),
             host: "this server".to_owned(),
@@ -619,7 +631,7 @@ mod sidebar_tests {
             .collect();
         assert!(rows[1].contains("reviewer"), "{rows:?}");
         assert!(
-            rows[12].contains("work") && rows[12].contains("!1"),
+            rows[12].contains("work") && rows[12].contains("●1"),
             "{rows:?}"
         );
         assert!(rows[13].contains("this server"), "{rows:?}");

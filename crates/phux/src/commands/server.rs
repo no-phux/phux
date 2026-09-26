@@ -30,23 +30,97 @@ const AUTO_SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// stuck holder cannot hang the terminal.
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Noninteractive counterpart of naked `phux`'s coordinator startup.
-pub(crate) fn run_ensure(socket: Option<PathBuf>) -> ExitCode {
-    let socket_path = socket.unwrap_or_else(default_socket_path);
-    if let Err(code) = super::ensure_socket_path_fits(&socket_path) {
-        return code;
-    }
-    match ensure::with_deadline(socket_path.clone()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("phux server --ensure: {}: {err}", socket_path.display());
-            ExitCode::FAILURE
+/// Version of the `phux server --ensure --json` availability document.
+const ENSURE_SCHEMA_VERSION: u8 = 1;
+
+/// Which owner made the selected socket available.
+///
+/// This is deliberately about the startup decision, not server compatibility:
+/// `--ensure` proves only that the Unix socket accepts. The consumer's normal
+/// HELLO remains the authority for protocol and feature negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnsureDisposition {
+    /// The socket accepted before startup coordination was needed.
+    Reused,
+    /// Another caller made it available while this caller waited for the lock.
+    Joined,
+    /// A pending `service install --adopt` handover started the supervisor.
+    SupervisedStarted,
+    /// This process launched the detached server directly.
+    DaemonStarted,
+}
+
+impl EnsureDisposition {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reused => "reused",
+            Self::Joined => "joined",
+            Self::SupervisedStarted => "supervised_started",
+            Self::DaemonStarted => "daemon_started",
         }
     }
 }
 
-fn ensure_accepting(socket_path: &Path) -> std::io::Result<()> {
-    ensure_server(
+fn ensure_document(socket_path: &Path, disposition: EnsureDisposition) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": ENSURE_SCHEMA_VERSION,
+        "running": true,
+        "socket": socket_path.display().to_string(),
+        "disposition": disposition.as_str(),
+        "cli_version": env!("CARGO_PKG_VERSION"),
+        "server_log": phux_server::telemetry::server_log_path(),
+    })
+}
+
+fn report_ensure_failure(json: bool, socket_path: &Path, err: &std::io::Error) -> ExitCode {
+    if !json {
+        eprintln!("phux server --ensure: {}: {err}", socket_path.display());
+        return ExitCode::FAILURE;
+    }
+
+    let code = match err.kind() {
+        std::io::ErrorKind::TimedOut => super::json_err::codes::SERVER_START_TIMEOUT,
+        std::io::ErrorKind::Interrupted => super::json_err::codes::SERVER_START_CANCELLED,
+        _ => super::json_err::codes::SERVER_START_FAILED,
+    };
+    let log_path = phux_server::telemetry::server_log_path();
+    let error = super::json_err::CliError::new(
+        code,
+        format!(
+            "could not make the local server available at {}: {err}",
+            socket_path.display()
+        ),
+        format!(
+            "retry; inspect {}; run `phux config check` and `phux doctor`",
+            log_path.display()
+        ),
+    );
+    super::json_err::emit(true, &error, 1)
+}
+
+/// Noninteractive counterpart of naked `phux`'s coordinator startup.
+pub(crate) fn run_ensure(socket: Option<PathBuf>, json: bool) -> ExitCode {
+    let socket_path = socket.unwrap_or_else(default_socket_path);
+    if let Err(err) = phux_server::runtime::validate_socket_path_len(&socket_path) {
+        return report_ensure_failure(
+            json,
+            &socket_path,
+            &std::io::Error::new(std::io::ErrorKind::InvalidInput, err),
+        );
+    }
+    match ensure::with_deadline(socket_path.clone()) {
+        Ok(disposition) => {
+            if json {
+                outln!("{}", ensure_document(&socket_path, disposition));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => report_ensure_failure(json, &socket_path, &err),
+    }
+}
+
+fn ensure_accepting(socket_path: &Path) -> std::io::Result<EnsureDisposition> {
+    let disposition = ensure_server(
         socket_path,
         &super::attach::resolved_default_session_name(),
         super::attach::configured_spawn_on_attach().as_deref(),
@@ -58,7 +132,10 @@ fn ensure_accepting(socket_path: &Path) -> std::io::Result<()> {
     // The shared probe deliberately calls permission errors "Live" to avoid
     // unlinking another user's socket. That conservative classification is not
     // sufficient evidence for this command's success contract.
-    std::os::unix::net::UnixStream::connect(socket_path).map(drop)
+    std::os::unix::net::UnixStream::connect(socket_path).map(|stream| {
+        drop(stream);
+        disposition
+    })
 }
 
 /// Compose the fatal message printed when the server refuses to start
@@ -829,7 +906,7 @@ pub(crate) fn ensure_server(
     session: &str,
     seed_command: Option<&str>,
     quiet: bool,
-) -> std::io::Result<()> {
+) -> std::io::Result<EnsureDisposition> {
     ensure_server_with(socket_path, Some(session), seed_command, quiet, false)
 }
 
@@ -837,7 +914,10 @@ pub(crate) fn ensure_server(
 /// started here runs `phux server --no-seed`, so `phux new --empty` ends up
 /// with only the empty session it creates (ADR-0105). A server that is
 /// already running is used as it is.
-pub(crate) fn ensure_server_unseeded(socket_path: &Path, quiet: bool) -> std::io::Result<()> {
+pub(crate) fn ensure_server_unseeded(
+    socket_path: &Path,
+    quiet: bool,
+) -> std::io::Result<EnsureDisposition> {
     ensure_server_with(socket_path, None, None, quiet, false)
 }
 
@@ -858,6 +938,7 @@ pub(crate) fn ensure_server_for_bootstrap(socket_path: &Path) -> std::io::Result
         false,
         true,
     )
+    .map(|_| ())
 }
 
 /// The shared body of [`ensure_server`] and [`ensure_server_unseeded`].
@@ -868,7 +949,7 @@ fn ensure_server_with(
     seed_command: Option<&str>,
     quiet: bool,
     login_shell: bool,
-) -> std::io::Result<()> {
+) -> std::io::Result<EnsureDisposition> {
     if socket::probe(socket_path) == SocketState::Live {
         // A live socket can be the supervised server login already started.
         // Sweep a leftover `--adopt` marker so the first `phux` command
@@ -877,7 +958,7 @@ fn ensure_server_with(
         if !quiet {
             reconcile_version_skew(socket_path);
         }
-        return Ok(());
+        return Ok(EnsureDisposition::Reused);
     }
 
     // Serialise the spawn decision across concurrent invocations. A failure
@@ -890,7 +971,7 @@ fn ensure_server_with(
     // the server we were about to duplicate.
     if socket::probe(socket_path) == SocketState::Live {
         super::service::sweep_stale_adoption_marker(socket_path);
-        return Ok(());
+        return Ok(EnsureDisposition::Joined);
     }
 
     // Nothing is accepting. If a socket file is in the way it belonged to a
@@ -923,10 +1004,11 @@ fn ensure_server_with(
             &phux_server::telemetry::server_log_path(),
         );
         drop(guard);
-        return result;
+        return result.map(|()| EnsureDisposition::SupervisedStarted);
     }
 
-    let result = maybe_auto_spawn_server(socket_path, session, seed_command, quiet, login_shell);
+    let result = maybe_auto_spawn_server(socket_path, session, seed_command, quiet, login_shell)
+        .map(|()| EnsureDisposition::DaemonStarted);
     drop(guard);
     result
 }
@@ -1047,6 +1129,20 @@ impl Drop for SpawnLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ensure_document_is_an_availability_result_not_a_handshake_claim() {
+        let socket = Path::new("/tmp/phux-contract.sock");
+        let doc = ensure_document(socket, EnsureDisposition::SupervisedStarted);
+        assert_eq!(doc["schema_version"], u64::from(ENSURE_SCHEMA_VERSION));
+        assert_eq!(doc["running"], true);
+        assert_eq!(doc["socket"], socket.display().to_string());
+        assert_eq!(doc["disposition"], "supervised_started");
+        assert_eq!(doc["cli_version"], env!("CARGO_PKG_VERSION"));
+        assert!(doc["server_log"].is_string());
+        assert!(doc.get("protocol").is_none());
+        assert!(doc.get("server_version").is_none());
+    }
 
     #[test]
     fn spawn_lock_refuses_symlinks_and_fifos() {

@@ -123,13 +123,17 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // window-only pick; resolved alongside `initial_window` and, like it,
     // degrades to a logged no-op if out of range.
     initial_pane: Option<usize>,
+    // phux-ah84: authoritative ResourceId to focus after re-attach, from
+    // a graph-discovered agent row (`switch-session { resource }`). Wins
+    // over window/pane indices and works before a TUI layout exists.
+    initial_resource: Option<ResourceId>,
     // The window sidebar's on/off state carried in from the previous
     // `main_loop` entry when a `switch-session` drove this one. `None` on the
     // first attach — `[sidebar] enabled` seeds it; `Some(v)` on every
     // in-process switch, so a `toggle-sidebar` the user made survives moving
-    // between spaces. Only the toggle is carried: the strip's width and edge
-    // stay pure config, re-derived per entry.
-    carried_sidebar_enabled: Option<bool>,
+    // between spaces. A dragged width is carried too; the edge stays pure
+    // config, re-derived per entry.
+    carried_sidebar: Option<super::entry::CarriedSidebar>,
     // ADR-0053: the acknowledged-input replay journal, shared across attach
     // attempts by the CLI's reconnect loop (remote dials only — `None` on
     // UDS). The session loop re-decides every queued operation against this
@@ -142,6 +146,9 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // phux-c2td.23: the stray satellite panes an earlier entry on this
     // connection still owed a kill. Empty on the first attach.
     orphan_kills: super::orphans::OrphanKills,
+    // phux-deya: per-identity review status carried across session switches
+    // on this connection. Empty on the first attach.
+    review: crate::attach::review::ReviewIndex,
 ) -> Result<LoopExit, AttachError> {
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("attach loop started before bootstrap negotiation".to_owned())
@@ -153,7 +160,8 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         onboarding_claim,
         initial_window,
         initial_pane,
-        carried_sidebar_enabled,
+        initial_resource,
+        carried_sidebar,
     )?;
     session.set_control_dial(control_dial.clone());
     // phux-r82.6: spawn one bounded interval runner per `exec` widget. The
@@ -163,6 +171,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // (and via kill_on_drop, their children) when this attach loop ends.
     session.set_input_replay(input_replay);
     session.set_orphan_kills(orphan_kills);
+    session.set_review(review);
     let _exec_runners = spawn_exec_feed_runners(session.exec_feeds());
     if let Some(exit) = session
         .bootstrap(conn, out, initial_attached, initial_notice)

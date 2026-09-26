@@ -77,14 +77,17 @@ app_instance_require_free
 run_args=(--debug --automation --fresh --detach)
 (( NO_BUILD == 0 )) || run_args+=(--no-build)
 set +e
-PHUX_COCKPIT_DEV_HOME="$DEV_HOME" "${ROOT}/scripts/dev-run.sh" "${run_args[@]}" | tee "$launch_log"
-launch_status=("${PIPESTATUS[@]}")
+# The detached app inherits the launcher's stdout. A pipe to tee would stay
+# open for the app's entire lifetime, preventing us from ever driving it.
+PHUX_COCKPIT_DEV_HOME="$DEV_HOME" "${ROOT}/scripts/dev-run.sh" "${run_args[@]}" >"$launch_log" 2>&1
+launch_status=$?
 set -e
+cat "$launch_log"
 APP_PID="$(reported_pid)"
-if (( launch_status[0] != 0 || launch_status[1] != 0 )); then
+if (( launch_status != 0 )); then
     stop_owned_pid "$APP_PID"
-    printf 'FAILED: dev-run pipeline exited %s/%s; transcript: %s\n' \
-        "${launch_status[0]}" "${launch_status[1]}" "$launch_log" >&2
+    printf 'FAILED: dev-run exited %s; transcript: %s\n' \
+        "$launch_status" "$launch_log" >&2
     exit 1
 fi
 if [[ ! "$APP_PID" =~ ^[0-9]+$ ]]; then
@@ -131,23 +134,27 @@ widget() {
 
 click_named() {
     local role="$1" name="$2" view id
-    read -r view id <<<"$(widget "$role" "$name")"
+    local target
+    target="$(widget "$role" "$name")" || return 1
+    read -r view id <<<"$target"
     app_instance_assert
     (cd "$DEV_HOME" && "$NATIVE" automate widget-click "$view" "$id" >/dev/null)
 }
 
 (cd "$DEV_HOME" && "$NATIVE" automate assert --absent 'name="Agent inspection details"' >/dev/null)
-click_named button 'Inspect agents'
+click_named button 'Workspace actions'
+click_named menuitem 'Inspect agents'
 (cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 'name="Agent inspection details"' >/dev/null)
 printf '  ok: Agents opens the inspector\n'
 
-# A zero-distance drag finishes with the automation pointer parked over the
+# A horizontal drag finishes with the automation pointer parked over the
 # shipping scroll surface. Hovered state proves only that the pointer reached
 # the real control; rendered rest/hover fill equality is the deterministic
 # semantic_theme Zig recipe contract named by cockpit-state-inventory.mjs.
 passive_snapshot="${WORK}/passive-hover.snapshot"
-read -r passive_view passive_id <<<"$(widget group 'Agent inspection details')"
-(cd "$DEV_HOME" && "$NATIVE" automate widget-drag "$passive_view" "$passive_id" 0.5 0.5 0.5 0.5 >/dev/null)
+passive_target="$(widget group 'Agent inspection details')"
+read -r passive_view passive_id <<<"$passive_target"
+(cd "$DEV_HOME" && "$NATIVE" automate widget-drag "$passive_view" "$passive_id" 0.25 0.75 0.5 0.5 >/dev/null)
 app_instance_snapshot >"$passive_snapshot"
 node "${ROOT}/scripts/cockpit-state-inventory.mjs" --check-pointer-target "$passive_snapshot" \
     --target-role group --target-name 'Agent inspection details'

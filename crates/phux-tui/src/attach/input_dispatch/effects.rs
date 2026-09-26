@@ -13,7 +13,9 @@
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ResourceId;
-use phux_protocol::wire::frame::{FrameKind, SESSION_NAME_KEY, Scope};
+use phux_protocol::ids::SessionId;
+use phux_protocol::wire::frame::{FrameKind, Scope};
+use phux_protocol::wire::info::SessionInfo;
 
 use crate::attach::actions::{self, PendingSplit, PendingWindow};
 use crate::attach::connection::Connection;
@@ -99,8 +101,10 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     send_kill_frames(
         effects.kill_frames,
         effects.expected_closes,
+        effects.kill_requests,
         conn,
         ctx.expected_closes,
+        ctx.pending_kills,
     )
     .await?;
     send_command_frames(effects.command_frames, conn).await?;
@@ -119,18 +123,23 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     if effects.reload_config {
         *ctx.reload_request = true;
     }
-    record_reattach_request(effects.reattach, ctx.switch_request, ctx.session_name);
-    let renamed = send_session_rename(
+    record_reattach_request(
+        effects.reattach,
+        ctx.switch_request,
+        ctx.session_name,
+        ctx.focused_session,
+    );
+    send_session_rename(
         effects.rename_session,
         conn,
         ctx.session_name,
+        ctx.sessions,
         ctx.next_request_id,
+        ctx.rename_pending,
+        ctx.rename_notice,
     )
     .await?;
-    // A rename repaints the status bar (it carries the session name) the
-    // same way a layout mutation does; fold it into the caller's repaint
-    // signal so the new name shows immediately.
-    Ok(layout_changed || renamed)
+    Ok(layout_changed)
 }
 
 /// Execute a picker-committed pane move on a dedicated control connection.
@@ -184,8 +193,10 @@ async fn apply_pane_move(
             };
             *ctx.switch_request = Some(ReattachTarget::Existing {
                 name: outcome.destination_session_name,
+                id: None,
                 window: Some(window),
                 pane: Some(pane),
+                resource: Some(intent.source),
             });
             true
         }
@@ -374,18 +385,21 @@ async fn send_directory_request(
     conn.send(&frame).await
 }
 
-/// kill-pane / kill-window keystroke sequences; the `RESOURCE_CLOSED`
-/// fold-out happens when each shell exits. Park the targets FIRST
-/// (phux-i0e8.2.2): once the frames are on the wire the close can
-/// race back, and an unmarked close would notice-spam the user about
-/// a death they ordered.
+/// kill-pane / kill-window `KILL_RESOURCE` commands; the `RESOURCE_CLOSED`
+/// fold-out happens as each resource tears down. Park the targets and their
+/// request ids FIRST (phux-i0e8.2.2): once the frames are on the wire the
+/// close — or the refusal — can race back, and an unmarked close would
+/// notice-spam the user about a death they ordered.
 async fn send_kill_frames(
     kill_frames: Vec<FrameKind>,
     targets: Vec<ResourceId>,
+    kill_requests: Vec<(u32, ResourceId)>,
     conn: &mut Connection,
     expected_closes: &mut HashSet<ResourceId>,
+    pending_kills: &mut HashMap<u32, ResourceId>,
 ) -> Result<(), AttachError> {
     expected_closes.extend(targets);
+    pending_kills.extend(kill_requests);
     for frame in kill_frames {
         conn.send(&frame).await?;
     }
@@ -441,6 +455,7 @@ fn record_reattach_request(
     reattach: Option<ReattachTarget>,
     switch_request: &mut Option<ReattachTarget>,
     session_name: &str,
+    focused_session: Option<SessionId>,
 ) {
     let Some(target) = reattach else {
         return;
@@ -448,14 +463,28 @@ fn record_reattach_request(
     match target {
         ReattachTarget::Existing {
             name,
+            id,
             window: None,
             pane: None,
-        } if name == session_name => {
+            resource: None,
+        } if is_current_session(id, &name, session_name, focused_session) => {
             tracing::debug!(target_session = %name, "switch-session to current session; no-op");
         }
-        ReattachTarget::Existing { name, window, pane } => {
-            tracing::info!(target_session = %name, target_window = ?window, target_pane = ?pane, "switch-session requested");
-            *switch_request = Some(ReattachTarget::Existing { name, window, pane });
+        ReattachTarget::Existing {
+            name,
+            id,
+            window,
+            pane,
+            resource,
+        } => {
+            tracing::info!(target_session = %name, target_id = ?id, target_window = ?window, target_pane = ?pane, target_resource = ?resource, "switch-session requested");
+            *switch_request = Some(ReattachTarget::Existing {
+                name,
+                id,
+                window,
+                pane,
+                resource,
+            });
         }
         ReattachTarget::Create(name) => {
             tracing::info!(session = %name, "new-session requested");
@@ -464,42 +493,71 @@ fn record_reattach_request(
     }
 }
 
-/// rename-session: since the v0.3.0 "Option B" re-tier (ADR-0019 /
-/// ADR-0027) removed the `RENAME_SESSION` verb, a rename is a `SET_METADATA`
-/// write of the conventional `SESSION_NAME_KEY` (`Scope::Global`, value
-/// `current\0new`); the server intercepts it and applies the registry
-/// rename. We optimistically reflect the new name locally — the server is
-/// authoritative, and the next ATTACHED snapshot overwrites `session_name`
-/// (also how other attached clients learn the rename; a live
-/// `SESSION_RENAMED` push is out of scope for this pass). A no-op rename
-/// (new == current) is dropped: nothing to send, nothing to repaint.
+fn is_current_session(
+    id: Option<SessionId>,
+    name: &str,
+    session_name: &str,
+    focused_session: Option<SessionId>,
+) -> bool {
+    id.map_or_else(|| name == session_name, |id| Some(id) == focused_session)
+}
+
+/// rename-session: the shared [`phux_client::rename`] policy.
 ///
-/// Returns `true` when a rename went on the wire — the caller folds that
-/// into its repaint signal.
+/// The attach connection cannot run `rename_checked` — a request/response
+/// helper would consume pane output interleaved ahead of the reply — so this
+/// sends the same frames and lets the driver correlate the barrier. The
+/// cached session list is the pre-check. A refusal or a no-op sends nothing;
+/// a refusal is parked on `rename_notice` for the status bar. The local
+/// status name stays unchanged until the barrier (or a `METADATA_CHANGED`
+/// on the subscribed key) confirms the write.
 async fn send_session_rename(
     rename_session: Option<String>,
     conn: &mut Connection,
-    session_name: &mut String,
+    session_name: &str,
+    sessions: &[SessionInfo],
     next_request_id: &mut u32,
-) -> Result<bool, AttachError> {
-    let Some(new_name) = rename_session.filter(|n| n != &*session_name) else {
-        return Ok(false);
+    rename_pending: &mut Option<PendingSessionRename>,
+    rename_notice: &mut Option<String>,
+) -> Result<(), AttachError> {
+    let Some(new_name) = rename_session.filter(|n| n != session_name) else {
+        return Ok(());
+    };
+    if rename_pending.is_some() {
+        tracing::warn!("rename-session already in flight; dropping a second request");
+        return Ok(());
+    }
+    let roster: Vec<_> = sessions
+        .iter()
+        .map(|session| phux_client::rename::NamedSession {
+            id: session.id,
+            name: session.name.as_str(),
+        })
+        .collect();
+    let session_id = match phux_client::rename::plan_rename(&roster, session_name, &new_name) {
+        phux_client::rename::RenamePlan::Unchanged { .. } => return Ok(()),
+        phux_client::rename::RenamePlan::Refused(refusal) => {
+            *rename_notice = Some(format!("could not rename session to {new_name}: {refusal}"));
+            return Ok(());
+        }
+        phux_client::rename::RenamePlan::Send { session_id } => session_id,
     };
     let request_id = *next_request_id;
     *next_request_id = next_request_id.wrapping_add(1);
-    let mut value = session_name.as_bytes().to_vec();
-    value.push(0);
-    value.extend_from_slice(new_name.as_bytes());
-    conn.send(&FrameKind::SetMetadata {
-        request_id,
-        scope: Scope::Global,
-        key: SESSION_NAME_KEY.to_owned(),
-        value,
-    })
-    .await?;
-    tracing::info!(new_name = %new_name, "rename-session sent; optimistically updating local name");
-    *session_name = new_name;
-    Ok(true)
+    let barrier = *next_request_id;
+    *next_request_id = next_request_id.wrapping_add(1);
+    let (write, barrier_frame) =
+        phux_client::rename::rename_frames(request_id, barrier, session_name, &new_name);
+    conn.send(&write).await?;
+    conn.send(&barrier_frame).await?;
+    tracing::info!(new_name = %new_name, "rename-session sent; waiting for GET_STATE confirmation");
+    *rename_pending = Some(PendingSessionRename {
+        barrier,
+        session_id: Some(session_id),
+        current: session_name.to_owned(),
+        new_name,
+    });
+    Ok(())
 }
 
 /// Result of feeding a key event through the resolver.
@@ -599,12 +657,19 @@ pub(super) struct ActionEffects {
     /// async caller records it (id and listed host) as the pending listing,
     /// then sends it; the reply opens the directory picker.
     pub(super) list_directory: Option<(PendingDirectory, FrameKind)>,
-    /// phux-4li.12: a `kill-pane` action ships a sequence of frames to
-    /// the focused Terminal (the "soft-kill via shell-exit" — see
-    /// `run_action`). The async caller sends them in order; the
-    /// resulting `RESOURCE_CLOSED` from the server folds the pane out
+    /// A `kill-pane` / `kill-window` action's `KILL_RESOURCE` commands, one
+    /// per targeted Terminal. The async caller sends them in order; the
+    /// resulting `RESOURCE_CLOSED` from the server folds each pane out
     /// of the layout in [`crate::attach::server_frame::handle_server_frame`].
     pub(super) kill_frames: Vec<FrameKind>,
+    /// `(request_id, Terminal)` for each frame in `kill_frames`. The async
+    /// caller parks them in `DispatchCtx::pending_kills` so a
+    /// `TerminalNotFound` refusal can be attributed back to the leaf it
+    /// names: that reply is the only evidence a client gets that a pane
+    /// whose resource already died should leave the layout, since no
+    /// `RESOURCE_CLOSED` is ever broadcast for a resource the server does
+    /// not have.
+    pub(super) kill_requests: Vec<(u32, ResourceId)>,
     /// phux-i0e8.2.2: the Terminals `kill_frames` targets. The async
     /// caller parks them in `DispatchCtx::expected_closes` so the
     /// eventual `RESOURCE_CLOSED` is recognized as client-initiated and
@@ -626,16 +691,13 @@ pub(super) struct ActionEffects {
     /// no-op (the session picker uses that row to dismiss in place).
     pub(super) reattach: Option<ReattachTarget>,
     /// rename-session: a committed rename. Carries the new name. The async
-    /// caller ([`apply_action_effects`]) sends a `RENAME_SESSION` command
-    /// for the *current* session over the existing connection and
-    /// optimistically updates the client's own cached `session_name` +
-    /// repaints its status bar. The server is authoritative: the next
-    /// `ATTACHED` snapshot reconciles the name (and is how other attached
-    /// clients learn of it — a live `SESSION_RENAMED` push is out of scope
-    /// for this pass). A refusal (unknown session / name taken) arrives as a
-    /// `COMMAND_RESULT { Error }`; this pass logs it and lets the next
-    /// snapshot correct the optimistic name rather than blocking the input
-    /// loop on the reply.
+    /// caller ([`apply_action_effects`]) sends a `SET_METADATA` write of
+    /// `SESSION_NAME_KEY` for the *current* session plus a correlated
+    /// `GET_STATE` barrier, and parks [`PendingSessionRename`] so the driver
+    /// can apply or refuse from the snapshot. The local status name stays
+    /// unchanged until that confirmation (or a `METADATA_CHANGED` broadcast)
+    /// so a rejected rename cannot lie. Peers learn the new name from the
+    /// same subscribed broadcast rather than waiting for a re-attach.
     pub(super) rename_session: Option<String>,
     /// phux-r82.5: a `plugin-action` dispatch carrying
     /// `(plugin_id, action_id)`. The async caller
@@ -672,10 +734,16 @@ pub(super) struct PaneMoveIntent {
 /// connection without dropping the transport or leaving raw mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReattachTarget {
-    /// Switch to an existing session by name (`switch-session`).
+    /// Switch to an existing session (`switch-session`).
     Existing {
-        /// Target session name.
+        /// Target session display name. Used when `id` is absent (a typed
+        /// name or a satellite hop) and as the human-facing log label.
         name: String,
+        /// Stable session identity from the painted roster/picker row.
+        /// When present, the outer loop attaches by this id so a rename
+        /// cannot retarget the click. Satellite rows leave this `None`:
+        /// their ids are host-local and not attachable on this hub.
+        id: Option<SessionId>,
         /// phux-foz.8: window index to select once the target session's
         /// persisted layout loads — the one-step cross-session window
         /// pick. `None` keeps the session's own remembered focus. The
@@ -691,10 +759,33 @@ pub enum ReattachTarget {
         /// `window` resolves in range; an out-of-range ordinal degrades to
         /// a logged no-op, same as `window`.
         pane: Option<usize>,
+        /// phux-ah84: authoritative pane identity from the server graph or
+        /// a persisted layout leaf. When present, the driver focuses this
+        /// `ResourceId` after re-attach instead of fabricating TUI window
+        /// or pane indices. Window/pane remain as layout-backed hints.
+        resource: Option<ResourceId>,
     },
     /// Create — or attach to, if it already exists — a session by name
     /// (`new-session`).
     Create(String),
+}
+
+/// An in-flight `rename-session` waiting on its `GET_STATE` barrier.
+///
+/// `SET_METADATA` has no reply frame, so the driver parks this until the
+/// snapshot after the write names the outcome. A `METADATA_CHANGED` on
+/// `SESSION_NAME_KEY` may apply the name earlier; the barrier still has
+/// to be consumed so its `COMMAND_RESULT` is not treated as a stray.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::attach) struct PendingSessionRename {
+    /// Request id of the confirming `GET_STATE`.
+    pub barrier: u32,
+    /// The attached session's id when the rename was sent, if known.
+    pub session_id: Option<SessionId>,
+    /// Display name at send time (`current` in `current\0new`).
+    pub current: String,
+    /// Requested replacement name.
+    pub new_name: String,
 }
 
 /// Encode the workspace for `SET_METADATA`, logging encode failures.

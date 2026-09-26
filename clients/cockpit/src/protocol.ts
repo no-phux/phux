@@ -554,8 +554,12 @@ function agentPlacementValid(window: number, tab: number, state: number, flags: 
 
 // Restate the integer proof at the compiled-core record boundary. The SDK's
 // ahead-of-time subset does not carry a predicate's range proof to its caller.
-function wireIndex(value: number): number {
+export function wireIndex(value: number): number {
   return value >= 0 && value <= 65535 ? Math.trunc(value) : 0;
+}
+
+export function wireU32(value: number): number {
+  return value >= 0 && value <= 4294967295 ? Math.trunc(value) : 0;
 }
 
 interface AgentRecords { readonly rows: readonly SnapshotAgentRow[]; readonly total: number; }
@@ -639,15 +643,48 @@ function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly 
   return { windows: secondary, terminalStates, extensions };
 }
 
-function targetTabs(tabs: readonly SnapshotTab[], contexts: Uint8Array, window: number): readonly SnapshotTab[] {
-  return tabs.map((tab) => ({ id: tab.id, index: tab.index, title: tab.title, cwd: tab.cwd,
-    selected: tab.selected, attention: tab.attention, target: tabTarget(contexts, window, tab.id) }));
+const EMPTY_SNAPSHOT_TAB: SnapshotTab = {
+  id: 0, index: 0, title: new Uint8Array(0), cwd: new Uint8Array(0),
+  selected: false, attention: false, target: new Uint8Array(0),
+};
+const NO_SNAPSHOT_TABS: readonly SnapshotTab[] = [];
+const EMPTY_SECONDARY_WINDOW: SecondaryWindow = {
+  index: 0, selectedTab: 0, runStart: 0, runCount: 0, tabWidth: 0, tabs: NO_SNAPSHOT_TABS,
+};
+
+function copySnapshotTab(tab: SnapshotTab, target: Uint8Array): SnapshotTab {
+  return {
+    id: tab.id >= 0 && tab.id <= 9007199254740991 ? Math.trunc(tab.id) : 0,
+    index: tab.index >= 0 && tab.index <= 9007199254740991 ? Math.trunc(tab.index) : 0,
+    title: tab.title, cwd: tab.cwd, selected: tab.selected, attention: tab.attention, target,
+  };
 }
 
-function targetWindow(window: SecondaryWindow, contexts: Uint8Array): SecondaryWindow {
-  return { index: window.index, selectedTab: window.selectedTab, runStart: window.runStart,
-    runCount: window.runCount, tabWidth: window.tabWidth,
-    tabs: targetTabs(window.tabs, contexts, window.index) };
+function copySecondaryWindow(window: SecondaryWindow, tabs: readonly SnapshotTab[]): SecondaryWindow {
+  return {
+    index: window.index >= 0 && window.index <= 9007199254740991 ? Math.trunc(window.index) : 0,
+    selectedTab: window.selectedTab >= 0 && window.selectedTab <= 9007199254740991 ? Math.trunc(window.selectedTab) : 0,
+    runStart: window.runStart >= 0 && window.runStart <= 9007199254740991 ? Math.trunc(window.runStart) : 0,
+    runCount: window.runCount >= 0 && window.runCount <= 9007199254740991 ? Math.trunc(window.runCount) : 0,
+    tabWidth: window.tabWidth >= 0 && window.tabWidth <= 9007199254740991 ? Math.trunc(window.tabWidth) : 0,
+    tabs,
+  };
+}
+
+function targetTabs(tabs: readonly SnapshotTab[], contexts: Uint8Array, window: number): readonly SnapshotTab[] {
+  const next: SnapshotTab[] = [];
+  for (const tab of tabs) {
+    if (tab !== undefined) next.push(copySnapshotTab(tab, tabTarget(contexts, window, tab.id)));
+  }
+  return next;
+}
+
+function mappedWindows(windows: readonly SecondaryWindow[], contexts: Uint8Array): readonly SecondaryWindow[] {
+  const next: SecondaryWindow[] = [];
+  for (const window of windows) {
+    if (window !== undefined) next.push(copySecondaryWindow(window, targetTabs(window.tabs, contexts, window.index)));
+  }
+  return next;
 }
 
 /// Retain the native lifetime bytes from THIS projection in the painted event.
@@ -685,7 +722,7 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     currentSession: extensions.navigation.currentSession,
     coordinatorEndpoint: extensions.navigation.coordinatorEndpoint,
     connectionDetail: extensions.navigation.connectionDetail,
-    secondary: secondary.windows.map((window) => targetWindow(window, extensions.contexts)),
+    secondary: mappedWindows(secondary.windows, extensions.contexts),
     terminalStates: secondary.terminalStates,
     themes: catalog.themes,
     activeTheme: settings.activeTheme,
@@ -737,7 +774,7 @@ export interface NavigationRow {
   readonly target: Uint8Array;
   readonly highlighted: boolean;
   readonly detail: Uint8Array;
-  /// 0 open, 1 available, 2 session, 3 known host.
+  /// Catalog kind, or agent-inspection row kind (0 AgentSession, 1 terminal identity).
   readonly kind: number;
   readonly host: Uint8Array;
   readonly selectable: boolean;
@@ -916,9 +953,9 @@ function navigationHeaderValid(bytes: Uint8Array): boolean {
   return queryLength >= 0 && queryLength <= 64 && 16 + queryLength <= bytes.length;
 }
 
-/// One identity-bound inspection row: the old catalog index/label framing,
-/// then the four length-delimited identity fields. A single row fills the
-/// page; the revision fence still rejects delayed replies.
+/// One identity-bound inspection row: row kind, catalog index, label, then the
+/// four length-delimited identity fields. A single row fills the page; the
+/// revision fence still rejects delayed replies.
 // ts_agents.max_evidence_bytes: provider 256 + reason 1024 + metadata 512.
 // Identities retain their independent bounds; the page is still at most 4096.
 function inspectionFieldLimit(index: number): number {
@@ -941,17 +978,19 @@ function inspectionFields(bytes: Uint8Array, start: number): readonly Uint8Array
 }
 
 function inspectionRow(bytes: Uint8Array, at: number, highlighted: boolean): NavigationRow | null {
-  if (at + 3 > bytes.length) return null;
-  const rawIndex = bytes[at] + bytes[at + 1] * 256;
-  const length = bytes[at + 2];
+  if (at + 4 > bytes.length) return null;
+  const kind = bytes[at];
+  if (!(kind === 0 || kind === 1)) return null;
+  const rawIndex = bytes[at + 1] + bytes[at + 2] * 256;
+  const length = bytes[at + 3];
   if (!(rawIndex >= 0 && rawIndex <= 65535)) return null;
-  if (!(length >= 1 && length <= 240) || at + 3 + length > bytes.length) return null;
-  const fields = inspectionFields(bytes, at + 3 + length);
+  if (!(length >= 1 && length <= 240) || at + 4 + length > bytes.length) return null;
+  const fields = inspectionFields(bytes, at + 4 + length);
   if (fields === null) return null;
   const index = Math.trunc(rawIndex);
   const empty = new Uint8Array(0);
-  return { id: index, index, label: bytes.subarray(at + 3, at + 3 + length), target: empty, highlighted,
-    detail: empty, kind: 0, host: empty, selectable: true, current: false,
+  return { id: index, index, label: bytes.subarray(at + 4, at + 4 + length), target: empty, highlighted,
+    detail: empty, kind, host: empty, selectable: true, current: false,
     resource: fields[0], parent: fields[1], nativeId: fields[2], evidence: fields[3] };
 }
 

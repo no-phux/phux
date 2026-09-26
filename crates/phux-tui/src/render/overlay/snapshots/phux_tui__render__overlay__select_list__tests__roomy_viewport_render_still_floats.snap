@@ -1,5 +1,5 @@
 ---
-source: crates/phux-client/src/render/overlay/select_list.rs
+source: crates/phux-tui/src/render/overlay/select_list.rs
 expression: out
 ---
 
@@ -8,21 +8,19 @@ expression: out
 
 
 
-                    ┌──────────────────── command palette ─────────────────────┐
-                    │>                                                         │
-                    │                                                          │
-                    │split-pane                                           C-a |│
-                    │new-window                                           C-a c│
-                    │detach                                               C-a d│
-                    │                                                          │
-                    │Enter select  ·  Esc cancel  ·  type to filter            │
-                    │                                                          │
-                    │                                                          │
-                    │                                                          │
-                    │                                                          │
-                    │                                                          │
-                    │                                                          │
-                    │                                                          │
-                    │                                                          │
-                    │                                                          │
-                    └──────────────────────────────────────────────────────────┘
+
+                         ┌ command palette ───────────────────────────────┐
+                         │ >                                              │
+                         │ split-pane                               C-a | │
+                         │ new-window                               C-a c │
+                         │ detach                                   C-a d │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         └────────────────────────────────────────────────┘

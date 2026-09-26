@@ -244,6 +244,10 @@ static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 /// as independent key bytes and the attach transport cannot preserve the
 /// paste's atomic boundary.
 ///
+/// `?1004h` turns on focus reports (`CSI I` / `CSI O`). The client emits
+/// `INPUT_FOCUS` from them (docs/spec/input.md section 4), and a focus loss
+/// ends any chrome drag whose button release the client will never see.
+///
 /// `?1002h` is button-event tracking (motion only while a button is held,
 /// not `?1003h` any-motion which would flood the wire with hover traffic
 /// we discard); `?1006h` is SGR extended coordinates, mandatory to address
@@ -253,6 +257,7 @@ fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> 
     out.write_all(b"\x1b[?1049h")?;
     out.write_all(b"\x1b[?25l")?;
     out.write_all(b"\x1b[?2004h")?;
+    out.write_all(b"\x1b[?1004h")?;
     if mouse {
         out.write_all(b"\x1b[?1002h\x1b[?1006h")?;
         MOUSE_CAPTURE_ACTIVE.store(true, Ordering::SeqCst);
@@ -346,6 +351,7 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     // Drop it before returning to the caller's normal screen so a program
     // that does not opt into bracketed paste never receives framing bytes.
     out.write_all(b"\x1b[?2004l")?;
+    out.write_all(b"\x1b[?1004l")?;
     out.flush()?;
     // phux-wrnm: a context menu open at detach (or at SIGINT) left the
     // terminal in any-motion mode; drop that before the capture pair so the
@@ -615,6 +621,10 @@ mod tests {
             "entry must enable bracketed paste framing: {entry:?}"
         );
         assert!(
+            entry.windows(8).any(|w| w == b"\x1b[?1004h"),
+            "entry must enable focus reports: {entry:?}"
+        );
+        assert!(
             entry.windows(8).any(|w| w == b"\x1b[?1002h"),
             "entry must enable button-motion tracking: {entry:?}"
         );
@@ -634,6 +644,10 @@ mod tests {
             .windows(8)
             .position(|w| w == b"\x1b[?2004l")
             .expect("reset must disable bracketed paste framing");
+        assert!(
+            reset.windows(8).any(|w| w == b"\x1b[?1004l"),
+            "reset must disable focus reports: {reset:?}"
+        );
         let pos_1006l = reset
             .windows(8)
             .position(|w| w == b"\x1b[?1006l")

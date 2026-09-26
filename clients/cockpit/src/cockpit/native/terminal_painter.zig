@@ -55,6 +55,16 @@ pub fn terminalPaintIndex(model: *const Model, terminal_ref: TerminalRef) usize 
     return @intCast(0x0000_8000_0000_0000 | (terminal_ref.hash() & 0x0000_7fff_ffff_ffff));
 }
 
+fn paneMeasuredCells(model: *const Model, tree: *const layout.Tree, pane: layout.Pane) usize {
+    if (model.provider.terminalConst(pane.terminal)) |terminal| {
+        return @as(usize, terminal.session.cols()) * @as(usize, terminal.session.rows());
+    }
+    if (model.remotePaintPresentationIn(tree, pane.terminal)) |presentation| {
+        return @as(usize, presentation.cols) * @as(usize, presentation.rows);
+    }
+    return paint_budget.full_cells;
+}
+
 fn authorityPreviewText(builder: *canvas.Builder, tokens: canvas.DesignTokens, authority: []const u8, width: f32) !?[]const u8 {
     var canonical_buf: [url_module.max_url_bytes]u8 = undefined;
     for (authority, 0..) |byte, index| canonical_buf[index] = std.ascii.toLower(byte);
@@ -176,46 +186,56 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     // colors); everything else on this surface is chrome and keeps the app's
     // own register. See `projection.terminalTokens`.
     const grid_tokens = projection.terminalTokensFrom(tokens, model);
-    // The window's own ground is painted ONCE, before any pane. The first
-    // pane used to be handed the whole window as its background frame, so
-    // the emulator's background (OSC 11 included) bled under the tab strip
-    // and the titlebar. It takes the terminal's background so a configured
-    // `background` reaches the gutter too, rather than leaving a frame of
-    // the app's default graphite around a themed terminal.
+    // The measured terminal space includes its gutters, but excludes native
+    // material chrome. Keep that entire content region opaque: neither cell
+    // backgrounds nor gaps between panes should sample the desktop. Older
+    // non-markup callers retain their full-window ground until measured.
     try builder.fillRect(.{
         .id = window_ground_command_id,
-        .rect = geometry.RectF.init(0, 0, size.width, size.height),
+        .rect = ws.shipping_terminal_space orelse geometry.RectF.init(0, 0, size.width, size.height),
         .fill = .{ .color = grid_tokens.colors.background },
     });
     try search_painter.paintWorkspace(model, builder, ws, size, tokens, window_active);
 
-    // The app's own grounds are chrome, not grid: the panes' command
-    // envelope is measured from HERE, so adding a background fill can never
-    // shave commands off the last pane's share.
-    const prologue = builder.len;
-
     var panes: [layout.max_panes]layout.Pane = undefined;
     const count = projection.resolvePanesIn(model, ws, size, &panes);
     if (count == 0) return;
-
-    // Hybrid C (Cockpit pkg3b / Metal): focused pane of the active window
-    // takes a full product grid; everything else shares leftover as a
-    // last-N crop at `max_rows / 4`. Glyphs are not `widget_glyph_budget / N`.
-    // Commands/text/paths keep forward-slack inside a tier so a later
-    // full pane cannot be stolen. `widget_cell_reserve` is not a floor.
     const tree = ws.selectedTreeConst() orelse return;
+    try paintTerminalContents(model, builder, tree, panes[0..count], tokens, window_active);
+
+    // Borders and the focus ring follow all panes and their dim scrims, so a
+    // neighbouring pane cannot cover the active pane's focus indication.
+    // The ring also remains visible when a black terminal cannot dim further.
+    try paintPaneChrome(builder, panes[0..count], tree.focus, tokens, window_active);
+}
+
+fn paintTerminalContents(model: *const Model, builder: *canvas.Builder, tree: *const layout.Tree, panes: []const layout.Pane, tokens: canvas.DesignTokens, window_active: bool) !void {
+    // Ground and search controls are outside the panes' command envelope.
+    const prologue = builder.len;
+    const count = panes.len;
     const focus_node = tree.focus;
+    const grid_tokens = projection.terminalTokensFrom(tokens, model);
+    // Hybrid C (Cockpit pkg3b / Metal): when measured pane cells fit in
+    // the store, every visible pane paints full. Otherwise the focused
+    // pane of the active window takes a full product grid and everything
+    // else shares leftover as a last-N crop at `max_rows / 4`. Glyphs are
+    // not `widget_glyph_budget / N`. Commands/text/paths keep forward-slack
+    // inside a tier so a later full pane cannot be stolen.
+    // `widget_cell_reserve` is not a floor.
     var focused_flags: [layout.max_panes]bool = @splat(false);
-    for (panes[0..count], 0..) |pane, index| {
+    var pane_cells: [layout.max_panes]usize = @splat(paint_budget.full_cells);
+    for (panes, 0..) |pane, index| {
         focused_flags[index] = pane.node == focus_node;
+        pane_cells[index] = paneMeasuredCells(model, tree, pane);
     }
     const budget_plan = paint_budget.plan(.{
         .window_active = window_active,
         .pane_count = count,
         .focused = focused_flags[0..count],
+        .pane_cells = pane_cells[0..count],
     });
 
-    for (panes[0..count], 0..) |pane, index| {
+    for (panes, 0..) |pane, index| {
         if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
         const alloc = budget_plan.forPane(index, prologue);
         const grid_rect = projection.paneGridRect(pane.rect, count);
@@ -248,16 +268,6 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
 
         try paintDim(builder, pane, index, count, window_active, focus_node, tokens);
     }
-
-    // Card hairlines and the focused pane's floating ring, painted AFTER
-    // every pane and every scrim so a neighbour's dim can never lie on
-    // top of them. The ring lives in the gutter, never on the grid.
-    //
-    // The scrim alone is not enough and never was. It dims toward black, and a
-    // terminal configured black — or one an application put there with OSC 11 —
-    // has nothing left to take away, which is exactly the setup a terminal user
-    // is most likely to be running. The ring is the signal that survives it.
-    try paintPaneChrome(builder, panes[0..count], focus_node, tokens, window_active);
 }
 
 /// Dim only background splits in the active window. A single pane never dims.
@@ -332,13 +342,17 @@ fn paintPaneChrome(
     if (panes.len < 2 or !window_active) return;
     const radius = projection.paneCardRadius(tokens);
     const hairline = @max(1, tokens.stroke.hairline);
+    // These borders sit on opaque terminal content, not native material. Keep
+    // the terminal's opaque divider: light chrome's black/8% hairline would
+    // disappear over a dark terminal when the system appearance changes.
+    const border = projection.baseTokens().colors.border;
     for (panes, 0..) |pane, index| {
         if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
         try builder.strokeRect(.{
             .id = pane_border_command_id_base + index,
             .rect = pane.rect,
             .radius = radius,
-            .stroke = .{ .fill = .{ .color = tokens.colors.border }, .width = hairline },
+            .stroke = .{ .fill = .{ .color = border }, .width = hairline },
         });
         if (pane.node != focus_node) continue;
         try builder.strokeRect(.{

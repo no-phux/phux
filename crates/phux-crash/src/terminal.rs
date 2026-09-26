@@ -31,8 +31,7 @@
 //   ?1000   Normal mouse tracking (X11 press/release)      never enabled by phux
 //   ?1015   RXVT extended mouse reporting                  never enabled by phux
 //   ?2004   Bracketed paste mode                           write_enter_alt_screen
-//   ?1004   Focus reporting (focus in/out events)          never enabled by phux
-//                                                          (parsed, never requested)
+//   ?1004   Focus reporting (focus in/out events)          write_enter_alt_screen
 //   CSI<u   Kitty keyboard protocol pop                    never pushed by phux
 //                                                          (CSI-u is parsed, never
 //                                                          requested)

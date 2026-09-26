@@ -119,7 +119,7 @@ pub(super) fn compose_full_frame_cells(
     // out, never over pane content.
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
         let rect = sidebar_rect(viewport_dims, res);
-        let strip = painter.compose_buffer(rect);
+        let strip = painter.compose_buffer(rect, super::paint::sidebar_rule(res.edge), rail);
         overlay_buffer(&mut frame, &strip, (rect.x, rect.y), false);
     }
 
@@ -441,6 +441,8 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
+                badge: None,
             },
             WindowInfo {
                 name: "shell".to_owned(),
@@ -448,6 +450,8 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
+                badge: None,
             },
         ]);
 
@@ -636,6 +640,8 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
+            badge: None,
         }];
         painter.set_windows(windows.clone());
 

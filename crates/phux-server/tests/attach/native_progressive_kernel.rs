@@ -33,7 +33,7 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed, run_local,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, run_local,
     send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
@@ -244,12 +244,7 @@ async fn run_flow(
 
     unsafe { phux_client_free(client) };
     drop(stream);
-    shutdown_tx.send(()).ok();
-    timeout(SERVER_JOIN_DEADLINE, server_handle)
-        .await
-        .expect("server did not stop")
-        .expect("server join")
-        .expect("server run");
+    join_after_shutdown(shutdown_tx, server_handle).await;
     metrics
 }
 

@@ -27,7 +27,8 @@ use tokio::time::{Instant, timeout};
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result,
-    join_after_shutdown, recv_typed, run_local, send_frame, spawn_server_with, wait_for_socket,
+    join_after_shutdown, recv_typed, recv_until, run_local, send_frame, spawn_server_with,
+    wait_for_socket,
 };
 
 const SESSION: &str = "command-isolation";
@@ -77,12 +78,11 @@ fn line_recording_command(marker: &Path) -> Vec<String> {
 
 async fn attach(stream: &mut UnixStream) -> ResourceId {
     send_frame(stream, &attach_by_name(SESSION)).await;
-    loop {
-        let (_, frame) = recv_typed(stream).await;
-        if let FrameKind::Attached { snapshot, .. } = frame {
-            return snapshot.resources[0].id.clone();
-        }
-    }
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::Attached { snapshot, .. } => Some(snapshot.resources[0].id.clone()),
+        _ => None,
+    })
+    .await
 }
 
 async fn spawn_terminal(stream: &mut UnixStream, request_id: u32, marker: &Path) -> ResourceId {
@@ -103,20 +103,17 @@ async fn spawn_terminal(stream: &mut UnixStream, request_id: u32, marker: &Path)
         },
     )
     .await;
-    loop {
-        let (_, frame) = recv_typed(stream).await;
-        if let FrameKind::ResourceSpawned {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::ResourceSpawned {
             request_id: got,
             result,
-        } = frame
-            && got == request_id
-        {
-            return match result {
-                SpawnResult::Ok(id) => id,
-                other => panic!("SPAWN_RESOURCE failed: {other:?}"),
-            };
-        }
-    }
+        } if got == request_id => match result {
+            SpawnResult::Ok(id) => Some(id),
+            other => panic!("SPAWN_RESOURCE failed: {other:?}"),
+        },
+        _ => None,
+    })
+    .await
 }
 
 async fn upload(
@@ -175,12 +172,11 @@ fn transcript(result: CommandResult) -> String {
 }
 
 async fn next_command_result(stream: &mut UnixStream) -> (u32, CommandResult) {
-    loop {
-        let (_, frame) = recv_typed(stream).await;
-        if let FrameKind::CommandResult { request_id, result } = frame {
-            return (request_id, result);
-        }
-    }
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::CommandResult { request_id, result } => Some((request_id, result)),
+        _ => None,
+    })
+    .await
 }
 
 async fn send_isolation_probes(stream: &mut UnixStream, terminal_id: ResourceId) {

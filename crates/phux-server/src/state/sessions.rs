@@ -136,4 +136,55 @@ impl ServerState {
         let owner = self.terminal_from_wire(owner)?;
         self.sessions.add_pane_beside(owner)
     }
+
+    /// Natural `exit` of this Terminal should spawn a fresh default shell in
+    /// place, rather than close the pane: it is the session's only Terminal
+    /// and nobody asked to kill it.
+    #[must_use]
+    pub(crate) fn should_replace_last_shell(&self, pane: ResourceId) -> bool {
+        if matches!(
+            self.pending_close_reason(pane),
+            Some(
+                phux_protocol::wire::frame::CloseReason::Killed
+                    | phux_protocol::wire::frame::CloseReason::ParentClosed
+                    | phux_protocol::wire::frame::CloseReason::ServerShutdown
+            )
+        ) {
+            return false;
+        }
+        self.is_sole_session_terminal(pane)
+    }
+
+    fn is_sole_session_terminal(&self, pane: ResourceId) -> bool {
+        let Some(desc) = self.sessions.registry.resource(pane) else {
+            return false;
+        };
+        if desc.kind != phux_core::resource::ResourceKind::Terminal {
+            return false;
+        }
+        let Some(window_id) = desc.window else {
+            return false;
+        };
+        let Some(session_id) = self.sessions.registry.window(window_id).map(|w| w.session) else {
+            return false;
+        };
+        let terminals = self.session_terminal_ids(session_id);
+        terminals.len() == 1 && terminals[0] == pane
+    }
+
+    fn session_terminal_ids(&self, session: SessionId) -> Vec<ResourceId> {
+        self.sessions
+            .registry
+            .session(session)
+            .into_iter()
+            .flat_map(|session| session.windows.iter().copied())
+            .filter_map(|window| self.sessions.registry.window(window))
+            .flat_map(|window| window.slots.iter().copied())
+            .filter(|&id| {
+                self.sessions.registry.resource(id).is_some_and(|resource| {
+                    resource.kind == phux_core::resource::ResourceKind::Terminal
+                })
+            })
+            .collect()
+    }
 }

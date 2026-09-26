@@ -77,11 +77,11 @@ fn herdr_opinions_are_shipped_defaults_now() {
     // Session naming: directories, not "default".
     assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");
 
-    // Status lineup: tabs left, hints center, and a right slot that
+    // Status lineup: tabs left, empty center, and a right slot that
     // changes shape with the terminal (session + clock when there is
     // room, a `switch` chip when there is not).
     assert_eq!(cfg.status.left.len(), 1);
-    assert_eq!(cfg.status.center.len(), 1);
+    assert!(cfg.status.center.is_empty());
     assert_eq!(cfg.status.right.len(), 3);
 }
 

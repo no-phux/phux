@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-22
 ---
 
 # Contributing to phux
@@ -29,10 +29,9 @@ phux away from any of those, it's the wrong proposal.
 
 ## Get set up
 
-Start with [Contributor setup](./docs/SETUP.md): choose docs, Rust core, native
-terminal, an agent integration, browser, or Cockpit. Native tools and Nix run
-the same commands. You do not need Nix or maintainer task-tracking tools to
-contribute; a GitHub issue or PR is enough to coordinate a contribution.
+Start with [Contributor setup](./docs/SETUP.md): `mise install` or
+`nix develop`, then the same `just` recipes. A GitHub issue or PR is enough
+to coordinate; you do not need Beads.
 
 ## Agent entrypoints
 
@@ -110,9 +109,10 @@ commitment to keep the two columns aligned.
 Most rows now say "same recipe" rather than "(identical)". That is the point:
 `ci.yml` used to re-type the cargo invocations, and "identical" was a promise a
 human had to keep on every edit. The workflow calls the recipes instead, so the
-flags exist in exactly one place — the `justfile` — and the columns cannot
+flags exist in exactly one place — `just/*.just` — and the columns cannot
 disagree. A row that names a bare `cargo` command under CI is a row where that
-promise is back; prefer adding the recipe.
+promise is back; prefer adding the recipe. Product recipes stay out of the
+root `justfile` so CI can route by which module changed.
 
 | Gate | CI (`ci.yml`) | Local |
 |---|---|---|
@@ -128,8 +128,8 @@ promise is back; prefer adding the recipe.
 | Homebrew formula | `just formula-check` | same recipe |
 | toolchain pins | `just toolchain-check` | same recipe; `just toolchain-parity` additionally compares the resolved Nix and Mise environments |
 | unit tests | `NEXTEST_PROFILE=ci just test` (default features; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test`; `just test-cargo` if nextest is unavailable |
-| workflow/setup contracts | `just workflow-check` | same (includes `just setup-check`'s helper tests) |
-| agent integration packages | `just agent-integrations-check` | same; `just integration-check <package>` for a scoped loop |
+| workflow/setup contracts | `just workflow-check` (includes `just shellcheck`) | same (includes `just setup-check`'s helper tests) |
+| agent integration packages | `bash scripts/ci/agent-integrations.sh` | `just agent-integrations-check` (same script); `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
 | install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
 | embedded skill contract | `just skill-contract` | same |
@@ -223,6 +223,8 @@ because the thing they check does not exist on a runner.
   changes no additive shape can express, and the PR says so out loud. The
   rule is normative in [`docs/spec/proto.md`](./docs/spec/proto.md) §6.3 and
   argued in [`docs/adr/0061`](./docs/adr/0061-capabilities-add-versions-break.md).
+  The `ServerFeature` u32 is closed; the next bit is the trailing word in
+  [`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md).
 - **Do not document what you did not build.** In `docs/spec/` and
   `docs/consumers/`, a surface the reference implementation does not provide
   carries an `impl-status` marker naming a code symbol, and `just docs-check`
@@ -364,8 +366,12 @@ mechanically enforced, both by `check_registry_rows` in
 Each enforces unique keys and strict ordering, so a second claim on the same
 identifier fails the gate whether or not git noticed. When you add a third
 such registry, instantiate the helper for it rather than hand-rolling a gate.
-For any registry not yet covered, rebase onto the integration branch and
-re-run the relevant gate before declaring a branch done.
+`ServerFeature` bits and command or event tags are the same kind of claim
+and are not in the table. They are first-come on main:
+[`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md) is the
+rule, and a branch plan is not a reservation. For any registry not yet
+covered, rebase onto the integration branch and re-run the relevant gate
+before declaring a branch done.
 
 ## Observability: CI itself
 

@@ -57,9 +57,17 @@ pub enum DialError {
 
     /// The remote transport could not be established: QUIC/TLS handshake,
     /// certificate verification (a fingerprint that did not match the
-    /// pin), or a refused/oversized auth preamble.
+    /// pin), or a malformed/oversized auth preamble. A peer that answered
+    /// and then refused the pairing token is [`Self::AuthRefused`].
     #[error("transport connect error: {0}")]
     Connect(String),
+
+    /// The peer refused the pairing token at the QUIC auth preamble
+    /// (application close `AUTH_FAILED`). Distinct from [`Self::Connect`]
+    /// (certificate pin / TLS) and [`Self::Unreachable`] (nothing answered),
+    /// so a revoked or stale credential is not reported as a lost path.
+    #[error("pairing token refused: {0}")]
+    AuthRefused(String),
 
     /// The remote host did not answer or its name could not be resolved:
     /// connection refused, no route to host, network unreachable or down,
@@ -67,7 +75,8 @@ pub enum DialError {
     /// overlay, `MagicDNS` being down looks exactly like this).
     /// Distinguished from [`Self::Connect`] so consumers can hint at
     /// reachability (an overlay that is down) rather than at credentials —
-    /// certificate-pin and auth failures stay in [`Self::Connect`].
+    /// certificate-pin failures stay in [`Self::Connect`], token refusal
+    /// in [`Self::AuthRefused`].
     #[error("transport connect error: {0}")]
     Unreachable(String),
 

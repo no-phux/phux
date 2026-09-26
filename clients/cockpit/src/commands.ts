@@ -20,7 +20,9 @@ export function containsQuery(text: Uint8Array, query: Uint8Array): boolean {
   for (let start = 0; start + query.length <= text.length; start += 1) {
     let matches = true;
     for (let at = 0; at < query.length; at += 1) {
-      if (fold(text[start + at]) !== fold(query[at])) matches = false;
+      const left = text.subarray(start + at, start + at + 1)[0];
+      const right = query.subarray(at, at + 1)[0];
+      if (left === undefined || right === undefined || fold(left) !== fold(right)) matches = false;
     }
     if (matches) return true;
   }
@@ -47,7 +49,7 @@ export function contextualCommand(name: string): boolean {
   return name === "terminal.new" || name === "window.new" || name === "session.new" || name === "session.rename";
 }
 
-export function commandRows(query: Uint8Array, cursor: number, hasTerminal: boolean, context: Uint8Array, bindings: KeybindingPage): readonly ActionRow[] {
+export function commandRows(query: Uint8Array, cursor: number, hasTerminal: boolean, bindings: KeybindingPage): readonly ActionRow[] {
   const rows: ActionRow[] = [];
   for (const candidate of COMMAND_CATALOG) {
     const command: CommandDefinition = candidate === undefined
@@ -55,9 +57,10 @@ export function commandRows(query: Uint8Array, cursor: number, hasTerminal: bool
       : candidate;
     if (!containsQuery(command.label, query)) continue;
     const disabled = terminalCommand(command.name) && !hasTerminal;
-    const index = command.index >= 0 && command.index <= 65535 ? Math.trunc(command.index) : 0;
+    const rawIndex = command.index;
+    const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
     rows.push({ index, label: command.label, shortcut: keybindingHint(bindings, asciiBytes(command.name)),
-      detail: disabled ? asciiBytes("Requires a focused terminal") : context,
+      detail: disabled ? asciiBytes("Requires a focused terminal") : new Uint8Array(0),
       disabled, highlighted: rows.length === cursor });
   }
   return rows;

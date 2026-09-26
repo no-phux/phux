@@ -12,6 +12,7 @@ available as clean markdown: send `Accept: text/markdown` to any page URL.
 ```sh
 curl -fsSL https://phux.sh/install | sh        # phux CLI
 curl -fsSL https://phux.sh/install-cockpit | sh # Cockpit (native GUI)
+npx skills add no-phux/skills                   # agent skills
 ```
 
 ## Hosted services

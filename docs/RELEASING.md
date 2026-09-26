@@ -1,16 +1,16 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-22
 ---
 
 # Releasing
 
-**TL;DR.** Release Please owns independent root, Cockpit, and host-integration
-versions in one manifest. Merging its reviewed PR creates component tags and
-private draft releases; dedicated workflows validate exact tagged trees,
-attach artifacts, publish only complete releases, and update Homebrew. The
-`phux-protocol` crate remains a separate human dispatch.
+**TL;DR.** Release Please cuts versions, tags, and private draft notes.
+`ci` proves the commit. `publish` ships every draft whose tag points at a
+green `ci` commit: root binaries, Cockpit, mobile FFI, and host integrations.
+One dispatch finishes a stuck draft. `phux-protocol` on crates.io stays a
+separate human dispatch.
 
 ## Who owns what
 
@@ -23,17 +23,18 @@ same release.
 | `Cargo.lock` refresh on the release PR | the `sync-lockfile` job in `release-please.yml` |
 | The `vX.Y.Z` **tag** | release-please, when the release PR merges |
 | The GitHub **release** and its body/notes | release-please creates them as a draft |
-| Release **assets** (tarballs + `.sha256`) | `release.yml`, via `gh release upload` |
+| Release **assets** (tarballs + `.sha256`) | `release.yml`, called by `publish.yml` |
 | Homebrew tap formula | `release.yml` |
-| Draft -> published transition | `release.yml`, after all assets are attached |
+| Draft -> published transition | `publish.yml`, after `ci` is green for that tag |
 | `phux-protocol` on crates.io | a human, via `publish-crate.yml` |
 | Integration versions | release-please component PRs |
 | Integration validation, assets, and publication | `agent-integration-release.yml` |
 | Cockpit version and changelog | release-please, under `clients/cockpit` |
 | The `cockpit-vX.Y.Z` tag and draft release | release-please |
-| Cockpit ZIP, DMG, signature/notarization evidence, and publication | `cockpit-release.yml` |
+| Cockpit ZIP, DMG, signature/notarization evidence, and publication | `cockpit-release.yml`, called by `publish.yml` |
 | `phux-cockpit` Homebrew cask | `cockpit-release.yml` |
-| Moving `next` prerelease (green `main`) | `next-release.yml` |
+| `PhuxFFI-<tag>.xcframework.zip`, its `.sha256`, and `.provenance` on the root release | `ffi-xcframework.yml`, called by `publish.yml` |
+| Moving `next` prerelease (green `main`), CLI and Cockpit | `next-release.yml` |
 
 `release.yml` never creates a tag, release, or release body. It uploads assets
 onto the draft release-please made and only flips that draft to public after the
@@ -47,14 +48,12 @@ tap build.
 
 | You want to | Do this |
 |---|---|
-| Ship a release | Mark the open **release-please** PR "Ready for review" (it is born draft; undrafting runs CI), then merge it |
+| Ship a release | Mark the open **release-please** PR "Ready for review" (it is born draft; undrafting runs CI), then merge it. `publish` runs once `ci` is green for that commit |
 | Prove the release is locally coherent first | `just release-preflight vX.Y.Z` |
 | Skip crates.io packaging during a fast/offline binary-only check | `just release-preflight-fast vX.Y.Z` |
-| Re-build or re-attach assets for an existing tag | Dispatch **Actions -> release** with `tag=vX.Y.Z` |
+| Re-build or finish any draft | Dispatch **Actions -> publish** with `tag=vX.Y.Z`, `tag=cockpit-vX.Y.Z`, or a component tag. An empty tag reconciles every ready draft |
 | Publish `phux-protocol` to crates.io | Dispatch **Actions -> publish-crate** with `tag=vX.Y.Z`, `dry_run=false` |
 | Revalidate an integration tag without publishing | Dispatch **Actions -> Release agent integration** with its component tag and `dry_run=true` |
-| Finish an integration release that stalled in draft | Dispatch **Actions -> Release agent integration** with its component tag and `dry_run=false` |
-| Re-build or finish a Cockpit release | Dispatch **Actions -> Release Cockpit** with `tag=cockpit-vX.Y.Z` |
 | Check Cockpit locally before its release PR merges | `just cockpit-test`, then `bash clients/cockpit/scripts/build-phux-artifacts.sh` and `clients/cockpit/scripts/package-macos.sh` |
 | Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
 | Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with `vX.Y.Z` or `cockpit-vX.Y.Z`, `stage=building`, then again with `stage=released` |
@@ -66,32 +65,32 @@ tap build.
 | Flow | Trigger | What it does |
 |---|---|---|
 | Pull request CI | `pull_request`, `merge_group` | Compile-free guards always run; Rust and Node integration lanes run for their dependency inputs. Draft PRs skip until ready. |
-| Cockpit CI | shared classifier on PR/main | Builds same-checkout FFI and coordinator, tests Cockpit, and compiles the canonical shipping app on arm64 macOS. ZIP/DMG packaging and the three-cycle soak run on `main` or manual dispatch. |
+| Cockpit CI | shared classifier on PR/main | Builds same-checkout FFI and coordinator, tests Cockpit, and compiles the canonical shipping app on arm64 macOS. ZIP/DMG packaging and the soak run only when `publish` ships a Cockpit tag. |
 | Browser CI | shared classifier on PR/main, manual | Node adapters/session tests, shipping package, and three real Chrome canvas/live-server tests. Only engine inputs reproduce the committed WASM binary. |
 | Native setup | setup inputs, weekly, manual | Uncached native setup/linker assurance; ordinary Rust source changes use the product lanes. |
 | Conventional-commit gate | `pull_request` | `commitlint` lints every PR commit and the PR title. Live rules require `ci` and `commitlint` (verified 2026-09-09). |
 | pr-janitor | `pull_request` `closed`, or manual dispatch with a PR number | Cancels the closed PR's still-live runs to free standard/macOS concurrency, then deletes its `refs/pull/N/merge` caches to free the 10 GB repository cap. See "Cache budget". |
 | Main CI | push to `main` | Reuses successful same-repository validation only for an identical tree, workflow and routed coverage; otherwise runs the normal lanes. Cheap guards always run. |
-| release-please | push to `main` | Maintains the release PR; creates tags/drafts, waits for validation of each emitted tag's exact commit, then calls artifact workflows. |
-| Release artifacts | called by release-please (or manual dispatch) | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
-| Cockpit release | called by release-please, or manual dispatch | Re-tests the tagged tree, packages, signs and optionally notarizes, verifies downloaded ZIP/DMG assets, proves the Homebrew cask reached the tap, then publishes the draft. |
+| release-please | push to `main` | Maintains the release PR. On merge, creates tags and private drafts. Does not build or publish. |
+| publish | `ci` or release-please completed on `main`, daily, or dispatch | Ships drafts whose tag points at a green `ci` run. Deletes drafts older than an already published version of the same component. |
+| Release artifacts | called by `publish` | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
+| Cockpit release | called by `publish` | Re-tests the tagged tree, packages, signs and optionally notarizes, verifies downloaded ZIP/DMG assets, proves the Homebrew cask reached the tap, then publishes the draft. |
 | Cockpit SDK head | manual | Builds Cockpit against an explicitly selected SDK ref. Pinned SDK changes still run ordinary Cockpit CI. |
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
-| Agent integration release | component tag or manual dry run | Re-runs locked gates, creates one checksummed artifact, clean-installs npm artifacts, publishes npm with provenance where applicable, and publishes the component draft release. |
+| Agent integration release | called by `publish`, or a manual dry run | Re-runs locked gates, creates one checksummed artifact, clean-installs npm artifacts, publishes npm with provenance where applicable, and publishes the component draft release. |
 | Stress lane | manual or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
 | Scoped mutation | manual | Bounded Rust or Zig advisory scans; ordinary changed-code checks remain in the product lanes. |
 | Release drift | daily at 15:20 UTC, or manual | `scripts/check-release-drift.mjs`. Fails if a release is stuck. See "When a release goes quiet". |
-| Linear release report | called by release-please, or manual dispatch | `linear-release.yml`. Names the Linear release after the tag and copies the tagged changelog section. Root `vX.Y.Z` goes to pipeline `phux`; `cockpit-vX.Y.Z` goes to `phux-cockpit` (secret `LINEAR_COCKPIT_RELEASE_ACCESS_KEY`). `stage=building` at tag time, `stage=released` once artifacts are public. |
-| next channel | `ci.yml` success on `main`, coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`. |
+| Linear release report | called by `publish` after a public release, or manual dispatch | `linear-release.yml`. Names the Linear release after the tag and copies the tagged changelog section. Root `vX.Y.Z` goes to pipeline `phux`; `cockpit-vX.Y.Z` goes to `phux-cockpit` (secret `LINEAR_COCKPIT_RELEASE_ACCESS_KEY`). A missing Cockpit key warns and skips; it does not hold the GitHub release in draft. |
+| next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and an ad-hoc-signed Phux Cockpit when its inputs moved, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`; `install-cockpit.sh --channel next` and the app follow `cockpit-channel.json`. |
 
 ### Standard public runner policy
 
 This repository is public. Standard GitHub-hosted runners are
 [free for public repositories](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
 and do not consume the private-repository minute allowance. Workflows use only
-standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-22.04`,
-`ubuntu-22.04-arm` and `macos-26` labels. Blacksmith and larger hosted runners
-are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
+standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `xcode-27`
+labels (`xcode-27` is macOS 27 with Xcode 27). Blacksmith and larger hosted runners are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
 runner registration. GitHub artifact/cache storage is a separate billing surface.
 
 ### Cache budget
@@ -126,21 +125,19 @@ Root release targets retain their artifact names and native architectures:
 
 | Target | Standard runner | Build userspace |
 |---|---|---|
-| `aarch64-apple-darwin` | `macos-26` | Native Apple-silicon macOS |
-| `x86_64-unknown-linux-gnu` | `ubuntu-22.04` | Native Ubuntu 22.04 |
-| `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` | Native ARM Ubuntu 22.04 |
+| `aarch64-apple-darwin` | `xcode-27` | Native Apple-silicon macOS |
+| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | `ubuntu:22.04` container (glibc 2.35) |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `ubuntu:22.04` container (glibc 2.35) |
 
 The [standard runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-lists Ubuntu 22.04 for both Linux architectures. Before building, every matrix
-leg checks its OS/architecture; Linux also requires
-Ubuntu 22.04 and glibc 2.35. Existing binary portability and executable smoke
+lists Ubuntu 24.04 for both Linux architectures. Linux release jobs run in an
+`ubuntu:22.04` container so the compiler links against glibc 2.35 after GitHub
+[deprecated the hosted Ubuntu 22.04 labels](https://github.com/actions/runner-images/issues/14254).
+Before building, every matrix leg checks its OS/architecture; Linux also requires
+Ubuntu 22.04 and glibc 2.35 inside that container. Existing binary portability and executable smoke
 checks remain mandatory before upload. This is a native ARM build,
 not an x64 emulation or a relabeled macOS binary. Every target must succeed
 before the root draft is published; no partial-matrix publication is allowed.
-
-GitHub [announces retirement of both Ubuntu 22.04 images](https://github.com/actions/runner-images/issues/14254)
-on April 17, 2027, with deprecation beginning September 17, 2026. The replacement
-build userspace that preserves this glibc floor is tracked work in `phux-xrok`.
 
 All workflow concurrency groups use the `mini-v1-` cutover namespace. New
 pushes cannot cancel pre-cutover groups; root/Cockpit main validation still
@@ -158,22 +155,28 @@ new execution environments proven.
 events. All four consumers use `.github/actions/classify-changes` without
 duplicated outer path filters. Unknown paths, unavailable history and empty
 diffs request every surface. On pull requests the same classifier also emits
-`test_filterset` (`rdeps(=crate)` union, or empty) so the unit lane can skip
-unrelated crates after the `--workspace` build; pushes to `main` keep the
-full pool. The required `ci` aggregate rejects failed or cancelled lanes and
+`test_filterset` (`rdeps(=crate)` union, or empty) so a library change can
+skip unrelated crates after the `--workspace` build. A `tests/`-only diff
+sets `unit_mode=narrow` and builds that integration test instead. Pushes to
+`main` keep the full pool. The required `ci` aggregate rejects failed or cancelled lanes and
 retains the visible `check`/`test` job names.
 
 | Change | Product validation |
 |---|---|
 | Handwritten docs, including Cockpit README | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
+| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**`, `.agents/skills/beads/**` | Compile-free guards |
+| `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
+| `just/cockpit.just` | Cockpit tests + shipping app |
+| `just/setup.just`, `scripts/doctor.sh`, `scripts/setup-rust.sh`, `scripts/test-dev-setup.sh`, `scripts/native-smoke.sh` | Native setup assurance |
 | `integrations/**` | Node integration gates |
 | `clients/cockpit/**` source | Cockpit tests + shipping app |
 | Browser source | Node/WASM package + Chrome/live-server tests |
 | Root crates | Rust + Cockpit coordinator coverage; browser also runs for its Rust/demo-server dependency closure |
 | Cargo/toolchain/build inputs | Affected products plus clean native setup assurance |
-| `.config/zig-toolchain.json`, engine source/vendor/installer | Affected products plus byte-identical engine reproduction |
-| Embedded `.agents/skills/using-phux*/**` | Rust + Cockpit; these versioned project skills are compiled product inputs |
+| `.config/zig-toolchain.json` | Affected products plus byte-identical engine reproduction |
+| `scripts/install-zig.sh` | Cockpit + native-setup + engine reproduction (Nix phux lanes use flake Zig) |
+| Embedded `.agents/skills/using-phux*/**` | Rust + Cockpit; these versioned project skills are compiled product inputs. Push to `main` also mirrors the allowlisted product skills to `no-phux/skills` (see `.github/workflows/sync-skills.yml`). |
 
 `bash scripts/ci/check-classify-changes.sh` exercises routes and actual event
 diffs, including cross-surface renames and the browser server's manifest closure.
@@ -286,12 +289,15 @@ Linux x86_64, and Linux arm64.
 
 | Artifact | Channel | Mechanism |
 |---|---|---|
-| `phux`, `phux-mcp` binaries | Homebrew + GitHub release | [`release.yml`](../.github/workflows/release.yml), called by release-please |
+| `phux`, `phux-mcp` binaries | Homebrew + GitHub release | [`release.yml`](../.github/workflows/release.yml), called by [`publish.yml`](../.github/workflows/publish.yml) |
 | `phux-protocol` crate | crates.io | [`publish-crate.yml`](../.github/workflows/publish-crate.yml), manual dispatch only |
 | `@phux/opencode` | npm + GitHub release | `opencode-plugin-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
 | `@phux/pi` | npm + GitHub release | `pi-extension-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
 | Claude Code plugin | repository marketplace + GitHub release | `claude-plugin-vX.Y.Z`, [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) |
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
+| `PhuxFFI.xcframework` (phux-client-ffi for iOS, simulator, macOS) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), called by `publish.yml`; see [PhuxFFI xcframework](#phuxffi-xcframework) |
+| `PhuxMobileFFI-<tag>.xcframework.zip` (mobile UniFFI runtime projection plus generated Swift) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), built beside the C artifact; see [Mobile UniFFI xcframework](#mobile-uniffi-xcframework) |
+| `PhuxMobileFFI-<tag>.android.zip` (same UniFFI surface: Kotlin + arm64-v8a/x86_64 `.so`) | GitHub Actions artifact / release asset | [`ffi-android.yml`](../.github/workflows/ffi-android.yml); phux-mobile fetches at `PHUX_REV` |
 
 `@phux/integration-runtime` is a private implementation module bundled into
 the public Pi artifact and inlined into OpenCode. It has no tag or independent
@@ -343,6 +349,12 @@ The opt-in `next` channel ([ADR-0113](adr/0113-next-release-channel.md))
 reuses the same member set (either license layout accepted). GitHub's tag is the moving prerelease `next`;
 assets are `phux-next.<sha>-<target>.tar.gz` plus sidecar, and `channel.json`
 is the pointer `phux update --channel next` reads. Homebrew stays on stable.
+Cockpit rides the same prerelease ([ADR-0138](adr/0138-cockpit-rides-the-next-channel.md)):
+`phux-cockpit-next.<sha>-macos-arm64.zip` plus a `.sha256` sidecar in the same
+`"<64 hex>  <archive>"` form, with `cockpit-channel.json` as its pointer. Each
+product rebuilds only when its own inputs moved since its pointer's SHA, and
+`scripts/publish-next-channel.sh [--cockpit]` prunes only that product's
+assets.
 
 ## Versioning
 
@@ -430,8 +442,8 @@ library paths.
 packaging: macOS binaries may link only `/usr/lib/**` and `/System/Library/**`,
 Linux binaries only the glibc runtime set (`libc`, `libm`, `libgcc_s`, `libdl`,
 `libpthread`, `librt`, `libutil`, `ld-linux`). It also fails if a Linux binary
-demands a glibc symbol version above `PHUX_GLIBC_MAX` (2.35, the ubuntu-22.04
-floor the Linux legs build on), so a runner image bump cannot quietly raise the
+demands a glibc symbol version above `PHUX_GLIBC_MAX` (2.35, the Ubuntu 22.04
+floor the Linux legs build against), so a runner image bump cannot quietly raise the
 minimum distro. Before this existed the check was a `grep` for `/nix/store` in
 `otool -L` output — macOS only, one failure mode, and nothing whatsoever on
 Linux.
@@ -533,11 +545,12 @@ Linux it rejects ELF notes that declare an x86-64-v2-or-newer ISA requirement.
 Cockpit is a Release Please component, not part of the Rust workspace version.
 A Cockpit conventional commit updates the shared draft release PR only under
 `clients/cockpit` plus the root release manifest. Mark that PR ready, wait for
-`cockpit-ci`, `ci` (the aggregate of `check`/`test`), and `commitlint`, then merge it. Release Please
-creates `cockpit-vX.Y.Z` and a private draft; `cockpit-release.yml` re-tests the
-exact tag, creates the arm64 ZIP and DMG, verifies the downloaded copies and
-their `SHA256SUMS`, updates and remotely verifies `Casks/phux-cockpit.rb`,
-records signing status in the notes, and only then publishes the draft.
+`ci` and `commitlint`, then merge it. Release Please creates `cockpit-vX.Y.Z`
+and a private draft. Once `ci` is green for that commit, `publish` calls
+`cockpit-release.yml`, which re-tests the exact tag, creates the arm64 ZIP and
+DMG, verifies the downloaded copies and their `SHA256SUMS`, updates and
+remotely verifies `Casks/phux-cockpit.rb`, records signing status in the notes,
+and only then publishes the draft.
 
 Developer ID and notarization credentials are optional by policy, but never
 partial. No Apple secrets means an explicitly ad-hoc-signed release and a cask
@@ -548,7 +561,7 @@ fails before it uploads or publishes anything.
 Recovery is idempotent:
 
 ```sh
-gh workflow run cockpit-release.yml \
+gh workflow run publish.yml \
   --repo no-phux/phux \
   -f tag=cockpit-vX.Y.Z
 ```
@@ -561,6 +574,110 @@ The `cockpit-vX.Y.Z` tag shape and the `phux-cockpit-<semver>-macos-arm64.zip`
 asset name are a consumed contract: `scripts/install-cockpit.sh` and the
 site's Cockpit version badge resolve them directly. Rename either and both
 break; `scripts/check-install-surface.sh` pins the three halves together.
+
+## PhuxFFI xcframework
+
+`scripts/build-ffi-xcframework.sh` (`just ffi-xcframework`) builds
+`crates/phux-client-ffi` as a static library with `--profile ffi-release`
+(the C boundary needs `panic = "unwind"`, so never the plain release profile)
+for `aarch64-apple-ios`, `aarch64-apple-ios-sim`, and `aarch64-apple-darwin`,
+each slice with the libghostty engine compiled in by `libghostty-vt-sys`, and
+wraps them as `PhuxFFI.xcframework` whose headers are `phux/client.h` plus a
+`module PhuxFFI` map, so Swift can `import PhuxFFI` directly
+([ADR-0133](adr/0133-one-client-runtime-below-every-binding.md)). The Intel
+simulator is absent by design: the engine's iOS slices come from ghostty's
+arm64-only xcframework path. The script then builds and runs a throwaway
+SwiftPM executable against the macOS slice, which proves the module map and
+the archive link the way a real consumer uses them.
+
+`ffi-xcframework.yml` runs it on `xcode-27` for every root release
+(release-please calls it beside `release.yml`) and on dispatch, uploads the
+`PhuxFFI-xcframework` workflow artifact, and with a tag attaches three assets
+to that release:
+
+| Asset | Contents |
+|---|---|
+| `PhuxFFI-<tag>.xcframework.zip` | `PhuxFFI.xcframework` at the archive root, the layout a SwiftPM `binaryTarget(url:checksum:)` expects; `swift package compute-checksum` over the zip equals the sidecar |
+| `PhuxFFI-<tag>.xcframework.zip.sha256` | `"<64 hex>  <archive>"`, the same sidecar format as the CLI tarballs |
+| `PhuxFFI-<tag>.provenance` | the build's inputs, below |
+
+The provenance file is `key value` lines: `phux-rev` and `phux-tree`
+(`clean`, or `dirty` when anything is modified or untracked),
+`phux-client-abi-version` from the header, `libghostty-vt-rev` as Cargo
+resolved it (cross-checked against the root `Cargo.toml` pin), `ghostty-rev`
+from the `-sys` crate's build script, `zig`, `rustc`, `cargo-profile`, `mode`,
+`targets`, one `rustflags <target> <flags>` line per slice (the explicit CPU
+floor: `apple-a7` device, `apple-a12` simulator, `apple-m1` macOS, which
+`scripts/check-release-cpu-baselines.sh` pins beside the other release
+lanes), `libghostty-cpu-macos` (`baseline`) and `libghostty-cpu-ios`
+(`ghostty-xcframework-targets`, because the iOS emit selects its own platform
+targets rather than inheriting `LIBGHOSTTY_VT_SYS_CPU`), `xcode`, `macosx-sdk`,
+`iphoneos-sdk`, both deployment floors (26.0, phux-mobile's), and one
+`slice-sha256 <identifier> <digest>` per slice. Slice verification also
+rejects any member above the floor or carrying the other platform's legacy
+`LC_VERSION_MIN_*` marker. phux-mobile's `PHUX_REV` pin should match
+`phux-rev` of the archive it links.
+
+The xcframework never gates the draft's publication; `release.yml` owns that,
+and the CLI tarballs remain the release contract. A failed or missing build is
+repaired without a new release:
+
+```sh
+gh workflow run ffi-xcframework.yml --repo no-phux/phux -f tag=vX.Y.Z
+```
+
+Uploads use `--clobber`, so a replay against the same tag replaces the three
+assets with bytes rebuilt from that exact tag. Dispatching with an empty tag
+builds the chosen ref and only uploads the workflow artifact, which is how a
+branch is proven before it lands.
+
+Locally the script needs full Xcode with the iOS SDK, rustup, and the pinned
+Zig on `PATH`; it scrubs Nix devshell toolchain overrides itself (including
+the devshell's `DEVELOPER_DIR`, inherited `RUSTFLAGS`, and the SDK pins), so
+it runs the same from a stock shell, from `mise`, or under `nix develop`, and
+that scrub is why the "never inside `nix develop`" rule for release tarballs
+above does not apply to it. It honours cargo's own target directory
+(`CARGO_TARGET_DIR`, `build.target-dir`). Output lands in
+`target/ffi-xcframework/Artifacts/`, or under `--out` (a relative path is
+taken from the invoking directory). A local build is for proving a change;
+the slices a release ships come from `ffi-xcframework.yml`, whose provenance
+file is the authoritative record.
+
+## Mobile UniFFI xcframework
+
+`scripts/build-mobile-ffi-xcframework.sh` (`just mobile-ffi-xcframework`)
+builds `crates/phux-client-ffi` with `--no-default-features --features
+uniffi` for the same three Apple targets. That is the same binding crate the
+C xcframework above builds, under its other encoder (ADR-0135): one
+`projection/` layer maps `phux-client-runtime` values to the product
+vocabulary, and the UniFFI lane lowers it into the object, callback, receipt,
+and byte-arena surface consumed by native mobile clients. Its connected path
+owns no dial, reconnect, frame pump, or remote engine state machine; the
+artifact also keeps an isolated `TerminalEngine` for local playground and
+test terminals (ADR-0133; phux-mobile ADR-0031). The archive inside the
+bundle is `libphux_client_ffi.a`, the name cargo links it under: the artifact
+carries the name of the crate that produced it. The bundle, the `PhuxFFI`
+module name, the asset names and the provenance keys are unchanged, so a
+phux-mobile re-pin is a `PHUX_REV` bump plus the archive name its artifact
+verifiers assert.
+
+The output directory contains `PhuxFFI.xcframework`,
+`Generated/PhuxFFI.swift`, and `provenance`. The build reads the UniFFI surface
+from the macOS library, assembles the native slices, and runs a throwaway
+SwiftPM executable that calls `bridgeReady()`. Provenance records the exact
+phux revision and tree, dirty state, engine revision, profile, mode, toolchain,
+generated-source digest, and every archive digest. A consumer must verify and
+replace all three outputs atomically; generated Swift from one revision must
+never load a native slice from another.
+
+`ffi-xcframework.yml` uploads this bundle as the
+`PhuxMobileFFI-xcframework` workflow artifact. For a root release it also
+attaches `PhuxMobileFFI-<tag>.xcframework.zip`, its SHA-256 sidecar, and its
+provenance sidecar. The zip contains the xcframework, generated Swift, and
+provenance at its root. An empty-tag dispatch proves an exact branch or commit
+without mutating a release. The mobile repository resolves the workflow run by
+its pinned phux commit and can fall back to building this script from an exact
+phux checkout after run-artifact retention expires.
 
 ## One-time Cockpit import cutover
 

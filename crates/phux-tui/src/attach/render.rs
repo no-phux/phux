@@ -4822,6 +4822,30 @@ mod tests {
         }
     }
 
+    /// phux-5js7: ECH of a wrapped wide glyph's continuation rewrites the
+    /// spacer head on the previous row. A pooled `RenderState` (and a full paint)
+    /// that trusts dirty bits) must copy that rewrite, matching a fresh
+    /// snapshot. This is seed 11 of the property test below, locked so it
+    /// cannot be skipped.
+    #[test]
+    fn erasing_a_wrapped_wide_glyph_clears_the_pooled_spacer_head() {
+        let mut pane = fresh(9, 3);
+        pane.vt_write("\x1b[1;6H\x1b[7;31m\u{754C}#\u{754C}".as_bytes());
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(9, 3);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), true);
+
+        pane.vt_write(b"\x1b[2;1H\x1b[48;5;39m\x1b[1X");
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), true);
+
+        assert_glass_shows(
+            &glass,
+            &pane,
+            (0, 0),
+            "pooled spacer head after ECH of wrapped wide glyph",
+        );
+    }
+
     /// The property: any sequence of edits, painted through the diff one frame
     /// at a time — with modals scribbled and invalidated, predictions
     /// forgotten row by row, and forced repaints after clears mixed in — leaves
@@ -4830,13 +4854,14 @@ mod tests {
     /// grid shows.
     ///
     /// The second half is asserted only while the dirty-row painter itself
-    /// agrees with a full repaint. It does not always: libghostty can change a
-    /// cell without marking its row dirty (erasing the continuation of a wide
-    /// glyph that wrapped rewrites the spacer head on the row above, and only
-    /// the erased row is reported — `phux-5js7`). No painter that trusts the
-    /// dirty bits can see that change, not even a forced paint through the
-    /// pooled render state; it predates the diff, and the test re-syncs both
-    /// lanes from fresh renderers before carrying on.
+    /// agrees with a full repaint. If libghostty changes a cell without
+    /// marking its row dirty, no painter that trusts dirty bits can see it,
+    /// not even a forced paint through the pooled render state; the test
+    /// re-syncs both lanes from fresh renderers before carrying on. The
+    /// wrap-spacer-head ECH miss (`phux-5js7`) is no longer in that set: the
+    /// engine pin dirties the previous row, and
+    /// `erasing_a_wrapped_wide_glyph_clears_the_pooled_spacer_head` fails if
+    /// that rewrite regresses.
     #[test]
     fn random_edits_through_the_diff_painter_match_a_full_repaint() {
         let mut tally = Tally::default();

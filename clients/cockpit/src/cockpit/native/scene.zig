@@ -35,13 +35,14 @@ pub const cockpit_shortcuts = [_]native_sdk.Shortcut{
     // The summoned tab switcher. Registered globally like every other chord
     // the app answers, so the platform does not beep at it, and reachable
     // whatever surface owns the content area.
-    .{ .id = "tabs.palette", .key = "p", .modifiers = .{ .primary = true, .shift = true } },
     // cmd+, — the settings chord every macOS app answers. Registered globally
     // like the rest so the platform does not beep at it, and so the menu item
     // below has a real equivalent rather than a decorative one.
     .{ .id = "settings.open", .key = ",", .modifiers = .{ .primary = true } },
     .{ .id = "tab.previous", .key = "[", .modifiers = .{ .primary = true, .shift = true } },
     .{ .id = "tab.next", .key = "]", .modifiers = .{ .primary = true, .shift = true } },
+    .{ .id = "navigator.sessions", .key = "k", .modifiers = .{ .primary = true } },
+    .{ .id = "commands.open", .key = "p", .modifiers = .{ .primary = true, .shift = true } },
     .{ .id = "terminal.new", .key = "t", .modifiers = .{ .primary = true } },
     // cmd+N opens a WINDOW, the way every Mac app spells it — and the reason
     // cmd+T is the tab chord rather than this one.
@@ -67,7 +68,7 @@ pub const cockpit_shortcuts = [_]native_sdk.Shortcut{
     .{ .id = "terminal.select-all", .key = "a", .modifiers = .{ .primary = true } },
     .{ .id = "terminal.copy", .key = "c", .modifiers = .{ .primary = true } },
     .{ .id = "terminal.paste", .key = "v", .modifiers = .{ .primary = true } },
-    .{ .id = "terminal.clear", .key = "k", .modifiers = .{ .primary = true } },
+    .{ .id = "terminal.clear", .key = "k", .modifiers = .{ .primary = true, .shift = true } },
     // Scrollback search: the cmd+F / cmd+G / cmd+shift+G trio every macOS
     // app shares. Registered globally so the platform does not beep at a
     // chord the app answers, and so the menu items below have equivalents.
@@ -114,7 +115,7 @@ const edit_menu_items = [_]native_sdk.MenuItem{
     .{ .label = "Paste", .command = "terminal.paste", .key = "v", .modifiers = .{ .primary = true } },
     .{ .separator = true },
     .{ .label = "Select All", .command = "terminal.select-all", .key = "a", .modifiers = .{ .primary = true } },
-    .{ .label = "Clear", .command = "terminal.clear", .key = "k", .modifiers = .{ .primary = true } },
+    .{ .label = "Clear", .command = "terminal.clear", .key = "k", .modifiers = .{ .primary = true, .shift = true } },
     .{ .separator = true },
     .{ .label = "Find", .command = "terminal.find", .key = "f", .modifiers = .{ .primary = true } },
     .{ .label = "Find Next", .command = "terminal.find-next", .key = "g", .modifiers = .{ .primary = true } },
@@ -132,6 +133,8 @@ const edit_menu_items = [_]native_sdk.MenuItem{
 /// `toggleFullscreenWindow` are that verb, so the item names a command the app
 /// can now answer, against the FOCUSED window rather than always the main one.
 const view_menu_items = [_]native_sdk.MenuItem{
+    .{ .label = "Commands…", .command = "commands.open", .key = "p", .modifiers = .{ .primary = true, .shift = true } },
+    .{ .separator = true },
     // Settings lives in VIEW rather than in the app menu, where macOS
     // convention puts it, because the app menu is the toolkit's: supplying
     // custom menus replaces File/Edit/View/Window and `appkit_host.m` rebuilds
@@ -158,7 +161,8 @@ const window_menu_items = [_]native_sdk.MenuItem{
     // inherited.
     .{ .label = "Minimize", .command = "window.minimize", .key = "m", .modifiers = .{ .primary = true } },
     .{ .separator = true },
-    .{ .label = "Go to Terminal…", .command = "tabs.palette", .key = "p", .modifiers = .{ .primary = true, .shift = true } },
+    .{ .label = "Sessions…", .command = "navigator.sessions", .key = "k", .modifiers = .{ .primary = true } },
+    .{ .label = "Go to Terminal…", .command = "tabs.palette" },
     .{ .separator = true },
     .{ .label = "Previous Tab", .command = "tab.previous", .key = "[", .modifiers = .{ .primary = true, .shift = true } },
     .{ .label = "Next Tab", .command = "tab.next", .key = "]", .modifiers = .{ .primary = true, .shift = true } },

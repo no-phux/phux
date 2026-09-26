@@ -1,0 +1,211 @@
+# Build the canonical C and mobile-native xcframeworks from this checkout and
+# attach them to the root release. Both come from crates/phux-client-ffi, the
+# one binding crate (ADR-0135): PhuxFFI is its default C ABI plus
+# phux/client.h for C consumers, PhuxMobileFFI is the same crate built with
+# --no-default-features --features uniffi, including generated Swift from
+# the same revision.
+# Both carry the engine for iOS devices, the arm64 simulator, and arm64 macOS.
+#
+# Release Please owns tags, draft releases and notes. This workflow only adds
+# verified assets to an existing release, the same contract release.yml and
+# cockpit-release.yml follow, and publish.yml calls it for every root
+# release. It never gates the draft's publication: the CLI tarballs are the
+# release contract; the xcframework is the mobile pin's input.
+#
+# No pull request triggers this workflow, so its caches are saved from every
+# run without thrashing the PR budget docs/RELEASING.md describes.
+#
+# It also fires on main when the shim or its runtime inputs change, exactly as
+# ffi-android.yml does, so a merge is the produce run. That pairing is the
+# point: phux-mobile pins ONE revision and fetches both artifacts at it, and a
+# tagless push run uploads the workflow artifact without touching any release
+# (the attach step is guarded on RELEASE_TAG). Before this, only android
+# produced on merge while the xcframework waited for a dispatch, so the two
+# artifacts almost never existed at the same commit and the mobile pin had
+# nothing to land on.
+
+name: ffi-xcframework
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # KEEP THIS LIST IDENTICAL TO ffi-android.yml's. phux-mobile pins one
+      # revision and fetches BOTH artifacts at it, so a commit that produces
+      # only one is unusable as a pin. Identical filters are what guarantee the
+      # pair; if these lists drift, the pin silently has nothing to land on.
+      - crates/phux-client-ffi/**
+      - crates/phux-client-runtime/**
+      - crates/phux-client-core/**
+      - crates/phux-protocol/**
+      - crates/phux-dial/**
+      - scripts/build-ffi-xcframework.sh
+      - scripts/build-mobile-ffi-xcframework.sh
+      - scripts/build-mobile-ffi-android.sh
+      - scripts/ci/setup-android-ndk.sh
+      - .github/workflows/ffi-android.yml
+      - .github/workflows/ffi-xcframework.yml
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing root release tag (vX.Y.Z) to build from and attach the xcframework to.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing root release tag (vX.Y.Z) to build from and attach to. Empty builds the dispatched ref and only uploads the workflow artifact.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mini-v1-ffi-xcframework-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build native xcframeworks
+    # Standard xcode-27 is an arm64 GitHub-hosted runner with Xcode 27 and the
+    # iOS SDK; device and simulator slices need both.
+    runs-on: xcode-27
+    # A cold run compiles ghostty's xcframework emit for both iOS targets;
+    # retain a conservative ceiling until hosted timings justify tightening it.
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      ARTIFACTS: target/ffi-xcframework/Artifacts
+      MOBILE_ARTIFACTS: target/mobile-ffi-xcframework/Artifacts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Contributor Zig setup
+        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+
+      - name: Contributor Rust setup
+        run: bash scripts/setup-rust.sh core
+
+      # After the Rust setup: check-release-version.sh runs `cargo metadata`,
+      # and the pinned toolchain must come from scripts/setup-rust.sh, not
+      # from whatever the runner image auto-installs on first use. The tag
+      # pattern is release.yml's, so both asset workflows agree on what a
+      # root tag is (a prerelease suffix included).
+      - name: Validate release tag
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
+          bash scripts/check-release-version.sh "$RELEASE_TAG"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
+      # Three cross targets share one Cargo.lock; the shared key keeps this
+      # cache disjoint from the Cockpit and Linux lanes' profiles. Preserve a
+      # partial cold build if the first hosted run times out or fails later.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: mini-v1-ffi-xcframework
+          cache-on-failure: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/zig
+          key: mini-v1-ffi-xcframework-zig-${{ hashFiles('.config/zig-toolchain.json', 'Cargo.lock') }}
+          restore-keys: |
+            mini-v1-ffi-xcframework-zig-
+
+      - name: Build, verify and smoke-test the xcframework
+        run: bash scripts/build-ffi-xcframework.sh --full
+
+      - name: Build, verify and smoke-test the mobile xcframework
+        run: bash scripts/build-mobile-ffi-xcframework.sh --full
+
+      - name: Package the C archive and its checksum
+        id: package
+        run: |
+          set -euo pipefail
+          stem="PhuxFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}"
+          cd "$ARTIFACTS"
+          # The xcframework sits at the archive root, which is the layout a
+          # SwiftPM binaryTarget URL expects; `swift package compute-checksum`
+          # over the zip equals the sidecar's SHA-256.
+          zip -qry "${stem}.xcframework.zip" PhuxFFI.xcframework
+          shasum -a 256 "${stem}.xcframework.zip" > "${stem}.xcframework.zip.sha256"
+          cp provenance "${stem}.provenance"
+          cat "${stem}.xcframework.zip.sha256" "${stem}.provenance"
+          echo "stem=${stem}" >> "$GITHUB_OUTPUT"
+
+      - name: Package the mobile archive, bindings and checksum
+        id: mobile-package
+        run: |
+          set -euo pipefail
+          stem="PhuxMobileFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}"
+          cd "$MOBILE_ARTIFACTS"
+          zip -qry "${stem}.xcframework.zip" PhuxFFI.xcframework Generated provenance
+          shasum -a 256 "${stem}.xcframework.zip" > "${stem}.xcframework.zip.sha256"
+          cp provenance "${stem}.provenance"
+          cat "${stem}.xcframework.zip.sha256" "${stem}.provenance"
+          echo "stem=${stem}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: PhuxFFI-xcframework
+          # The zip already carries the xcframework bytes; uploading the
+          # expanded directory too would double the payload for nothing.
+          path: |
+            ${{ env.ARTIFACTS }}/provenance
+            ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.xcframework.zip
+            ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.xcframework.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: PhuxMobileFFI-xcframework
+          path: |
+            ${{ env.MOBILE_ARTIFACTS }}/provenance
+            ${{ env.MOBILE_ARTIFACTS }}/${{ steps.mobile-package.outputs.stem }}.xcframework.zip
+            ${{ env.MOBILE_ARTIFACTS }}/${{ steps.mobile-package.outputs.stem }}.xcframework.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach and verify release assets
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STEM: ${{ steps.package.outputs.stem }}
+          MOBILE_STEM: ${{ steps.mobile-package.outputs.stem }}
+        run: |
+          set -euo pipefail
+          mobile_artifacts="$GITHUB_WORKSPACE/$MOBILE_ARTIFACTS"
+          cd "$ARTIFACTS"
+          # `gh release upload` adds assets only; it never rewrites the name or
+          # body release-please generated. --clobber keeps a replay against
+          # the same tag idempotent, as release.yml's backfill path is.
+          gh release upload "$RELEASE_TAG" \
+            "${STEM}.xcframework.zip" "${STEM}.xcframework.zip.sha256" "${STEM}.provenance" --clobber
+          gh release upload "$RELEASE_TAG" \
+            "$mobile_artifacts/${MOBILE_STEM}.xcframework.zip" \
+            "$mobile_artifacts/${MOBILE_STEM}.xcframework.zip.sha256" \
+            "$mobile_artifacts/${MOBILE_STEM}.provenance" --clobber
+          existing="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --dir "$existing" --pattern "${STEM}.*"
+          gh release download "$RELEASE_TAG" --dir "$existing" --pattern "${MOBILE_STEM}.*"
+          cmp "${STEM}.xcframework.zip" "$existing/${STEM}.xcframework.zip"
+          cmp "${STEM}.provenance" "$existing/${STEM}.provenance"
+          cmp "$mobile_artifacts/${MOBILE_STEM}.xcframework.zip" "$existing/${MOBILE_STEM}.xcframework.zip"
+          cmp "$mobile_artifacts/${MOBILE_STEM}.provenance" "$existing/${MOBILE_STEM}.provenance"
+          (cd "$existing" && shasum -a 256 -c "${STEM}.xcframework.zip.sha256")
+          (cd "$existing" && shasum -a 256 -c "${MOBILE_STEM}.xcframework.zip.sha256")
+          echo "attached ${STEM} and ${MOBILE_STEM} to ${RELEASE_TAG}"

@@ -5,72 +5,22 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
-
-/// Idle lifetime for this file's harness server, as a backstop UNDER the
-/// `Drop` kill (ADR-0063). The guard is still the primary cleanup; it cannot
-/// run if the test process is `SIGKILL`ed or the runner is reaped mid-job, and
-/// what leaks then is a daemon holding a live PTY on a socket nobody will
-/// ever look at again. Ten minutes is far longer than any gap between this
-/// file's client connections, so it can only fire after the harness is gone.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
-const SOCKET_DEADLINE: Duration = Duration::from_secs(20);
-const SOCKET_POLL: Duration = Duration::from_millis(50);
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
+struct ServerGuard(common::ServerGuard);
 
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
     fn start(session: &str) -> Self {
-        let dir = tempfile::tempdir().expect("create temp dir for socket");
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = dir
-            .path()
-            .join(format!("ab-{}-{n}.sock", std::process::id()));
-        let child = Command::new(PHUX)
-            .args(["server", "--session", session, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        guard.wait_for_socket();
-        guard
-    }
-
-    fn wait_for_socket(&self) {
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if self.socket.exists() {
-                return;
-            }
-            std::thread::sleep(SOCKET_POLL);
-        }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            self.socket.display()
-        );
-    }
-
-    fn socket_text(&self) -> String {
-        self.socket.to_string_lossy().into_owned()
+        Self(common::ServerGuard::builder("ab").session(session).start())
     }
 }
 

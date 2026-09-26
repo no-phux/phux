@@ -1,7 +1,8 @@
 //! Generate protocol-0.8 workspace replies for Cockpit's existing terminal-7 attach fixture.
 //! Usage: `cargo run -p phux-client-ffi --example workspace_fixtures -- OUTPUT_DIRECTORY`.
-//! Requests follow initial read, refresh, rename, split, resize. Pass output bytes
-//! through the ordinary FFI frame feeder; no emulator allocation is needed for listings.
+//! Requests follow initial read, refresh, rename, split, resize, and the
+//! independent-session add/close cases. Pass output bytes through the ordinary
+//! FFI frame feeder; no emulator allocation is needed for listings.
 
 use phux_client_core::layout::{self, Workspace};
 use phux_protocol::wire::frame::{CommandResult, CommandValue, FrameKind};
@@ -110,6 +111,55 @@ fn cutover_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
     pair(directory, "workspace_add", 13, 14, true, Some(&topology))
 }
 
+fn sibling_session_fixtures(directory: &Path) -> Result<(), Box<dyn Error>> {
+    let session = SessionId::new(2);
+    let snapshot = SessionSnapshot::new(session, WindowId::new(1), ResourceId::local(7))
+        .with_sessions(vec![SessionInfo::new(session, "sibling")])
+        .with_windows(vec![WindowInfo::new(WindowId::new(1), session, "sibling")])
+        .with_resources(vec![ResourceInfo::new(
+            ResourceId::local(7),
+            WindowId::new(1),
+            80,
+            24,
+        )]);
+    write_pair(
+        directory,
+        "workspace_session2_initial",
+        0,
+        1,
+        snapshot.clone(),
+        Some(Workspace::single(ResourceId::local(7)).encode_topology_cbor()?),
+    )?;
+    let mut added_snapshot = snapshot.clone();
+    added_snapshot
+        .windows
+        .push(WindowInfo::new(WindowId::new(2), session, "sibling-2"));
+    added_snapshot.resources.push(ResourceInfo::new(
+        ResourceId::local(8),
+        WindowId::new(2),
+        80,
+        24,
+    ));
+    let mut added = Workspace::single(ResourceId::local(7));
+    added.add_window(String::new(), ResourceId::local(8));
+    write_pair(
+        directory,
+        "workspace_session2_add",
+        13,
+        14,
+        added_snapshot,
+        Some(added.encode_topology_cbor()?),
+    )?;
+    write_pair(
+        directory,
+        "workspace_session2_close",
+        2,
+        3,
+        snapshot,
+        Some(Workspace::new().encode_topology_cbor()?),
+    )
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let directory = std::env::args_os()
         .nth(1)
@@ -138,5 +188,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     pair(directory, "workspace_resize", 10, 11, true, Some(&topology))?;
     cutover_fixtures(directory)?;
+    sibling_session_fixtures(directory)?;
     Ok(())
 }

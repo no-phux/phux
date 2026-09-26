@@ -36,7 +36,8 @@ pub const Status = struct {
         locked.evidence = evidence;
         locked.message_len = 0;
         if (failure) |err| {
-            const text = std.fmt.bufPrint(&locked.message, "Local Phux at {s}: {s}; CLI {s}. {s} Retry or Repair Installation.", .{ socket, @errorName(err), evidence.cli(), evidence.stderr.text()[0..@min(240, evidence.stderr.len)] }) catch {
+            const detail = evidence.detail();
+            const text = std.fmt.bufPrint(&locked.message, "Local Phux at {s}: {s}; CLI {s}. {s} Retry or Repair Installation.", .{ socket, @errorName(err), evidence.cli(), detail[0..@min(240, detail.len)] }) catch {
                 const fallback = "Local Phux startup failed. Retry or Repair Installation.";
                 @memcpy(locked.message[0..fallback.len], fallback);
                 locked.message_len = fallback.len;
@@ -68,10 +69,15 @@ pub const Status = struct {
 pub const Evidence = struct {
     executable: [4096]u8 = undefined,
     executable_len: usize = 0,
+    stdout: Capture = .{},
     stderr: Capture = .{},
     status: ?c_int = null,
     pub fn cli(self: *const Evidence) []const u8 {
         return self.executable[0..self.executable_len];
+    }
+
+    fn detail(self: *const Evidence) []const u8 {
+        return if (self.stderr.len != 0) self.stderr.text() else self.stdout.text();
     }
 };
 
@@ -226,7 +232,7 @@ pub fn compatibleProbe(gpa: std.mem.Allocator, json: []const u8) bool {
     // Same contract as crates/phux-protocol/src/lib.rs; runtime handshake is
     // still authoritative for the running coordinator's negotiated features.
     if (p.protocol.major != 0 or p.protocol.minor != 9) return false;
-    for ([_][]const u8{ "server-ensure-v1", "structured-spawn-v1", "host-enroll-v1" }) |required| {
+    for ([_][]const u8{ "server-ensure-v1", "server-ensure-json-v1", "structured-spawn-v1", "host-enroll-v1" }) |required| {
         if (!hasCapability(p.capabilities, required)) return false;
     }
     return true;
@@ -278,8 +284,29 @@ pub fn ensure(
     evidence.* = .{};
     evidence.executable_len = @min(cli.len, evidence.executable.len);
     @memcpy(evidence.executable[0..evidence.executable_len], cli[0..evidence.executable_len]);
-    var stdout: Capture = .{};
-    try runHelper(io, &.{ cli, "--socket", socket_path, "server", "--ensure" }, stopping, options.timeout_ms, &stdout, evidence);
+    try runHelper(io, &.{ cli, "--socket", socket_path, "server", "--ensure", "--json" }, stopping, options.timeout_ms, &evidence.stdout, evidence);
+    try validateEnsureReply(gpa, evidence.stdout.text(), socket_path);
+}
+
+fn validateEnsureReply(gpa: std.mem.Allocator, bytes: []const u8, socket_path: []const u8) !void {
+    const Reply = struct {
+        schema_version: u32,
+        running: bool,
+        socket: []const u8,
+        disposition: []const u8,
+        cli_version: []const u8,
+        server_log: []const u8,
+    };
+    const parsed = std.json.parseFromSlice(Reply, gpa, bytes, .{ .ignore_unknown_fields = true }) catch return error.InvalidEnsureReply;
+    defer parsed.deinit();
+    const reply = parsed.value;
+    if (reply.schema_version != 1 or !reply.running) return error.InvalidEnsureReply;
+    if (!std.mem.eql(u8, reply.socket, socket_path)) return error.InvalidEnsureReply;
+    if (reply.cli_version.len == 0 or reply.server_log.len == 0) return error.InvalidEnsureReply;
+    for ([_][]const u8{ "reused", "joined", "supervised_started", "daemon_started" }) |known| {
+        if (std.mem.eql(u8, reply.disposition, known)) return;
+    }
+    return error.InvalidEnsureReply;
 }
 
 fn runHelper(io: std.Io, argv: []const []const u8, stopping: *const std.atomic.Value(bool), timeout_ms: u32, stdout: *Capture, evidence: *Evidence) !void {
@@ -401,14 +428,43 @@ test "ensure rejects relative sockets and canceled startup before executing a fi
 test "ensure observes fixture failure without fallback or retry" {
     var stopping = std.atomic.Value(bool).init(false);
     try std.testing.expectError(error.EnsureFailed, ensure(std.testing.allocator, std.testing.io, "/unused.sock", &stopping, .{ .cli_path = "/usr/bin/false" }));
-    try ensure(std.testing.allocator, std.testing.io, "/unused.sock", &stopping, .{ .cli_path = "/usr/bin/true" });
+    try std.testing.expectError(error.InvalidEnsureReply, ensure(std.testing.allocator, std.testing.io, "/unused.sock", &stopping, .{ .cli_path = "/usr/bin/true" }));
 }
 
-/// Test-only process fixture shared with the worker integration test. Every path
-/// lives in a disposable directory; the selected socket is never created.
+test "ensure success requires the versioned result for the exact socket" {
+    const reply =
+        \\{"schema_version":1,"running":true,"socket":"/wanted.sock","disposition":"reused","cli_version":"1.2.3","server_log":"/state/server.log"}
+    ;
+    try validateEnsureReply(std.testing.allocator, reply, "/wanted.sock");
+    try std.testing.expectError(error.InvalidEnsureReply, validateEnsureReply(std.testing.allocator, reply, "/other.sock"));
+    const unknown = try std.mem.replaceOwned(u8, std.testing.allocator, reply, "reused", "invented");
+    defer std.testing.allocator.free(unknown);
+    try std.testing.expectError(error.InvalidEnsureReply, validateEnsureReply(std.testing.allocator, unknown, "/wanted.sock"));
+}
+
+/// The whole socket path must fit `sockaddr_un.sun_path`: 104 bytes on
+/// Darwin, 108 on Linux. The kernel measures the path, not its last
+/// component, so a deep checkout is what overruns it.
+const max_socket_path = @sizeOf(@FieldType(std.posix.sockaddr.un, "path"));
+
+/// Sockets live here rather than beside the fixture's other files.
+/// `std.testing.tmpDir` is `.zig-cache/tmp/<hash>` relative to the
+/// checkout, and a linked worktree's prefix alone can spend the entire
+/// `sun_path` budget before the fixture adds anything. A short absolute
+/// base keeps these tests runnable from any checkout depth, which is what
+/// the repository's worktree-per-branch rule requires.
+const socket_root = "/tmp";
+
+/// Distinguishes concurrent fixtures within one test binary; the pid
+/// distinguishes binaries running in parallel.
+var socket_sequence: std.atomic.Value(u32) = .init(0);
+
+/// Test-only process fixture shared with the worker integration test. Every
+/// path lives in a disposable directory; the selected socket is never created.
 pub const TestFixture = struct {
     tmp: std.testing.TmpDir,
     cli: [:0]u8,
+    socket_dir: []u8,
     socket: []u8,
 
     pub fn init() !TestFixture {
@@ -421,11 +477,30 @@ pub const TestFixture = struct {
         });
         const cli = try tmp.dir.realPathFileAlloc(std.testing.io, "fixture cli", std.testing.allocator);
         errdefer std.testing.allocator.free(cli);
-        const socket = try std.fs.path.join(std.testing.allocator, &.{ std.fs.path.dirname(cli).?, "s s" });
-        return .{ .tmp = tmp, .cli = cli, .socket = socket };
+
+        const socket_dir = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{s}/phux-cockpit-{d}-{d}",
+            .{ socket_root, std.c.getpid(), socket_sequence.fetchAdd(1, .monotonic) },
+        );
+        errdefer std.testing.allocator.free(socket_dir);
+        const cwd = std.Io.Dir.cwd();
+        cwd.deleteTree(std.testing.io, socket_dir) catch {};
+        try cwd.createDirPath(std.testing.io, socket_dir);
+        errdefer cwd.deleteTree(std.testing.io, socket_dir) catch {};
+
+        // The space is deliberate: `ensure` hands this path to a helper and
+        // must quote it.
+        const socket = try std.fs.path.join(std.testing.allocator, &.{ socket_dir, "s s" });
+        errdefer std.testing.allocator.free(socket);
+        if (socket.len >= max_socket_path) return error.TestSocketTooLong;
+
+        return .{ .tmp = tmp, .cli = cli, .socket_dir = socket_dir, .socket = socket };
     }
 
     pub fn deinit(self: *TestFixture) void {
+        std.Io.Dir.cwd().deleteTree(std.testing.io, self.socket_dir) catch {};
+        std.testing.allocator.free(self.socket_dir);
         std.testing.allocator.free(self.cli);
         std.testing.allocator.free(self.socket);
         self.tmp.cleanup();
@@ -434,6 +509,28 @@ pub const TestFixture = struct {
     pub fn ready(self: *TestFixture) bool {
         self.tmp.dir.access(std.testing.io, "pid", .{}) catch return false;
         return true;
+    }
+
+    /// Fail with the fixture files that exist. `calls` is the script body's
+    /// first write, before the pid rename; both absent means the helper has
+    /// not reached that write (spawn/exec still in progress, or it exited first).
+    pub fn expectReady(self: *TestFixture) !void {
+        if (self.ready()) return;
+        std.debug.print(
+            "coordinator fixture not ready: pid={s} calls={s} release={s} exit-code={s}\n",
+            .{
+                self.markerState("pid"),
+                self.markerState("calls"),
+                self.markerState("release"),
+                self.markerState("exit-code"),
+            },
+        );
+        return error.HelperNotReady;
+    }
+
+    fn markerState(self: *TestFixture, name: []const u8) []const u8 {
+        self.tmp.dir.access(std.testing.io, name, .{}) catch |err| return @errorName(err);
+        return "present";
     }
 
     pub fn release(self: *TestFixture, code: []const u8) !void {
@@ -450,7 +547,7 @@ pub const TestFixture = struct {
     pub fn checkArguments(self: *TestFixture) !void {
         const actual = try self.tmp.dir.readFileAlloc(std.testing.io, "calls", std.testing.allocator, .limited(4096));
         defer std.testing.allocator.free(actual);
-        const expected = try std.fmt.allocPrint(std.testing.allocator, "--socket\n{s}\nserver\n--ensure\n", .{self.socket});
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "--socket\n{s}\nserver\n--ensure\n--json\n", .{self.socket});
         defer std.testing.allocator.free(expected);
         try std.testing.expectEqualStrings(expected, actual);
     }
@@ -480,15 +577,92 @@ pub const TestFixture = struct {
     }
 };
 
+const Readiness = enum { ready, wait, not_ready };
+
+/// The hosted failure (phux-oh5o, `extension.zig:827`) asserted a 5s clock
+/// after an earlier `!ready()` sample, while no disconnect had been posted.
+/// The marker at this decision is authoritative; the budget only stops waiting.
+fn classifyReadiness(ready_now: bool, deadline_reached: bool) Readiness {
+    if (ready_now) return .ready;
+    if (deadline_reached) return .not_ready;
+    return .wait;
+}
+
+fn waitUntilReady(fixture: *TestFixture, budget_ms: u32, done: *const std.atomic.Value(bool)) !void {
+    const io = std.testing.io;
+    const started = std.Io.Clock.awake.now(io);
+    while (true) {
+        const deadline_reached = started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() >= budget_ms;
+        switch (classifyReadiness(fixture.ready(), deadline_reached)) {
+            .ready => return,
+            .not_ready => return fixture.expectReady(),
+            .wait => {
+                if (done.load(.acquire)) return error.EnsureReturnedBeforeReady;
+                try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+            },
+        }
+    }
+}
+
+test "readiness failure requires the marker to be absent at the deadline" {
+    try std.testing.expectEqual(Readiness.ready, classifyReadiness(true, true));
+    try std.testing.expectEqual(Readiness.ready, classifyReadiness(true, false));
+    try std.testing.expectEqual(Readiness.wait, classifyReadiness(false, false));
+    try std.testing.expectEqual(Readiness.not_ready, classifyReadiness(false, true));
+}
+
+test "ensure reaches the helper ready marker before any socket exists" {
+    var fixture = try TestFixture.init();
+    defer fixture.deinit();
+    var stopping = std.atomic.Value(bool).init(false);
+    const Runner = struct {
+        fixture: *TestFixture,
+        stopping: *const std.atomic.Value(bool),
+        failed: ?anyerror = null,
+        done: std.atomic.Value(bool) = .init(false),
+
+        fn run(self: *@This()) void {
+            ensure(std.testing.allocator, std.testing.io, self.fixture.socket, self.stopping, .{ .cli_path = self.fixture.cli }) catch |err| {
+                self.failed = err;
+            };
+            self.done.store(true, .release);
+        }
+    };
+    var runner = Runner{ .fixture = &fixture, .stopping = &stopping };
+    const thread = try std.Thread.spawn(.{}, Runner.run, .{&runner});
+    var joined = false;
+    errdefer if (!joined) {
+        stopping.store(true, .release);
+        thread.join();
+    };
+    waitUntilReady(&fixture, (Options{}).timeout_ms, &runner.done) catch |err| {
+        if (runner.done.load(.acquire)) {
+            if (runner.failed) |cause| std.debug.print("ensure finished before the ready marker: {s}\n", .{@errorName(cause)});
+        }
+        return err;
+    };
+    // Still inside ensure: provider open connects only after ensure returns.
+    try std.testing.expect(!runner.done.load(.acquire));
+    try std.testing.expect(!try serverPresent(fixture.socket));
+    try fixture.release("0");
+    thread.join();
+    joined = true;
+    if (runner.failed) |err| return err;
+    try fixture.checkArguments();
+    try fixture.expectExitCode("0");
+}
+
 test "ensure bounds an unresponsive helper and reaps it" {
     var fixture = try TestFixture.init();
     defer fixture.deinit();
     try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "spawn-probe", .data = "" });
     var stopping = std.atomic.Value(bool).init(false);
-    // The fixture runs until released; allow Python startup, then enforce the
-    // outer budget. This is a timeout contract, not a performance assertion.
-    try std.testing.expectError(error.EnsureTimedOut, ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli, .timeout_ms = 1000 }));
-    try std.testing.expect(fixture.ready());
+    // Helper-ready is a scheduling wait for Python under CI load. Bound the
+    // unresponsive helper by the production ensure budget so a 1s test clock
+    // cannot fire EnsureTimedOut before the pid file exists (phux-7v35). This
+    // is a timeout/reap contract, not a performance assertion.
+    try std.testing.expectError(error.EnsureTimedOut, ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli, .timeout_ms = (Options{}).timeout_ms }));
+    try fixture.expectReady();
     try fixture.checkArguments();
     try fixture.expectReaped();
     try fixture.expectProbeStopped();
@@ -516,7 +690,7 @@ test "already reaped helper is never signaled again" {
 }
 
 const test_probe =
-    \\{"schema_version":1,"binary":"phux","version":"unknown-development-version","protocol":{"major":0,"minor":9,"patch":0},"capabilities":["server-ensure-v1","structured-spawn-v1","host-enroll-v1"]}
+    \\{"schema_version":1,"binary":"phux","version":"unknown-development-version","protocol":{"major":0,"minor":9,"patch":0},"capabilities":["server-ensure-v1","server-ensure-json-v1","structured-spawn-v1","host-enroll-v1"]}
 ;
 
 test "runtime compatibility uses versioned protocol evidence rather than CLI semver" {
@@ -533,6 +707,9 @@ test "runtime compatibility uses versioned protocol evidence rather than CLI sem
     const missing = try std.mem.replaceOwned(u8, gpa, test_probe, "server-ensure-v1", "unsupported");
     defer gpa.free(missing);
     try std.testing.expect(!compatibleProbe(gpa, missing));
+    const unstructured = try std.mem.replaceOwned(u8, gpa, test_probe, "server-ensure-json-v1", "unsupported");
+    defer gpa.free(unstructured);
+    try std.testing.expect(!compatibleProbe(gpa, unstructured));
 }
 
 test "installed candidate probe is read-only with exact argv and bounded output" {
@@ -595,10 +772,11 @@ test "isolated live coordinator is reused without invoking even a broken CLI" {
 fn expectExitedHelperCleanup(code: []const u8) !void {
     var fixture = try TestFixture.init();
     defer fixture.deinit();
-    const script = try std.fmt.allocPrint(std.testing.allocator, "#!/usr/bin/python3\nimport pathlib, subprocess, sys\n" ++
+    const script = try std.fmt.allocPrint(std.testing.allocator, "#!/usr/bin/python3\nimport json, pathlib, subprocess, sys\n" ++
         "p = subprocess.Popen(['/bin/sleep', '60'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n" ++
         "(pathlib.Path(__file__).parent / 'probe-pid').write_text(str(p.pid))\n" ++
-        "sys.exit({s})\n", .{code});
+        "if {s} == 0: print(json.dumps({{'schema_version': 1, 'running': True, 'socket': sys.argv[2], 'disposition': 'daemon_started', 'cli_version': 'test', 'server_log': '/unused.log'}}))\n" ++
+        "sys.exit({s})\n", .{ code, code });
     defer std.testing.allocator.free(script);
     try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fixture cli", .data = script, .flags = .{ .permissions = .fromMode(0o700) } });
     var stopping = std.atomic.Value(bool).init(false);
@@ -619,9 +797,10 @@ test "failed exited helper cannot leave disposable process group children" {
 test "exited helper cleanup preserves a daemon that acquired its own session" {
     var fixture = try TestFixture.init();
     defer fixture.deinit();
-    const script = "#!/usr/bin/python3\nimport pathlib, subprocess\n" ++
+    const script = "#!/usr/bin/python3\nimport json, pathlib, subprocess, sys\n" ++
         "p = subprocess.Popen(['/bin/sleep', '60'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n" ++
-        "(pathlib.Path(__file__).parent / 'daemon-pid').write_text(str(p.pid))\n";
+        "(pathlib.Path(__file__).parent / 'daemon-pid').write_text(str(p.pid))\n" ++
+        "print(json.dumps({'schema_version': 1, 'running': True, 'socket': sys.argv[2], 'disposition': 'daemon_started', 'cli_version': 'test', 'server_log': '/unused.log'}))\n";
     try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fixture cli", .data = script, .flags = .{ .permissions = .fromMode(0o700) } });
     var stopping = std.atomic.Value(bool).init(false);
     try ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli });

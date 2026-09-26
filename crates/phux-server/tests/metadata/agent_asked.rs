@@ -48,8 +48,8 @@ use tokio::time::timeout;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
-    recv_command_result, recv_typed, run_local, send_frame, spawn_server_with_seed_cmd,
-    wait_for_raw_socket,
+    recv_command_result, recv_typed, recv_until_deadline, run_local, send_frame,
+    spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 async fn negotiate(stream: &mut UnixStream) {
     send_frame(
@@ -131,20 +131,11 @@ fn park_until_shutdown() -> CommandBuilder {
 /// `RESOURCE_OUTPUT`, etc.) are skipped — we assert on the event stream.
 async fn collect_until_asked(stream: &mut UnixStream, deadline: Duration) -> Option<AgentEvent> {
     let end = tokio::time::Instant::now() + deadline;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            return None;
-        };
-        if let FrameKind::Event { event, .. } = frame
-            && matches!(event, AgentEvent::Asked { .. })
-        {
-            return Some(event);
-        }
-    }
+    recv_until_deadline(stream, end, |_, frame| match frame {
+        FrameKind::Event { event, .. } if matches!(event, AgentEvent::Asked { .. }) => Some(event),
+        _ => None,
+    })
+    .await
 }
 
 async fn collect_result_and_asked(

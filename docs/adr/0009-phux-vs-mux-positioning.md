@@ -10,6 +10,7 @@ last-reviewed: 2026-05-28
 
 Status: Accepted
 Date: 2026-05-25
+See [ADR-0132](./0132-swarm-members-are-coordinator-clients.md) for swarm members as coordinator clients; Mux-class product policy stays out.
 
 ## Context
 

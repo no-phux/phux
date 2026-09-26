@@ -9,6 +9,7 @@
  */
 import { Effect } from "effect";
 import { routeRequest } from "./routes";
+import { handleAssociationRequest } from "./pairing";
 import { handleMcpRequest } from "./mcp";
 import { estimateTokens, htmlToMarkdown, wantsMarkdown } from "./markdown";
 import {
@@ -47,6 +48,14 @@ export default {
     ctx?: WaitUntil,
   ): Promise<Response> {
     const url = new URL(request.url);
+
+    // Apple's association file is answered before any routing, because
+    // Universal Links treat a redirect as no association at all. Anything
+    // that could 3xx this path silently un-pairs every iOS device, which is
+    // precisely the failure this handler exists to prevent (phux-z84.4).
+    const association = handleAssociationRequest(url);
+    if (association) return association;
+
     const routed = routeRequest(url.hostname, url);
     if (routed.kind === "redirect") {
       return Response.redirect(routed.location, routed.status);
@@ -168,9 +177,20 @@ async function telemetryApi(request: Request, env: Env): Promise<Response> {
   });
 }
 
+function ingestKeyMatches(secret: string | undefined, provided: string | null): boolean {
+  if (!secret) return false;
+  const candidate = provided ?? "";
+  let difference = candidate.length ^ secret.length;
+  const length = Math.max(candidate.length, secret.length);
+  for (let index = 0; index < length; index++) {
+    difference |= (candidate.charCodeAt(index) || 0) ^ (secret.charCodeAt(index) || 0);
+  }
+  return difference === 0;
+}
+
 async function telemetryIngest(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return new Response("post only", { status: 405 });
-  if (!env.TELEMETRY_INGEST_KEY || request.headers.get("x-telemetry-key") !== env.TELEMETRY_INGEST_KEY) {
+  if (!ingestKeyMatches(env.TELEMETRY_INGEST_KEY, request.headers.get("x-telemetry-key"))) {
     return new Response("unauthorized", { status: 403 });
   }
   let body: { events?: unknown };

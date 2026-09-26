@@ -153,6 +153,17 @@ fn report(json: bool, result: Result<PathBuf, LaunchError>) -> ExitCode {
     }
 }
 
+/// The installed bundle `phux update` keeps on the CLI's channel: the one
+/// `phux cockpit` would open. `None` off macOS or when none is installed.
+pub(crate) fn installed_app() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let override_app = std::env::var_os(OVERRIDE_ENV).map(PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    resolve_app(&application_roots(home.as_deref()), override_app.as_deref()).ok()
+}
+
 /// Open the installed Cockpit app.
 pub(crate) fn run(json: bool) -> ExitCode {
     let override_app = std::env::var_os(OVERRIDE_ENV).map(PathBuf::from);

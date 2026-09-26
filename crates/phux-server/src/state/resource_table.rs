@@ -99,6 +99,17 @@ impl Drop for OutputPumpTask {
     }
 }
 
+impl OutputPumpTask {
+    /// Drop tracking without aborting the task.
+    ///
+    /// A fenced pump may still be publishing a final screen onto the consumer
+    /// mailbox after the pane is reaped (phux-fpgl.28). Aborting that send
+    /// leaves the consumer with only `RESOURCE_CLOSED`.
+    fn release(self) {
+        let _ = std::mem::ManuallyDrop::new(self);
+    }
+}
+
 /// Every resource-keyed table the server owns, plus the client
 /// subscriptions and output pumps that hang off them.
 ///
@@ -403,6 +414,21 @@ impl ResourceTable {
         tasks.push(OutputPumpTask { abort, done });
     }
 
+    /// Let this pane's output pumps finish without aborting them.
+    fn release_output_pumps(&mut self, terminal: ResourceId) {
+        let keys: Vec<_> = self
+            .output_pumps
+            .keys()
+            .filter(|(_, pane)| *pane == terminal)
+            .copied()
+            .collect();
+        for key in keys {
+            for task in self.output_pumps.remove(&key).unwrap_or_default() {
+                task.release();
+            }
+        }
+    }
+
     /// Abort every output task for this subscription and return their exit
     /// fences. Generation bookkeeping remains available to replacement attach.
     pub(super) fn stop_output_pumps(
@@ -500,29 +526,32 @@ impl ResourceTable {
     ///
     /// Cancels the actor token defensively (the actor has usually already
     /// exited by the time we reap, but a still-live token is cleanly
-    /// resolved by the cancel) and cancels the pane's `ATTACH_RESOURCE`
-    /// pumps: the broadcast channel is closing anyway, but the cancel keeps
-    /// the token map bounded and the teardown prompt.
+    /// resolved by the cancel). Output pump *tasks* and `ATTACH_RESOURCE`
+    /// generation tokens are released rather than cancelled or aborted: a
+    /// fenced pump may still be publishing the final screen the consumer
+    /// is owed (phux-fpgl.28). The actor's broadcast close stops them
+    /// after that publish.
     ///
     /// The wire-id retirement and the per-resource metadata / agent-record
     /// cleanup that pair with this stay on
     /// [`super::ServerState::reap_terminal`] — they are keyed on the wire id
     /// this resource is about to give up.
-    pub(super) fn forget_resource(&mut self, terminal: ResourceId) {
-        self.output_pumps.retain(|(_, pane), _| *pane != terminal);
+    /// Returns the actor cancellation token so the caller can fire it
+    /// after fenced pumps have published the last screen (phux-fpgl.28).
+    pub(super) fn forget_resource(
+        &mut self,
+        terminal: ResourceId,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.release_output_pumps(terminal);
         self.handles.remove(&terminal);
-        if let Some(token) = self.tokens.remove(&terminal) {
-            token.cancel();
-        }
+        let token = self.tokens.remove(&terminal);
         self.subscribers.remove(&terminal);
         self.spawns.remove(&terminal);
-        self.pumps.retain(|(_, pane), generation| {
-            if *pane == terminal {
-                generation.cancel.cancel();
-                false
-            } else {
-                true
-            }
-        });
+        // Drop pump-generation bookkeeping without cancelling the tasks:
+        // a fenced pump may still be publishing the EOF snapshot
+        // (phux-fpgl.28). Broadcast close stops them once the actor
+        // shuts down.
+        self.pumps.retain(|(_, pane), _| *pane != terminal);
+        token
     }
 }

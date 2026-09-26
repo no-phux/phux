@@ -17,6 +17,7 @@ use phux_protocol::ids::SessionId;
 use crate::layout::Workspace;
 use crate::render::overlay::SelectItem;
 
+use super::args::switch_session_args;
 use super::ctx::DispatchCtx;
 use super::effects::ActionEffects;
 
@@ -150,7 +151,7 @@ pub(super) fn window_picker_items(
             // shape as the current session's rows, but committing
             // `switch-session { name, window }` so a single Enter lands in
             // that window of that session.
-            items.extend(foreign_session_window_rows(&session.name, foreign));
+            items.extend(foreign_session_window_rows(session, foreign));
         } else {
             // No cached layout for this foreign session; offer a switch.
             let windows = if session.window_count == 1 {
@@ -158,8 +159,7 @@ pub(super) fn window_picker_items(
             } else {
                 format!("{} windows", session.window_count)
             };
-            let mut args = std::collections::BTreeMap::new();
-            args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
+            let args = switch_session_args(&session.name, Some(session.id));
             items.push(
                 SelectItem::new(
                     "switch to this session",
@@ -228,7 +228,7 @@ pub(super) fn current_session_window_rows(workspace: &Workspace) -> Vec<SelectIt
 /// re-attach-and-select the driver resolves after the target's layout
 /// loads.
 pub(super) fn foreign_session_window_rows(
-    session_name: &str,
+    session: &phux_protocol::wire::info::SessionInfo,
     workspace: &Workspace,
 ) -> Vec<SelectItem> {
     workspace
@@ -247,11 +247,7 @@ pub(super) fn foreign_session_window_rows(
             } else {
                 format!("{panes} panes")
             };
-            let mut args = std::collections::BTreeMap::new();
-            args.insert(
-                "name".to_owned(),
-                toml::Value::String(session_name.to_owned()),
-            );
+            let mut args = switch_session_args(&session.name, Some(session.id));
             // Window counts never approach i64::MAX; the lossless path is
             // the only one that can fire in practice.
             let idx_i64 = i64::try_from(index).unwrap_or(i64::MAX);
@@ -303,8 +299,7 @@ pub(super) fn session_picker_items(
             if s.attached_client_count != 0 {
                 details.push(format!("{} attached", s.attached_client_count));
             }
-            let mut args = std::collections::BTreeMap::new();
-            args.insert("name".to_owned(), toml::Value::String(s.name.clone()));
+            let args = switch_session_args(&s.name, Some(s.id));
             SelectItem::new(
                 s.name.clone(),
                 phux_config::keybind::ResolvedAction {

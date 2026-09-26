@@ -39,37 +39,34 @@
 //! after attach) still falls back to the single "switch to this session"
 //! row.
 //!
-//! Two honest limits remain. **Satellite** sessions cannot be watched at
-//! all: `SUBSCRIBE_METADATA` on a satellite Terminal scope is normatively
-//! refused (`docs/spec/L3.md`), so their panes are skipped and their state
-//! is rendered as explicitly unknown rather than as a calm zero. And
-//! foreign rows still carry no **branch/cwd** — a foreign pane has no local
-//! `PaneSlot`, and `CwdChanged` is dropped for an unknown Terminal. The
-//! asked flag, which this doc previously listed alongside them, IS
-//! available now: an ADR-0035 `Asked` for a pane outside the local set
-//! arrives on the server-wide event stream. The `phux agent list` CLI
-//! remains the exhaustive projection (it queries the server per terminal).
+//! Two honest limits remain. **Satellite** agents are listed by agent name,
+//! with a host badge, from the hub's read-only mirror of `phux.agent/v1`
+//! and `phux.agent.asked/v1` (ADR-0136) — not by machine, and not as a
+//! general metadata federation. Foreign rows still carry no **branch/cwd**
+//! — a foreign pane has no local `PaneSlot`, and `CwdChanged` is dropped
+//! for an unknown Terminal. The `phux agent list` CLI remains the
+//! exhaustive projection (it queries the server per terminal).
 //!
 //! ## Row anatomy
 //!
 //! ```text
 //! work (current)                       <- session header
-//!   ! 0:main.0 reviewer [claude]  blocked - main   <- pane row
-//!   * 0:main.1 builder            working - main
-//!   ? 1:logs.0 tail -f                       logs
+//!   ● 0:main.0 reviewer [claude]  blocked - main   <- pane row
+//!   ◐ 0:main.1 builder            working - main
+//!   ○ 1:logs.0 tail -f                       logs
 //! scratch                              <- foreign session header
-//!   * 0:main.0 packer [codex]     working         <- foreign pane row
-//!   ? 1:logs.0 no agent
+//!   ◐ 0:main.0 packer [codex]     working         <- foreign pane row
+//!   ○ 1:logs.0 no agent
 //! ```
 //!
-//! The state glyph is `!` blocked, `*` working, `-` idle, `.` done,
-//! `?` unknown. A pane with no `phux.agent/v1` record also renders `?`
-//! (its state is unknown) and falls back to its OSC title for the display
+//! The state glyph is the chrome's badge vocabulary: `●` blocked, `◐`
+//! working, `◆` done, `○` idle or unknown. A pane with no `phux.agent/v1`
+//! record renders `○` (its state is unknown) and falls back to its OSC title for the display
 //! name (the record outranks the title when both exist, ADR-0040 decision
 //! 3). Attention rows (a pending ADR-0035 question, or a declared/derived
 //! high attention) paint in the theme's `attention` slot.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
@@ -193,11 +190,9 @@ pub(super) fn fleet_items(
                 .get(&session.id)
                 .filter(|ws| !ws.windows.is_empty())
             {
-                Some(foreign) => items.extend(foreign_session_pane_rows(
-                    &session.name,
-                    foreign,
-                    foreign_agents,
-                )),
+                Some(foreign) => {
+                    items.extend(foreign_session_pane_rows(session, foreign, foreign_agents));
+                }
                 None => items.push(foreign_session_row(session)),
             }
         }
@@ -208,6 +203,88 @@ pub(super) fn fleet_items(
         items.extend(current_session_pane_rows(workspace, agent_meta, pane_meta));
     }
     items
+}
+
+/// Satellite terminals grouped by agent name, not by machine (ADR-0136).
+///
+/// A pane already open in `workspace` is a current-session row. Everyone
+/// else with a mirrored `phux.agent/v1` record gets a header per agent and
+/// one row per host. Choosing the row opens that pane beside the focused
+/// one (`split-pane` with `resource`), which focuses it when it is already
+/// open.
+pub(super) fn satellite_agent_items(
+    agents: &HashMap<ResourceId, AgentRecord>,
+    attention: &HashSet<ResourceId>,
+    workspace: &Workspace,
+) -> Vec<SelectItem> {
+    let open = open_leaves(workspace);
+    let mut rows: Vec<(&ResourceId, &AgentRecord)> = agents
+        .iter()
+        .filter(|(id, record)| {
+            id.host().is_some() && !open.contains(*id) && !record.name.is_empty()
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        a.1.name
+            .cmp(&b.1.name)
+            .then_with(|| satellite_sort_key(a.0).cmp(&satellite_sort_key(b.0)))
+    });
+    let mut items = Vec::new();
+    let mut header = String::new();
+    for (id, record) in rows {
+        if header != record.name {
+            items.push(SelectItem::header(record.name.clone()));
+            header.clone_from(&record.name);
+        }
+        items.push(satellite_agent_row(id, record, attention.contains(id)));
+    }
+    items
+}
+
+fn open_leaves(workspace: &Workspace) -> HashSet<ResourceId> {
+    let mut open = HashSet::new();
+    for window in &workspace.windows {
+        if let Some(tree) = window.state.tree.as_ref() {
+            open.extend(crate::layout::leaves(tree));
+        }
+    }
+    open
+}
+
+fn satellite_sort_key(id: &ResourceId) -> (String, u32) {
+    match id {
+        ResourceId::Satellite { host, id } => (host.as_str().to_owned(), *id),
+        ResourceId::Local { id } => (String::new(), *id),
+    }
+}
+
+fn satellite_agent_row(id: &ResourceId, record: &AgentRecord, asked: bool) -> SelectItem {
+    let host = id
+        .host()
+        .map_or("", phux_protocol::ids::SatelliteHost::as_str);
+    let attention = asked || record.effective_attention() == AgentAttention::High;
+    let mut args = BTreeMap::new();
+    args.insert(
+        "direction".to_owned(),
+        toml::Value::String("horizontal".to_owned()),
+    );
+    args.insert(
+        "resource".to_owned(),
+        toml::Value::String(phux_client::selector::format_terminal_id(id)),
+    );
+    let mut item = SelectItem::new(
+        format!("{} {host}", state_glyph(record.state)),
+        phux_config::keybind::ResolvedAction {
+            action: "split-pane".to_owned(),
+            args,
+        },
+    )
+    .indented()
+    .secondary(record.state.as_str().to_owned());
+    if attention {
+        item = item.attention();
+    }
+    item
 }
 
 /// The selectable pane rows for the attached session: every window's DFS
@@ -236,6 +313,7 @@ fn current_session_pane_rows(
                     agent_meta.get(id),
                     &meta,
                     None,
+                    id.host().map(phux_protocol::ids::SatelliteHost::as_str),
                 ));
                 continue;
             }
@@ -247,6 +325,7 @@ fn current_session_pane_rows(
                     agent_meta.get(id),
                     &meta,
                     Some(session),
+                    id.host().map(phux_protocol::ids::SatelliteHost::as_str),
                 ));
             }
         }
@@ -261,7 +340,7 @@ fn current_session_pane_rows(
 /// or the provider alone. Otherwise the `phux.agent/v1` record, when
 /// present, supplies the display name (`name [kind]`) and the state
 /// glyph/word; absent, the OSC title is the compatibility fallback
-/// (ADR-0040 decision 3) with the `?` unknown glyph and no state word. The
+/// (ADR-0040 decision 3) with the `○` unknown glyph and no state word. The
 /// secondary column is `state - place` where place is the branch
 /// (preferred) or the cwd's last path component. Attention = the ADR-0035
 /// asked flag OR a blocked stream OR the record's effective high attention;
@@ -273,6 +352,7 @@ fn pane_row(
     record: Option<&AgentRecord>,
     meta: &FleetPaneMeta,
     session: Option<&AgentSessionRow>,
+    host: Option<&str>,
 ) -> SelectItem {
     let (glyph, who, state_word) = match (session, record) {
         (Some(session), record) => {
@@ -295,7 +375,7 @@ fn pane_row(
             (state_glyph(r.state), who, Some(r.state.as_str()))
         }
         (None, None) => (
-            '?',
+            AGENT_IDLE_GLYPH,
             meta.title.clone().unwrap_or_else(|| "no agent".to_owned()),
             None,
         ),
@@ -308,10 +388,14 @@ fn pane_row(
         .branch
         .clone()
         .or_else(|| meta.cwd.as_deref().map(short_cwd));
-    let secondary = match (state_word, place) {
-        (Some(state), Some(place)) => Some(format!("{state} - {place}")),
-        (Some(state), None) => Some(state.to_owned()),
-        (None, place) => place,
+    let secondary = match (state_word, place, host) {
+        (Some(state), Some(place), Some(host)) => Some(format!("{host} {state} - {place}")),
+        (Some(state), None, Some(host)) => Some(format!("{host} {state}")),
+        (None, Some(place), Some(host)) => Some(format!("{host} {place}")),
+        (None, None, Some(host)) => Some(host.to_owned()),
+        (Some(state), Some(place), None) => Some(format!("{state} - {place}")),
+        (Some(state), None, None) => Some(state.to_owned()),
+        (None, place, None) => place,
     };
 
     let mut args = BTreeMap::new();
@@ -353,6 +437,10 @@ fn foreign_session_row(session: &SessionInfo) -> SelectItem {
     };
     let mut args = BTreeMap::new();
     args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
+    args.insert(
+        "id".to_owned(),
+        toml::Value::Integer(i64::from(session.id.get())),
+    );
     SelectItem::new(
         "switch to this session",
         phux_config::keybind::ResolvedAction {
@@ -373,7 +461,7 @@ fn foreign_session_row(session: &SessionInfo) -> SelectItem {
 /// fetched for the peer's leaves (no live subscription, so no asked flag or
 /// branch/cwd).
 fn foreign_session_pane_rows(
-    session_name: &str,
+    session: &SessionInfo,
     workspace: &Workspace,
     foreign_agents: &HashMap<ResourceId, AgentRecord>,
 ) -> Vec<SelectItem> {
@@ -387,7 +475,7 @@ fn foreign_session_pane_rows(
             .unwrap_or_default();
         for (p, id) in leaves.iter().enumerate() {
             rows.push(foreign_pane_row(
-                session_name,
+                session,
                 w,
                 &window.name,
                 p,
@@ -402,18 +490,18 @@ fn foreign_session_pane_rows(
 /// with the declared state word as its dimmed secondary, committing
 /// `switch-session { name, window = w, pane = p }`. The `phux.agent/v1`
 /// record supplies the name (`name [kind]`) and glyph/state; absent, the
-/// row is `?` "no agent" (a foreign pane has no local mirror, so there is
+/// row is `○` "no agent" (a foreign pane has no local mirror, so there is
 /// no OSC-title fallback the way the attached session has). High effective
 /// attention highlights the row.
 fn foreign_pane_row(
-    session_name: &str,
+    session: &SessionInfo,
     w: usize,
     window_name: &str,
     p: usize,
     record: Option<&AgentRecord>,
 ) -> SelectItem {
     let (glyph, who, state_word) = record.map_or_else(
-        || ('?', "no agent".to_owned(), None),
+        || (AGENT_IDLE_GLYPH, "no agent".to_owned(), None),
         |r| {
             let who = r
                 .kind
@@ -425,9 +513,10 @@ fn foreign_pane_row(
     let attention = record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
     let label = format!("{glyph} {w}:{window_name}.{p} {who}");
     let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
     args.insert(
-        "name".to_owned(),
-        toml::Value::String(session_name.to_owned()),
+        "id".to_owned(),
+        toml::Value::Integer(i64::from(session.id.get())),
     );
     // Window/pane ordinals never approach i64::MAX; the lossless path is
     // the only one that can fire in practice.
@@ -456,17 +545,22 @@ fn foreign_pane_row(
     item
 }
 
-/// The one-character lifecycle glyph for a declared agent state:
-/// `!` blocked, `*` working, `-` idle, `.` done, `?` unknown.
-const fn state_glyph(state: AgentMetaState) -> char {
+/// The lifecycle glyph for a declared agent state, from the chrome's one
+/// badge vocabulary: `●` blocked, `◐` working, `◆` done, `○` idle or
+/// unknown. The same glyph a tab, a sidebar row, and a pane title show for
+/// the same state, so the fleet is not a fourth dialect.
+const fn state_glyph(state: AgentMetaState) -> &'static str {
+    use crate::render::chrome::{AGENT_BLOCKED_GLYPH, AGENT_DONE_GLYPH, AGENT_WORKING_GLYPH};
     match state {
-        AgentMetaState::Blocked => '!',
-        AgentMetaState::Working => '*',
-        AgentMetaState::Idle => '-',
-        AgentMetaState::Done => '.',
-        AgentMetaState::Unknown => '?',
+        AgentMetaState::Blocked => AGENT_BLOCKED_GLYPH,
+        AgentMetaState::Working => AGENT_WORKING_GLYPH,
+        AgentMetaState::Done => AGENT_DONE_GLYPH,
+        AgentMetaState::Idle | AgentMetaState::Unknown => AGENT_IDLE_GLYPH,
     }
 }
+
+/// The hollow ring: idle, reviewed, or unknown.
+const AGENT_IDLE_GLYPH: &str = "\u{25cb}";
 
 /// Shorten a cwd to its last path component for the secondary column
 /// (a full path would push the state word off a narrow modal).
@@ -566,6 +660,10 @@ mod tests {
             items[5].action.args.get("name"),
             Some(&toml::Value::String("scratch".to_owned()))
         );
+        assert_eq!(
+            items[5].action.args.get("id"),
+            Some(&toml::Value::Integer(2))
+        );
         assert_eq!(items[5].secondary.as_deref(), Some("3 windows"));
     }
 
@@ -626,10 +724,10 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(items[0].label, "* 0:main.0 reviewer [claude]");
+        assert_eq!(items[0].label, "◐ 0:main.0 reviewer [claude]");
         assert_eq!(items[0].secondary.as_deref(), Some("working"));
         assert!(!items[0].attention, "working is not high attention");
-        assert_eq!(items[1].label, "! 0:main.1 builder");
+        assert_eq!(items[1].label, "● 0:main.1 builder");
         assert_eq!(items[1].secondary.as_deref(), Some("blocked"));
         assert!(
             items[1].attention,
@@ -676,10 +774,10 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].label, "! 0:1.0 reviewer [claude]");
+        assert_eq!(items[0].label, "● 0:1.0 reviewer [claude]");
         assert_eq!(items[0].secondary.as_deref(), Some("blocked"));
         assert!(items[0].attention, "a blocked stream highlights");
-        assert_eq!(items[1].label, "* 0:1.0 reviewer");
+        assert_eq!(items[1].label, "◐ 0:1.0 reviewer");
         assert_eq!(items[1].secondary.as_deref(), Some("working"));
         assert!(!items[1].attention);
         assert!(
@@ -715,17 +813,17 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(items[0].label, ". 0:1.0 codex");
+        assert_eq!(items[0].label, "◆ 0:1.0 codex");
         assert_eq!(items[0].secondary.as_deref(), Some("done"));
     }
 
     #[test]
     fn state_glyphs_cover_the_v1_vocabulary() {
-        assert_eq!(state_glyph(AgentMetaState::Blocked), '!');
-        assert_eq!(state_glyph(AgentMetaState::Working), '*');
-        assert_eq!(state_glyph(AgentMetaState::Idle), '-');
-        assert_eq!(state_glyph(AgentMetaState::Done), '.');
-        assert_eq!(state_glyph(AgentMetaState::Unknown), '?');
+        assert_eq!(state_glyph(AgentMetaState::Blocked), "●");
+        assert_eq!(state_glyph(AgentMetaState::Working), "◐");
+        assert_eq!(state_glyph(AgentMetaState::Idle), "○");
+        assert_eq!(state_glyph(AgentMetaState::Done), "◆");
+        assert_eq!(state_glyph(AgentMetaState::Unknown), "○");
     }
 
     #[test]
@@ -749,7 +847,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(items[0].label, "? 0:1.0 vim src/main.rs");
+        assert_eq!(items[0].label, "○ 0:1.0 vim src/main.rs");
         assert_eq!(items[0].secondary, None, "no record => no state word");
         // Without a title: the placeholder.
         let items = fleet_items(
@@ -761,7 +859,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(items[0].label, "? 0:1.0 no agent");
+        assert_eq!(items[0].label, "○ 0:1.0 no agent");
     }
 
     #[test]
@@ -813,7 +911,7 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(
-            items[0].label, "- 0:1.0 reviewer",
+            items[0].label, "○ 0:1.0 reviewer",
             "ADR-0040 decision 3: the record must outrank the OSC title"
         );
     }
@@ -931,7 +1029,7 @@ mod tests {
             assert!(r.action.args.contains_key("pane"));
         }
         // First row addresses window 0 pane 0 and shows the codex agent.
-        assert_eq!(rows[0].label, "* 0:main.0 packer [codex]");
+        assert_eq!(rows[0].label, "◐ 0:main.0 packer [codex]");
         assert_eq!(rows[0].secondary.as_deref(), Some("working"));
         assert_eq!(
             rows[0].action.args.get("window"),
@@ -942,10 +1040,10 @@ mod tests {
             Some(&toml::Value::Integer(0))
         );
         // Blocked pane highlights (effective high attention).
-        assert_eq!(rows[1].label, "! 0:main.1 linter");
+        assert_eq!(rows[1].label, "● 0:main.1 linter");
         assert!(rows[1].attention, "blocked foreign pane must highlight");
-        // Window 1 pane 0 has no record: `?` + placeholder, no state word.
-        assert_eq!(rows[2].label, "? 1:logs.0 no agent");
+        // Window 1 pane 0 has no record: `○` + placeholder, no state word.
+        assert_eq!(rows[2].label, "○ 1:logs.0 no agent");
         assert_eq!(rows[2].secondary, None);
         assert_eq!(
             rows[2].action.args.get("window"),
@@ -980,6 +1078,56 @@ mod tests {
             items[scratch_hdr + 1].secondary.as_deref(),
             Some("4 windows")
         );
+    }
+
+    #[test]
+    fn satellite_agents_group_by_name_with_a_host_badge() {
+        let gpu = ResourceId::satellite("gpubox", 4);
+        let edge = ResourceId::satellite("edge", 9);
+        let local = ResourceId::local(1);
+        let mut agents = HashMap::new();
+        agents.insert(
+            gpu,
+            AgentRecord {
+                name: "reviewer".to_owned(),
+                state: AgentMetaState::Working,
+                ..AgentRecord::default()
+            },
+        );
+        agents.insert(
+            edge.clone(),
+            AgentRecord {
+                name: "reviewer".to_owned(),
+                state: AgentMetaState::Blocked,
+                ..AgentRecord::default()
+            },
+        );
+        agents.insert(
+            local,
+            AgentRecord {
+                name: "local-only".to_owned(),
+                ..AgentRecord::default()
+            },
+        );
+        let attention = HashSet::from([edge]);
+        let items = satellite_agent_items(&agents, &attention, &Workspace::default());
+        assert_eq!(items.len(), 3, "one header, two hosts: {items:?}");
+        assert_eq!(items[0].label, "reviewer");
+        assert!(items[0].is_header());
+        assert_eq!(items[1].label, "● edge");
+        assert!(items[1].attention, "the asked flag highlights the row");
+        assert_eq!(items[1].action.action, "split-pane");
+        assert_eq!(
+            items[1]
+                .action
+                .args
+                .get("resource")
+                .and_then(|v| v.as_str()),
+            Some("edge/@9")
+        );
+        assert_eq!(items[2].label, "◐ gpubox");
+        assert!(!items[2].attention);
+        assert_eq!(items[2].secondary.as_deref(), Some("working"));
     }
 
     #[test]

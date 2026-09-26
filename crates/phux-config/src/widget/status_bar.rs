@@ -695,6 +695,8 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
+                badge: None,
             },
             WindowInfo {
                 name: "b".to_owned(),
@@ -702,6 +704,8 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
+                badge: None,
             },
         ];
         let ctx = WidgetContext::new(UNIX_EPOCH, "", "C-a", &windows);
@@ -777,6 +781,8 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
+            badge: None,
         };
         let windows = [mk("alpha", true), mk("beta", false), mk("gamma", false)];
         let ctx = WidgetContext::new(UNIX_EPOCH, "", "C-a", &windows);
@@ -841,6 +847,8 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
+            badge: None,
         };
         let windows = [
             mk("alpha", false),

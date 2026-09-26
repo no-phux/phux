@@ -1,9 +1,8 @@
 # phux release artifacts — build distributable binaries, attach them to an
 # existing draft, publish the complete release, then refresh Homebrew.
 #
-# Trigger: called by release-please.yml once release-please has pushed the tag
-# and created the GitHub release. Also dispatchable by hand against an existing
-# tag to re-build or re-attach assets.
+# Trigger: publish.yml, once the tag exists and ci.yml is green for it.
+# Re-running publish against the same tag rebuilds and re-attaches.
 #
 # This workflow does NOT create tags or release notes. release-please owns the
 # tag and creates the release body as a draft. This workflow attaches assets
@@ -49,12 +48,6 @@ on:
         description: "Existing tag to build and attach assets for (e.g. v0.1.0)."
         required: true
         type: string
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to build and attach assets for (e.g. v0.1.0). Must already exist."
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -71,7 +64,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -118,6 +111,10 @@ jobs:
     name: build ${{ matrix.target }}
     needs: prepare
     runs-on: ${{ matrix.os }}
+    # Hosted ubuntu-22.04 labels retire in 2027 (actions/runner-images#14254).
+    # Linux legs keep a native glibc 2.35 userspace via ubuntu:22.04 on the
+    # free 24.04 runners. macOS is JSON null (no container).
+    container: ${{ fromJSON(matrix.container) }}
     defaults:
       run:
         shell: bash
@@ -126,11 +123,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-26
+          - os: xcode-27
+            container: "null"
             target: aarch64-apple-darwin
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
+            container: '{"image":"ubuntu:22.04"}'
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04-arm
+          - os: ubuntu-24.04-arm
+            container: '{"image":"ubuntu:22.04"}'
             target: aarch64-unknown-linux-gnu
     steps:
       - name: Verify native release platform and Linux baseline
@@ -149,7 +149,19 @@ jobs:
             test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
           fi
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install git in the Ubuntu 22.04 container
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Linux 22.04 release userspace
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/setup-linux-release-userspace.sh
 
       - name: Check out release tag
         shell: bash
@@ -191,7 +203,15 @@ jobs:
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$sha" =~ ^[0-9a-f]{64}$ ]]
           archive="zig-${target}-${version}.tar.xz"
           curl -fSL --retry 3 "https://ziglang.org/download/$version/$archive" -o "$RUNNER_TEMP/$archive"
-          (cd "$RUNNER_TEMP" && echo "$sha  $archive" | shasum -a 256 -c - && tar -xf "$archive")
+          (
+            cd "$RUNNER_TEMP"
+            if command -v sha256sum >/dev/null 2>&1; then
+              echo "$sha  $archive" | sha256sum -c -
+            else
+              echo "$sha  $archive" | shasum -a 256 -c -
+            fi
+            tar -xf "$archive"
+          )
           echo "$RUNNER_TEMP/${archive%.tar.xz}" >> "$GITHUB_PATH"
 
       - name: Install Rust toolchain
@@ -211,14 +231,10 @@ jobs:
       # matrix leg and every backfill re-run. cache-targets: false keeps the
       # entry small, so releases never pressure ci.yml's warm entries in the
       # shared 10 GB Actions cache.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: release-deps
           cache-targets: "false"
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential mold
 
       - name: Build release binaries
         run: bash scripts/build-release-binaries.sh "${{ matrix.target }}"
@@ -248,7 +264,7 @@ jobs:
             --out-dir . \
             --smoke
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.target }}
           path: |
@@ -267,7 +283,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
@@ -353,9 +369,9 @@ jobs:
 
       - name: Checkout phux (for the generator script)
         if: steps.gate.outputs.enabled == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: steps.gate.outputs.enabled == 'true'
         with:
           path: dist
@@ -363,7 +379,7 @@ jobs:
 
       - name: Checkout tap
         if: steps.gate.outputs.enabled == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: no-phux/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

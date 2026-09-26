@@ -16,6 +16,7 @@
 //! * **Nothing here mutates anything.** A diagnostic that repairs things is
 //!   a diagnostic nobody can trust to describe the system.
 
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -1072,56 +1073,128 @@ fn remote_listeners_check(
 /// listening, correctly paired, and completely unreachable, and before this
 /// check `phux doctor` reported that server as entirely fine.
 ///
-/// So this one leaves the machine: it dials its own advertised address with
-/// the same stack a real client uses, and reports what came back. Skipped
-/// when this server has no wss listener (probing the host overlay would
-/// dial a different process) or when there is no overlay address to dial.
+/// So this one leaves the machine: it dials this server's bound off-loopback
+/// address with the same stack a real client uses. UDS answering (we just
+/// asked `GET_STATE`) plus a silent TCP handshake is the Application
+/// Firewall stealth-drop (phux-9lj9), not a dead server. A loopback-only
+/// bind is skipped; an unspecified `0.0.0.0`/`::` bind is rewritten onto an
+/// overlay IP when one is detected, otherwise warned rather than passed.
 fn check_remote_reachable(socket_path: &std::path::Path) -> Check {
-    // Ask *this* server first. Overlay detection shells out to tailscale
-    // and then dials whatever is on :8787 — on a machine with a live
-    // unsupervised server that is a different process, and the 4s probe
-    // made `phux doctor` in isolated tests non-hermetic (phux-vlv1).
+    // Ask *this* server first. Overlay detection used to dial whatever was
+    // on :8787 — on a machine with a live unsupervised server that is a
+    // different process, and the 4s probe made `phux doctor` in isolated
+    // tests non-hermetic (phux-vlv1). The probe target is now this process's
+    // bound address; overlay detect is only a rewrite for 0.0.0.0/::.
     match server_wss_offer(socket_path) {
-        WssOffer::Disabled(reason) => {
-            return remote_reachable_check(
-                "this server's wss listener",
-                Reachability::NoListener,
-                Some(reason),
-            );
-        }
-        WssOffer::Absent => {
-            return Check::pass(
-                "remote-reachable",
-                "this server has no wss listener; nothing routable to probe",
-            );
-        }
-        WssOffer::Bound => {}
-    }
-    let advertised = phux_config::overlay::detect();
-    let Some(addr) = advertised.first().copied() else {
-        return Check::pass(
+        WssOffer::Disabled(reason) => remote_reachable_check(
+            "this server's wss listener",
+            Reachability::NoListener,
+            Some(reason),
+        ),
+        WssOffer::Absent => Check::pass(
             "remote-reachable",
-            "no overlay address detected; nothing routable to probe",
-        );
-    };
-    let url = format!(
-        "wss://{}:{}",
-        phux_server::transport::tls::san_name(addr),
-        phux_server::runtime::DEFAULT_WS_PORT
-    );
-    remote_reachable_check(&url, probe_remote_listener(&url), None)
+            "this server has no wss listener; nothing routable to probe",
+        ),
+        WssOffer::Bound { addr } => {
+            let overlay = if bound_needs_overlay(addr.as_deref()) {
+                phux_config::overlay::detect()
+            } else {
+                Vec::new()
+            };
+            remote_reachable_verdict(off_loopback_target(addr.as_deref(), &overlay), |url| {
+                probe_remote_listener(url)
+            })
+        }
+    }
 }
 
 /// What this instance's `GET_STATE` says about its wss listener.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum WssOffer {
-    /// A bound, healthy wss slot — the only case where an overlay dial
-    /// asks about *this* server.
-    Bound,
+    /// A bound, healthy wss slot, with the address the server recorded.
+    Bound { addr: Option<String> },
     /// A wss slot exists and the server disabled it.
     Disabled(phux_protocol::wire::ListenerDisabledReason),
     /// No server, no listener table, or no wss slot.
     Absent,
+}
+
+/// Where the off-loopback reachability probe should dial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OffLoopbackTarget {
+    /// Concrete non-loopback address belonging to *this* server.
+    Dial(SocketAddr),
+    /// Bound on loopback only — the Application Firewall does not apply.
+    LoopbackOnly,
+    /// Unspecified or unknown bind, and no overlay IP to rewrite onto.
+    NoOffLoopback { bound: String },
+}
+
+fn bound_needs_overlay(bound: Option<&str>) -> bool {
+    bound
+        .and_then(|raw| raw.parse::<SocketAddr>().ok())
+        .is_some_and(|addr| addr.ip().is_unspecified())
+}
+
+/// Pick a dial target from this server's bound wss address.
+///
+/// Pure, so the loopback / unspecified / concrete matrix is testable
+/// without a tailnet, a listener, or a firewall.
+fn off_loopback_target(bound: Option<&str>, overlay: &[IpAddr]) -> OffLoopbackTarget {
+    let Some(raw) = bound else {
+        return OffLoopbackTarget::NoOffLoopback {
+            bound: "unknown".into(),
+        };
+    };
+    let Ok(addr) = raw.parse::<SocketAddr>() else {
+        return OffLoopbackTarget::NoOffLoopback {
+            bound: raw.to_owned(),
+        };
+    };
+    if addr.ip().is_loopback() {
+        return OffLoopbackTarget::LoopbackOnly;
+    }
+    if addr.ip().is_unspecified() {
+        return overlay
+            .iter()
+            .copied()
+            .find(|ip| !ip.is_loopback() && !ip.is_unspecified())
+            .map_or_else(
+                || OffLoopbackTarget::NoOffLoopback {
+                    bound: raw.to_owned(),
+                },
+                |ip| OffLoopbackTarget::Dial(SocketAddr::new(ip, addr.port())),
+            );
+    }
+    OffLoopbackTarget::Dial(addr)
+}
+
+/// The pure half of the bound-address verdict, so skip / warn / fail
+/// classifications are testable without dialing.
+fn remote_reachable_verdict(
+    target: OffLoopbackTarget,
+    probe: impl FnOnce(&str) -> Reachability,
+) -> Check {
+    match target {
+        OffLoopbackTarget::LoopbackOnly => Check::pass(
+            "remote-reachable",
+            "wss is bound on loopback only; inbound host-firewall rules do not apply",
+        ),
+        OffLoopbackTarget::NoOffLoopback { bound } => Check::warn(
+            "remote-reachable",
+            format!(
+                "wss is bound on {bound}; no off-loopback address to probe, so a \
+                 host firewall stealth-drop would look healthy"
+            ),
+            "doctor only probes a concrete non-loopback bind, or an overlay IP \
+             rewritten onto 0.0.0.0/:: — bind `--listen` to a routable address, \
+             or check overlay detection (`tailscale ip -4`)",
+        ),
+        OffLoopbackTarget::Dial(addr) => {
+            let url = format!("wss://{addr}");
+            remote_reachable_check(&url, probe(&url), None)
+        }
+    }
 }
 
 /// Ask the running server what it is doing with wss.
@@ -1151,7 +1224,9 @@ fn server_wss_offer(socket_path: &std::path::Path) -> WssOffer {
             .map_or(WssOffer::Absent, WssOffer::Disabled);
     }
     if slot.bound {
-        WssOffer::Bound
+        WssOffer::Bound {
+            addr: slot.addr.clone(),
+        }
     } else {
         WssOffer::Absent
     }
@@ -1215,9 +1290,9 @@ fn remote_reachable_check(
         Reachability::Silent => Check::fail(
             "remote-reachable",
             format!(
-                "{url} accepted a connection and then answered nothing — the socket is \
-                 bound but traffic is not reaching phux, which is what a host firewall \
-                 looks like from here"
+                "{url} accepted a connection and then answered nothing — UDS is healthy \
+                 and the listener is bound, so this is a host firewall stealth-drop, not \
+                 a dead server"
             ),
             FIREWALL_REMEDY,
         ),
@@ -1256,16 +1331,19 @@ fn remote_reachable_check(
 /// What to do about a listener that is bound but unreachable.
 ///
 /// macOS gets named specifically because it is the case operators cannot
-/// guess: the application firewall drops inbound connections to a binary it
-/// does not recognize, phux ships adhoc-signed so it is never recognized, and
-/// an allowlist entry is keyed to the exact binary path — so upgrading phux
-/// silently breaks remote access even for someone who allowlisted it once.
+/// guess (phux-9lj9): Application Firewall stealth-drops inbound packets to
+/// an adhoc-signed binary while UDS and loopback stay healthy. An allowlist
+/// entry is keyed to the exact binary path — Homebrew's Cellar path changes
+/// on every version bump — so upgrading silently breaks remote access even
+/// for someone who allowlisted it once. Signed/notarized releases are the
+/// durable fix; they are out of scope here.
 #[cfg(target_os = "macos")]
-const FIREWALL_REMEDY: &str = "macOS: the application firewall blocks inbound connections to \
-     unrecognized binaries, and phux is adhoc-signed. Check it with \
-     `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`. Allowlisting is \
-     per-binary-path, so it breaks again on the next upgrade; turning the firewall off on a \
-     host that lives behind an overlay network is the durable fix";
+const FIREWALL_REMEDY: &str = "macOS: Application Firewall stealth-drops inbound packets to \
+     unrecognized binaries, and phux is adhoc-signed. Allowlisting is per exact path \
+     (Homebrew `/opt/homebrew/Cellar/phux/<version>/bin/phux`), so every upgrade breaks it. \
+     Check with `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`. On a \
+     host that already lives behind an overlay, turning the firewall off is the durable \
+     workaround until signed/notarized releases";
 
 #[cfg(not(target_os = "macos"))]
 const FIREWALL_REMEDY: &str = "check this host's packet filter for a rule dropping inbound \
@@ -1534,11 +1612,28 @@ mod tests {
             "a listener that answers nothing is a failure, not a warning: \
              remote access is entirely broken"
         );
+        assert!(
+            check.detail.contains("UDS"),
+            "the detail must contrast UDS-healthy with the silent remote: {}",
+            check.detail
+        );
+        assert!(
+            check.detail.contains("firewall") || check.detail.contains("stealth"),
+            "the detail must name the failure mode, not a dead server: {}",
+            check.detail
+        );
         let hint = check.hint.expect("a failure must carry a remedy");
         assert!(
             hint.contains("firewall") || hint.contains("packet filter"),
             "the remedy must name the blocker: {hint}"
         );
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                hint.contains("adhoc") && hint.contains("Cellar"),
+                "macOS remedy must name the adhoc signature and the versioned Cellar path: {hint}"
+            );
+        }
 
         // An answer of any kind proves packets land, which is all this asks —
         // an auth refusal counts, so a probe that sends no token still passes.
@@ -1573,6 +1668,75 @@ mod tests {
             !hint.contains("phux pair"),
             "must not blame pairing when the server already explained the disable: {hint}"
         );
+    }
+
+    /// Bound-address classification is the whole remaining gap: overlay
+    /// detect used to be the only probe host, so a concrete `--listen` on a
+    /// LAN IP with no Tailscale passed, and a loopback bind could dial some
+    /// other process on the overlay :8787 (phux-vlv1).
+    #[test]
+    fn off_loopback_target_classifies_bound_addresses_without_dialing() {
+        let overlay = [IpAddr::V4(std::net::Ipv4Addr::new(100, 64, 0, 2))];
+
+        assert_eq!(
+            off_loopback_target(Some("192.0.2.10:9443"), &[]),
+            OffLoopbackTarget::Dial("192.0.2.10:9443".parse().unwrap()),
+            "a concrete non-loopback bind is probeable without overlay detect"
+        );
+        assert_eq!(
+            off_loopback_target(Some("127.0.0.1:8787"), &overlay),
+            OffLoopbackTarget::LoopbackOnly
+        );
+        assert_eq!(
+            off_loopback_target(Some("[::1]:8787"), &overlay),
+            OffLoopbackTarget::LoopbackOnly
+        );
+        assert_eq!(
+            off_loopback_target(Some("0.0.0.0:9443"), &overlay),
+            OffLoopbackTarget::Dial(SocketAddr::from(([100, 64, 0, 2], 9443))),
+            "unspecified bind keeps the bound port, not the default 8787"
+        );
+        assert!(matches!(
+            off_loopback_target(Some("0.0.0.0:8787"), &[]),
+            OffLoopbackTarget::NoOffLoopback { .. }
+        ));
+        assert!(matches!(
+            off_loopback_target(None, &overlay),
+            OffLoopbackTarget::NoOffLoopback { .. }
+        ));
+    }
+
+    #[test]
+    fn loopback_bind_passes_and_unspecified_without_overlay_warns_instead_of_passing() {
+        let loopback = remote_reachable_verdict(OffLoopbackTarget::LoopbackOnly, |_| {
+            unreachable!("loopback-only must not dial")
+        });
+        assert_eq!(loopback.status, Status::Pass);
+
+        let unspecified = remote_reachable_verdict(
+            OffLoopbackTarget::NoOffLoopback {
+                bound: "0.0.0.0:8787".into(),
+            },
+            |_| unreachable!("no off-loopback target must not dial"),
+        );
+        assert_eq!(
+            unspecified.status,
+            Status::Warn,
+            "passing hid the firewall stealth-drop when overlay detect was empty"
+        );
+        assert!(
+            unspecified.detail.contains("0.0.0.0:8787"),
+            "{}",
+            unspecified.detail
+        );
+
+        let silent = remote_reachable_verdict(
+            OffLoopbackTarget::Dial("192.0.2.10:8787".parse().unwrap()),
+            |_| Reachability::Silent,
+        );
+        assert_eq!(silent.status, Status::Fail);
+        assert!(silent.detail.contains("wss://192.0.2.10:8787"));
+        assert!(silent.detail.contains("UDS"));
     }
 
     /// The running server's listener table is what closes the gap between a

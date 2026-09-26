@@ -794,6 +794,9 @@ fn a_seed_pane_is_retained_when_the_operator_makes_retention_the_default() {
             .first()
             .map(|r| r.id.clone())
             .expect("the seed pane");
+        // A last-shell natural exit is replaced in place (ADR-0131). Keep a
+        // sibling live so this seed can actually be retained as exited.
+        let _sibling = h.spawn("read _", None, Some(&seed)).await;
         h.release(&seed).await;
         let info = h.wait_exited(&seed).await;
         assert_eq!(

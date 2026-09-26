@@ -9,6 +9,208 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.45.0](https://github.com/no-phux/phux/compare/v0.44.0...v0.45.0) (2026-09-25)
+
+
+### Features
+
+* **desktop:** land the Solid native terminal on Apple silicon ([4248754](https://github.com/no-phux/phux/commit/4248754a47cff676bfb315b97de69386bec3ce5f))
+* **desktop:** show agent badges, settings, IME preedit, and a second window ([82a9722](https://github.com/no-phux/phux/commit/82a97227689149b4647da23c1d99d39116e9f382))
+
+
+### Bug Fixes
+
+* **site:** pin hosted native to 0.44.0 ([#852](https://github.com/no-phux/phux/issues/852)) ([1fab89c](https://github.com/no-phux/phux/commit/1fab89cb8b8b599ffb60ae98d554e8e22df24df6))
+* unblock main CI after the Solid native and desktop landings ([#854](https://github.com/no-phux/phux/issues/854)) ([aa3d4d6](https://github.com/no-phux/phux/commit/aa3d4d6e9ede1a1d676f1ad1bdff149fea539d7c))
+
+## [0.44.0](https://github.com/no-phux/phux/compare/v0.43.0...v0.44.0) (2026-09-23)
+
+
+### Features
+
+* **release:** ship Cockpit on the next channel and switch it with phux channel ([#851](https://github.com/no-phux/phux/issues/851)) ([56c7a3e](https://github.com/no-phux/phux/commit/56c7a3e8df8a980103c29394da8d9f323d3cc91f))
+* **tui:** align the chrome on one grid with one badge vocabulary ([73b55ad](https://github.com/no-phux/phux/commit/73b55adfac02d4b740a2370e8c67cb5f76cce1a6))
+* **tui:** align the chrome on one grid with one badge vocabulary ([#849](https://github.com/no-phux/phux/issues/849)) ([73b55ad](https://github.com/no-phux/phux/commit/73b55adfac02d4b740a2370e8c67cb5f76cce1a6))
+
+
+### Bug Fixes
+
+* **ci:** keep ReleaseSafe and fat LTO off pull requests ([#842](https://github.com/no-phux/phux/issues/842)) ([0303d38](https://github.com/no-phux/phux/commit/0303d3872676d400e78735ec3359d68f1fac3625))
+* **server:** answer terminal queries once, from the canonical terminal ([#845](https://github.com/no-phux/phux/issues/845)) ([935e414](https://github.com/no-phux/phux/commit/935e4143b3d4eed9f62ed5a350b3251acdb6ce4b))
+* **site:** pin hosted native to 0.43.0 ([#844](https://github.com/no-phux/phux/issues/844)) ([7b70501](https://github.com/no-phux/phux/commit/7b70501ab39643c7006b41f5cde8f56d50d98bdd))
+
+
+### Documentation
+
+* **site:** add a privacy policy for the phux apps and phux.sh ([#847](https://github.com/no-phux/phux/issues/847)) ([b3587a6](https://github.com/no-phux/phux/commit/b3587a61862d9285e205ffc4d42776aa6ed43487))
+
+## [0.43.0](https://github.com/no-phux/phux/compare/v0.42.0...v0.43.0) (2026-09-22)
+
+
+### Features
+
+* **cockpit:** add identity-safe native tab context actions ([#840](https://github.com/no-phux/phux/issues/840)) ([3b64ad2](https://github.com/no-phux/phux/commit/3b64ad2ae56e0e04c6575ddfa634e4fcce113c07))
+* **pair:** list and prune credentials; reuse or replace on re-enroll ([#841](https://github.com/no-phux/phux/issues/841)) ([2f26009](https://github.com/no-phux/phux/commit/2f260094f2e1e2b8fcca7cb0fc6ec0e6f37fdbf8))
+* **protocol:** share RenderPool through a narrow render-pool feature ([#832](https://github.com/no-phux/phux/issues/832)) ([22b5b81](https://github.com/no-phux/phux/commit/22b5b81db1fa84ade1c8fe3439ff7a71f8432881))
+
+
+### Bug Fixes
+
+* **ci:** dispatch integration publish so npm trusts the workflow ([#836](https://github.com/no-phux/phux/issues/836)) ([3d047b8](https://github.com/no-phux/phux/commit/3d047b819287f8837dc2adab2fde4e28ecb5ebbe))
+* **ci:** ship drafts from one publish workflow ([#833](https://github.com/no-phux/phux/issues/833)) ([bf37d88](https://github.com/no-phux/phux/commit/bf37d88bbbee3ecbd0fc0e57cde7d197c517b74b))
+* **ci:** stop relinking artifacts the diff did not change ([#837](https://github.com/no-phux/phux/issues/837)) ([fe6f95f](https://github.com/no-phux/phux/commit/fe6f95fc1b32dd872cc93fd67742c8784e9b8ca2))
+* **client:** share one session-rename policy across FFI, CLI, and TUI ([#838](https://github.com/no-phux/phux/issues/838)) ([e303956](https://github.com/no-phux/phux/commit/e30395693eff86aabd842e7e563e869f38d112ad))
+* **cockpit:** finish native interaction and presentation craft pass ([#839](https://github.com/no-phux/phux/issues/839)) ([a7e06ee](https://github.com/no-phux/phux/commit/a7e06ee2931ee88dd69b3a12b1bbbbb11d9c730c))
+* **server:** deliver the final screen to a fenced pump before pane close (phux-fpgl.28) ([#830](https://github.com/no-phux/phux/issues/830)) ([569c585](https://github.com/no-phux/phux/commit/569c585bc5c511e43d5f9023cf0101ee23f00233))
+* **server:** make the canonical terminal accessor total (phux-c0r0) ([#835](https://github.com/no-phux/phux/issues/835)) ([6f42e39](https://github.com/no-phux/phux/commit/6f42e3999a3416322270cca3ef5579a7c6fe347b))
+
+## [0.42.0](https://github.com/no-phux/phux/compare/v0.41.0...v0.42.0) (2026-09-22)
+
+
+### Features
+
+* **client-ffi:** one binding crate, one projection, two encoders (phux-ase2.1) ([#822](https://github.com/no-phux/phux/issues/822)) ([38aa532](https://github.com/no-phux/phux/commit/38aa53214359dd1e1cd44b48f7fbf7ceb08391fc))
+* **ffi:** cockpit on the runtime's connected client (ADR-0133 rung 10) ([#809](https://github.com/no-phux/phux/issues/809)) ([f67f2ee](https://github.com/no-phux/phux/commit/f67f2ee3b798d6f8c97c6a4454721d0055f7cb86))
+* **ffi:** publish the Android UniFFI zip ([#805](https://github.com/no-phux/phux/issues/805)) ([cdcabd0](https://github.com/no-phux/phux/commit/cdcabd0a60066c3cea5b952bb55cdeca1a68a6f0))
+* **mcp:** share kill/signal/tag/rename builders with the CLI (phux-c3vw) ([#813](https://github.com/no-phux/phux/issues/813)) ([f07b1c6](https://github.com/no-phux/phux/commit/f07b1c6d7f1e4e49d33ffa8ce69c5bd6083777c9))
+* **server:** forward retain_secs on satellite-relayed spawns (phux-fpgl.32) ([#817](https://github.com/no-phux/phux/issues/817)) ([7a3fa41](https://github.com/no-phux/phux/commit/7a3fa41f5c01e25d342235e4624315cebf62af8b))
+* **server:** mirror satellite agent metadata on the hub (phux-lxov.2) ([#823](https://github.com/no-phux/phux/issues/823)) ([e970e52](https://github.com/no-phux/phux/commit/e970e5247c4067d15c5a94afe0e16984d881b7da))
+* **tui:** open satellite panes beside local ones (phux-lxov.1) ([b8bfa6c](https://github.com/no-phux/phux/commit/b8bfa6c1d9f7d9ea362313dfa32ca2eb7d7f6665))
+* **tui:** show a live drop indicator while dragging tabs (phux-mv5y) ([#819](https://github.com/no-phux/phux/issues/819)) ([30dcbf6](https://github.com/no-phux/phux/commit/30dcbf6d5b05d37c56ad596f46b91ad063d50aa4))
+* **tui:** show retained panes in the sidebar and window tabs (phux-fpgl.33) ([8a54b70](https://github.com/no-phux/phux/commit/8a54b70bb0beb08aa89d8415774513c98a52ad7d))
+
+
+### Bug Fixes
+
+* cascade kill-pane through grandchildren (phux-v4tv) ([#811](https://github.com/no-phux/phux/issues/811)) ([70d8795](https://github.com/no-phux/phux/commit/70d879558f2c1383cfc1646a01073ea4ab358848))
+* **ci:** install mold on the Android UniFFI producer ([#808](https://github.com/no-phux/phux/issues/808)) ([bd5c53e](https://github.com/no-phux/phux/commit/bd5c53ebb7d6d751b314ac015ce3bbd6fd0273e6))
+* **client-ffi:** close the mobile-artifact and CI gaps review found in [#822](https://github.com/no-phux/phux/issues/822) (phux-ase2.1) ([84d5fd9](https://github.com/no-phux/phux/commit/84d5fd96145514892a725cbd7fb55c710797e189))
+* stop the server aborting on a loaned terminal, and make kill-pane and run actually work ([#807](https://github.com/no-phux/phux/issues/807)) ([f21c7a9](https://github.com/no-phux/phux/commit/f21c7a9f6537e3a3e159d48ce9fadbf52a5c5dfd))
+
+
+### Performance
+
+* **runtime:** coalesce batched grid projections ([#802](https://github.com/no-phux/phux/issues/802)) ([182d416](https://github.com/no-phux/phux/commit/182d41645456ed42bccab99a882a17dae1303ef6))
+
+
+### Refactors
+
+* **agent-rules:** extract the manifest evaluator from phux-server (phux-w7z2.24) ([52f852a](https://github.com/no-phux/phux/commit/52f852ab502079df7eedcf9ef674e521b310c0e2))
+
+
+### Documentation
+
+* **adr:** close the ServerFeature u32 before the last bit (phux-ppy8) ([#828](https://github.com/no-phux/phux/issues/828)) ([406a285](https://github.com/no-phux/phux/commit/406a2855155046d0a7f64b692165b7a417276b00))
+* **adr:** restore ADR-0133 and record its refinements as ADR-0134 ([ee682b0](https://github.com/no-phux/phux/commit/ee682b02f935569fba00c0d9a03bfc5dbdb80612))
+* **architecture:** record what a consumer touches when the binding crate changes ([ffedae9](https://github.com/no-phux/phux/commit/ffedae98f8b9eaac45b237bb829135a827633e91))
+* **cockpit:** capture UI and code craft direction ([7571395](https://github.com/no-phux/phux/commit/7571395bf0f246e3a4d9c4cf49c3860ecd84693e))
+* reconcile SSH-stdio under paired workload mode (phux-fpgl.29) ([#812](https://github.com/no-phux/phux/issues/812)) ([cf1da5f](https://github.com/no-phux/phux/commit/cf1da5f9ee5ded6ca153c59111624248c249d53f))
+
+## [0.41.0](https://github.com/no-phux/phux/compare/v0.40.0...v0.41.0) (2026-09-21)
+
+
+### Features
+
+* **client-runtime:** add native binding operations ([145ee58](https://github.com/no-phux/phux/commit/145ee58be4a44ff494ee831283a08ad854787ce5))
+* **client-runtime:** sans-IO control plane, engine owner thread, published grid ([#775](https://github.com/no-phux/phux/issues/775)) ([6e02ea4](https://github.com/no-phux/phux/commit/6e02ea438d7af9df46b824663637d2b947e684a9))
+* **client-runtime:** switch live sessions on one connection ([9926d72](https://github.com/no-phux/phux/commit/9926d727a389663f20b1e4575ea05fe94a68c9b3))
+* **ffi:** publish canonical mobile UniFFI artifact ([#797](https://github.com/no-phux/phux/issues/797)) ([21a1fe6](https://github.com/no-phux/phux/commit/21a1fe6466e6e074c3d71670442cb62f33584c81))
+* **skills:** publish no-phux/skills for npx skills add ([#787](https://github.com/no-phux/phux/issues/787)) ([c759426](https://github.com/no-phux/phux/commit/c759426736a9e698ee462be66f696d89722d0083))
+
+
+### Bug Fixes
+
+* **client-runtime:** close review gaps in FFI migration ([0304edc](https://github.com/no-phux/phux/commit/0304edc2a2955b27a8ceed7b12e2e9c050c68e50))
+* **client-runtime:** silence clippy match_same_arms on InvalidState ([bf19f97](https://github.com/no-phux/phux/commit/bf19f97b85dddf27b7432938836bf45e464a1e64))
+* **client:** drop testkit-only rustdoc links from default docs ([#791](https://github.com/no-phux/phux/issues/791)) ([b3ca915](https://github.com/no-phux/phux/commit/b3ca91573383a20e10bf2a3fbd1c359ee0d65cf3))
+* **cockpit:** pick newest rlib after fixture-generator version bump ([#783](https://github.com/no-phux/phux/issues/783)) ([41057d7](https://github.com/no-phux/phux/commit/41057d76c52be191d114dfaf200f86bae0e35692))
+* **ffi:** apply the xcframework lane's review findings ([#785](https://github.com/no-phux/phux/issues/785)) ([a968920](https://github.com/no-phux/phux/commit/a9689202442210bab34208fa9c8e7fda3dd76949))
+* **ffi:** classify only generation refusals as InvalidState ([74b631f](https://github.com/no-phux/phux/commit/74b631f3b7243cde061418bb34c6ccf4cc293197))
+* **ffi:** restore InvalidState and replica stamps after runtime shim ([164cdf4](https://github.com/no-phux/phux/commit/164cdf4a93a1cbe8b2b9310d6221936ff3a9ed0e))
+* **release:** trust container-mounted workspace ([#788](https://github.com/no-phux/phux/issues/788)) ([cfe21cb](https://github.com/no-phux/phux/commit/cfe21cb046caf1e9c61fe29fa324ab4c1a1e2b9f))
+* **server:** merge detector writes over identity-only agent names (phux-uaon) ([#782](https://github.com/no-phux/phux/issues/782)) ([b0e518a](https://github.com/no-phux/phux/commit/b0e518a33cbe0d11e156552418d97463e010306e))
+
+
+### Refactors
+
+* **ffi:** delegate terminal state to client runtime ([b2e0ec3](https://github.com/no-phux/phux/commit/b2e0ec32a87101f27464090f90989a480eea4a50))
+
+## [0.40.0](https://github.com/no-phux/phux/compare/v0.39.0...v0.40.0) (2026-09-20)
+
+
+### Features
+
+* **cli:** add a JSON contract for phux server --ensure ([4e3610b](https://github.com/no-phux/phux/commit/4e3610b651c18c2fac46f59bcf2b05331847a980))
+* **client-core:** one cell layout in core; the C ABI lends it ([#766](https://github.com/no-phux/phux/issues/766)) ([f448d2e](https://github.com/no-phux/phux/commit/f448d2e77adb551bdfe63187f6b9ea83dc3faa93))
+* **client-ffi:** expose named-projection L3 get/set/delete ([#706](https://github.com/no-phux/phux/issues/706)) ([247379f](https://github.com/no-phux/phux/commit/247379fbea8ebc8a7bc3f44c3cbd2ab965e87781))
+* **client-runtime:** extract transport orchestration from phux-client-ffi ([71ca56c](https://github.com/no-phux/phux/commit/71ca56c77c56b9b7d221b3fb3b4451e79827bd38))
+* **cli:** phux resource show|wait|methods, retain and idempotency flags, and cursor-resumable watch ([#709](https://github.com/no-phux/phux/issues/709)) ([ae6c040](https://github.com/no-phux/phux/commit/ae6c0407092d665eac61c03391596960449157b9))
+* **ffi:** build and publish the PhuxFFI xcframework of phux-client-ffi ([#768](https://github.com/no-phux/phux/issues/768)) ([7391d6c](https://github.com/no-phux/phux/commit/7391d6c0880457c5970d3f8e3714ad0cd9516096))
+* **mcp:** call phux-client in-process and gate cli/mcp parity ([#719](https://github.com/no-phux/phux/issues/719)) ([088ff53](https://github.com/no-phux/phux/commit/088ff5310bedc352b81534dff439d2cf285500b1))
+* **protocol:** attach roles as intent on the input lease ([#717](https://github.com/no-phux/phux/issues/717)) ([bbccc3a](https://github.com/no-phux/phux/commit/bbccc3ad88739d6c37aec985d2407dc41b92631a))
+* **server:** approvals are held signal actions, single-use and expiring ([#724](https://github.com/no-phux/phux/issues/724)) ([5b690d5](https://github.com/no-phux/phux/commit/5b690d54608af9b4408bfaa8edc68c9d57fd6a21))
+* **server:** freeze snapshot capture at READY without encoding history ([#758](https://github.com/no-phux/phux/issues/758)) ([edc7382](https://github.com/no-phux/phux/commit/edc738229ff16e190abd31be02881df29096fee9))
+* **server:** input leases expire on their TTL and inventories show the holder ([#705](https://github.com/no-phux/phux/issues/705)) ([d7795e5](https://github.com/no-phux/phux/commit/d7795e583f4520c92e281f2f5efde5bf0e6b1e99))
+* **server:** keep a live shell after the last process exits ([244874b](https://github.com/no-phux/phux/commit/244874b6f57a63e575aef2944a5e2057331051c0))
+* **server:** keyed kill and signal, federated keyed input with an incarnation fence ([#721](https://github.com/no-phux/phux/issues/721)) ([f8d6e75](https://github.com/no-phux/phux/commit/f8d6e755598cdae6f81ff768e5890fdb52a5cf1e))
+* **server:** revoke workload authority live ([#704](https://github.com/no-phux/phux/issues/704)) ([5833c03](https://github.com/no-phux/phux/commit/5833c0322ff8b50efffda53527a54159ed547603))
+* **tui:** drag to resize the sidebar and reorder windows ([#755](https://github.com/no-phux/phux/issues/755)) ([05a7016](https://github.com/no-phux/phux/commit/05a7016879607d2f1e2ea089db31340991c3e03e))
+* **tui:** quiet default chrome and pad overlays ([#756](https://github.com/no-phux/phux/issues/756)) ([ff653c4](https://github.com/no-phux/phux/commit/ff653c4267d0a1732cba4e8676c1d52bd2ef135c))
+* **tui:** quieter chrome — no teaching strips, less fill ([#762](https://github.com/no-phux/phux/issues/762)) ([9b2e1d8](https://github.com/no-phux/phux/commit/9b2e1d807c3dbbb59fd4dab8cb366abebb64dab4))
+
+
+### Bug Fixes
+
+* **ci:** key validation concurrency on the main SHA, serialize crate publish ([#771](https://github.com/no-phux/phux/issues/771)) ([5730995](https://github.com/no-phux/phux/commit/5730995c6e12ff260f85144bdd3ea6380ecbef24))
+* **ci:** retry Cockpit DMG hdiutil on GitHub macOS runners ([#708](https://github.com/no-phux/phux/issues/708)) ([23c4071](https://github.com/no-phux/phux/commit/23c4071dd79494d2d772192e85cc100a39bc1ffe))
+* **cli:** diagnose macOS firewall stealth-drop (phux-9lj9) ([3e99e2b](https://github.com/no-phux/phux/commit/3e99e2b39ba32c189fdc25307ffd4668d2e10bc1))
+* **client-runtime:** correct reconnect caller wording, clamp Ladder::next floor ([83562ea](https://github.com/no-phux/phux/commit/83562eabb70883dcbf67741a30dafa44fadbc26a))
+* **client:** emit ERROR{FRAME_TOO_LARGE} on attach framing violations ([#743](https://github.com/no-phux/phux/issues/743)) ([eccdd6d](https://github.com/no-phux/phux/commit/eccdd6db12f4648feae9382050ab21dd885f4239))
+* **client:** end the attach reconnect on a refusal no retry can satisfy ([3567ab9](https://github.com/no-phux/phux/commit/3567ab9a1a0e12bbc369461ba193f7f1b264f295))
+* **config:** follow symlinks in the registry writer (phux-u1tq.7) ([c02cf29](https://github.com/no-phux/phux/commit/c02cf29ed41023ea3b7f3a3bd0cfdf395e04ae6e))
+* **dial:** preserve QUIC credential refusal reason ([#738](https://github.com/no-phux/phux/issues/738)) ([9304d80](https://github.com/no-phux/phux/commit/9304d80bcf977ade5e7692b89c40645f54a8d4e9))
+* **docs:** omit live crate version from generated CLI reference ([#776](https://github.com/no-phux/phux/issues/776)) ([15606a1](https://github.com/no-phux/phux/commit/15606a1ccad999bbc2232e3d0903b64e00e566d5))
+* **nix:** keep the devshell on its own Apple SDK under Xcode 27 ([#763](https://github.com/no-phux/phux/issues/763)) ([4e68f50](https://github.com/no-phux/phux/commit/4e68f50923e724c8bf29ccb1dd418b6fcd2d7278))
+* **pair:** serve the Universal Link association and emit phux.sh links ([#761](https://github.com/no-phux/phux/issues/761)) ([2d2641d](https://github.com/no-phux/phux/commit/2d2641d27badf198fc5ed53e17f16b69e7679ed2))
+* **protocol:** preserve keep-empty on explicit Close Tab ([#718](https://github.com/no-phux/phux/issues/718)) ([df8bb87](https://github.com/no-phux/phux/commit/df8bb87543e2f1d4a1f00e567ac62456cabdc20a))
+* **release:** keep the fan-out when release-please fails after tagging ([99a8951](https://github.com/no-phux/phux/commit/99a895128ded65993fc22eadd388d4b128ca6d3b))
+* **scripts:** poll tui-probe waits instead of fixed sleeps ([#739](https://github.com/no-phux/phux/issues/739)) ([b4f0144](https://github.com/no-phux/phux/commit/b4f014484af7af7b758410e078c02150876982e1))
+* **server:** drop hub viewer marks on refused satellite attach (phux-4z1y) ([c6c296b](https://github.com/no-phux/phux/commit/c6c296b99604440c1f4f7349b259c5bcd37a9fad))
+* **server:** flush a final screen to fenced pumps before pane close (phux-fpgl.28) ([#780](https://github.com/no-phux/phux/issues/780)) ([ded853b](https://github.com/no-phux/phux/commit/ded853b730cfb0179de861658bb36d0e59d6d458))
+* **server:** make resumed upgrade reconstruction transactional ([#742](https://github.com/no-phux/phux/issues/742)) ([b82638f](https://github.com/no-phux/phux/commit/b82638f35456056b840dc83ee404a18a56abc2bc))
+* **server:** reject duplicate WebTransport Authorization before header map ([#733](https://github.com/no-phux/phux/issues/733)) ([789391b](https://github.com/no-phux/phux/commit/789391bbeaa33ef5e22df98519ccc9675fc42529))
+* **server:** retry seed ATTACH when the session is not ready yet ([#777](https://github.com/no-phux/phux/issues/777)) ([efd3a26](https://github.com/no-phux/phux/commit/efd3a26ca463062322cd49f0bac6b4c1b94d5b7e))
+* **server:** strip Claude Code nested-session markers from pane children ([#781](https://github.com/no-phux/phux/issues/781)) ([bec0d71](https://github.com/no-phux/phux/commit/bec0d71b3004e223b274c1160bee1cfd03c1fc8d))
+* **server:** withdraw satellite holds on relayed RESOURCE_CLOSED (phux-x8k0) ([#779](https://github.com/no-phux/phux/issues/779)) ([9d5d9b1](https://github.com/no-phux/phux/commit/9d5d9b10d3ad73d2f82863df7654f267a5686014))
+* **site:** complete GitHub OAuth without the transaction cookie ([#729](https://github.com/no-phux/phux/issues/729)) ([39f546e](https://github.com/no-phux/phux/commit/39f546e58578c65f4ef04b74cc3c4153667a98c4))
+* **site:** complete hosted native pin to workspace 0.39.0 ([6cffd4b](https://github.com/no-phux/phux/commit/6cffd4b00b50412bffd4e58864df6d3055b0d310))
+* **site:** keep demo credentials and quotas off spoofable paths ([#730](https://github.com/no-phux/phux/issues/730)) ([339f792](https://github.com/no-phux/phux/commit/339f792adaacd24a48d429e7c94944605f12456f))
+* **site:** pin hosted native phux to workspace 0.39.0 ([#711](https://github.com/no-phux/phux/issues/711)) ([50c4c85](https://github.com/no-phux/phux/commit/50c4c8514cc9e7573bba8b4629a71a5720e363d8))
+* **tui:** confirm session rename and navigate peers by identity ([#735](https://github.com/no-phux/phux/issues/735)) ([3cd08dd](https://github.com/no-phux/phux/commit/3cd08dd48adda489e19efdc84d40da804fec64c4))
+* **tui:** discover peer agents from the server graph before layout persist ([#736](https://github.com/no-phux/phux/issues/736)) ([d5ff88f](https://github.com/no-phux/phux/commit/d5ff88fa912abe26f145762bf937f63b27f94c5f))
+* **tui:** drop unused non-native-engine driver fallback (phux-u1tq.5) ([#727](https://github.com/no-phux/phux/issues/727)) ([aaba7e4](https://github.com/no-phux/phux/commit/aaba7e40f48ccf322c23e04227e4c87b80629792))
+* **tui:** never local-scroll alt-screen; forward no-op wheels ([#740](https://github.com/no-phux/phux/issues/740)) ([02734be](https://github.com/no-phux/phux/commit/02734be7b1a776929b1c7e181b69e594e164ad07))
+* **tui:** pin libghostty-vt wrap spacer-head dirty rewrite (phux-5js7) ([a85e8bd](https://github.com/no-phux/phux/commit/a85e8bd715685cc9129191cf81ae87f7eda875a8))
+* **tui:** preserve agent review state across session switches ([#737](https://github.com/no-phux/phux/issues/737)) ([ad300c7](https://github.com/no-phux/phux/commit/ad300c7659b90315e194d7dfe0ef4fff3ce076a2))
+
+
+### Refactors
+
+* **client-ffi:** drop unused set_callbacks and list_directory exports (phux-1k7t) ([#726](https://github.com/no-phux/phux/issues/726)) ([697a039](https://github.com/no-phux/phux/commit/697a039b2a7f21bd436728909ce475f3e5d50cba))
+* **client:** walk the runtime's reconnect ladder in resource wait and attach ([#764](https://github.com/no-phux/phux/issues/764)) ([5741bec](https://github.com/no-phux/phux/commit/5741bec938598aa2c47b65d1331bf2ab460f7e33))
+* **protocol:** derive ServerFeature tables from one list ([#722](https://github.com/no-phux/phux/issues/722)) ([c80445b](https://github.com/no-phux/phux/commit/c80445bbd0aba078bbd184f8fd6c6b1ea844264d))
+* **server:** split terminal run loop and tick_emit (phux-18sb) ([#752](https://github.com/no-phux/phux/issues/752)) ([5b0a8af](https://github.com/no-phux/phux/commit/5b0a8afba05b1ca0c6c7dd62caf481c4f800e980))
+
+
+### Documentation
+
+* **adr:** one client runtime below every binding (ADR-0133) ([5bf110a](https://github.com/no-phux/phux/commit/5bf110a0cf397b556cffd03af412e449cb013300))
+* **adr:** swarm members are coordinator clients ([#757](https://github.com/no-phux/phux/issues/757)) ([b93f0ef](https://github.com/no-phux/phux/commit/b93f0ef5d1f3d1e67c8986eb5599504293c089bd))
+* **architecture:** keep the server hub redial server-owned in crate-graph ([2a1fda2](https://github.com/no-phux/phux/commit/2a1fda286f6af7322fde5e6a1621e8a99b3629c6))
+* **ci:** map the workflow system in one page ([#770](https://github.com/no-phux/phux/issues/770)) ([2076776](https://github.com/no-phux/phux/commit/2076776461e4c31e9c32218518724cbf3a2841f4))
+* clarify alternatives and publish performance evidence ([74b2c9f](https://github.com/no-phux/phux/commit/74b2c9f4c48e8613a0adff95f051df3e6fbf4157))
+* **pha-406:** close out the phase-2 program ([#725](https://github.com/no-phux/phux/issues/725)) ([36657c0](https://github.com/no-phux/phux/commit/36657c0e9c690af2776ca2fd86f2685095acd653))
+
 ## [0.39.0](https://github.com/no-phux/phux/compare/v0.38.0...v0.39.0) (2026-09-15)
 
 

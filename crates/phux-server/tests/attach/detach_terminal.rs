@@ -26,7 +26,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown, recv_typed,
     run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket, wait_for_socket,
 };
 use tempfile::TempDir;
@@ -362,12 +362,7 @@ async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
     }
     drop(stream);
     drop(control);
-    shutdown.send(()).unwrap();
-    timeout(SERVER_JOIN_DEADLINE, task)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    join_after_shutdown(shutdown, task).await;
 }
 
 #[test]
@@ -475,12 +470,7 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
         )
         .await;
         drop(stream);
-        shutdown.send(()).unwrap();
-        timeout(SERVER_JOIN_DEADLINE, task)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        join_after_shutdown(shutdown, task).await;
     });
 }
 

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-20
 ---
 
 # Crate dependency graph
@@ -37,7 +37,7 @@ the L1/L3 wire layering from ADR-0015 and ADR-0102.
                         └───────────────────┘      pane (ADR-0013)
 ```
 
-Four crate boundaries carry weight:
+Five crate boundaries carry weight:
 
 1. **`phux-core` and `phux-protocol` do not depend on each other.** Core
    holds the in-process domain (slotmap keys with generational tags,
@@ -79,6 +79,32 @@ Four crate boundaries carry weight:
    (`phux_dial::window`) that `phux-server`'s QUIC and WebTransport writers
    and `phux-relay`'s consumer leg share, since both crates already depend
    on it.
+5. **`phux-client-runtime` is the one orchestration layer below every
+   binding** (ADR-0133). It sits above `phux-dial`, `phux-config`, and
+   `phux-client-core` and below `phux-client-ffi`, `phux-client`, and the
+   `phux` binary: registry resolution, dial planning
+   under the CLI's trust
+   rules, reconnect policy, WebSocket frame cutting, the relay tunnel, the
+   sans-IO control plane over `SessionKernel`, the engine owner thread,
+   and grid publication exist once, as a Rust API with no FFI (see
+   [`client-runtime.md`](./client-runtime.md)). The reconnect policy is one
+   `Ladder` with a preset per lane: `phux-client`'s agent verbs walk the
+   fast agent-verb ladder and the binary's attach loop walks the
+   interactive one for remote dials and the flat local-upgrade poll for
+   UDS, so no consumer carries a backoff constant of its own. The same
+   module owns the other half of the policy: a refusal no retry can
+   satisfy — a 401/403 on the upgrade, a QUIC preamble answered
+   `AUTH_FAILED` — ends the attach loop's reconnect on the probe that saw
+   it, with the refusal as the reported reason. `phux-server`'s hub link
+   and connector keep their own redial ladder: they are the server-side
+   federation dialer, not a client binding, and moving them onto the
+   runtime's `Ladder` is a separate decision. A binding crate translates
+   runtime-owned values into its language's idiom and holds no connected-client
+   state machine; a connection loop, a `select!`, or a backoff constant in a
+   binding is in the wrong crate. There is one binding crate,
+   `phux-client-ffi`, with one projection layer and one encoder per
+   foreign language behind a feature (ADR-0135); its UniFFI lane is
+   published with generated bindings from this exact source revision.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the
@@ -96,15 +122,19 @@ for the renderer-side contract on both ends.
 `phux-config` is a sibling of `core` and is consumed by the binary, the
 server, the client, and the TUI.
 
-`phux-client-ffi` sits above `phux-client-core` and below nothing in this
-workspace: it is a stable C ABI over the synchronous session kernel, for
-native embedders that are not written in Rust. It is compile-time excluded
-on wasm. Nothing else in the graph depends on it — it is a leaf, and the
-crate to reach for before hand-rolling a second bridge to the kernel. Its
-remote-host tunnel also depends on `phux-config` (to read the CLI's
-`[[remote]]` registry through the same loader) and `phux-dial` (QUIC/WSS
-establishment with the certificate pin and bearer token), so an embedder
-reaches a registered host without a second registry or a second dialer.
+`phux-client-ffi` is the one binding leaf above `phux-client-runtime`,
+compile-time excluded on wasm. Its `projection/` layer derives the product
+vocabulary from the runtime's typed events, topology, receipts and
+published grids exactly once; its `c-abi` encoder lends that vocabulary
+through the stable C ABI native embedders and Cockpit link, and its
+`uniffi` encoder (off by default) lowers the same vocabulary into Swift and
+Kotlin without passing through the C ABI (ADR-0135). Its generated bindings
+and Apple native slices ship as one revision-pinned artifact. It owns no
+terminal, session, history, topology, or transport state machine. Its
+remote-host tunnel is the runtime's, behind a C handle: the runtime reads
+the CLI's `[[remote]]` registry through `phux-config`'s loader and dials
+through `phux-dial`, so an embedder reaches a registered host without a
+second registry, a second dialer, or a second relay.
 
 ## Browser client crates (standalone wasm workspace)
 

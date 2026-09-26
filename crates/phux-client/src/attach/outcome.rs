@@ -14,6 +14,7 @@
 
 use std::io;
 
+use phux_client_runtime::reconnect::{TOKEN_REFUSED, is_fatal_refusal_detail};
 use phux_protocol::wire::frame::DetachReason;
 use phux_protocol::wire::framing::FramingError;
 
@@ -65,13 +66,11 @@ pub enum AttachError {
     ///
     /// Split out of [`Self::Protocol`] as a *typed* variant on purpose. §5
     /// obliges the receiving peer — either peer, per the spec text — to answer
-    /// with `ERROR { code: FRAME_TOO_LARGE }` before closing. The client does
-    /// not yet: its readers do not hold the paired write half at the decode
-    /// seam, so emission stays deliberately deferred. Keeping the
-    /// [`FramingError`] instead of flattening it to a string at the detection
-    /// point means the eventual emitter needs the write half and nothing else
-    /// — no re-plumbing of two call sites and this enum. The rendered message
-    /// is unchanged from the string form it replaces.
+    /// with `ERROR { code: FRAME_TOO_LARGE }` before closing. Decode sites
+    /// keep this error typed rather than flattening it to a string;
+    /// [`super::connection::Connection::recv`] / `try_recv` hold the write
+    /// half and emit the goodbye (phux-85ot) before returning this variant.
+    /// The rendered message is unchanged from the string form it replaces.
     #[error("protocol error: server sent a malformed frame: {0}")]
     Framing(#[from] FramingError),
 
@@ -123,6 +122,12 @@ impl From<phux_dial::DialError> for AttachError {
         match value {
             phux_dial::DialError::Io(err) => Self::Io(err),
             phux_dial::DialError::Connect(msg) => Self::Connect(msg),
+            // Same repair class as a WebSocket 401: the host answered and
+            // refused the token, so the CLI re-pairs rather than treating
+            // it as overlay loss.
+            phux_dial::DialError::AuthRefused(msg) => {
+                Self::Connect(format!("{TOKEN_REFUSED} ({msg})"))
+            }
             phux_dial::DialError::Unreachable(msg) => Self::Unreachable(msg),
             // A stalled lane IS a disconnection — the peer is gone, we just
             // had to ask to find out. Mapping it here is what routes a
@@ -132,6 +137,33 @@ impl From<phux_dial::DialError> for AttachError {
                 tracing::info!(reason = %msg, "WebSocket lane stalled; treating it as a disconnect");
                 Self::Disconnected
             }
+        }
+    }
+}
+
+impl AttachError {
+    /// Whether this failure is a refusal that retrying with the same
+    /// credentials cannot change: the host answered and rejected the
+    /// pairing token (ADR-0031), as a QUIC `AUTH_FAILED` preamble reply or
+    /// an HTTP 401/403 on the WebSocket upgrade.
+    ///
+    /// ADR-0133 keeps that rule in `phux-client-runtime::reconnect`, which
+    /// states it over a [`phux_dial::DialError`]. A reconnect probe no
+    /// longer holds one — [`From<phux_dial::DialError>`] has already
+    /// flattened the dial failure into this vocabulary by the time the
+    /// policy asks — so this reads the runtime's rule over the rendered
+    /// detail instead of restating it.
+    ///
+    /// Everything else answers `false` and is worth the reconnect ladder: a
+    /// 503, an unreachable host, a stalled lane, a local I/O error. So does
+    /// [`Self::Refused`], which is the *server's* `ATTACH` policy declining
+    /// a session rather than the transport declining the client, and is
+    /// reached only past a connection this rule has already allowed.
+    #[must_use]
+    pub fn is_fatal_refusal(&self) -> bool {
+        match self {
+            Self::Connect(detail) => is_fatal_refusal_detail(detail),
+            _ => false,
         }
     }
 }
@@ -246,10 +278,63 @@ mod tests {
             super::AttachError::Connect(_)
         ));
         assert!(matches!(
+            super::AttachError::from(phux_dial::DialError::AuthRefused("unauthorized".to_owned())),
+            super::AttachError::Connect(msg) if msg.contains("pairing token refused")
+        ));
+        assert!(matches!(
             super::AttachError::from(phux_dial::DialError::Io(std::io::Error::from(
                 std::io::ErrorKind::BrokenPipe
             ))),
             super::AttachError::Io(_)
         ));
+    }
+
+    /// ADR-0133: a dial failure that no retry with the same credentials can
+    /// satisfy stays fatal after it is flattened into this vocabulary, and
+    /// everything the ladder could still heal stays retryable. The reconnect
+    /// probe keys on exactly this, so a wording change on either side of the
+    /// `From` impl that lost the verdict would fail here rather than quietly
+    /// walk a 401 through a 60-second countdown.
+    #[test]
+    fn only_the_refusals_no_retry_can_satisfy_are_fatal() {
+        let fatal = [
+            phux_dial::DialError::AuthRefused("unauthorized".to_owned()),
+            phux_dial::DialError::Connect(
+                "WebSocket handshake: HTTP error: 401 Unauthorized".to_owned(),
+            ),
+            phux_dial::DialError::Connect(
+                "WebSocket handshake: HTTP error: 403 Forbidden".to_owned(),
+            ),
+        ];
+        for error in fatal {
+            let rendered = error.to_string();
+            assert!(
+                super::AttachError::from(error).is_fatal_refusal(),
+                "{rendered} must end the reconnect"
+            );
+        }
+
+        let retryable = [
+            phux_dial::DialError::Connect(
+                "WebSocket handshake: HTTP error: 503 Service Unavailable".to_owned(),
+            ),
+            phux_dial::DialError::Unreachable("no route".to_owned()),
+            phux_dial::DialError::Stalled("no pong".to_owned()),
+            phux_dial::DialError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)),
+        ];
+        for error in retryable {
+            let rendered = error.to_string();
+            assert!(
+                !super::AttachError::from(error).is_fatal_refusal(),
+                "{rendered} may heal and is worth the ladder"
+            );
+        }
+
+        // A server that declines the ATTACH is not the transport refusing
+        // the client: the connection it arrived on was already allowed.
+        assert!(
+            !super::AttachError::Refused("no such session".to_owned()).is_fatal_refusal(),
+            "a server-side ATTACH refusal is not a transport refusal"
+        );
     }
 }

@@ -8,7 +8,8 @@ use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     AgentEvent, CONFIG_RELOAD_KEY, DetachReason, ErrorCode, FrameKind, ResourceLifecycle,
-    SESSION_KEEP_EMPTY_KEY, Scope, SpawnError, SpawnResult, decode_session_keep_empty,
+    SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, Scope, SpawnError, SpawnResult,
+    decode_session_keep_empty, decode_session_rename,
 };
 
 use crate::attach::actions::{
@@ -24,7 +25,7 @@ use crate::attach::render::ReplicaWalk;
 use crate::layout::{self, LayoutState, Rect, Workspace};
 use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell_at};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
-use phux_client::agent_meta::RESOURCE_AGENT_KEY;
+use phux_client::agent_meta::{RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY};
 use phux_client::conditional_kill::BoundResource;
 use phux_client::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, LayoutKeyOwner, layout_key_session,
@@ -90,6 +91,16 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     // arm drains the marker and suppresses the pane-exit notice for an
     // expected close — the user killed it; telling them it died is noise.
     expected_closes: &'a mut HashSet<ResourceId>,
+    // `request_id` -> the Terminal that request named, for every command this
+    // client sent whose refusal is authoritative about that Terminal's
+    // existence (`KILL_RESOURCE` from kill-pane / kill-window,
+    // `ATTACH_RESOURCE` for a layout leaf discovered at attach). A
+    // `TERMINAL_NOT_FOUND` reply is the ONLY evidence a client ever gets that
+    // such a resource is gone: the server broadcasts `RESOURCE_CLOSED` when a
+    // resource it holds dies, and nothing at all for one it never had. Without
+    // this correlation a leaf naming a dead resource stays in the layout
+    // forever, painting a blank pane that no kill can remove.
+    pending_resource_ops: &'a mut HashMap<u32, ResourceId>,
     // ADR-0040: the driver-held `phux.agent/v1` index. The MetadataValue /
     // MetadataChanged arms decode agent records into it; the driver reads
     // it when composing window labels.
@@ -183,6 +194,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
     pending_splits: &mut HashMap<u32, PendingSplit>,
     pending_windows: &mut HashMap<u32, PendingWindow>,
     expected_closes: &mut HashSet<ResourceId>,
+    pending_resource_ops: &mut HashMap<u32, ResourceId>,
     agent_meta: &mut AgentMetaIndex,
     overlay_active: bool,
     defer_paint: bool,
@@ -228,6 +240,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         pending_splits,
         pending_windows,
         expected_closes,
+        pending_resource_ops,
         agent_meta,
         overlay_active,
         defer_paint,
@@ -504,6 +517,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
     Ok(FrameOutcome {
         subscribe_layout: true,
         sessions: Some(session_cache),
+        inventory: Some((snapshot.windows.clone(), snapshot.resources.clone())),
         // ADR-0033: cache our own ClientId so the supervisory badge can
         // distinguish "you hold the wheel" from another client.
         own_client_id: Some(initial_client_id),
@@ -545,6 +559,7 @@ fn attach_empty_session<W: crate::attach::RenderSink>(
     FrameOutcome {
         subscribe_layout: true,
         sessions: Some((snapshot.sessions.clone(), snapshot.focused_session)),
+        inventory: Some((snapshot.windows.clone(), snapshot.resources.clone())),
         own_client_id: Some(initial_client_id),
         layout_replaced: true,
         ..FrameOutcome::default()
@@ -1083,6 +1098,9 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
 ) -> Result<FrameOutcome, AttachError> {
     // ADR-0040: a pending per-Terminal `phux.agent/v1` GET reply.
     // `value: None` (key absent) clears any stale record.
+    if let Some(terminal) = ctx.agent_meta.asked_pending.remove(&request_id) {
+        return Ok(apply_asked_flag(ctx, terminal, value.as_deref()));
+    }
     if let Some(terminal) = ctx.agent_meta.pending.remove(&request_id) {
         let changed = ctx.agent_meta.apply(&terminal, value.as_deref());
         if changed {
@@ -1090,6 +1108,7 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
         }
         return Ok(FrameOutcome {
             agent_meta_changed: changed,
+            agent_meta_terminal: Some(terminal),
             ..FrameOutcome::default()
         });
     }
@@ -1151,6 +1170,12 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
     if key == RESOURCE_AGENT_KEY {
         return Ok(apply_agent_broadcast(ctx, scope, value));
     }
+    if key == RESOURCE_ASKED_KEY {
+        let Scope::Resource(terminal) = scope else {
+            return Ok(FrameOutcome::default());
+        };
+        return Ok(apply_asked_flag(ctx, terminal.clone(), value.as_deref()));
+    }
     // phux-foz.5: the config-reload doorbell. Value bytes are an
     // opaque nonce (only there to defeat the server's equal-bytes
     // SET dedup); a tombstone is not a reload request.
@@ -1162,6 +1187,9 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
     }
     if key == SESSION_KEEP_EMPTY_KEY && matches!(scope, Scope::Global) {
         return Ok(apply_keep_empty_broadcast(ctx, value.as_deref()));
+    }
+    if key == SESSION_NAME_KEY && matches!(scope, Scope::Global) {
+        return Ok(apply_session_rename_broadcast(ctx, value.as_deref()));
     }
     let Some(LayoutKeyOwner::Session(key_session)) = layout_key_scope_session(scope, key) else {
         return Ok(FrameOutcome::default());
@@ -1212,6 +1240,45 @@ fn layout_decode_refusal(error: &crate::layout::LayoutDecodeError) -> AttachErro
 /// ADR-0040: a `phux.agent/v1` broadcast for a subscribed pane.
 /// A tombstone (`value: None`, the `DELETE_METADATA` path) clears
 /// the record and the label falls back to the OSC title.
+/// ADR-0136: `phux.agent.asked/v1` is `1` while an ask is pending and absent
+/// once it clears. A workspace pane stores that on `PaneSlot::attention`.
+/// Anything else is a foreign attention insert or clear. A declared
+/// `phux.agent/v1` attention is left alone.
+fn apply_asked_flag<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal: ResourceId,
+    value: Option<&[u8]>,
+) -> FrameOutcome {
+    let asked = value == Some(b"1");
+    let in_workspace = window_holding_pane(ctx.workspace, &terminal).is_some();
+    let chrome_dirty = if in_workspace
+        && let Some(slot) = ctx.panes.get_mut(&terminal)
+        && slot.attention != asked
+    {
+        slot.attention = asked;
+        true
+    } else {
+        false
+    };
+    if in_workspace {
+        return FrameOutcome {
+            chrome_dirty,
+            ..FrameOutcome::default()
+        };
+    }
+    if asked {
+        FrameOutcome {
+            foreign_attention: Some(terminal),
+            ..FrameOutcome::default()
+        }
+    } else {
+        FrameOutcome {
+            foreign_attention_clear: Some(terminal),
+            ..FrameOutcome::default()
+        }
+    }
+}
+
 fn apply_agent_broadcast<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     scope: &Scope,
@@ -1235,6 +1302,7 @@ fn apply_agent_broadcast<W: crate::attach::RenderSink>(
     }
     FrameOutcome {
         agent_meta_changed: changed,
+        agent_meta_terminal: Some(terminal.clone()),
         ..FrameOutcome::default()
     }
 }
@@ -1403,10 +1471,12 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
     new_id: ResourceId,
     pending: &PendingSplit,
 ) -> Result<FrameOutcome, AttachError> {
+    let keep_existing = pending.open_existing.is_some();
     let Some(index) = window_holding_pane(ctx.workspace, &pending.focused_at_request) else {
-        return Ok(split_dropped(
+        return Ok(abandon_split(
             ctx,
             &new_id,
+            keep_existing,
             "the pane it was split from has closed",
         ));
     };
@@ -1415,7 +1485,12 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
         Ok(new_state) => new_state,
         Err(err) => {
             tracing::warn!(error = %err, terminal = ?new_id, "apply_spawned_ok failed");
-            return Ok(split_dropped(ctx, &new_id, "the layout could not take it"));
+            return Ok(abandon_split(
+                ctx,
+                &new_id,
+                keep_existing,
+                "the layout could not take it",
+            ));
         }
     };
     *window = new_state;
@@ -1467,6 +1542,25 @@ fn focus_landed_split<W: crate::attach::RenderSink>(
     if let Some(fid) = ctx.focused_resource.as_ref() {
         reanchor_predict_to_pane(ctx.predict, ctx.panes, fid);
     }
+}
+
+/// A split that cannot land. A pane this client spawned is killed; an
+/// existing pane opened with `resource = "host/@N"` is left alone.
+fn abandon_split<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    new_id: &ResourceId,
+    keep_existing: bool,
+    why: &str,
+) -> FrameOutcome {
+    if keep_existing {
+        tracing::warn!(terminal = ?new_id, why, "split dropped; existing pane kept");
+        let _ = actions::write_bell(ctx.out);
+        return FrameOutcome {
+            notices: vec![Notice::warn(format!("split dropped: {why}"))],
+            ..FrameOutcome::default()
+        };
+    }
+    split_dropped(ctx, new_id, why)
 }
 
 /// A spawned split that has nowhere to go: bell, and say why. The layout,
@@ -1539,21 +1633,32 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         };
     }
+    fold_dead_resource(
+        ctx,
+        terminal_id,
+        exit_status,
+        pane_exit_notices(terminal_id, exit_status, expected),
+    )
+}
+
+/// Fold a Terminal that no longer exists out of this client's projection:
+/// drop its `PaneSlot`, remove its layout leaf, prune the window if that
+/// emptied it, and re-anchor focus. Shared by the `RESOURCE_CLOSED` broadcast
+/// and by [`fold_missing_resource`], because a refusal naming a resource the
+/// server does not have is the same fact arriving by a different route.
+fn fold_dead_resource<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal_id: &ResourceId,
+    exit_status: Option<i32>,
+    notices: Vec<Notice>,
+) -> FrameOutcome {
     // Always drop the slot — even for unknown leaves (could be
     // a spawn-failure cleanup race or a stale id from before
     // an attach).
     ctx.panes.remove(terminal_id);
     // Find the window holding this leaf (panes can live in any
     // window, not just the active one) and fold it out there.
-    let owner = ctx.workspace.windows.iter().position(|w| {
-        w.state
-            .tree
-            .as_ref()
-            .map(layout::leaves)
-            .unwrap_or_default()
-            .contains(terminal_id)
-    });
-    let Some(idx) = owner else {
+    let Some(idx) = window_holding_pane(ctx.workspace, terminal_id) else {
         return FrameOutcome::default();
     };
     let new_state = match apply_terminal_closed(&ctx.workspace.windows[idx].state, terminal_id) {
@@ -1586,7 +1691,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     // alive. ADR-0105: a keep-empty session outlives its last
     // pane, so the attach stays and shows the empty state.
     if ctx.workspace.windows.is_empty() && *ctx.keep_empty_session {
-        return last_pane_closed_keep_empty(ctx, terminal_id, exit_status, expected);
+        return last_pane_closed_keep_empty(ctx, notices);
     }
     if ctx.workspace.windows.is_empty() {
         tracing::info!("ResourceClosed folded the last pane; detaching");
@@ -1614,9 +1719,50 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
         // phux-tnh: the survivor's Rect grew; tell the
         // server so its PTY winsize grows too.
         reflow_panes: true,
-        notices: pane_exit_notices(terminal_id, exit_status, expected),
+        notices,
         ..FrameOutcome::default()
     }
+}
+
+/// A command this client sent was refused with `TERMINAL_NOT_FOUND`: the
+/// Terminal it named is gone and no `RESOURCE_CLOSED` is coming for it (the
+/// server only broadcasts closes for resources it holds). Fold it out on the
+/// strength of the refusal so the stale leaf stops painting a blank pane.
+///
+/// This is what lets a pane orphaned by a server restart be closed at all: its
+/// layout leaf is restored from persisted metadata, but the resource behind it
+/// died with the old process, so every kill aimed at it is refused.
+fn fold_missing_resource<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal_id: &ResourceId,
+) -> FrameOutcome {
+    tracing::info!(
+        terminal = ?terminal_id,
+        "server refused a command naming this resource as not found; folding the stale leaf out",
+    );
+    let expected = ctx.expected_closes.remove(terminal_id);
+    let notices = if expected {
+        Vec::new()
+    } else {
+        vec![Notice::warn(format!(
+            "{}: gone (the server no longer has this pane)",
+            pane_label(terminal_id),
+        ))]
+    };
+    fold_dead_resource(ctx, terminal_id, None, notices)
+}
+
+/// Drain the resource a correlated reply names, if this client sent a command
+/// whose refusal is authoritative about that resource's existence. `Some`
+/// outcome ⇒ the reply was a `TERMINAL_NOT_FOUND` and the leaf was folded out;
+/// `None` ⇒ nothing to do here and the reply falls through to its own arm.
+fn resolve_resource_op<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: u32,
+    code: Option<ErrorCode>,
+) -> Option<FrameOutcome> {
+    let terminal_id = ctx.pending_resource_ops.remove(&request_id)?;
+    (code == Some(ErrorCode::TerminalNotFound)).then(|| fold_missing_resource(ctx, &terminal_id))
 }
 
 /// ADR-0105: the last pane of a keep-empty session closed. The session is
@@ -1625,9 +1771,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
 /// dead panes, so it is tombstoned rather than left for the next attach.
 fn last_pane_closed_keep_empty<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal_id: &ResourceId,
-    exit_status: Option<i32>,
-    expected: bool,
+    notices: Vec<Notice>,
 ) -> FrameOutcome {
     tracing::info!("ResourceClosed folded the last pane of a keep-empty session; staying attached");
     *ctx.focused_resource = None;
@@ -1635,7 +1779,7 @@ fn last_pane_closed_keep_empty<W: crate::attach::RenderSink>(
     FrameOutcome {
         layout_replaced: true,
         clear_layout: true,
-        notices: pane_exit_notices(terminal_id, exit_status, expected),
+        notices,
         ..FrameOutcome::default()
     }
 }
@@ -1652,6 +1796,27 @@ fn apply_keep_empty_broadcast<W: crate::attach::RenderSink>(
         *ctx.keep_empty_session = keep;
     }
     FrameOutcome::default()
+}
+
+/// phux-4s6o / phux-q7ks: a `phux.session.name/v1` broadcast. The handler
+/// updates this client's status name when the `current` side matches; the
+/// driver folds the pair into the cached session graph so peer roster
+/// rows follow without a re-attach.
+fn apply_session_rename_broadcast<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    value: Option<&[u8]>,
+) -> FrameOutcome {
+    let Some((current, new_name)) = value.and_then(decode_session_rename) else {
+        return FrameOutcome::default();
+    };
+    if current == ctx.session_name.as_str() {
+        new_name.clone_into(ctx.session_name);
+    }
+    FrameOutcome {
+        session_rename: Some((current.to_owned(), new_name.to_owned())),
+        chrome_dirty: true,
+        ..FrameOutcome::default()
+    }
 }
 
 /// phux-i0e8.2.2: survivors get a transient Warn notice naming the dead pane
@@ -1918,10 +2083,62 @@ fn error_frame_outcome<W: crate::attach::RenderSink>(
     code: ErrorCode,
     message: String,
 ) -> Result<FrameOutcome, AttachError> {
+    let mut marked = note_satellite_down(ctx, code, &message);
     if let Some(parked) = request_id.and_then(|id| take_pending_adopt(ctx, id)) {
-        return handle_adopt_reply(ctx, parked, Some(AdoptRefusal { code, message }));
+        return handle_adopt_reply(ctx, parked, Some(AdoptRefusal { code, message }))
+            .map(|outcome| with_satellite_chrome(outcome, marked));
     }
-    Ok(handle_error_frame(request_id, code, &message))
+    if let Some(id) = request_id {
+        // A replay `ATTACH_RESOURCE` cleared the down flag when it was sent.
+        // A refusal that names the pane, even without the hub's diagnostic
+        // wording, puts the flag back so the leaf stays grey.
+        marked |= remark_pending_satellite(ctx, id, Some(code));
+        if let Some(outcome) = resolve_resource_op(ctx, id, Some(code)) {
+            return Ok(with_satellite_chrome(outcome, marked));
+        }
+    }
+    Ok(with_satellite_chrome(
+        handle_error_frame(request_id, code, &message),
+        marked,
+    ))
+}
+
+/// Grey every pane on the host a `SatelliteUnreachable` names. The layout
+/// leaf stays; chrome is the only thing that moves (phux-lxov.1).
+fn note_satellite_down<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    code: ErrorCode,
+    message: &str,
+) -> bool {
+    code == ErrorCode::SatelliteUnreachable
+        && crate::attach::pane_state::note_satellite_unreachable(ctx.panes, message)
+}
+
+const fn with_satellite_chrome(mut outcome: FrameOutcome, marked: bool) -> FrameOutcome {
+    outcome.chrome_dirty |= marked;
+    outcome
+}
+
+/// Re-mark the host of a correlated resource reply when the satellite is
+/// unreachable. The pending id is still in the map; [`resolve_resource_op`]
+/// removes it afterwards.
+fn remark_pending_satellite<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: u32,
+    code: Option<ErrorCode>,
+) -> bool {
+    if !matches!(code, Some(ErrorCode::SatelliteUnreachable)) {
+        return false;
+    }
+    let Some(host) = ctx
+        .pending_resource_ops
+        .get(&request_id)
+        .and_then(ResourceId::host)
+        .map(|host| host.as_str().to_owned())
+    else {
+        return false;
+    };
+    crate::attach::pane_state::mark_satellite_down(ctx.panes, &host)
 }
 
 /// The `COMMAND_RESULT` arm: the reply to a parked satellite attach
@@ -1933,6 +2150,12 @@ fn command_result_outcome<W: crate::attach::RenderSink>(
     request_id: u32,
     result: phux_protocol::wire::frame::CommandResult,
 ) -> Result<FrameOutcome, AttachError> {
+    let marked = match &result {
+        phux_protocol::wire::frame::CommandResult::Error { code, message } => {
+            note_satellite_down(ctx, *code, message)
+        }
+        _ => false,
+    };
     if let Some(parked) = take_pending_adopt(ctx, request_id) {
         let refusal = match result {
             phux_protocol::wire::frame::CommandResult::Error { code, message } => {
@@ -1940,13 +2163,22 @@ fn command_result_outcome<W: crate::attach::RenderSink>(
             }
             _ => None,
         };
-        return handle_adopt_reply(ctx, parked, refusal);
+        return handle_adopt_reply(ctx, parked, refusal)
+            .map(|outcome| with_satellite_chrome(outcome, marked));
+    }
+    let code = match &result {
+        phux_protocol::wire::frame::CommandResult::Error { code, .. } => Some(*code),
+        _ => None,
+    };
+    let marked = marked || remark_pending_satellite(ctx, request_id, code);
+    if let Some(outcome) = resolve_resource_op(ctx, request_id, code) {
+        return Ok(with_satellite_chrome(outcome, marked));
     }
     tracing::debug!(
         request_id,
         "dropping CommandResult with no matching pending request"
     );
-    Ok(FrameOutcome::default())
+    Ok(with_satellite_chrome(FrameOutcome::default(), marked))
 }
 
 /// Take the window or split parked on the satellite attach behind
@@ -1969,7 +2201,7 @@ fn take_pending_adopt<W: crate::attach::RenderSink>(
     if ctx
         .pending_splits
         .get(&request_id)
-        .is_some_and(|pending| pending.adopt.is_some())
+        .is_some_and(|pending| pending.adopt.is_some() || pending.open_existing.is_some())
     {
         return ctx
             .pending_splits
@@ -2114,9 +2346,10 @@ pub(in crate::attach) fn pane_is_referenced(
     let adopting_window = pending_windows
         .values()
         .any(|window| window.adopt.as_ref().map(Adopt::pane) == Some(pane));
-    let adopting_split = pending_splits
-        .values()
-        .any(|split| split.adopt.as_ref().map(|spawned| &spawned.id) == Some(pane));
+    let adopting_split = pending_splits.values().any(|split| {
+        split.adopt.as_ref().map(|spawned| &spawned.id) == Some(pane)
+            || split.open_existing.as_ref() == Some(pane)
+    });
     window_holding_pane(workspace, pane).is_some() || adopting_window || adopting_split
 }
 

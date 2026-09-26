@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-19
 ---
 
 # Cockpit everyday UX: implementation design
@@ -29,7 +29,7 @@ The source findings below are not live-app reproduction evidence.
 | [`remote_memory.zig:32-44`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/src/cockpit/remote_memory.zig#L32-L44) | Persistence separately caps saved reconnect records at three hosts. |
 | [`cockpit-window.native:252-345`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/src/windows/components/cockpit-window.native#L252-L345) | Settings offers appearance controls and Finder reveal, not editor launch or a searchable settings catalog. |
 | [`core.ts:2150-2152`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/src/core.ts#L2150-L2152) | Reveal is a guarded host intent. An editor launch needs a correlated local creation result, not a cosmetic replacement label. |
-| [`app.zon:13-99`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/app.zon#L13-L99) | Shipping menus include Connect to Host, Go to Directory and Rename Session, but no machine inventory or window list. Cmd+Shift+P currently opens Go to Terminal. |
+| [`app.zon:13-99`](https://github.com/no-phux/phux/blob/d5e2977c1e327c84fe20b1f8192589be693008c1/clients/cockpit/app.zon#L13-L99) | Shipping menus include Connect to Host, Go to Directory, Rename Session, machine inventory and window list. Sessions is Cmd+K; Commands is Cmd+Shift+P; terminal clear is Cmd+Shift+K. |
 
 The existing native/shared-workspace engine remains the authority for topology,
 terminal identity, input routing and geometry. The TypeScript core and compiled
@@ -203,12 +203,13 @@ bundled sibling and discards helper stderr. The integration contract is:
 | Explicit socket override | Address that exact socket throughout probe, ensure, attach, setup and editor launch. Failure names that destination; never retry against the default socket. |
 | Finder environment lacks shell PATH/EDITOR | Resolve candidates using the runtime-discovery contract and explicit preferences; use bundle fallback and editor selection. Do not source arbitrary shell startup files just to inspect versions. |
 | Running server and Cockpit cannot negotiate | Keep work and its server intact. Show which component is incompatible and an Update Cockpit or Update Phux recovery appropriate to supported releases, then Retry. A Phux update uses its existing graceful-upgrade path; a bundle update alone does not restart the server. |
-| Helper launch/ensure fails | Keep bounded stderr/exit evidence, identify the executable and socket, offer Retry or Repair Installation; do not report a generic disconnected terminal or fall back to scratch. |
+| Helper launch/ensure fails | Invoke `server --ensure --json` on a CLI that advertises `server-ensure-json-v1`. Keep bounded stdout/stderr/exit evidence, identify the executable and socket, offer Retry or Repair Installation; do not report a generic disconnected terminal or fall back to scratch. Malformed success documents are refused. |
 | Compatible CLI installed after Cockpit | Apply preference at the next server-start decision, not by moving active work. An existing compatible connection remains authoritative. |
 
 Setup and editor terminals use this same selected local coordinator even when a
 remote terminal is focused. Runtime probe output must be versioned and usable
-without connecting or changing a server. Candidate resolution is deterministic,
+without connecting or changing a server. `phux server --ensure --json` is
+availability only: HELLO remains the authority for protocol compatibility. Candidate resolution is deterministic,
 bounded and captured once per launch operation. Repair results return to the
 initiating Machines/Settings flow with state refreshed from the real server;
 an updater success line alone is not proof of a working terminal.

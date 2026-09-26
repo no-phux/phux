@@ -407,14 +407,43 @@ fn pane_kill_grace() -> std::time::Duration {
 thread_local! {
     static PANE_KILL_GRACE_OVERRIDE: Cell<Option<std::time::Duration>> =
         const { Cell::new(None) };
+    static PANE_KILL_GRACE_GATE: RefCell<Option<std::path::PathBuf>> =
+        const { RefCell::new(None) };
 }
+
+/// How long a test may hold the hangup clock waiting for an observed
+/// trap-started marker before the ceiling begins (phux-ko7j). Ambient
+/// scheduling, not the product flush window — same budget as the armed
+/// barrier. Idle groups still return on the first poll, before this
+/// wait is consulted.
+#[cfg(test)]
+const PANE_KILL_GRACE_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Stretch the pane-kill grace ceiling for the rest of this thread.
 /// Cleared when the guard drops. Production never calls this.
 #[cfg(test)]
 fn stretch_pane_kill_grace(grace: std::time::Duration) -> PaneKillGraceOverride {
+    stretch_pane_kill_grace_after(grace, None)
+}
+
+/// Like [`stretch_pane_kill_grace`], but do not start the ceiling until
+/// `gate` exists. Isolates SIGHUP-delivery scheduling from the flush
+/// budget (phux-ko7j). Production never calls this.
+#[cfg(test)]
+fn stretch_pane_kill_grace_after(
+    grace: std::time::Duration,
+    gate: Option<&std::path::Path>,
+) -> PaneKillGraceOverride {
     PANE_KILL_GRACE_OVERRIDE.with(|slot| slot.set(Some(grace)));
+    PANE_KILL_GRACE_GATE.with(|slot| {
+        *slot.borrow_mut() = gate.map(std::path::Path::to_path_buf);
+    });
     PaneKillGraceOverride
+}
+
+#[cfg(test)]
+fn pane_kill_grace_gate() -> Option<std::path::PathBuf> {
+    PANE_KILL_GRACE_GATE.with(|slot| slot.borrow().clone())
 }
 
 #[cfg(test)]
@@ -424,6 +453,9 @@ struct PaneKillGraceOverride;
 impl Drop for PaneKillGraceOverride {
     fn drop(&mut self) {
         PANE_KILL_GRACE_OVERRIDE.with(|slot| slot.set(None));
+        PANE_KILL_GRACE_GATE.with(|slot| {
+            slot.borrow_mut().take();
+        });
     }
 }
 
@@ -575,39 +607,41 @@ enum CanonicalTerminal {
 }
 
 impl CanonicalTerminal {
-    #[allow(
-        clippy::expect_used,
-        reason = "Plain is temporarily None only while native_manager holds the actor-local mutable borrow"
-    )]
-    fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
+    /// The canonical terminal, or `None` while it is on loan.
+    ///
+    /// `Plain` is `None` only while `native_manager` holds the actor-local
+    /// mutable borrow; `Native` is `None` while a snapshot capture holds the
+    /// terminal. Neither is an invariant violation, so neither aborts — see
+    /// [`crate::native_state::NativeTerminalManager::try_terminal`].
+    pub(super) const fn try_terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         match self {
-            Self::Plain(terminal) => terminal
-                .as_ref()
-                .expect("plain canonical terminal is present"),
+            Self::Plain(terminal) => terminal.as_ref(),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            Self::Native(manager) => manager.terminal(),
+            Self::Native(manager) => manager.try_terminal(),
         }
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "Plain is temporarily None only while native_manager holds the actor-local mutable borrow"
-    )]
+    /// `Plain` is `None` only while `native_manager` holds the actor-local
+    /// mutable borrow, which is narrow — but "narrow" is the reasoning that
+    /// made the Native side abort twice in production, and the cost of being
+    /// wrong is the whole process. `reset_for_new_child` below already took
+    /// the degrading branch for the same state; this matches it.
     fn vt_write(&mut self, bytes: &[u8]) {
         match self {
-            Self::Plain(terminal) => terminal
-                .as_mut()
-                .expect("plain canonical terminal is present")
-                .vt_write(bytes),
+            Self::Plain(Some(terminal)) => terminal.vt_write(bytes),
+            Self::Plain(None) => {
+                tracing::error!(
+                    bytes = bytes.len(),
+                    "vt_write with the plain canonical terminal taken; dropping the write"
+                );
+            }
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             Self::Native(manager) => manager.vt_write(bytes),
         }
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "Plain is temporarily None only while native_manager holds the actor-local mutable borrow"
-    )]
+    /// Refuses rather than aborts when the terminal is taken; see
+    /// [`Self::vt_write`].
     fn resize(
         &mut self,
         cols: u16,
@@ -616,12 +650,39 @@ impl CanonicalTerminal {
         cell_height_px: u32,
     ) -> libghostty_vt::error::Result<()> {
         match self {
-            Self::Plain(terminal) => terminal
-                .as_mut()
-                .expect("plain canonical terminal is present")
-                .resize(cols, rows, cell_width_px, cell_height_px),
+            Self::Plain(Some(terminal)) => {
+                terminal.resize(cols, rows, cell_width_px, cell_height_px)
+            }
+            Self::Plain(None) => {
+                tracing::error!("resize with the plain canonical terminal taken; refusing it");
+                Err(libghostty_vt::error::Error::InvalidValue)
+            }
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             Self::Native(manager) => manager.resize(cols, rows, cell_width_px, cell_height_px),
+        }
+    }
+
+    fn reset_for_new_child(&mut self) {
+        match self {
+            Self::Plain(Some(terminal)) => terminal.reset(),
+            Self::Plain(None) => {}
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            Self::Native(manager) => manager.reset(),
+        }
+    }
+
+    fn reinstall_pty_write(
+        &mut self,
+        size_report: &Rc<Cell<SizeReportSize>>,
+        pty_tx: Option<&mpsc::Sender<EncodedInputRequest>>,
+    ) -> Result<(), TerminalActorError> {
+        match self {
+            Self::Plain(Some(terminal)) => {
+                TerminalActor::install_effects(terminal, size_report, pty_tx)
+            }
+            Self::Plain(None) => Ok(()),
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            Self::Native(_) => Ok(()),
         }
     }
 
@@ -652,14 +713,6 @@ impl CanonicalTerminal {
             Self::Native(manager) => Ok(manager),
             Self::Plain(_) => Err(crate::native_state::NativeStateError::InvalidState),
         }
-    }
-}
-
-impl std::ops::Deref for CanonicalTerminal {
-    type Target = GhosttyTerminal<'static, 'static>;
-
-    fn deref(&self) -> &Self::Target {
-        self.terminal()
     }
 }
 

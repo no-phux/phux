@@ -23,11 +23,22 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
 use crate::render::{ChromeBreakpoints, Theme};
 
-/// A centered, bordered modal box: themed border + centered title, a body
+/// Horizontal inner padding of a floating modal, in cells. Text never sits
+/// flush against the border.
+pub const MODAL_PAD: u16 = 1;
+
+/// Interior text width of a modal: two border columns plus [`MODAL_PAD`]
+/// on each side.
+#[must_use]
+pub const fn modal_inner_width(area_width: u16) -> u16 {
+    area_width.saturating_sub(2 + MODAL_PAD * 2)
+}
+
+/// A centered, bordered modal box: themed border + left title, a body
 /// of pre-built [`Line`]s, and an optional dimmed footer line.
 ///
 /// The caller supplies the body content (already styled) and the
@@ -53,7 +64,7 @@ const FOOTER_SEP: &str = "  ·  ";
 impl<'a> Modal<'a> {
     /// A modal titled `title` with `body` lines. No footer; body wrapping
     /// off by default (use [`Self::wrap`] to enable). Title is rendered
-    /// centered as ` title ` in the border.
+    /// left-aligned as ` title ` in the border.
     #[must_use]
     pub fn new(theme: &Theme, title: impl Into<String>, body: Vec<Line<'a>>) -> Self {
         Self {
@@ -187,13 +198,12 @@ impl<'a> Modal<'a> {
             .border_style(Style::default().fg(self.theme.border))
             .title(Span::styled(
                 format!(" {} ", self.title),
-                Style::default()
-                    .fg(self.theme.accent)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(self.theme.accent),
             ))
-            .title_alignment(Alignment::Center);
+            .title_alignment(Alignment::Left)
+            .padding(Padding::horizontal(MODAL_PAD));
 
-        let mut para = Paragraph::new(self.lines(area.width.saturating_sub(2))).block(block);
+        let mut para = Paragraph::new(self.lines(modal_inner_width(area.width))).block(block);
         if self.wrap {
             para = para.wrap(Wrap { trim: false });
         }
@@ -302,7 +312,7 @@ pub const fn scroll_into_view(offset: usize, cursor: usize, total: usize, height
 /// Paint a vertical scrollbar into `track` — a one-column [`Rect`], meant to
 /// be the modal's right *border* column beside the scrolling region.
 ///
-/// The thumb (a block glyph in [`Theme::accent`]) is sized to the visible
+/// The thumb (a block glyph in [`Theme::dim`]) is sized to the visible
 /// fraction of `total` and positioned by `offset`, so it reads as both "how
 /// much list is there" and "where am I in it". Track cells keep the border
 /// glyph in [`Theme::border`], so the bar looks like part of the box rather
@@ -322,7 +332,7 @@ pub fn paint_scrollbar(buf: &mut Buffer, track: Rect, theme: &Theme, total: usiz
     let max_offset = total - height;
     let thumb_top = offset.min(max_offset) * travel / max_offset;
 
-    let thumb = Style::default().fg(theme.accent).bg(theme.surface);
+    let thumb = Style::default().fg(theme.dim).bg(theme.surface);
     let rail = Style::default().fg(theme.border).bg(theme.surface);
     for row in 0..track.height {
         let on_thumb = {
@@ -439,12 +449,14 @@ impl KeyChordTable {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            lines.push(Line::from(Span::styled(
-                section.title.clone(),
-                Style::default()
-                    .fg(self.theme.section_header)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            if !section.title.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    section.title.clone(),
+                    Style::default()
+                        .fg(self.theme.section_header)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
             for row in &section.rows {
                 lines.push(self.row_line(row, chord_width));
             }
@@ -461,18 +473,13 @@ impl KeyChordTable {
         lines
     }
 
-    /// One table row: bold chord padded to `width`, two-space gutter, then
+    /// One table row: chord padded to `width`, two-space gutter, then
     /// the description.
     fn row_line(&self, row: &ChordRow, width: usize) -> Line<'static> {
         let pad = width.saturating_sub(crate::render::display_width(&row.chord));
         let padding = " ".repeat(pad);
         Line::from(vec![
-            Span::styled(
-                row.chord.clone(),
-                Style::default()
-                    .fg(self.theme.chord)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(row.chord.clone(), Style::default().fg(self.theme.chord)),
             Span::raw(padding),
             Span::raw("  "),
             Span::styled(

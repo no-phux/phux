@@ -1034,12 +1034,21 @@ fn drain_ask_sentinel(
     // A pane reaped between the actor's send and this drain has no core id
     // left to key the ledger by; its ask died with it.
     let terminal = s.terminal_from_wire(wire_terminal_id)?;
-    let Some(payload) = ask else {
+    let emitted = if let Some(payload) = ask {
+        s.report_agent_asked(terminal, AskedSource::Sentinel, payload)
+            .emit_payload()
+    } else {
         s.retract_agent_asked(terminal, AskedSource::Sentinel);
-        return None;
+        None
     };
-    s.report_agent_asked(terminal, AskedSource::Sentinel, payload)
-        .emit_payload()
+    // The tombstone is how a consumer sees a clear: a retract broadcasts
+    // nothing (ADR-0036). ADR-0136 projects the ladder onto one metadata key.
+    crate::hub::metadata_mirror::publish_asked_flag(
+        s,
+        wire_terminal_id,
+        s.agent_is_asked(terminal),
+    );
+    emitted
 }
 
 /// The drain's `Retract` arm: the pane's agent is confirmed gone.
@@ -1393,7 +1402,13 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // Recv error (sender dropped without firing) is treated the
         // same as a fired EOF with unknown exit status: in both cases
         // the pane is dead and every subscribed client must be told.
-        let (exit, mut events) = journal_until_exit(&state, rx, events).await;
+        let (mut exit, mut events) = journal_until_exit(&state, rx, events).await;
+        while let Some(next_rx) = replace_last_shell(&state, pane, &root_token).await {
+            info!("last shell exited; respawning a default shell in place");
+            let next = journal_until_exit(&state, next_rx, events).await;
+            exit = next.0;
+            events = next.1;
+        }
         // ADR-0124: a retained pane's exit is a facet, not a close. It stays
         // in the registry as `Exited`, readable, until a purge cancels its
         // engine token or its retention expires; only then does it take the
@@ -1422,6 +1437,48 @@ pub(crate) fn spawn_terminal_exit_watcher(
         };
         announce_close(&state, reap, &root_token, exit_hook_owed).await;
     });
+}
+
+/// If `pane` is the session's last Terminal and this was a natural process
+/// exit, replace the child in place and return the next EOF receiver.
+async fn replace_last_shell(
+    state: &SharedState,
+    pane: phux_core::ids::ResourceId,
+    root_token: &CancellationToken,
+) -> Option<oneshot::Receiver<phux_core::process::ExitOutcome>> {
+    if root_token.is_cancelled() {
+        return None;
+    }
+    let handle = state.with(|s| {
+        s.should_replace_last_shell(pane)
+            .then(|| s.resource_handle(pane).cloned())
+            .flatten()
+    })?;
+    let command = replacement_shell_command(state, pane);
+    let (reply_tx, reply_rx) = oneshot::channel();
+    handle
+        .control
+        .send(crate::resource::ControlRequest::ReplaceChild {
+            command: crate::resource::ReplacementCommand(command),
+            reply: reply_tx,
+        })
+        .await
+        .ok()?;
+    reply_rx.await.ok()?.ok()
+}
+
+fn replacement_shell_command(
+    state: &SharedState,
+    pane: phux_core::ids::ResourceId,
+) -> portable_pty::CommandBuilder {
+    state.with_mut(|s| {
+        let mut cmd = crate::terminal_actor::default_shell_command(s.shell(), s.login_shell());
+        crate::terminal_actor::apply_term(&mut cmd, s.term());
+        let wire = s.intern_terminal_wire(pane);
+        crate::terminal_actor::apply_terminal_id(&mut cmd, &wire);
+        crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
+        cmd
+    })
 }
 
 /// A pane kept as `Exited` after its process exited (ADR-0124), as its exit
@@ -1626,7 +1683,7 @@ fn reap_exited_pane(
     // phux-60s: reap the dead pane, cascading to its window and session when
     // they empty. Done here (inside the same lock that gathered subscribers)
     // so no ATTACH can interleave between "gather" and "reap".
-    let server_empty = s.reap_terminal(pane);
+    let (server_empty, actor_token) = s.reap_terminal_deferring_actor_cancel(pane);
     let served = s.has_served_client();
     // ADR-0105: a session a group kill released is gone once its last pane
     // is reaped. Its session-attached clients are gathered here, under the
@@ -1646,20 +1703,26 @@ fn reap_exited_pane(
         server_empty,
         killed_clients,
         served,
+        actor_token,
     })
 }
 
-/// Close every resource bound to `pane` (ADR-0104 §2) in the parent's lock,
-/// before the parent is reaped, so no client observes a child whose parent
-/// has left. Each child's frame is emitted by the parent's watcher; its own
-/// watcher later finds it already claimed.
+/// Close every descendant bound to `pane` (ADR-0104 §2) in the parent's
+/// lock, before the parent is reaped, so no client observes a child whose
+/// parent has left. Each descendant's frame is emitted by the parent's
+/// watcher; its own watcher later finds it already claimed.
 fn cascade_children(
     s: &mut crate::state::ServerState,
     pane: phux_core::ids::ResourceId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
 ) -> Vec<CascadedClose> {
+    // Deepest first: reaping a child via `remove_resource` would otherwise
+    // drop its children out of the registry before they are journaled
+    // (phux-v4tv). Reverse BFS is generation-deepest and keeps the
+    // existing one-child order a reversal of one element.
+    let descendants = s.resource_descendants(pane);
     let mut cascaded = Vec::new();
-    for child in s.resource_children(pane) {
+    for child in descendants.into_iter().rev() {
         let Some(recorded) = s.begin_resource_close(child) else {
             continue;
         };
@@ -1700,6 +1763,68 @@ fn cascade_children(
     cascaded
 }
 
+#[cfg(test)]
+mod cascade_close_tests {
+    use phux_core::process::ExitOutcome;
+    use phux_core::resource::AgentFacet;
+    use phux_protocol::wire::frame::CloseReason;
+
+    use super::reap_exited_pane;
+    use crate::state::ServerState;
+
+    fn agent(provider: &str) -> AgentFacet {
+        AgentFacet {
+            provider: provider.to_owned(),
+            native_id: None,
+            state: None,
+        }
+    }
+
+    #[test]
+    fn reap_cascades_through_grandchildren() {
+        let mut state = ServerState::new();
+        let (_session, _window, grandparent) = state.seed_session("main");
+        let child = state
+            .registry_mut()
+            .new_agent_session(grandparent, agent("child"))
+            .expect("child");
+        let grandchild = state
+            .registry_mut()
+            .new_agent_session(grandparent, agent("grandchild"))
+            .expect("grandchild seed");
+        state
+            .registry_mut()
+            .resource_mut(grandchild)
+            .expect("live")
+            .parent = Some(child);
+
+        let wire_grandparent = state.intern_terminal_wire(grandparent);
+        let wire_grandchild = state.intern_terminal_wire(grandchild);
+        let reap = reap_exited_pane(&mut state, grandparent, ExitOutcome::exited(0), None)
+            .expect("grandparent was live");
+
+        assert_eq!(reap.wire_terminal_id, wire_grandparent);
+        assert!(
+            reap.cascaded.iter().any(|c| {
+                c.wire_terminal_id == wire_grandchild && c.reason == CloseReason::ParentClosed
+            }),
+            "grandchild must be in the cascade with ParentClosed, not silently \
+             dropped when the child is reaped; got {:?}",
+            reap.cascaded
+                .iter()
+                .map(|c| (&c.wire_terminal_id, c.reason))
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            state.registry().resource(grandchild).is_none(),
+            "grandchild must leave the registry with its ancestor"
+        );
+        // Immediate children still cascade; this is the one-level case the
+        // previous helper covered, plus the grandchild.
+        assert_eq!(reap.cascaded.len(), 2);
+    }
+}
+
 /// The off-lock half of a close: the `pane-exit` hook when the exit was not
 /// already announced, `RESOURCE_CLOSED` (children first), the detach of a
 /// released keep-empty session's clients, and the phux-60s self-exit.
@@ -1718,6 +1843,7 @@ async fn announce_close(
         server_empty,
         served,
         killed_clients,
+        actor_token,
     } = reap;
     // docs/consumers/tui.md §9 (phux-r82.1): the inner process exited — the
     // `pane-exit` hook point. Fired off-lock (the hook helper re-takes the
@@ -1753,6 +1879,9 @@ async fn announce_close(
         .await;
     }
     broadcast_terminal_closed(&wire_terminal_id, &targets, exit, reason).await;
+    if let Some(token) = actor_token {
+        token.cancel();
+    }
 
     // ADR-0105: after the closes, so a client sees its last pane go before
     // the session that held it.
@@ -1772,8 +1901,42 @@ async fn announce_close(
     //     actor too, routing through here; don't log a spurious "self-exit"
     //     or double-cancel during normal teardown.
     if server_empty && served && !root_token.is_cancelled() {
+        // `send` only queues on the client mailbox. Cancelling in the same
+        // turn lets `handle_client`'s cancel arm win the biased select and
+        // close the transport before the writer flushes `RESOURCE_CLOSED`,
+        // so the TUI sees "lost the server" instead of the last-pane
+        // explanation (phux-fpgl.28). Wait until those writers have taken
+        // the close — then a few more turns for write+flush — before
+        // unlinking.
+        yield_until_close_frames_taken(&targets).await;
+        for child in &cascaded {
+            yield_until_close_frames_taken(&child.targets).await;
+        }
         info!("last session reaped after serving clients; server self-exit");
         root_token.cancel();
+    }
+}
+
+/// Yield until each client writer has taken the just-queued close frames,
+/// or a small turn budget expires.
+///
+/// Last-session self-exit must not cancel the root token while
+/// `RESOURCE_CLOSED` is still sitting in the mailbox (phux-fpgl.28).
+async fn yield_until_close_frames_taken(targets: &[tokio::sync::mpsc::Sender<Outbound>]) {
+    for _ in 0..256 {
+        if targets
+            .iter()
+            .all(|tx| tx.is_closed() || tx.capacity() == tx.max_capacity())
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    // Mailbox empty (or budget expired): the writer has the frames, or
+    // never will. Extra turns so `write_frames` + `flush` can complete
+    // before root cancel unlinks the socket.
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
     }
 }
 
@@ -1809,6 +1972,10 @@ struct ReapAndNotify {
     killed_clients: Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>,
     ///Whether any client has ever attached (arms the phux-60s self-exit).
     served: bool,
+    /// Actor token to cancel after `RESOURCE_CLOSED` is queued, so a fenced
+    /// pump can publish the last screen while the broadcast is still open
+    /// (phux-fpgl.28).
+    actor_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// One resource closed because its parent did (ADR-0104 §2), captured
@@ -1865,16 +2032,23 @@ pub(crate) async fn broadcast_terminal_closed(
             ?exit,
             "RESOURCE_CLOSED: broadcasting to subscribed clients",
         );
-        for tx in targets {
-            let _ = tx
-                .send(Outbound::Frame(FrameKind::ResourceClosed {
-                    terminal_id: wire_terminal_id.clone(),
-                    exit_status: exit.status,
-                    reason,
-                    signal: exit.signal,
-                }))
-                .await;
-        }
+        // Concurrent: sequential await let a stalled owner starve every
+        // other subscriber, so a lagged watcher never saw RESOURCE_CLOSED
+        // (phux-fpgl.28). The EOF snapshot is already parking on `send` in
+        // the addressed pump; do not delay close for occupancy.
+        let sends = targets.iter().map(|tx| {
+            let tx = tx.clone();
+            let frame = Outbound::Frame(FrameKind::ResourceClosed {
+                terminal_id: wire_terminal_id.clone(),
+                exit_status: exit.status,
+                reason,
+                signal: exit.signal,
+            });
+            async move {
+                let _ = tx.send(frame).await;
+            }
+        });
+        futures_util::future::join_all(sends).await;
     }
 }
 
@@ -2643,7 +2817,6 @@ fn classify_attach_id(
 /// without killing an otherwise valid connection, and never pass its bytes to
 /// the PTY.
 async fn dispatch_terminal_reply(
-    state: &SharedState,
     client_id: ClientId,
     selection: NegotiatedConnection,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -2660,7 +2833,7 @@ async fn dispatch_terminal_reply(
             .await;
         return;
     }
-    handle_terminal_reply(state, client_id, terminal_id, bytes);
+    handle_terminal_reply(client_id, terminal_id, &bytes);
 }
 
 /// Why one connection must end, and what the peer is owed on the way out
@@ -3821,7 +3994,6 @@ where
                     continue;
                 };
                 dispatch_terminal_reply(
-                    &state,
                     client_id,
                     *selection,
                     &terminal_id,
@@ -4474,6 +4646,7 @@ pub(crate) async fn handle_get_metadata(
     key: &str,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
+    kick_satellite_metadata_mirror(state, scope, key);
     let nonce_result = is_reserved_session_create_result(scope, key);
     let (value, speaks_l3) = state.with(|s| {
         (
@@ -4540,9 +4713,14 @@ fn read_metadata_value(
 /// connection and never stored, and an approval record is the server's
 /// account of a held action (ADR-0128).
 fn is_server_owned_key(key: &str) -> bool {
-    use phux_protocol::wire::frame::{APPROVAL_KEY_PREFIX, RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY};
+    use phux_protocol::wire::frame::{
+        APPROVAL_KEY_PREFIX, RESOURCE_ASKED_KEY, RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY,
+    };
 
-    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY || key.starts_with(APPROVAL_KEY_PREFIX)
+    key == RESOURCE_PANE_OCCUPANT_KEY
+        || key == RESOURCE_ASKED_KEY
+        || key == WHOAMI_KEY
+        || key.starts_with(APPROVAL_KEY_PREFIX)
 }
 
 #[derive(serde::Deserialize)]
@@ -5007,6 +5185,15 @@ fn reject_set_metadata(
         );
         return true;
     }
+    if is_satellite_terminal_scope(scope) {
+        warn!(
+            ?client_id,
+            request_id,
+            %key,
+            "SET_METADATA: satellite terminal metadata is read-only; ignoring"
+        );
+        return true;
+    }
     if is_server_owned_key(key) {
         warn!(
             ?client_id,
@@ -5217,6 +5404,15 @@ pub(crate) fn handle_delete_metadata(
     key: &str,
 ) {
     debug!(?client_id, request_id, ?scope, %key, "DELETE_METADATA");
+    if is_satellite_terminal_scope(scope) {
+        warn!(
+            ?client_id,
+            request_id,
+            %key,
+            "DELETE_METADATA: satellite terminal metadata is read-only; ignoring"
+        );
+        return;
+    }
     if is_reserved_session_create_result(scope, key) {
         warn!(
             ?client_id,
@@ -5294,32 +5490,60 @@ pub(crate) async fn handle_list_metadata(
     }
 }
 
+/// A satellite Terminal scope. Client writes of one are ignored (ADR-0136):
+/// the mirror is read-only, and every other key stays on the satellite.
+const fn is_satellite_terminal_scope(scope: &phux_protocol::wire::frame::Scope) -> bool {
+    matches!(
+        scope,
+        phux_protocol::wire::frame::Scope::Resource(
+            phux_protocol::ids::ResourceId::Satellite { .. }
+        )
+    )
+}
+
+/// Start the read-only agent-metadata mirror when `scope` names a satellite
+/// this hub routes and `key` is allowlisted. `false` otherwise.
+fn kick_satellite_metadata_mirror(
+    state: &SharedState,
+    scope: &phux_protocol::wire::frame::Scope,
+    key: &str,
+) -> bool {
+    state.with(|s| kick_satellite_metadata_mirror_locked(s, scope, key))
+}
+
+fn kick_satellite_metadata_mirror_locked(
+    state: &crate::state::ServerState,
+    scope: &phux_protocol::wire::frame::Scope,
+    key: &str,
+) -> bool {
+    let phux_protocol::wire::frame::Scope::Resource(terminal) = scope else {
+        return false;
+    };
+    if !crate::hub::metadata_mirror::is_mirrored_key(key) {
+        return false;
+    }
+    let Some((host, id)) = crate::hub::relay::satellite_route(terminal) else {
+        return false;
+    };
+    let Some(relay) = state.hub_relay(&host) else {
+        return false;
+    };
+    relay.mirror_terminal(id);
+    true
+}
+
 /// Refuse an L3 metadata subscription whose `Terminal` scope names a
 /// satellite pane, pushing the typed `ERROR` that says so (phux-w7z2.57).
 ///
 /// Returns `true` when the caller must abandon the subscription.
 ///
-/// # Why refuse rather than route
-///
-/// L3 metadata does not federate — at all. The hub relay
-/// ([`crate::hub::relay`]) forwards L1 commands and `SUBSCRIBE_EVENTS`;
-/// it carries no `GET`/`SET`/`SUBSCRIBE_METADATA` leg and no
-/// `METADATA_CHANGED` return leg, so the hub's metadata store holds nothing
-/// for a satellite pane and never will until federation is extended.
-/// Accepting the subscription anyway is the worst of the three options: the
-/// consumer believes it is watching a remote pane's `phux.agent/v1` record
-/// and blocks forever on a `METADATA_CHANGED` no code path can emit. That is
-/// the shape `phux agent wait host/@N` hit — it read the hub's (empty) store
-/// and reported `no_agent_record` for a live remote agent.
-///
-/// Routing is the eventual answer, but it is not this change. It needs a
-/// return leg that re-tags `Scope::Resource(Local(id))` to
-/// `Scope::Resource(Satellite { host, id })`, a decision about what `Global`
-/// and `Group` scopes even mean across a federation boundary. The federated
-/// `APPLY_INPUT` that lets a caller act on what it observed now exists (L1
-/// §9.1), so routing is worth having when it comes. A refusal is upgradeable to
-/// routing without breaking a single consumer: today's `ERROR` becomes
-/// tomorrow's `METADATA_CHANGED`, and nothing that works now stops working.
+/// The two agent keys in [`crate::hub::metadata_mirror`] are the exception
+/// on a hub that routes the host (ADR-0136): [`kick_satellite_metadata_mirror`]
+/// starts the read-only copy and the caller installs a local subscription
+/// against the retagged scope. Every other key, and those two keys on a
+/// server that does not route the host, still refuse. Accepting them
+/// silently is the outcome a consumer cannot recover from: with no reply
+/// frame, it blocks on a `METADATA_CHANGED` no code path can emit.
 ///
 /// # Why this code, and why it is not a wire change
 ///
@@ -5404,7 +5628,9 @@ pub(crate) fn handle_subscribe_metadata(
             debug!(?client_id, ?scope, %key, "SUBSCRIBE_METADATA refused (non-L3)");
             return;
         }
-        if refuse_satellite_metadata_scope(client_id, &scope, &key, out_tx) {
+        if kick_satellite_metadata_mirror_locked(s, &scope, &key) {
+            // Fall through: the subscription is on the hub's retagged scope.
+        } else if refuse_satellite_metadata_scope(client_id, &scope, &key, out_tx) {
             return;
         }
         // Cloned only for the post-call log line below; `scope` and `key`
@@ -7319,7 +7545,7 @@ mod satellite_metadata_subscription_tests {
     use phux_protocol::ids::{ResourceId as WireResourceId, SatelliteHost};
     use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope};
 
-    use super::handle_subscribe_metadata;
+    use super::{handle_delete_metadata, handle_set_metadata, handle_subscribe_metadata};
     use crate::state::{ClientId, Outbound, SharedState};
 
     const AGENT_KEY: &str = "phux.agent/v1";
@@ -7373,6 +7599,102 @@ mod satellite_metadata_subscription_tests {
             }
             other => panic!("expected a typed ERROR push, got {other:?}"),
         }
+    }
+
+    /// ADR-0136: on a hub that routes the host, the two agent keys install
+    /// a subscription and queue the mirror. A non-allowlisted key still
+    /// refuses, and a client cannot write the satellite scope.
+    #[test]
+    fn a_hub_mirrors_the_agent_allowlist_and_refuses_the_rest() {
+        use phux_protocol::wire::frame::RESOURCE_ASKED_KEY;
+
+        use crate::hub::relay::{HubRelays, RelayHandle, RelayRequest};
+
+        let state = SharedState::new();
+        let (handle, mut mailbox) = RelayHandle::new(SatelliteHost::new("gpubox"));
+        let relays = HubRelays::default();
+        relays.insert(handle);
+        state.with_mut(|s| s.set_hub_relays(relays));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(4);
+        let client = ClientId(3);
+        let scope = satellite_scope();
+
+        handle_subscribe_metadata(&state, client, scope.clone(), AGENT_KEY.to_owned(), &tx);
+        handle_subscribe_metadata(
+            &state,
+            client,
+            scope.clone(),
+            RESOURCE_ASKED_KEY.to_owned(),
+            &tx,
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an allowlisted subscribe on a routed host is not an error"
+        );
+        assert_eq!(
+            state
+                .with(|s| s.metadata().subscribers_for(&scope, AGENT_KEY))
+                .len(),
+            1
+        );
+        assert_eq!(
+            state
+                .with(|s| s.metadata().subscribers_for(&scope, RESOURCE_ASKED_KEY))
+                .len(),
+            1
+        );
+        assert!(matches!(
+            mailbox.requests.try_recv(),
+            Ok(RelayRequest::MirrorTerminal { terminal: 7 })
+        ));
+        // The second subscribe queues a second mirror; the session dedups.
+        assert!(matches!(
+            mailbox.requests.try_recv(),
+            Ok(RelayRequest::MirrorTerminal { terminal: 7 })
+        ));
+
+        handle_subscribe_metadata(
+            &state,
+            client,
+            scope.clone(),
+            "phux.tags/v1".to_owned(),
+            &tx,
+        );
+        match rx.try_recv() {
+            Ok(Outbound::Frame(FrameKind::Error { code, message, .. })) => {
+                assert_eq!(code, ErrorCode::UnsupportedSatelliteRoute);
+                assert!(message.contains("does not federate"), "{message}");
+                assert!(message.contains("phux.tags/v1"), "{message}");
+            }
+            other => panic!("expected a refusal of the non-allowlisted key, got {other:?}"),
+        }
+        assert!(
+            state
+                .with(|s| s.metadata().subscribers_for(&scope, "phux.tags/v1"))
+                .is_empty()
+        );
+
+        state.with_mut(|s| {
+            s.metadata_set(&scope, AGENT_KEY, br#"{"name":"reviewer"}"#.to_vec());
+        });
+        handle_set_metadata(
+            &state,
+            client,
+            1,
+            &scope,
+            AGENT_KEY,
+            b"overwrite".to_vec(),
+            &tokio_util::sync::CancellationToken::new(),
+        );
+        handle_delete_metadata(&state, client, 2, &scope, AGENT_KEY);
+        assert_eq!(
+            state
+                .with(|s| s.metadata().get(&scope, AGENT_KEY))
+                .as_deref(),
+            Some(&br#"{"name":"reviewer"}"#[..]),
+            "a client cannot write or delete a satellite terminal's metadata"
+        );
     }
 
     /// The refusal is scoped to satellite `Terminal` scopes only. A local
@@ -8646,6 +8968,56 @@ mod agent_drain_tests {
                     "while the kind — which they never supplied — tracks the pane",
                 );
                 assert_eq!(record.state, "idle");
+            })
+            .await;
+    }
+
+    /// phux-uaon: a human identity-only SET after the detector has already
+    /// published, then a subsequent detector write. The name must survive
+    /// even when the arbiter bit is missing — the store already holds the
+    /// identity-only bytes, and that is enough to merge.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_subsequent_detector_write_merges_over_an_identity_only_set() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
+                )
+                .await;
+                assert_eq!(
+                    stored(&state, &terminal).expect("detector published").name,
+                    "claude"
+                );
+
+                // Store-ahead of the arbiter: the SET landed, `note_explicit_set`
+                // has not. This is the race the integration test lost once.
+                let named = br#"{"name":"reviewer","session":"fleet-7"}"#;
+                state.with_mut(|s| {
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, named.to_vec());
+                });
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("merged");
+                assert_eq!(
+                    record.name, "reviewer",
+                    "human name survives the detector write"
+                );
+                assert_eq!(record.session.as_deref(), Some("fleet-7"));
+                assert_eq!(record.state, "blocked", "detector fills state");
+                assert_eq!(record.kind.as_deref(), Some("claude"));
             })
             .await;
     }

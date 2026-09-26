@@ -1,13 +1,14 @@
 //! Window chrome projection: the status-bar badge/hint composers, the
 //! window/agent row builders, and the single chrome-refresh chokepoint.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::ResourceLifecycle;
 
 use crate::attach::agent_rows::AgentSessionRows;
-use crate::attach::pane_state::{PaneSlot, VcsIndex};
+use crate::attach::pane_state::{ExitMark, PaneSlot, VcsIndex};
+use crate::attach::review::ReviewIndex;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
 use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter};
@@ -24,14 +25,27 @@ fn supervisory_badge(
     focused_resource: Option<&ResourceId>,
     own_client_id: Option<ClientId>,
 ) -> Option<String> {
-    let slot = panes.get(focused_resource?)?;
+    let id = focused_resource?;
+    let slot = panes.get(id)?;
     // ADR-0124: a retained pane's process is gone; how it ended is the whole
     // story, and no lease or brake applies to it any more.
     if let Some(mark) = slot.exited {
         return Some(format!("[ {} ]", mark.label()));
     }
+    // phux-lxov.1: a down satellite is the whole story until it returns.
+    if slot.satellite_down {
+        let name = id
+            .host()
+            .map_or("satellite", phux_protocol::SatelliteHost::as_str);
+        return Some(format!(" {name} down "));
+    }
     let frozen = matches!(slot.lifecycle, ResourceLifecycle::Frozen);
-    format_supervisory_badge(frozen, slot.input_holder, own_client_id)
+    format_supervisory_badge(
+        frozen,
+        slot.input_holder,
+        own_client_id,
+        id.host().map(phux_protocol::SatelliteHost::as_str),
+    )
 }
 
 /// Pure badge formatter (split out from [`supervisory_badge`] so the
@@ -41,19 +55,28 @@ fn format_supervisory_badge(
     frozen: bool,
     input_holder: Option<ClientId>,
     own_client_id: Option<ClientId>,
+    host: Option<&str>,
 ) -> Option<String> {
     let wheel = input_holder.map(|holder| {
         if Some(holder) == own_client_id {
-            "WHEEL:you".to_owned()
+            "wheel".to_owned()
         } else {
-            format!("WHEEL:c{}", holder.get())
+            format!("wheel:c{}", holder.get())
         }
     });
-    match (frozen, wheel) {
+    let base = match (frozen, wheel) {
         (false, None) => None,
-        (true, None) => Some("[ FROZEN ]".to_owned()),
-        (false, Some(w)) => Some(format!("[ {w} ]")),
-        (true, Some(w)) => Some(format!("[ FROZEN {w} ]")),
+        (true, None) => Some(" frozen ".to_owned()),
+        (false, Some(w)) => Some(format!(" {w} ")),
+        (true, Some(w)) => Some(format!(" frozen {w} ")),
+    };
+    match (host.filter(|host| !host.is_empty()), base) {
+        (None, badge) => badge,
+        (Some(host), None) => Some(format!(" {host} ")),
+        (Some(host), Some(badge)) => {
+            let inner = badge.trim();
+            Some(format!(" {host} {inner} "))
+        }
     }
 }
 
@@ -67,13 +90,13 @@ fn attention_hint(panes: &HashMap<ResourceId, PaneSlot>) -> Option<String> {
 
 /// Pure hint formatter (split out from [`attention_hint`] so the count→string
 /// mapping is testable without a libghostty-backed `PaneSlot`). `None` ⇒ no
-/// hint (nothing is asking). Plain ASCII chrome, matching the ADR-0033
-/// supervisory badge convention.
+/// hint (nothing is asking). Quiet lowercase chrome; the paint path still
+/// applies the attention color.
 fn format_attention_hint(asking: usize) -> Option<String> {
     match asking {
         0 => None,
-        1 => Some("[ ASK ]".to_owned()),
-        n => Some(format!("[ ASK x{n} ]")),
+        1 => Some(" ask ".to_owned()),
+        n => Some(format!(" ask·{n} ")),
     }
 }
 
@@ -88,38 +111,20 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
     static AGENTS: LazyLock<HashMap<ResourceId, AgentRecord>> = LazyLock::new(HashMap::new);
     static ATTENTION: LazyLock<std::collections::HashSet<ResourceId>> =
         LazyLock::new(std::collections::HashSet::new);
+    static WINDOWS: &[phux_protocol::wire::info::WindowInfo] = &[];
+    static RESOURCES: &[phux_protocol::wire::info::ResourceInfo] = &[];
+    static REVIEW: LazyLock<ReviewIndex> = LazyLock::new(ReviewIndex::new);
     crate::attach::sidebar_zones::PeerInputs {
         serving_host: None,
         hosts: &[],
         sessions: SESSIONS,
         focused_session: None,
+        windows: WINDOWS,
+        resources: RESOURCES,
         foreign_layouts: &LAYOUTS,
         foreign_agents: &AGENTS,
         foreign_attention: &ATTENTION,
-    }
-}
-
-/// Bundle the driver's peer-wide caches for the sidebar's cross-session
-/// zones (phux-k0cw).
-///
-/// A free function rather than a method so the call sites read the same at
-/// all eleven of them, and so a test can build one from synthetic state
-/// without standing up a driver.
-pub(super) const fn peer_inputs<'a>(
-    sessions: &'a [phux_protocol::wire::info::SessionInfo],
-    focused_session: Option<phux_protocol::ids::SessionId>,
-    foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
-    foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
-    foreign_attention: &'a std::collections::HashSet<ResourceId>,
-) -> crate::attach::sidebar_zones::PeerInputs<'a> {
-    crate::attach::sidebar_zones::PeerInputs {
-        serving_host: None,
-        hosts: &[],
-        sessions,
-        focused_session,
-        foreign_layouts,
-        foreign_agents,
-        foreign_attention,
+        review: &REVIEW,
     }
 }
 
@@ -156,7 +161,9 @@ pub(super) fn refresh_window_chrome(
     // how a 22-argument function happens (phux-jx39).
     peers: crate::attach::sidebar_zones::PeerInputs<'_>,
 ) -> bool {
-    let windows = window_infos(workspace, panes, zoomed, &agent_meta.records, vcs);
+    let mut windows = window_infos(workspace, panes, zoomed, &agent_meta.records, vcs);
+    let local = agent_entries(workspace, panes, agent_meta, agent_sessions, peers.review);
+    badge_windows(&mut windows, workspace, &local, sidebar_painter.theme());
     let mut changed = false;
     if let Some(sb) = status_bar {
         changed |= sb.set_windows(windows.clone());
@@ -172,19 +179,70 @@ pub(super) fn refresh_window_chrome(
         changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
     }
     changed |= sidebar_painter.set_windows(windows);
-    let local = agent_entries(workspace, panes, agent_meta, agent_sessions);
     changed |=
         sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(&peers, &local));
     // Stable navigation order; lifecycle changes only restyle existing rows.
-    changed |=
-        sidebar_painter.set_needs_you(crate::attach::sidebar_zones::needs_you_queue(local, &peers));
+    // Satellite agents append after that order, grouped by name then host.
+    let mut agents = crate::attach::sidebar_zones::needs_you_queue(local, &peers);
+    let mut open = HashSet::new();
+    for window in &workspace.windows {
+        if let Some(tree) = window.state.tree.as_ref() {
+            open.extend(crate::layout::leaves(tree));
+        }
+    }
+    agents.extend(crate::attach::sidebar_zones::satellite_agent_rows(
+        &peers, &open,
+    ));
+    changed |= sidebar_painter.set_needs_you(agents);
     changed
+}
+
+/// Give each window the badge of the agent in its focused pane.
+///
+/// Projected from the same [`agent_entries`] rows the sidebar paints, through
+/// the same [`agent_badge`](crate::render::chrome::agent_badge) vocabulary, so
+/// a tab, its sidebar row, and the pane's own title cannot disagree about
+/// state. The badge replaces the `(working)` text the label used to carry.
+pub(super) fn badge_windows(
+    windows: &mut [phux_config::widget::WindowInfo],
+    workspace: &Workspace,
+    agents: &[AgentEntry],
+    theme: &crate::render::Theme,
+) {
+    for (i, (info, window)) in windows.iter_mut().zip(&workspace.windows).enumerate() {
+        let focused_leaf = window.state.focus.as_ref().and_then(|focus| {
+            window
+                .state
+                .tree
+                .as_ref()
+                .map(crate::layout::leaves)
+                .and_then(|leaves| leaves.iter().position(|id| id == focus))
+        });
+        let Some(entry) = agents
+            .iter()
+            .find(|e| e.window == i && e.pane.is_some() && e.pane == focused_leaf)
+        else {
+            continue;
+        };
+        let badge =
+            crate::render::chrome::agent_badge(theme, entry.state, entry.attention, entry.seen);
+        info.badge = Some(phux_config::widget::WindowBadge {
+            glyph: badge.glyph.to_owned(),
+            style: phux_config::widget::CellStyle {
+                fg: Some(crate::render::theme::color_to_string(badge.color)),
+                bold: badge.emphatic,
+                ..phux_config::widget::CellStyle::default()
+            },
+        });
+    }
 }
 
 /// Snapshot the current workspace as the window widget's input.
 ///
-/// Labels prefer structured agent metadata, then the focused pane's cached
-/// OSC 0/2 title, then the stored window name.
+/// Labels prefer a name the user gave the window, then the structured agent
+/// name, then the focused pane's cached OSC 0/2 title, then the focused
+/// pane's working directory, then the auto-numbered stored name. Agent state
+/// is not part of the label: [`badge_windows`] carries it as a glyph.
 pub(super) fn window_infos(
     workspace: &Workspace,
     panes: &HashMap<ResourceId, PaneSlot>,
@@ -207,36 +265,104 @@ pub(super) fn window_infos(
             let focus = w.state.focus.as_ref();
             let agent_label = focus
                 .and_then(|fid| agent_meta.get(fid))
-                .map(AgentRecord::label);
+                .map(|record| record.name.clone());
             let title = focus
                 .and_then(|fid| panes.get(fid))
                 .map(|slot| slot.last_title.trim())
                 .filter(|title| !title.is_empty())
                 .map(ToOwned::to_owned);
             let active = i == workspace.active;
-            // phux-foz.1: a window carries attention when ANY of its leaves
-            // has the ADR-0035 asked flag set — not just the focused leaf —
-            // so a question in a background split still marks the tab.
-            let attention = w
+            let leaves = w
                 .state
                 .tree
                 .as_ref()
                 .map(crate::layout::leaves)
-                .unwrap_or_default()
+                .unwrap_or_default();
+            // phux-foz.1: a window carries attention when ANY of its leaves
+            // has the ADR-0035 asked flag set — not just the focused leaf —
+            // so a question in a background split still marks the tab.
+            let attention = leaves
                 .iter()
                 .any(|id| panes.get(id).is_some_and(|slot| slot.attention));
             // phux-p4vp: the branch line under the label — the focused
             // leaf's cwd resolved to its VCS branch (cached file read).
             let branch = focus.and_then(|fid| vcs.branch_for_pane(fid));
+            let place = focus
+                .and_then(|fid| panes.get(fid))
+                .and_then(|slot| slot.cwd.as_deref())
+                .and_then(cwd_basename);
+            // A name the user gave wins: it is the one label they chose.
+            // An auto-numbered window has not been named, so it takes the
+            // agent it runs, then the program's title, then where it is.
+            let explicit = (!auto_named(&w.name)).then(|| w.name.clone());
             phux_config::widget::WindowInfo {
-                name: agent_label.or(title).unwrap_or_else(|| w.name.clone()),
+                name: explicit
+                    .or(agent_label)
+                    .or(title)
+                    .or(place)
+                    .unwrap_or_else(|| w.name.clone()),
                 active,
                 zoomed: active && zoomed.is_some(),
                 attention,
                 branch,
+                exited: window_exited_mark(&leaves, focus, panes),
+                badge: None,
             }
         })
         .collect()
+}
+
+/// `true` for a name [`Workspace::default_window_name`] handed out: a bare
+/// positive integer. It carries no information, and beside the 0-based
+/// selector it reads as a second, disagreeing index (`4 3`), so the tab
+/// prefers where the window is working.
+fn auto_named(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Where an agent row says the agent is: the window's name when the user
+/// gave it one, otherwise the agent pane's working directory, otherwise the
+/// auto-numbered name. The row's right column already names the agent, so
+/// the locator must not repeat it.
+fn agent_locator(window_name: &str, slot: Option<&PaneSlot>) -> String {
+    if !auto_named(window_name) {
+        return window_name.to_owned();
+    }
+    slot.and_then(|slot| slot.cwd.as_deref())
+        .and_then(cwd_basename)
+        .unwrap_or_else(|| window_name.to_owned())
+}
+
+/// The last component of a working directory, `~` for the home directory
+/// itself. `None` for the filesystem root or an empty path.
+fn cwd_basename(cwd: &str) -> Option<String> {
+    let trimmed = cwd.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if std::env::var_os("HOME").is_some_and(|home| home == trimmed) {
+        return Some("~".to_owned());
+    }
+    trimmed
+        .rsplit('/')
+        .next()
+        .filter(|base| !base.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// ADR-0124 / phux-fpgl.33: compact exit status for chrome when any leaf is
+/// retained after its process exited. Prefer the focused pane's mark so the
+/// tab agrees with the focused-pane badge; otherwise the first exited leaf.
+fn window_exited_mark(
+    leaves: &[ResourceId],
+    focus: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> Option<String> {
+    let mark = |id: &ResourceId| panes.get(id).and_then(|slot| slot.exited);
+    focus
+        .and_then(mark)
+        .or_else(|| leaves.iter().find_map(mark))
+        .map(ExitMark::compact)
 }
 
 /// phux-foz.9: build the sidebar's agents-section entries — one per
@@ -267,6 +393,7 @@ pub(super) fn agent_entries(
     panes: &HashMap<ResourceId, PaneSlot>,
     agent_meta: &AgentMetaIndex,
     agent_sessions: &AgentSessionRows,
+    review: &ReviewIndex,
 ) -> Vec<AgentEntry> {
     let mut rows = Vec::new();
     for (i, w) in workspace.windows.iter().enumerate() {
@@ -279,13 +406,16 @@ pub(super) fn agent_entries(
         for (leaf, id) in leaves.iter().enumerate() {
             let base = AgentEntry {
                 session: None,
+                session_id: None,
+                resource: id.host().map(|_| id.clone()),
                 window: i,
-                window_name: w.name.clone(),
+                window_name: agent_locator(&w.name, panes.get(id)),
                 pane: Some(leaf),
                 name: String::new(),
                 state: AgentMetaState::Unknown,
                 attention: panes.get(id).is_some_and(|slot| slot.attention),
-                seen: panes.get(id).is_some_and(|slot| slot.seen),
+                host: id.host().map(|host| host.as_str().to_owned()),
+                seen: review.seen_or(id, panes.get(id).is_some_and(|slot| slot.seen)),
             };
             let record = agent_meta.records.get(id);
             if let Some(sessions) = agent_sessions.get(id).filter(|rows| !rows.is_empty()) {
@@ -337,11 +467,17 @@ fn advisory_agent_entry(base: AgentEntry, record: Option<&AgentRecord>) -> Optio
 /// chrome event happens to recompute [`agent_entries`].
 pub(super) fn mark_focused_seen(
     panes: &mut HashMap<ResourceId, PaneSlot>,
+    review: &mut ReviewIndex,
     focused_resource: Option<&ResourceId>,
 ) -> bool {
-    focused_resource
-        .and_then(|fid| panes.get_mut(fid))
-        .is_some_and(|slot| !std::mem::replace(&mut slot.seen, true))
+    let Some(id) = focused_resource else {
+        return false;
+    };
+    let flipped = review.mark_seen(id);
+    if let Some(slot) = panes.get_mut(id) {
+        slot.seen = true;
+    }
+    flipped
 }
 
 #[cfg(test)]
@@ -378,11 +514,13 @@ mod tests {
             signal: Some(9),
         };
         assert_eq!(signalled.label(), "exited signal 9");
+        assert_eq!(signalled.compact(), "sig9");
         let unknown = ExitMark {
             status: None,
             signal: None,
         };
         assert_eq!(unknown.label(), "exited");
+        assert_eq!(unknown.compact(), "");
     }
 
     #[test]
@@ -392,27 +530,51 @@ mod tests {
         // holder is "you" only when it matches this client's own id.
         let me = ClientId::new(7);
         let other = ClientId::new(9);
-        assert_eq!(format_supervisory_badge(false, None, Some(me)), None);
+        assert_eq!(format_supervisory_badge(false, None, Some(me), None), None);
         assert_eq!(
-            format_supervisory_badge(true, None, Some(me)).as_deref(),
-            Some("[ FROZEN ]")
+            format_supervisory_badge(true, None, Some(me), None).as_deref(),
+            Some(" frozen ")
         );
         assert_eq!(
-            format_supervisory_badge(false, Some(me), Some(me)).as_deref(),
-            Some("[ WHEEL:you ]")
+            format_supervisory_badge(false, Some(me), Some(me), None).as_deref(),
+            Some(" wheel ")
         );
         assert_eq!(
-            format_supervisory_badge(false, Some(other), Some(me)).as_deref(),
-            Some("[ WHEEL:c9 ]")
+            format_supervisory_badge(false, Some(other), Some(me), None).as_deref(),
+            Some(" wheel:c9 ")
         );
         assert_eq!(
-            format_supervisory_badge(true, Some(other), Some(me)).as_deref(),
-            Some("[ FROZEN WHEEL:c9 ]")
+            format_supervisory_badge(true, Some(other), Some(me), None).as_deref(),
+            Some(" frozen wheel:c9 ")
         );
         // No own id yet (pre-ATTACHED): a holder still renders by id, never "you".
         assert_eq!(
-            format_supervisory_badge(false, Some(me), None).as_deref(),
-            Some("[ WHEEL:c7 ]")
+            format_supervisory_badge(false, Some(me), None, None).as_deref(),
+            Some(" wheel:c7 ")
+        );
+        // phux-lxov.1: a satellite pane badges its host on the status bar,
+        // beside any lease or brake already shown.
+        assert_eq!(
+            format_supervisory_badge(false, None, Some(me), Some("devbox")).as_deref(),
+            Some(" devbox ")
+        );
+        assert_eq!(
+            format_supervisory_badge(true, None, Some(me), Some("devbox")).as_deref(),
+            Some(" devbox frozen ")
+        );
+    }
+
+    /// phux-lxov.1: the status bar names a down satellite, and the layout
+    /// leaf that owns the slot is not this function's to remove.
+    #[test]
+    fn a_down_satellite_pane_badges_its_host_on_the_status_bar() {
+        let id = ResourceId::satellite("devbox", 7);
+        let mut slot = crate::attach::pane_state::PaneSlot::new().expect("slot");
+        slot.satellite_down = true;
+        let panes = HashMap::from([(id.clone(), slot)]);
+        assert_eq!(
+            supervisory_badge(&panes, Some(&id), None).as_deref(),
+            Some(" devbox down ")
         );
     }
 
@@ -422,8 +584,8 @@ mod tests {
     #[test]
     fn attention_hint_formats_every_count() {
         assert_eq!(format_attention_hint(0), None);
-        assert_eq!(format_attention_hint(1).as_deref(), Some("[ ASK ]"));
-        assert_eq!(format_attention_hint(3).as_deref(), Some("[ ASK x3 ]"));
+        assert_eq!(format_attention_hint(1).as_deref(), Some(" ask "));
+        assert_eq!(format_attention_hint(3).as_deref(), Some(" ask·3 "));
     }
 
     /// phux-foz.1: `window_infos` marks a window when ANY of its leaves has
@@ -467,6 +629,83 @@ mod tests {
             &mut VcsIndex::default(),
         );
         assert!(!infos[1].attention);
+    }
+
+    /// phux-fpgl.33: `window_infos` marks a window when ANY of its leaves is
+    /// retained after exit — including a non-focused leaf — and only that window.
+    #[test]
+    fn window_infos_flags_exited_on_the_retained_window() {
+        let front = ResourceId::local(1);
+        let back = ResourceId::local(2);
+        let mut workspace = Workspace::single(front.clone());
+        workspace.add_window("2".to_owned(), back.clone());
+        workspace.select(0);
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+        panes.insert(front, PaneSlot::new_with_size(80, 24).expect("slot"));
+        let mut retained = PaneSlot::new_with_size(80, 24).expect("slot");
+        retained.exited = Some(ExitMark {
+            status: Some(3),
+            signal: None,
+        });
+        panes.insert(back, retained);
+
+        let infos = window_infos(
+            &workspace,
+            &panes,
+            None,
+            &HashMap::new(),
+            &mut VcsIndex::default(),
+        );
+        assert_eq!(
+            infos[0].exited.as_deref(),
+            None,
+            "live window stays unmarked"
+        );
+        assert_eq!(
+            infos[1].exited.as_deref(),
+            Some("3"),
+            "the retained (background) window carries the compact status"
+        );
+    }
+
+    /// phux-fpgl.33: a split whose unfocused leaf is retained still marks
+    /// the window, so the tab/sidebar show it without focusing that pane.
+    #[test]
+    fn window_infos_marks_a_split_when_the_unfocused_leaf_exited() {
+        use crate::layout::{LayoutNode, LayoutState, SplitDir};
+        let live = ResourceId::local(1);
+        let dead = ResourceId::local(2);
+        let mut workspace = Workspace::single(live.clone());
+        workspace.windows[0].state = LayoutState {
+            tree: Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Leaf(live.clone())),
+                right: Box::new(LayoutNode::Leaf(dead.clone())),
+            }),
+            focus: Some(live.clone()),
+        };
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+        panes.insert(live, PaneSlot::new_with_size(80, 24).expect("slot"));
+        let mut retained = PaneSlot::new_with_size(80, 24).expect("slot");
+        retained.exited = Some(ExitMark {
+            status: None,
+            signal: Some(9),
+        });
+        panes.insert(dead, retained);
+
+        let infos = window_infos(
+            &workspace,
+            &panes,
+            None,
+            &HashMap::new(),
+            &mut VcsIndex::default(),
+        );
+        assert_eq!(
+            infos[0].exited.as_deref(),
+            Some("sig9"),
+            "unfocused retained leaf still marks the window"
+        );
     }
 
     #[test]
@@ -553,8 +792,8 @@ mod tests {
 
         let infos = window_infos(&workspace, &panes, None, &records, &mut VcsIndex::default());
         assert_eq!(
-            infos[0].name, "!reviewer (blocked)",
-            "structured record must beat the OSC title"
+            infos[0].name, "reviewer",
+            "structured record must beat the OSC title; state rides the badge, not the label"
         );
     }
 
@@ -621,6 +860,7 @@ mod tests {
             &panes,
             &meta_index(records.clone()),
             &HashMap::new(),
+            &ReviewIndex::new(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
@@ -631,7 +871,13 @@ mod tests {
 
         // Visiting changes the badge in place.
         panes.get_mut(&done).expect("slot").seen = true;
-        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["w", "d", "b"], "review does not move the row");
     }
@@ -676,78 +922,28 @@ mod tests {
         let meta = meta_index(records);
 
         // Completion stays in its original row while unreviewed.
-        let names: Vec<String> = agent_entries(&workspace, &panes, &meta, &HashMap::new())
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
+        let names: Vec<String> = agent_entries(
+            &workspace,
+            &panes,
+            &meta,
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        )
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
         assert_eq!(names, vec!["w", "d"], "completion preserves row order");
 
         // Prime the painters against that (stale) view — this is the paint the
         // focus action itself produced, one iteration before the flip.
         let mut sidebar_painter = SidebarPainter::new(crate::render::Theme::default());
         let mut vcs = VcsIndex::default();
-        refresh_window_chrome(
-            None,
-            &mut sidebar_painter,
-            &workspace,
-            &panes,
-            Some(&done),
-            None,
-            None,
-            &meta,
-            &mut vcs,
-            &HashMap::new(),
-            no_peers(),
-        );
-
-        // The user is now looking at the finished pane.
-        assert!(
-            mark_focused_seen(&mut panes, Some(&done)),
-            "the first mark after a focus change must report the flip"
-        );
-
-        // The flip must repaint the glyph without moving the row.
-        let chrome_changed = refresh_window_chrome(
-            None,
-            &mut sidebar_painter,
-            &workspace,
-            &panes,
-            Some(&done),
-            None,
-            None,
-            &meta,
-            &mut vcs,
-            &HashMap::new(),
-            no_peers(),
-        );
-        assert!(
-            chrome_changed,
-            "the seen flip must dirty the chrome, or nothing repaints the strip"
-        );
-        let entries = agent_entries(&workspace, &panes, &meta, &HashMap::new());
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["w", "d"], "the reviewed row keeps its place");
-        // Only the FOCUSED pane's row is reviewed — the background `working`
-        // one is still unvisited, and the glyph derives from this bit.
-        let reviewed: Vec<(&str, bool)> =
-            entries.iter().map(|e| (e.name.as_str(), e.seen)).collect();
-        assert_eq!(
-            reviewed,
-            vec![("w", false), ("d", true)],
-            "the focused pane's row — and only it — must carry the reviewed bit"
-        );
-
-        // Steady state: no flip, no chrome change, no paint.
-        assert!(
-            !mark_focused_seen(&mut panes, Some(&done)),
-            "re-marking an already-seen pane must not report a flip"
-        );
-        assert!(
-            !refresh_window_chrome(
+        let mut refresh = |painter: &mut SidebarPainter, panes: &HashMap<ResourceId, PaneSlot>| {
+            refresh_window_chrome(
                 None,
-                &mut sidebar_painter,
+                painter,
                 &workspace,
-                &panes,
+                panes,
                 Some(&done),
                 None,
                 None,
@@ -755,7 +951,37 @@ mod tests {
                 &mut vcs,
                 &HashMap::new(),
                 no_peers(),
-            ),
+            )
+        };
+        refresh(&mut sidebar_painter, &panes);
+
+        // The user is now looking at the finished pane.
+        let mut review = ReviewIndex::new();
+        assert!(
+            mark_focused_seen(&mut panes, &mut review, Some(&done)),
+            "the first mark after a focus change must report the flip"
+        );
+
+        assert!(
+            refresh(&mut sidebar_painter, &panes),
+            "the seen flip must dirty the chrome, or nothing repaints the strip"
+        );
+        let entries = agent_entries(&workspace, &panes, &meta, &HashMap::new(), &review);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.name.as_str(), e.seen))
+                .collect::<Vec<_>>(),
+            vec![("w", false), ("d", true)],
+            "the focused pane's row stays put and is the only reviewed bit"
+        );
+
+        assert!(
+            !mark_focused_seen(&mut panes, &mut review, Some(&done)),
+            "re-marking an already-seen pane must not report a flip"
+        );
+        assert!(
+            !refresh(&mut sidebar_painter, &panes),
             "an unchanged chrome must stay zero-cost"
         );
     }
@@ -794,7 +1020,13 @@ mod tests {
         index.change_at.insert(fresh, now);
         // `never` has no clock entry at all.
 
-        let entries = agent_entries(&workspace, &panes, &index, &HashMap::new());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &index,
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["old", "fresh", "never"]);
     }
@@ -820,7 +1052,13 @@ mod tests {
             },
         );
 
-        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].window, 0);
         assert_eq!(
@@ -851,6 +1089,7 @@ mod tests {
             &panes,
             &AgentMetaIndex::default(),
             &HashMap::new(),
+            &ReviewIndex::new(),
         );
         assert!(
             entries.is_empty(),
@@ -877,7 +1116,13 @@ mod tests {
             },
         );
 
-        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
         assert!(entries[0].attention);
     }
 
@@ -911,7 +1156,13 @@ mod tests {
             }],
         );
 
-        let entries = agent_entries(&workspace, &panes, &meta_index(records), &sessions);
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &sessions,
+            &ReviewIndex::new(),
+        );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "reviewer", "the record names the row");
         assert_eq!(
@@ -951,7 +1202,13 @@ mod tests {
             ],
         );
 
-        let entries = agent_entries(&workspace, &panes, &AgentMetaIndex::default(), &sessions);
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &AgentMetaIndex::default(),
+            &sessions,
+            &ReviewIndex::new(),
+        );
         let names: Vec<(&str, AgentMetaState)> =
             entries.iter().map(|e| (e.name.as_str(), e.state)).collect();
         // Stream declaration order survives differing states.
@@ -994,5 +1251,79 @@ mod tests {
             &mut VcsIndex::default(),
         );
         assert!(!infos[0].zoomed && !infos[1].zoomed);
+    }
+
+    /// An auto-numbered window has not been named, so its tab says where it
+    /// is working instead of a second number beside the selector.
+    #[test]
+    fn an_auto_numbered_window_is_labelled_by_where_it_works() {
+        let id = ResourceId::local(1);
+        let workspace = Workspace::single(id.clone());
+        let (_, _, mut panes) = published_test_state(&[(&id, 80, 24, b"")]);
+        panes.get_mut(&id).expect("slot").cwd = Some("/src/phux/".to_owned());
+        let infos = window_infos(
+            &workspace,
+            &panes,
+            None,
+            &HashMap::new(),
+            &mut VcsIndex::default(),
+        );
+        assert_eq!(infos[0].name, "phux");
+    }
+
+    /// A name the user gave is the label they chose; it outranks the agent
+    /// record and the program's title.
+    #[test]
+    fn a_name_the_user_gave_beats_the_agent_and_the_title() {
+        let id = ResourceId::local(1);
+        let mut workspace = Workspace::single(id.clone());
+        workspace.windows[0].name = "deploy".to_owned();
+        let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;~/src\x07")]);
+        let records = HashMap::from([(
+            id,
+            AgentRecord {
+                name: "claude".to_owned(),
+                ..AgentRecord::default()
+            },
+        )]);
+        let infos = window_infos(&workspace, &panes, None, &records, &mut VcsIndex::default());
+        assert_eq!(infos[0].name, "deploy");
+    }
+
+    /// The tab badge is the focused pane's agent badge, from the same
+    /// vocabulary the sidebar paints.
+    #[test]
+    fn badge_windows_marks_the_focused_agent() {
+        let id = ResourceId::local(1);
+        let workspace = Workspace::single(id.clone());
+        let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"")]);
+        let mut infos = window_infos(
+            &workspace,
+            &panes,
+            None,
+            &HashMap::new(),
+            &mut VcsIndex::default(),
+        );
+        let agents = vec![AgentEntry {
+            session: None,
+            session_id: None,
+            resource: None,
+            window: 0,
+            window_name: "1".to_owned(),
+            pane: Some(0),
+            name: "claude".to_owned(),
+            state: AgentMetaState::Working,
+            attention: false,
+            host: None,
+            seen: true,
+        }];
+        let theme = crate::render::Theme::default();
+        badge_windows(&mut infos, &workspace, &agents, &theme);
+        let badge = infos[0].badge.as_ref().expect("badged");
+        assert_eq!(badge.glyph, crate::render::chrome::AGENT_WORKING_GLYPH);
+        assert_eq!(
+            badge.style.fg.as_deref(),
+            Some(crate::render::theme::color_to_string(theme.agent_working).as_str())
+        );
     }
 }

@@ -5,7 +5,7 @@ use super::{
     Bytes, EncodedInputRequest, InputEncoderSnapshot, PANE_KILL_POLL, PANE_KILL_REAP_BUDGET,
     PaneOutput, PasteOutcome, PtyOwned, PtySize, ResyncAudience, ResyncReason, SizeReportSize,
     SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion, debug, error, exit_outcome, mpsc,
-    trace, warn,
+    oneshot, trace, warn,
 };
 
 impl TerminalActor {
@@ -25,11 +25,14 @@ impl TerminalActor {
         &self,
         scrollback: Option<u32>,
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            return Err(crate::grid::SynthesisError::TerminalUnavailable);
+        };
         // phux-uow0: the full snapshot uses a fresh RenderState internally, so
         // it needs only a shared borrow.
         let synth = self.synth.borrow();
-        synth.synthesize_with_scrollback(&terminal, scrollback)
+        synth.synthesize_with_scrollback(terminal, scrollback)
     }
 
     pub(super) fn synthesize_with_scrollback_bounded(
@@ -37,9 +40,12 @@ impl TerminalActor {
         scrollback: Option<u32>,
         max_bytes: usize,
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            return Err(crate::grid::SynthesisError::TerminalUnavailable);
+        };
         let synth = self.synth.borrow();
-        synth.synthesize_with_scrollback_bounded(&terminal, scrollback, max_bytes)
+        synth.synthesize_with_scrollback_bounded(terminal, scrollback, max_bytes)
     }
 
     /// Project the current `Terminal` grid into a structured
@@ -75,13 +81,16 @@ impl TerminalActor {
         cells: bool,
         format: u8,
     ) -> Result<phux_core::screen::ScreenState, crate::grid::SynthesisError> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            return Err(crate::grid::SynthesisError::TerminalUnavailable);
+        };
         // Shared borrow: the read goes through a fresh per-call
         // `RenderState` (see the synthesizer body), so it never contends
         // with the tick path's `&mut` use of the pooled state.
         let synth = self.synth.borrow();
-        let mut screen = synth.screen_state_with_scrollback(&terminal, pane, scrollback, cells)?;
-        match synth.render_screen(&terminal, scrollback, format) {
+        let mut screen = synth.screen_state_with_scrollback(terminal, pane, scrollback, cells)?;
+        match synth.render_screen(terminal, scrollback, format) {
             Ok(rendered) => screen.rendered = rendered,
             Err(err @ crate::grid::SynthesisError::RenderBudgetExceeded { .. }) => return Err(err),
             Err(err) => {
@@ -107,8 +116,14 @@ impl TerminalActor {
     /// Publish the complete terminal-derived encoder state after a terminal
     /// mutation. Capture failures retain the previous good snapshot.
     pub(super) fn publish_input_snapshot(&self) {
-        let terminal = self.terminal.borrow();
-        match InputEncoderSnapshot::capture(&terminal, self.cell_px) {
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            // On loan to a capture. The snapshot the encoders already hold
+            // stays valid, and the cut's return is followed by a resync.
+            trace!("input snapshot skipped: canonical terminal is on loan");
+            return;
+        };
+        match InputEncoderSnapshot::capture(terminal, self.cell_px) {
             Ok(snapshot) => {
                 self.input_snapshot_tx.send_replace(snapshot);
             }
@@ -136,26 +151,34 @@ impl TerminalActor {
         &self,
         input: &TerminalInput,
     ) -> Result<Option<Vec<u8>>, libghostty_vt::Error> {
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            // Encoding reads terminal modes (DECCKM, kitty flags, DEC 2004),
+            // so it cannot be done without the terminal. `Ok(None)` is this
+            // function's existing "deliberately dropped" answer; the gated
+            // input arms keep this out of the production path.
+            trace!("input dropped: canonical terminal is on loan to a capture");
+            return Ok(None);
+        };
         match input {
             TerminalInput::Key(event) => {
                 let mut enc = self.key_enc.borrow_mut();
-                let bytes = enc.encode(event, &terminal)?;
+                let bytes = enc.encode(event, terminal)?;
                 Ok(Some(bytes.to_vec()))
             }
             TerminalInput::Mouse(event) => {
                 let mut enc = self.mouse_enc.borrow_mut();
-                let bytes = enc.encode(event, &terminal, self.cell_px)?;
+                let bytes = enc.encode(event, terminal, self.cell_px)?;
                 Ok(Some(bytes.to_vec()))
             }
             TerminalInput::Focus(event) => {
                 let mut enc = self.focus_enc.borrow_mut();
-                let bytes = enc.encode(*event, &terminal)?;
+                let bytes = enc.encode(*event, terminal)?;
                 Ok(bytes.map(<[u8]>::to_vec))
             }
             TerminalInput::Paste(event) => {
                 let mut enc = self.paste_enc.borrow_mut();
-                match enc.encode(event, &terminal)? {
+                match enc.encode(event, terminal)? {
                     PasteOutcome::Encoded(bytes) => Ok(Some(bytes.to_vec())),
                     PasteOutcome::Rejected => Ok(None),
                 }
@@ -304,7 +327,9 @@ impl TerminalActor {
             // requested dims: on error (e.g. a clamped 0 that still failed)
             // the grid is unchanged, so caching the request would desync
             // the cache from the real grid size.
-            (term.cols().unwrap_or(cols), term.rows().unwrap_or(rows))
+            term.try_terminal().map_or((cols, rows), |t| {
+                (t.cols().unwrap_or(cols), t.rows().unwrap_or(rows))
+            })
         };
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         {
@@ -477,7 +502,9 @@ impl TerminalActor {
     }
 
     /// React to PTY EOF (the child went away): detach the PTY-read branch
-    /// and notify the runtime so it can broadcast `RESOURCE_CLOSED`.
+    /// and record the exit facet. `exit_notify` is fired by the run loop
+    /// *after* it flushes any pending gap resync, so a fenced consumer still
+    /// gets the last screen before `RESOURCE_CLOSED` (phux-fpgl.28).
     ///
     /// Dropping `pty_rx` parks the pump's `select!` arm forever, but the
     /// actor deliberately stays alive — it must remain reachable for
@@ -488,16 +515,113 @@ impl TerminalActor {
     /// lets attached clients learn the shell exited instead of freezing in
     /// alt-screen.)
     ///
-    /// TODO(phux-9gw): multi-pane lifecycle — when a session has more than
-    /// one pane, a single EOF should switch focus to a sibling rather than
-    /// detach the whole session. Today sessions are 1:1 with panes in
-    /// practice so the simpler "EOF → detach attached" model is correct.
+    /// The runtime decides whether this EOF closes the pane or replaces the
+    /// child with a fresh default shell (last live Terminal in the session).
     pub(super) fn handle_pty_eof(&mut self) {
-        debug!("PTY EOF; firing exit_notify and keeping actor alive for late snapshot/input drain");
+        debug!("PTY EOF; recording exit and keeping actor alive for a final resync flush");
         self.pty_rx = None;
         let exit = self.reap_child_if_any();
         self.record_exit(exit);
-        self.core.notify_exit(exit);
+    }
+
+    /// Spawn a replacement child in this same Terminal after PTY EOF.
+    pub(super) fn replace_child(
+        &mut self,
+        mut cmd: portable_pty::CommandBuilder,
+    ) -> Result<oneshot::Receiver<phux_core::process::ExitOutcome>, String> {
+        self.apply_replacement_cwd(&mut cmd);
+        self.release_pty_after_exit();
+        self.reset_for_replacement();
+        let spawned = super::spawn_pty(cmd, self.cols, self.rows).map_err(|err| err.to_string())?;
+        self.install_replacement_pty(spawned)?;
+        Ok(self.core.arm_exit_notify())
+    }
+
+    fn apply_replacement_cwd(&self, cmd: &mut portable_pty::CommandBuilder) {
+        let cwd = self.last_known_cwd.borrow();
+        if !cwd.is_empty() {
+            cmd.cwd(cwd.as_str());
+        }
+    }
+
+    pub(super) fn reset_for_replacement(&mut self) {
+        self.exit = None;
+        self.lifecycle = super::ResourceLifecycle::Running;
+        self.osc133 = super::osc133::Osc133Scanner::new();
+        self.prompt = super::osc133::PromptTracker::default();
+        self.last_title.clear();
+        self.last_progress.clear();
+        self.in_output_burst = false;
+        self.output_since_idle_tick = false;
+        // Land every in-flight native cut BEFORE the reset. A pending
+        // bootstrap owns the canonical terminal (it is moved into the
+        // snapshot capture for the duration), and this path is reached
+        // exactly when a client may be attaching: `handle_pty_eof` keeps the
+        // actor alive precisely so a `SnapshotRequest` racing the child's
+        // exit still finds it. Resetting while the terminal is on loan used
+        // to hit `NativeTerminalManager::reset`'s `unreachable!` and abort
+        // the whole server process, taking every session on it with it.
+        //
+        // Invalidating is also the honest answer: the screen the cut
+        // captured is about to be cleared, so any cursor derived from it is
+        // stale. `install_replacement_pty` broadcasts an everyone-resync
+        // right after, which is the resync the tombstoned pumps need, so the
+        // returned targets need no separate address (phux-p5bo).
+        self.land_native_cuts();
+        self.terminal.borrow_mut().reset_for_new_child();
+    }
+
+    /// Fail any in-flight native bootstrap and tombstone every outstanding
+    /// cursor, returning the canonical terminal to the manager.
+    ///
+    /// A native bootstrap capture MOVES the canonical terminal out of
+    /// `NativeTerminalManager` for the length of the cut (up to
+    /// `NATIVE_CAPTURE_LIFETIME`), so any path that touches the terminal
+    /// while one is in flight aborts the process — release builds are
+    /// `panic = "abort"`, and this server holds every session the user has.
+    /// The `select!` arms that can reach the terminal are gated on
+    /// `!bootstrap_pending`; the teardown paths below run OUTSIDE those
+    /// guards, so they land the cut instead.
+    ///
+    /// Landing is also the honest answer on those paths: the pane is exiting
+    /// or being replaced, so the screen the cut captured is already stale.
+    ///
+    /// No-op on a build without the native engine, which never loans the
+    /// terminal out.
+    pub(super) fn land_native_cuts(&mut self) {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        {
+            let _ = self
+                .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Other);
+        }
+    }
+
+    fn install_replacement_pty(
+        &mut self,
+        spawned: (
+            mpsc::Receiver<super::PtyEvent>,
+            mpsc::Sender<super::EncodedInputRequest>,
+            super::PtyOwned,
+        ),
+    ) -> Result<(), String> {
+        let (pty_rx, pty_tx, pty) = spawned;
+        self.pty_rx = Some(pty_rx);
+        self.pty_tx = Some(pty_tx);
+        self.pty = Some(pty);
+        let facts = super::process_facet::ChildFacts::capture(self.pty.as_ref());
+        self.child_start_ms = facts.start_ms;
+        self.released_child_pid = None;
+        if !facts.cwd.is_empty() {
+            self.last_known_cwd.borrow_mut().clone_from(&facts.cwd);
+            self.cwd_announced.set(false);
+        }
+        self.terminal
+            .borrow_mut()
+            .reinstall_pty_write(&self.size_report, self.pty_tx.as_ref())
+            .map_err(|err| err.to_string())?;
+        self.publish_input_snapshot();
+        self.broadcast_resync(ResyncReason::Resize, super::ResyncAudience::Everyone);
+        Ok(())
     }
 
     /// Let go of a retained pane's PTY once its process has exited
@@ -726,6 +850,31 @@ fn hangup_pane_groups(groups: &[nix::unistd::Pid]) -> bool {
 async fn await_pane_group_exit(pty: &mut PtyOwned, groups: &[nix::unistd::Pid]) -> bool {
     use nix::errno::Errno;
     use nix::sys::signal::killpg;
+
+    // Tests may gate the ceiling on an observed trap-started marker so
+    // a starved `/bin/sh` does not spend the flush budget waiting to
+    // be scheduled (phux-ko7j). Production has no gate: the deadline
+    // starts here, as it always has. Groups that already exited return
+    // on the first poll in either case.
+    #[cfg(test)]
+    if let Some(gate) = super::pane_kill_grace_gate() {
+        let hold = tokio::time::Instant::now() + super::PANE_KILL_GRACE_GATE_WAIT;
+        loop {
+            if let Err(err) = pty.child.try_wait() {
+                debug!(?err, "try_wait during pane-kill grace gate failed");
+            }
+            if groups
+                .iter()
+                .all(|&group| matches!(killpg(group, None), Err(Errno::ESRCH)))
+            {
+                return true;
+            }
+            if gate.exists() || tokio::time::Instant::now() >= hold {
+                break;
+            }
+            tokio::time::sleep(PANE_KILL_POLL).await;
+        }
+    }
 
     let deadline = tokio::time::Instant::now() + super::pane_kill_grace();
     while tokio::time::Instant::now() < deadline {

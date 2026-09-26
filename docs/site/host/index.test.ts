@@ -67,3 +67,32 @@ describe("markdown negotiation", () => {
     expect(response.headers.get("location")).toBe("https://docs.phux.sh/docs");
   });
 });
+
+describe("telemetry ingest", () => {
+  test("rejects a mismatched key", async () => {
+    const response = await handler.fetch(
+      new Request("https://phux.sh/api/telemetry/ingest", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telemetry-key": "nope",
+        },
+        body: JSON.stringify({ events: [] }),
+      }),
+      { ...assetsOf(PAGE), TELEMETRY_INGEST_KEY: "secret" },
+    );
+    expect(response.status).toBe(403);
+  });
+
+  test("rejects a missing key", async () => {
+    const response = await handler.fetch(
+      new Request("https://phux.sh/api/telemetry/ingest", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ events: [] }),
+      }),
+      assetsOf(PAGE),
+    );
+    expect(response.status).toBe(403);
+  });
+});

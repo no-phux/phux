@@ -14,12 +14,12 @@ against `phux gen-reference-docs` output and fails on any drift, so
 hand edits do not survive. Regenerate with `just docs-gen`.
 -->
 
-Each section below is the verbatim `--help` text for one invocation path, rendered by the same argument parser the binary runs — flags, defaults, value names, and descriptions here are the ones the binary enforces. Hidden internal subcommands are omitted, exactly as they are from `--help` itself.
+Each section below is the `--help` text for one invocation path, rendered by the same argument parser the binary runs — flags, defaults, value names, and descriptions here are the ones the binary enforces. The root page omits the live crate version that `--help` prints (`phux <version>`), so a release bump does not churn this file. Hidden internal subcommands are omitted, exactly as they are from `--help` itself.
 
 ## `phux`
 
 ```text
-phux 0.39.0
+phux
 A terminal multiplexer you can drive by hand or script.
 
 Run `phux` alone to attach to your session; every other verb is headless.
@@ -64,7 +64,7 @@ Machines:
   host          Add and manage the machines phux reaches [aliases: machine]
   server        Run a server in the foreground
   service       Keep a server running across logout and reboot
-  pair          Mint, rotate, or revoke remote credentials
+  pair          Mint, rotate, revoke, list, or prune remote credentials
   relay         Run a standalone relay, or enroll a route with it
   workload      Manage the mTLS workload authority
 
@@ -858,10 +858,10 @@ Remote host:
                                   half names the ssh destination used to pair;
                                   it is not sent on the wire.
       --code <LINK>               Pair `--remote` from a
-                                  `https://phux.phall.io/connect?...` link (or
-                                  its `phux://connect?...` spelling) instead of
-                                  over ssh — the same link `phux pair` prints
-                                  and `phux pair --qr` renders. Quote it: it
+                                  `https://phux.sh/connect?...` link (or its
+                                  `phux://connect?...` spelling) instead of over
+                                  ssh — the same link `phux pair` prints and
+                                  `phux pair --qr` renders. Quote it: it
                                   contains `&`.
       --no-enroll                 Never shell out to ssh for `--remote`. An
                                   unregistered host is refused with its remedies
@@ -893,9 +893,7 @@ Attach role:
                                   into none. The server refuses this attach's
                                   input, and widening it takes a fresh attach
                                   without the flag, which every watcher sees.
-                                  Your viewport still sizes the panes, and an
-                                  app waiting on a terminal-query reply times
-                                  out.
+                                  Your viewport still sizes the panes.
       --take                      Attach and take the wheel: seize the input
                                   lease of every pane this attach opens, in the
                                   same step as the attach. The previous holder
@@ -921,6 +919,7 @@ Bare `phux channel` reports the rail this install follows and what is published
 there. `phux channel next` follows green `main`; `phux channel latest` (also
 `stable`) follows the numbered GitHub releases. Switching persists the choice
 and runs the same update path as `phux update --channel`, so live panes survive.
+An installed Phux Cockpit switches with it.
 
 Examples:
 phux channel
@@ -1317,11 +1316,18 @@ directions; this verb absorbs the split into a flag.
 Usage: phux host <SUBCOMMAND>
 
 Commands:
-  add   Add a machine so `phux attach NAME` reaches it.
-  ls    List registered machines from both registries. [aliases: list]
-  rm    Remove a registered machine. Its token file is left in place. [aliases:
-        remove]
-  help  Print this message or the help of the given subcommand(s)
+  add      Add a machine so `phux attach NAME` reaches it.
+  attach   Attach to a registered remote host (same as `phux attach NAME`).
+  disable  Disable a satellite on the hub's next start without forgetting it.
+  enable   Enable a satellite for the local hub on its next start.
+  ls       List registered machines from both registries. [aliases: list]
+  rename   Rename a registered machine without changing its route or
+           credentials.
+  rm       Remove a registered machine. Its token file is left in place.
+           [aliases: remove]
+  show     Show a registered machine, including its route and credential
+           references.
+  help     Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -1398,6 +1404,63 @@ Global flags:
       --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux host attach`
+
+```text
+Attach to a registered remote host (same as `phux attach NAME`).
+
+Usage: phux host attach <NAME>
+
+Arguments:
+  <NAME>  Registered remote name.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host disable`
+
+```text
+Disable a satellite on the hub's next start without forgetting it.
+
+Usage: phux host disable [--json] <NAME>
+
+Arguments:
+  <NAME>  Registered satellite name.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host enable`
+
+```text
+Enable a satellite for the local hub on its next start.
+
+Usage: phux host enable [--json] <NAME>
+
+Arguments:
+  <NAME>  Registered satellite name.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux host ls`
 
 ```text
@@ -1410,6 +1473,29 @@ Usage: phux host ls [--role <ROLE>] [--json]
 
 Flags:
       --role <ROLE>    Show only this registry.
+                       [possible values: remote, satellite]
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host rename`
+
+```text
+Rename a registered machine without changing its route or credentials.
+
+Usage: phux host rename [--role <ROLE>] [--json] <NAME> <NEW_NAME>
+
+Arguments:
+  <NAME>      Current registered name.
+  <NEW_NAME>  New local label (does not rename the machine over the network).
+
+Flags:
+      --role <ROLE>
                        [possible values: remote, satellite]
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
@@ -1436,6 +1522,28 @@ Arguments:
 Flags:
       --role <ROLE>    Which registry to remove from. Omitted: both are
                        searched.
+                       [possible values: remote, satellite]
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host show`
+
+```text
+Show a registered machine, including its route and credential references.
+
+Usage: phux host show [--role <ROLE>] [--json] <NAME>
+
+Arguments:
+  <NAME>  Registered name.
+
+Flags:
+      --role <ROLE>    Disambiguate a name present in both registries.
                        [possible values: remote, satellite]
       --json           Emit stable, versioned JSON on stdout instead of the
                        human view. On failure, stdout stays empty and stderr
@@ -1787,54 +1895,105 @@ Global flags:
 ## `phux pair`
 
 ```text
-Mint, rotate, or revoke remote credentials
+Mint, rotate, revoke, list, or prune remote credentials
 
 With no subcommand, mint one credential into the server's store and print its
-stable ID, one-time bearer secret, and certificate fingerprint. `rotate`
-replaces the bearer with a bounded overlap; `revoke` denies all generations on
-future connections. These operations update the store directly and take effect
-without restarting the server.
+stable ID, one-time bearer secret, and certificate fingerprint. `ls` lists ids
+with mint time, last seen, and revoked status; `prune --unused-for DURATION`
+revokes idle credentials; `rotate` replaces the bearer with a bounded overlap;
+`revoke` denies all generations on future connections. These operations update
+the store directly and take effect without restarting the server.
 
 This never contacts a running server — it only writes the token file.
 
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
 Commands:
+  ls      List credentials in the store (id, minted, last seen, revoked).
+  prune   Revoke credentials unused for at least DURATION.
   revoke  Revoke every generation of a credential for new connections.
   rotate  Replace a credential's bearer secret with a bounded overlap.
   help    Print this message or the help of the given subcommand(s)
 
 Flags:
-      --tokens <PATH>     Versioned credential store to update. Defaults to
-                          `PHUX_WS_TOKENS`.
-      --cert <PATH>       Server certificate PEM, used to print the pairing
-                          fingerprint. Defaults to `PHUX_WS_TLS_CERT`.
-      --qr                Also render the pairing payload as a scannable QR
-                          code. The QR encodes the same
-                          `https://phux.phall.io/connect` one-tap link printed
-                          as text, so a phone can pair by scanning instead of
-                          typing. Needs a server address: pass `--host`, or let
-                          it fall back to a detected overlay address plus the
-                          `PHUX_WS_ADDR` port.
-      --host <HOST:PORT>  Server address (`host:port`, or a full
-                          `ws://`/`wss://` URL) to embed in the connect link so
-                          it is fully self-contained. Omitted: derived from the
-                          detected overlay address and the `PHUX_WS_ADDR` port
-                          when possible; otherwise no link is printed (the
-                          device enters the address itself).
-      --name <NAME>       Human-readable server name to embed in the connect
-                          link, shown by the device in its server list. Omitted:
-                          the device picks a default.
-      --json              Emit the mint, rotation, or revocation result as JSON
-                          on stdout. `phux host add` consumes the mint document
-                          over ssh.
-      --migrate-legacy    Explicitly convert legacy anonymous token lines before
-                          pairing. Conversion preserves each bearer secret but
-                          stores only its verifier.
-  -h, --help              Print help
+      --tokens <PATH>        Versioned credential store to update. Defaults to
+                             `PHUX_WS_TOKENS`.
+      --cert <PATH>          Server certificate PEM, used to print the pairing
+                             fingerprint. Defaults to `PHUX_WS_TLS_CERT`.
+      --qr                   Also render the pairing payload as a scannable QR
+                             code. The QR encodes the same
+                             `https://phux.sh/connect` one-tap link printed as
+                             text, so a phone can pair by scanning instead of
+                             typing. Needs a server address: pass `--host`, or
+                             let it fall back to a detected overlay address plus
+                             the `PHUX_WS_ADDR` port.
+      --host <HOST:PORT>     Server address (`host:port`, or a full
+                             `ws://`/`wss://` URL) to embed in the connect link
+                             so it is fully self-contained. Omitted: derived
+                             from the detected overlay address and the
+                             `PHUX_WS_ADDR` port when possible; otherwise no
+                             link is printed (the device enters the address
+                             itself).
+      --name <NAME>          Human-readable server name to embed in the connect
+                             link, shown by the device in its server list.
+                             Omitted: the device picks a default.
+      --json                 Emit the mint, rotation, revocation, list, or prune
+                             result as JSON on stdout. `phux host add` consumes
+                             the mint document over ssh.
+      --migrate-legacy       Explicitly convert legacy anonymous token lines
+                             before pairing. Conversion preserves each bearer
+                             secret but stores only its verifier.
+      --replace-token <HEX>  When minting, revoke any live credential whose
+                             bearer matches this hex token first. `phux host
+                             add` passes the previously enrolled token so
+                             re-enrollment does not leave abandoned live
+                             credentials.
+  -h, --help                 Print help
 
 Global flags:
-      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux pair ls`
+
+```text
+List credentials in the store (id, minted, last seen, revoked).
+
+Usage: phux pair ls
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --tokens <PATH>  Versioned credential store to update. Defaults to
+                       `PHUX_WS_TOKENS`.
+      --json           Emit the mint, rotation, revocation, list, or prune
+                       result as JSON on stdout. `phux host add` consumes the
+                       mint document over ssh.
+```
+
+## `phux pair prune`
+
+```text
+Revoke credentials unused for at least DURATION.
+
+Usage: phux pair prune <--unused-for <DURATION>>
+
+Flags:
+      --unused-for <DURATION>  How long a credential may sit idle before prune
+                               revokes it (`30d`, `24h`, `90m`, or a bare number
+                               of seconds). Idle time is `last_seen` when
+                               recorded, otherwise the mint time.
+  -h, --help                   Print help
+
+Global flags:
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+      --tokens <PATH>          Versioned credential store to update. Defaults to
+                               `PHUX_WS_TOKENS`.
+      --json                   Emit the mint, rotation, revocation, list, or
+                               prune result as JSON on stdout. `phux host add`
+                               consumes the mint document over ssh.
 ```
 
 ## `phux pair revoke`
@@ -1854,9 +2013,9 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
       --tokens <PATH>  Versioned credential store to update. Defaults to
                        `PHUX_WS_TOKENS`.
-      --json           Emit the mint, rotation, or revocation result as JSON on
-                       stdout. `phux host add` consumes the mint document over
-                       ssh.
+      --json           Emit the mint, rotation, revocation, list, or prune
+                       result as JSON on stdout. `phux host add` consumes the
+                       mint document over ssh.
 ```
 
 ## `phux pair rotate`
@@ -1884,9 +2043,9 @@ Global flags:
                                   `$PHUX_SOCKET`)
       --tokens <PATH>             Versioned credential store to update. Defaults
                                   to `PHUX_WS_TOKENS`.
-      --json                      Emit the mint, rotation, or revocation result
-                                  as JSON on stdout. `phux host add` consumes
-                                  the mint document over ssh.
+      --json                      Emit the mint, rotation, revocation, list, or
+                                  prune result as JSON on stdout. `phux host
+                                  add` consumes the mint document over ssh.
 ```
 
 ## `phux paste`
@@ -2610,26 +2769,28 @@ Global flags:
 Run a command in a pane and capture its exit code.
 
 Reports the command's exit code, output, and duration. Brackets the command with
-sentinels to capture `$?`, so it assumes a POSIX shell (sh/bash/zsh). The
-process exit code mirrors the command's — and is 125 when `phux` gives up on
-`--timeout` — so `phux run … && next` composes like a shell. The timeout is one
-budget for the whole run — connecting, target resolution, input submission, and
-every screen read — so a server that stops answering still ends the run on time.
-Input is never started after the timeout, and once started it gets up to 2 more
-seconds to finish, so the pane is not left holding a half-typed line; the
-diagnostic says whether nothing, all, or possibly part of the input was
-delivered. Giving up does not stop the command or retract input already
-delivered. TARGET is a selector (see the top-level help), resolved client-side
-to one pane; the command routes to it by id (no attach, no resize).
+sentinels to capture `$?`, so it assumes a POSIX shell (sh/bash/zsh) — and
+refuses (exit 2) when a shell is not what is reading the pane, since against
+`vim` or `less` the same bytes are keystrokes, not a command; `--force` skips
+that precondition. The process exit code mirrors the command's — and is 125 when
+`phux` gives up on `--timeout` — so `phux run … && next` composes like a shell.
+The timeout is one budget for the whole run — connecting, target resolution,
+input submission, and every screen read — so a server that stops answering still
+ends the run on time. Input is never started after the timeout, and once started
+it gets up to 2 more seconds to finish, so the pane is not left holding a
+half-typed line; the diagnostic says whether nothing, all, or possibly part of
+the input was delivered. Giving up does not stop the command or retract input
+already delivered. TARGET is a selector (see the top-level help), resolved
+client-side to one pane; the command routes to it by id (no attach, no resize).
 
-Flags (`--timeout`, `--json`, `--socket`) MUST precede TARGET, or they are
-swallowed into the trailing command.
+Flags (`--timeout`, `--force`, `--json`, `--socket`) MUST precede TARGET, or
+they are swallowed into the trailing command.
 
 Examples:
 phux run build "cargo test"
 phux run --timeout 30 work:1.0 "cargo test"
 
-Usage: phux run [--timeout <SECS>] [--json] <TARGET> <COMMAND>…
+Usage: phux run [FLAGS] <TARGET> <COMMAND>…
 
 Arguments:
   <TARGET>    Target selector: session, session:window, session:window.pane,
@@ -2642,6 +2803,8 @@ Flags:
                         submitting the command, and every screen read share the
                         one budget; input that has started gets up to 2s more to
                         finish. Default: 600s. Pass 0 to wait indefinitely.
+      --force           Skip the available-shell precondition. Types the command
+                        line into the pane whatever is running there.
       --json            Emit stable, versioned JSON on stdout instead of the
                         human view. On failure, stdout stays empty and stderr
                         carries one JSON error object.
@@ -2725,6 +2888,10 @@ Flags:
                                   on stderr. Startup is bounded to 10 seconds,
                                   including lock contention. Does not attach or
                                   create another session on an existing server.
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
       --session <SESSION>         Name of the pre-seeded session. Matches what
                                   `phux attach <name>` will request.
                                   (default: default)
@@ -3342,6 +3509,10 @@ printed instead — and an unrecognized location is refused rather than
 overwritten.
 
 The previous binaries are kept beside the new ones; `--rollback` puts them back.
+
+On macOS, an installed Phux Cockpit follows the same channel: it is reported by
+`--check` and reinstalled through the Cockpit installer when it is behind. A
+Homebrew Cockpit gets `brew upgrade` instead.
 
 Examples:
 phux update --check

@@ -6,10 +6,12 @@ all-features = true
 
 [advisories]
 yanked = "deny"
-# No advisories are currently ignored. The previous ignores
-# (RUSTSEC-2017-0008 for the unmaintained `serial` crate, RUSTSEC-2024-0436
-# for the unmaintained `paste` crate) are no longer needed: portable-pty 0.9
-# uses the maintained `serial2` crate, and ratatui 0.30 dropped `paste`.
+# Unmaintained notices are actionable for direct workspace dependencies. UniFFI
+# 0.28 (retained by phux-mobile ADR-0031) still carries unmaintained `paste` and
+# `bincode` transitively, with no compatible upgrade that avoids them; security
+# vulnerabilities and yanks remain denied across the complete graph.
+unmaintained = "workspace"
+# No advisories are ignored.
 ignore = []
 
 [licenses]

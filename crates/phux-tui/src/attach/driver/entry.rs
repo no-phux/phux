@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use phux_protocol::caps::OutputMode;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use tracing::Instrument as _;
 
@@ -422,20 +423,35 @@ fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) 
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "switch carries the same pending-focus and connection-lifetime \
+              locals the re-attach handshake already threads; a bag type \
+              would only rename the list"
+)]
 async fn switch_session<W: crate::attach::RenderSink>(
     conn: &mut Connection,
     out: &mut W,
     target: ReattachTarget,
     pending_window: &mut Option<usize>,
     pending_pane: &mut Option<usize>,
+    pending_resource: &mut Option<ResourceId>,
     orphan_kills: &mut super::orphans::OrphanKills,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<FrameKind, AttachError> {
     // Lifecycle transition (info): switching sessions on the same
     // connection. `?target` names the destination.
     tracing::info!(?target, "attach loop: SWITCH_TO; re-attaching");
-    let attached =
-        reattach_on_same_connection(conn, target, pending_window, pending_pane, orphan_kills)
-            .await?;
+    let attached = reattach_on_same_connection(
+        conn,
+        target,
+        pending_window,
+        pending_pane,
+        pending_resource,
+        orphan_kills,
+        review,
+    )
+    .await?;
     let _ = write_terminal_clear(out);
     Ok(attached)
 }
@@ -552,14 +568,17 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // the SwitchTo arm below, consumed by `main_loop` once the target's
     // persisted layout loads. phux-jpqd: `pending_pane` is the pane half
     // of a one-step cross-session pane pick (`switch-session { .., pane }`).
+    // phux-ah84: `pending_resource` is the authoritative graph identity
+    // (`switch-session { .., resource }`) used when no TUI layout exists yet.
     let mut pending_window: Option<usize> = None;
     let mut pending_pane: Option<usize> = None;
-    // The window sidebar's runtime on/off state, handed back by each
-    // `LoopExit::SwitchTo` and fed into the next `main_loop` entry. `None` on
-    // the first attach so `[sidebar] enabled` decides. Unlike `pending_window`
-    // / `pending_pane` this is deliberately NOT `take`n — it persists for the
-    // life of the attach, across any number of switches.
-    let mut carried_sidebar_enabled: Option<bool> = None;
+    let mut pending_resource: Option<ResourceId> = None;
+    // The window sidebar's runtime state (on/off and width), handed back by
+    // each `LoopExit::SwitchTo` and fed into the next `main_loop` entry.
+    // `None` on the first attach so `[sidebar]` decides. Unlike
+    // `pending_window` / `pending_pane` this is deliberately NOT `take`n — it
+    // persists for the life of the attach, across any number of switches.
+    let mut carried_sidebar: Option<CarriedSidebar> = None;
     // phux-i0e8.2.3: hand the reconnect notice to the first `main_loop`
     // entry only (same `take` pattern as the onboarding hint above): a
     // session switch re-enters `main_loop` but is not a reconnect.
@@ -568,9 +587,13 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // handed out by each `LoopExit::SwitchTo` and into the next entry, so the
     // record lives as long as this connection, not one session's loop.
     let mut orphan_kills = super::orphans::OrphanKills::default();
+    let mut review = crate::attach::review::ReviewIndex::new();
     loop {
         let claim = onboarding_claim.take();
-        let exit = match main_loop(
+        // Boxed: the session loop's state machine is large, and inlining it
+        // here pushed every caller's attach future past clippy's
+        // `large_futures` limit. One allocation per attach or switch.
+        let exit = match Box::pin(main_loop(
             &mut conn,
             dial,
             attached,
@@ -582,10 +605,12 @@ async fn attach_session<W: crate::attach::RenderSink>(
             initial_notice.take(),
             pending_window.take(),
             pending_pane.take(),
-            carried_sidebar_enabled,
+            pending_resource.take(),
+            carried_sidebar,
             input_replay.clone(),
             std::mem::take(&mut orphan_kills),
-        )
+            std::mem::take(&mut review),
+        ))
         .await
         {
             Ok(exit) => exit,
@@ -621,21 +646,25 @@ async fn attach_session<W: crate::attach::RenderSink>(
             }
             LoopExit::SwitchTo {
                 target,
-                sidebar_enabled,
+                sidebar,
                 orphan_kills: carried_orphans,
+                review: carried_review,
             } => {
                 // The sidebar is the human's chrome, not the session's. Carry
-                // the toggle into the next entry so the strip does not blink
-                // shut on every space switch.
-                carried_sidebar_enabled = Some(sidebar_enabled);
+                // the toggle and a dragged width into the next entry so the
+                // strip neither blinks shut nor snaps back on a space switch.
+                carried_sidebar = Some(sidebar);
                 orphan_kills = carried_orphans;
+                review = carried_review;
                 attached = switch_session(
                     &mut conn,
                     out,
                     target,
                     &mut pending_window,
                     &mut pending_pane,
+                    &mut pending_resource,
                     &mut orphan_kills,
+                    &mut review,
                 )
                 .await?;
             }
@@ -659,20 +688,31 @@ async fn attach_session<W: crate::attach::RenderSink>(
 /// phux-foz.8: a one-step window pick carries a target window, stashed in
 /// `pending_window` for the next `main_loop` entry, which resolves it once the
 /// new session's layout loads. phux-jpqd: a foreign fleet row also carries a
-/// target pane, resolved after the window select.
+/// target pane, resolved after the window select. phux-ah84: a graph-discovered
+/// agent row carries a `ResourceId`, resolved from the ATTACHED inventory
+/// even when no TUI layout has been persisted.
 async fn reattach_on_same_connection(
     conn: &mut Connection,
     target: ReattachTarget,
     pending_window: &mut Option<usize>,
     pending_pane: &mut Option<usize>,
+    pending_resource: &mut Option<ResourceId>,
     orphan_kills: &mut super::orphans::OrphanKills,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
-    detach_and_drain(conn, orphan_kills).await?;
+    detach_and_drain(conn, orphan_kills, review).await?;
     let attach_target = match target {
-        ReattachTarget::Existing { name, window, pane } => {
+        ReattachTarget::Existing {
+            name,
+            id,
+            window,
+            pane,
+            resource,
+        } => {
             *pending_window = window;
             *pending_pane = pane;
-            AttachTarget::ByName(name)
+            *pending_resource = resource;
+            id.map_or(AttachTarget::ByName(name), AttachTarget::ById)
         }
         ReattachTarget::Create(name) => create_session_target(name),
     };
@@ -718,9 +758,15 @@ pub(super) fn create_session_target(name: String) -> AttachTarget {
 /// session. It sees each drained frame, so the reply to an orphan kill still
 /// settles and a satellite pane answering a spawn the old loop parked is
 /// remembered as a stray to kill later.
+///
+/// phux-deya: the review index is the other exception. Agent metadata (and
+/// unparsed `AgentSession` output) that lands in this window must still
+/// fold, or an identical GET after re-attach cannot recover a missed
+/// done-working-done cycle.
 async fn detach_and_drain(
     conn: &mut Connection,
     orphan_kills: &mut super::orphans::OrphanKills,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<(), AttachError> {
     conn.send(&FrameKind::Detach).await?;
     loop {
@@ -735,6 +781,7 @@ async fn detach_and_drain(
             }
             other => {
                 tracing::trace!(kind = ?other, "draining frame during session switch");
+                review.observe_switch_drain(&other);
                 orphan_kills.observe_switch_drain(other, std::time::Instant::now());
             }
         }
@@ -769,6 +816,10 @@ fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
 ///   for a new one), then re-enters `main_loop` with the new ATTACHED frame
 ///   and freshly-rebuilt session state.
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "SwitchTo carries the full re-attach request including resource identity"
+)]
 pub(super) enum LoopExit {
     /// The session ended (detach / server DETACHED / last pane closed).
     /// Carries WHY (phux-i0e8.2.2) so the teardown path can explain a
@@ -790,12 +841,16 @@ pub(super) enum LoopExit {
         /// human's chrome, not the session's, and switching spaces does not
         /// change which window they are looking at. Without carrying it out,
         /// the next entry re-seeds the strip from `[sidebar] enabled` and
-        /// silently reverts a `toggle-sidebar` the user made.
-        sidebar_enabled: bool,
+        /// silently reverts a `toggle-sidebar` the user made. The width rides
+        /// along for the same reason: a dragged edge must not snap back.
+        sidebar: CarriedSidebar,
         /// phux-c2td.23: the stray satellite panes this client still owes a
         /// kill, including the ones the switch itself strands. Connection
         /// state, not session state, so it rides into the next entry.
         orphan_kills: super::orphans::OrphanKills,
+        /// phux-deya: per-identity review status for this connection. Session
+        /// loops rebuild pane slots; this does not.
+        review: crate::attach::review::ReviewIndex,
     },
 }
 
@@ -811,6 +866,18 @@ pub(super) const fn detached_loop_exit(end: AttachEnd, local_intent: bool) -> Lo
         end,
         locally_requested: is_local_detach(end, local_intent),
     }
+}
+
+/// The sidebar state one `main_loop` entry hands the next across an
+/// in-process session switch. Runtime-only: neither field is ever written
+/// to `config.toml` (ADR-0101 decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CarriedSidebar {
+    /// `toggle-sidebar`'s current state.
+    pub enabled: bool,
+    /// The strip width when a drag moved it away from `[sidebar] width`;
+    /// `None` lets the next entry's config load decide, as before.
+    pub width: Option<u16>,
 }
 
 /// The window sidebar's enabled flag at `main_loop` entry.

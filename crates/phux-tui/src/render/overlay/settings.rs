@@ -55,7 +55,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::select_list::{WHEEL_SCROLL_ROWS, fuzzy_score};
-use super::widgets::{Modal, centered_panel, paint_scrollbar, scroll_into_view};
+use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::theme::SLOT_SPECS;
 use crate::render::{ChromeBreakpoints, Theme, clip_text, display_width};
@@ -75,9 +75,9 @@ const DETAIL_ROWS: u16 = 6;
 /// Rows the detail panel keeps on a row-starved viewport.
 const DETAIL_ROWS_COMPACT: u16 = 2;
 /// Rows of the modal box that are not list rows on a roomy layout: the two
-/// borders, the query line and its blank, the footer and its blank, and the
-/// rule above the detail panel.
-const FIXED_ROWS: u16 = 7;
+/// borders, the query line and its blank, and the rule above the detail
+/// panel.
+const FIXED_ROWS: u16 = 5;
 /// Width of the origin badge column, including its leading gap.
 const BADGE_COLS: usize = 9;
 
@@ -600,10 +600,10 @@ impl SettingsOverlay {
 
     // ---- rendering ------------------------------------------------------
 
-    /// The modal rect: 80% of the viewport, at least 60x16, full-bleed on a
-    /// starved axis.
+    /// The modal rect: 70% of the viewport, at least 60x16, full-bleed on a
+    /// starved axis. Smaller than a page, larger than a picker.
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        centered_panel(outer, 8, 60, 16, bp)
+        centered_panel(outer, 7, 60, 16, bp)
     }
 
     /// Whether the interior is wide enough for the section column.
@@ -945,16 +945,12 @@ impl SettingsOverlay {
 
     /// The header row: the filter prompt on the left, the file on the right.
     fn header_row(&self, width: usize) -> Line<'static> {
-        let query_text = if self.query.is_empty() && self.editor.is_none() {
-            "filter\u{2026}".to_owned()
-        } else {
-            self.query.clone()
-        };
+        let query_text = self.query.clone();
         let prompt_w = 2 + display_width(&query_text) + 1;
         let path = clip_text(&self.display_path, width.saturating_sub(prompt_w + 2));
         let pad = width.saturating_sub(prompt_w + display_width(&path));
         Line::from(vec![
-            Span::styled("> ".to_owned(), Style::default().fg(self.theme.accent)),
+            Span::styled("> ".to_owned(), Style::default().fg(self.theme.dim)),
             Span::styled(
                 query_text,
                 if self.query.is_empty() {
@@ -1027,22 +1023,6 @@ impl SettingsOverlay {
             lines.push(Line::from(spans));
         }
         lines
-    }
-
-    fn footer_hints(&self) -> Vec<&'static str> {
-        if self.editor.is_some() {
-            vec!["Enter apply", "Esc cancel", "C-u clear"]
-        } else {
-            vec![
-                "Enter edit",
-                "\u{2190}/\u{2192} step",
-                "Del reset",
-                "C-z undo",
-                "Tab section",
-                "type to filter",
-                "Esc close",
-            ]
-        }
     }
 }
 
@@ -1329,7 +1309,7 @@ fn cell_coord(value: f64) -> u16 {
 impl RenderOverlay for SettingsOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal = Self::modal_area(area, self.breakpoints);
-        let inner_width = modal.width.saturating_sub(2);
+        let inner_width = modal_inner_width(modal.width);
         let width = usize::from(inner_width);
         let two_column = Self::use_two_columns(inner_width, area, self.breakpoints);
         let detail = Self::detail_rows(area, self.breakpoints);
@@ -1356,9 +1336,7 @@ impl RenderOverlay for SettingsOverlay {
         }
         lines.extend(detail_lines);
 
-        Modal::new(&self.theme, "Settings", lines)
-            .footer_hints(self.footer_hints())
-            .render_into(modal, buf);
+        Modal::new(&self.theme, "Settings", lines).render_into(modal, buf);
 
         // Scrollbar over the setting rows only.
         let list_top = modal.y.saturating_add(3);

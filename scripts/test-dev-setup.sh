@@ -10,11 +10,13 @@ bin="$scratch/bin"
 mkdir -p "$repo/scripts/lib" "$repo/.config" "$bin"
 cp "$root"/scripts/{doctor,setup-rust,install-zig}.sh "$repo/scripts/"
 cp "$root/scripts/lib/dev-toolchain.sh" "$repo/scripts/lib/"
+cp "$root/scripts/lib/apple-toolchain-env.sh" "$repo/scripts/lib/"
 cp "$root/rust-toolchain.toml" "$repo/"
+cp "$root/mise.toml" "$repo/"
 cp "$root/.config/zig-toolchain.json" "$repo/.config/"
 source "$root/scripts/lib/dev-toolchain.sh"
 bash_bin="$BASH"
-for tool in dirname basename sed head awk git grep find sort mkdir mktemp rm mv tar uname tr; do
+for tool in dirname basename sed head awk git grep find sort mkdir mktemp rm mv tar uname tr chmod; do
     ln -s "$(command -v "$tool")" "$bin/$tool"
 done
 if command -v sha256sum >/dev/null 2>&1; then
@@ -78,7 +80,13 @@ MD
 printf '| `0x07` | `BOGUS`       | [L1.md](./L1.md) | shipped |\n' >>"$repo/docs/spec/appendix-reserved.md"
 expect_fail 'more than one row for command tag 0x07' "$repo/scripts/check-docs.sh" --only=spec-id-unique
 expect_fail 'usage:' "$repo/scripts/doctor.sh" typo
-expect_fail 'bash scripts/setup-rust.sh core' "$repo/scripts/doctor.sh" core
+# Doctor names Mise/Nix first; the rustup helper is the native-CI fallback.
+# Unset IN_NIX_SHELL so a leftover Nix shell from the runner cannot flip the
+# remedy (the fixture PATH has no compilers either way).
+unset IN_NIX_SHELL
+expect_fail 'mise install' "$repo/scripts/doctor.sh" core
+grep -Fq 'bash scripts/setup-rust.sh core' "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
+IN_NIX_SHELL=1 expect_fail 'nix develop should provide this' "$repo/scripts/doctor.sh" core
 rm -f "$bin/uname"
 cat >"$bin/uname" <<'SH'
 #!/bin/sh
@@ -87,7 +95,12 @@ SH
 cat >"$bin/rustc" <<SH
 #!/bin/sh
 test "\$RUSTUP_AUTO_INSTALL" = 0 || exit 1
-if [ "\$1" = --print ]; then echo "\$SETUP_TEST_SYSROOT"; else echo 'rustc $RUST_CHANNEL (fixture)'; fi
+if [ "\$1" = --print ]; then echo "\$SETUP_TEST_SYSROOT"; exit 0; fi
+if [ "\$1" = -o ]; then
+    if [ -n "\$SETUP_TEST_LINK_FAIL" ]; then echo 'libSystem.tbd:4:20: error: unknown architecture' >&2; exit 1; fi
+    printf '#!/bin/sh\\nexit 0\\n' >"\$2"; chmod +x "\$2"; exit 0
+fi
+echo 'rustc $RUST_CHANNEL (fixture)'
 SH
 for tool in cargo cc mold pkg-config npm; do
     cat >"$bin/$tool" <<'SH'
@@ -101,6 +114,8 @@ echo 22
 SH
 chmod +x "$bin"/{uname,rustc,cargo,cc,mold,pkg-config,npm,node}
 expect_pass "$repo/scripts/doctor.sh" core
+# Tools present but the link broken (a linker older than the SDK) must fail.
+SETUP_TEST_LINK_FAIL=1 expect_fail 'unknown architecture' "$repo/scripts/doctor.sh" core
 expect_fail 'Node 24+' "$repo/scripts/doctor.sh" integrations
 sed 's/echo 22/echo 24/' "$bin/node" >"$scratch/node"
 cp "$scratch/node" "$bin/node"
@@ -146,6 +161,27 @@ test "$1" = --show-sdk-path
 SH
 chmod +x "$bin/xcrun"
 expect_fail 'macOS SDK/nmedit' "$repo/scripts/doctor.sh" native
+
+# Xcode being present is insufficient for GPUI: execute the Metal compiler.
+cat >"$bin/xcrun" <<'SH'
+#!/bin/sh
+test "$1" != metal
+SH
+cp "$bin/npm" "$bin/python3"
+bun_version="$(sed -n 's/^bun = "\([^"]*\)"/\1/p' "$root/mise.toml")"
+cat >"$bin/bun" <<SH
+#!/bin/sh
+echo '$bun_version'
+SH
+chmod +x "$bin/bun"
+expect_fail 'Metal compiler unavailable' "$repo/scripts/doctor.sh" desktop
+cp "$bin/npm" "$bin/xcrun"
+expect_pass "$repo/scripts/doctor.sh" desktop
+cat >"$bin/bun" <<'SH'
+#!/bin/sh
+echo 0.0.0
+SH
+expect_fail "Bun $bun_version (found: 0.0.0)" "$repo/scripts/doctor.sh" desktop
 
 # Opt-in rustup components must not leak into a core contributor's install.
 export SETUP_TEST_LOG="$scratch/rustup-log"

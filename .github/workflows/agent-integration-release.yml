@@ -1,14 +1,13 @@
 # Release agent integration — the publish lane for public host adapters.
 #
-# Flow: release-please merges a release PR, creates `<component>-vX.Y.Z`, and
-# leaves a DRAFT GitHub release (release-please-config.json sets "draft": true
-# globally). That tag push lands here. This workflow re-tests the exact tagged
-# tree, packs the immutable artifact, publishes it to npm where applicable,
-# attaches the artifact to the draft, and only then flips the draft public.
+# Flow: publish.yml dispatches this workflow once ci.yml is green for the
+# component tag. This file re-tests that exact tree, packs one artifact,
+# publishes it to npm where applicable, attaches it to the draft, and only
+# then flips the draft public.
 #
-# The tag is created by the release App, not GITHUB_TOKEN, so the push DOES
-# raise a workflow run — see the header of release-please.yml for why that
-# distinction is load-bearing.
+# npm trusted publishing matches the entry workflow filename. This file is
+# that filename. Do not turn the publish into a workflow_call from
+# publish.yml: npm would see publish.yml and answer 404.
 #
 # THIS LANE WAS DEAD ON ARRIVAL. Its first four invocations all failed, leaving
 # four permanent 0-asset drafts (opencode-plugin-v0.2.0, pi-extension-v0.2.0,
@@ -55,11 +54,6 @@
 name: Release agent integration
 
 on:
-  push:
-    tags:
-      - "opencode-plugin-v*.*.*"
-      - "pi-extension-v*.*.*"
-      - "claude-plugin-v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
@@ -76,7 +70,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mini-v1-agent-integration-release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  group: mini-v1-agent-integration-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -92,28 +86,21 @@ jobs:
       publish_npm: ${{ steps.release.outputs.publish_npm }}
       dry_run: ${{ steps.release.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          ref: ${{ inputs.tag }}
 
       - name: Validate tag, commit, and component version
         id: release
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSH_TAG: ${{ github.ref_name }}
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == push ]]; then
-            tag="$PUSH_TAG"
-            dry_run=false
-          else
-            tag="$DISPATCH_TAG"
-            dry_run="$DISPATCH_DRY_RUN"
-          fi
+          tag="$DISPATCH_TAG"
+          dry_run="$DISPATCH_DRY_RUN"
           if [[ ! "$tag" =~ ^(opencode-plugin|pi-extension|claude-plugin)-v([0-9]+[.][0-9]+[.][0-9]+)$ ]]; then
             echo "::error::tag must be opencode-plugin-vX.Y.Z, pi-extension-vX.Y.Z, or claude-plugin-vX.Y.Z"
             exit 1
@@ -154,7 +141,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.tag }}
@@ -238,7 +225,7 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund --package-lock=false "$GITHUB_WORKSPACE/release/$TARBALL"
           npm ls --depth=0 "${PACKAGE_NAME}@${VERSION}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ needs.prepare.outputs.component }}-${{ needs.prepare.outputs.tag }}
           path: release/*
@@ -262,7 +249,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.prepare.outputs.component }}-${{ needs.prepare.outputs.tag }}
           path: release

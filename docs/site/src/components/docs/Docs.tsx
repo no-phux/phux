@@ -115,6 +115,7 @@ const sectionContent: Record<string, { label: string; intro: string; links: [str
     links: [
       ["Decide", "/concepts/when-to-use", "Whether phux fits you today."],
       ["Run it", "/quickstart", "Install, attach, detach, drive it from a second terminal."],
+      ["Numbers", "/performance", "Dated latency, throughput, and memory measurements."],
       ["The model", "/concepts", "What a terminal is on the wire."],
     ],
   },

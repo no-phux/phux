@@ -2186,6 +2186,10 @@ fn decode_bootstrap_capabilities(
 ///
 /// The feature set is an additive trailing field: a producer that ended the
 /// capability block before it leaves the default (empty) set.
+///
+/// A remainder after that `u32` is not an error. ADR-0137 reserves the tail
+/// for a second feature word (`features_ext`). Do not require the field to
+/// end after the first word: an old client must keep ignoring those bytes.
 fn decode_server_capabilities(
     d: &mut Decoder<'_>,
 ) -> Result<crate::caps::ServerCapabilities, DecodeError> {

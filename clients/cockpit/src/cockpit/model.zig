@@ -31,6 +31,7 @@ pub const max_terminals = local.max_terminals;
 pub const max_tabs = topology.max_tabs;
 pub const max_remote_terminals = support.max_remote_terminals;
 pub const AgentSession = support.AgentSession;
+pub const AgentIdentity = support.AgentIdentity;
 pub const AgentState = support.AgentState;
 pub const max_agent_sessions = support.max_agent_sessions;
 

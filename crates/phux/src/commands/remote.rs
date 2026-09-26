@@ -257,7 +257,7 @@ impl NewRemote {
 
 /// A remote name is what the operator types after `phux attach`, so it must
 /// not collide with the selector grammar's sigils.
-fn validate_name(name: &str) -> Result<String, String> {
+pub(crate) fn validate_name(name: &str) -> Result<String, String> {
     let trimmed = name.trim();
     if trimmed.is_empty()
         || trimmed.contains('/')

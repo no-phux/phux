@@ -92,7 +92,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use phux_server_testkit::{
-    encode_frame, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket,
+    encode_frame, recv_command_result, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
@@ -124,6 +124,113 @@ mod consumer_filters;
 /// Generous per-step deadline, mirroring `phux_server_testkit::WIRE_RECV_TIMEOUT`'s
 /// rationale (the hub link dials with backoff under full-parallel nextest).
 const STEP_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Hang-guard for satellite WebSocket readiness (phux-9jm5 / phux-atxp).
+///
+/// Not a latency assertion: `listen_ws` is a `spawn_local` task, and under
+/// concurrent crate-check load it can sit behind the scheduler longer than
+/// [`STEP_DEADLINE`] before the port accepts. The happy path still connects
+/// in milliseconds. A hang reports the last TCP and handshake errors plus
+/// the satellite's captured stderr (phux-atxp).
+const WS_CONNECT_HANG_GUARD: Duration = Duration::from_secs(60);
+
+/// Cap on the captured satellite stderr included in a readiness failure.
+///
+/// The satellite is an in-process `spawn_local` task, so it has no child
+/// pipe. Production would send the same tracing warnings to stderr via
+/// `telemetry::init`; tests have no subscriber unless this harness installs
+/// one. A bind that fails is a warning and the task keeps running, which is
+/// why a connect timeout otherwise looks like a slow start.
+const SATELLITE_STDERR_CAP: usize = 4096;
+
+thread_local! {
+    static SATELLITE_STDERR: std::cell::RefCell<Option<std::sync::Arc<std::sync::Mutex<String>>>> =
+        const { std::cell::RefCell::new(None) };
+    static SATELLITE_STDERR_GUARD: std::cell::RefCell<Option<tracing::subscriber::DefaultGuard>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+struct SatelliteStderrWriter(std::sync::Arc<std::sync::Mutex<String>>);
+
+impl std::io::Write for SatelliteStderrWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        append_satellite_stderr(&self.0, &String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Install a thread-local subscriber once and return the buffer it fills.
+fn satellite_stderr_buf() -> std::sync::Arc<std::sync::Mutex<String>> {
+    SATELLITE_STDERR.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(buf) = slot.as_ref() {
+            return std::sync::Arc::clone(buf);
+        }
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let writer_buf = std::sync::Arc::clone(&buf);
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || SatelliteStderrWriter(std::sync::Arc::clone(&writer_buf)))
+            .finish();
+        SATELLITE_STDERR_GUARD.with(|guard| {
+            *guard.borrow_mut() = Some(tracing::subscriber::set_default(subscriber));
+        });
+        *slot = Some(std::sync::Arc::clone(&buf));
+        buf
+    })
+}
+
+fn append_satellite_stderr(buf: &std::sync::Mutex<String>, text: &str) {
+    let mut slot = buf
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let room = SATELLITE_STDERR_CAP.saturating_sub(slot.len());
+    if room == 0 || text.is_empty() {
+        return;
+    }
+    let end = text.floor_char_boundary(text.len().min(room));
+    slot.push_str(&text[..end]);
+}
+
+fn note_satellite_stderr(text: &str) {
+    append_satellite_stderr(&satellite_stderr_buf(), text);
+}
+
+/// Drop residue from a previous test on this thread before the next satellite.
+fn clear_satellite_stderr() {
+    satellite_stderr_buf()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+}
+
+fn satellite_stderr_snapshot() -> String {
+    let text = satellite_stderr_buf()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if text.is_empty() {
+        "(empty)".to_owned()
+    } else {
+        text
+    }
+}
+
+#[test]
+fn satellite_stderr_capture_records_warnings() {
+    clear_satellite_stderr();
+    tracing::warn!("satellite stderr probe");
+    let text = satellite_stderr_snapshot();
+    assert!(
+        text.contains("satellite stderr probe"),
+        "expected the warning on the captured stderr, got {text:?}"
+    );
+}
 
 /// A satellite endpoint that is dead and *stays* dead for the whole test.
 ///
@@ -205,6 +312,7 @@ fn spawn_satellite_runtime(
     oneshot::Sender<()>,
     JoinHandle<Result<(), ServerError>>,
 ) {
+    clear_satellite_stderr();
     let hold = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let ws_addr = hold.local_addr().unwrap();
     let (tx, rx) = oneshot::channel::<()>();
@@ -217,12 +325,16 @@ fn spawn_satellite_runtime(
     };
     let handle = tokio::task::spawn_local(async move {
         drop(hold);
-        ServerRuntime::new(cfg)
+        let result = ServerRuntime::new(cfg)
             .listen_ws(ws_addr)
             .run_async(async move {
                 let _ = rx.await;
             })
-            .await
+            .await;
+        if let Err(err) = &result {
+            note_satellite_stderr(&format!("satellite runtime error: {err}\n"));
+        }
+        result
     });
     (ws_addr.port(), tx, handle)
 }
@@ -295,16 +407,29 @@ fn spawn_hub_with_session(
 async fn discover_satellite_pane(ws_port: u16) -> u32 {
     let addr = format!("127.0.0.1:{ws_port}");
     let url = format!("ws://{addr}/");
-    let deadline = Instant::now() + STEP_DEADLINE;
+    let started = Instant::now();
+    let mut last_tcp: Option<std::io::Error> = None;
+    let mut last_handshake: Option<String> = None;
     let mut ws = loop {
+        let elapsed = started.elapsed();
+        let stderr = satellite_stderr_snapshot();
+        // A failed bind logs and leaves the task on UDS only; a startup
+        // error ends the task. Waiting out the hang-guard cannot succeed
+        // in either case, so surface the captured stderr immediately.
+        let terminal_failure = stderr.contains("failed to bind WebSocket")
+            || stderr.contains("satellite runtime error:");
         assert!(
-            Instant::now() < deadline,
-            "satellite WebSocket never became connectable"
+            elapsed < WS_CONNECT_HANG_GUARD && !terminal_failure,
+            "satellite WebSocket never became connectable at {addr} after {elapsed:?}: \
+             last_tcp={last_tcp:?} last_handshake={last_handshake:?}\n\
+             satellite stderr:\n{stderr}"
         );
-        if let Ok(tcp) = TcpStream::connect(&addr).await
-            && let Ok((ws, _)) = tokio_tungstenite::client_async(&url, tcp).await
-        {
-            break ws;
+        match TcpStream::connect(&addr).await {
+            Ok(tcp) => match tokio_tungstenite::client_async(&url, tcp).await {
+                Ok((ws, _)) => break ws,
+                Err(err) => last_handshake = Some(err.to_string()),
+            },
+            Err(err) => last_tcp = Some(err),
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
@@ -370,17 +495,7 @@ async fn get_screen_via_hub(
         },
     )
     .await;
-    loop {
-        let (_, frame) = recv_typed(hub).await;
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
+    recv_command_result(hub, request_id).await
 }
 
 /// Retry `GET_SCREEN` through the hub until the link connects and the
@@ -451,17 +566,11 @@ fn command_round_trip_and_stream_retagging() {
             },
         )
         .await;
-        loop {
-            let (_, frame) = recv_typed(&mut hub).await;
-            if let FrameKind::CommandResult {
-                request_id: 2000,
-                result,
-            } = frame
-            {
-                assert_eq!(result, CommandResult::Ok, "ROUTE_INPUT relays Ok");
-                break;
-            }
-        }
+        assert_eq!(
+            recv_command_result(&mut hub, 2000).await,
+            CommandResult::Ok,
+            "ROUTE_INPUT relays Ok"
+        );
 
         // 2. Return leg re-tagging: subscribe to the satellite pane's
         //    events through the hub, trigger one via a relayed

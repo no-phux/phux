@@ -3,7 +3,7 @@
 
 use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::SessionInfo;
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 use phux_protocol::{BootstrapId, StreamId};
 
 use crate::attach::outcome::AttachEnd;
@@ -66,6 +66,10 @@ pub(in crate::attach) struct FrameOutcome {
     /// phux-k0cw: an ADR-0035 `Asked` event for a Terminal outside this
     /// client's pane set — a peer agent is blocked on a human.
     pub(in crate::attach) foreign_attention: Option<ResourceId>,
+    /// ADR-0136: the mirrored asked flag cleared for a Terminal outside
+    /// this client's pane set. Kept apart from [`Self::foreign_attention`]
+    /// so one frame can raise one and the fold can drop the other.
+    pub(in crate::attach) foreign_attention_clear: Option<ResourceId>,
     /// phux-k0cw: a `ResourceSpawned` / `ResourceClosed` for a Terminal this client
     /// does not hold, so the peer pane set (and its subscriptions) needs
     /// re-sweeping. This is what closes the enumerate-then-subscribe race
@@ -158,6 +162,10 @@ pub(in crate::attach) struct FrameOutcome {
     /// `ATTACHED` snapshot is already authoritative at attach time (SPEC
     /// §13). Set ONLY by the `Attached` arm.
     pub(in crate::attach) sessions: Option<(Vec<SessionInfo>, SessionId)>,
+    /// phux-ah84: windows and resources from the same ATTACHED snapshot
+    /// graph. The driver caches them so the Agents list can name panes in
+    /// CLI-created sessions that have no persisted TUI layout yet.
+    pub(in crate::attach) inventory: Option<(Vec<WindowInfo>, Vec<ResourceInfo>)>,
     /// ADR-0033: `Some(id)` ⇒ ATTACHED carried this client's own server-assigned
     /// `ClientId`. The driver caches it to tell "you have the wheel" from
     /// another client holding it when rendering the supervisory badge. Set ONLY
@@ -180,6 +188,10 @@ pub(in crate::attach) struct FrameOutcome {
     /// (tab strip + sidebar) and repaints. Set ONLY by the
     /// `MetadataValue` / `MetadataChanged` arms.
     pub(in crate::attach) agent_meta_changed: bool,
+    /// The Terminal a local agent GET/broadcast applied to, even when the
+    /// stored record was identical, so the connection-lifetime review index
+    /// can fold without invalidating on a repeat read (phux-deya).
+    pub(in crate::attach) agent_meta_terminal: Option<ResourceId>,
     /// phux-p4vp: per-pane working directories carried by the `ATTACHED`
     /// snapshot (`ResourceInfo::cwd`). The driver folds these into its
     /// pane-cwd index, from which the sidebar's branch line is derived
@@ -194,6 +206,11 @@ pub(in crate::attach) struct FrameOutcome {
     /// error. Set ONLY by the `MetadataChanged` arm; tombstones do not
     /// set it.
     pub(in crate::attach) config_reload: bool,
+    /// phux-4s6o: `Some((current, new))` ⇒ a subscribed `phux.session.name/v1`
+    /// broadcast applied a rename. The handler updates this client's status
+    /// name when `current` matches; the driver renames the cached session
+    /// graph so the roster/picker follow without a re-attach.
+    pub(in crate::attach) session_rename: Option<(String, String)>,
     /// phux-i0e8.2.1: transient status-bar notices raised by this frame,
     /// drained by the driver into the painter's newest-wins notice slot
     /// (`StatusBarPainter::set_notice`) right after the dispatch returns.

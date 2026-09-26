@@ -151,7 +151,7 @@ pub const REGISTRY: &[ActionSpec] = &[
         name: "split-pane",
         category: Category::Pane,
         description: "Split the focused pane side-by-side (vertical divider)",
-        params: "`direction` = `horizontal` | `vertical`",
+        params: "`direction` = `horizontal` | `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`)",
         args: &[("direction", ArgValue::Str("vertical"))],
     },
     ActionSpec {
@@ -230,7 +230,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         name: "context-menu",
         category: Category::Pane,
-        description: "Open the context menu for the focused pane (ADR-0058)",
+        description: "Open the context menu for the focused pane",
         params: "",
         args: &[],
     },
@@ -356,28 +356,28 @@ pub const REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         name: "take-input",
         category: Category::Pane,
-        description: "Take the wheel: seize exclusive input over the focused pane (ADR-0033)",
+        description: "Take the wheel: seize exclusive input over the focused pane",
         params: "",
         args: &[],
     },
     ActionSpec {
         name: "give-input",
         category: Category::Pane,
-        description: "Give back the wheel: release the focused pane's input lease (ADR-0033)",
+        description: "Give back the wheel: release the focused pane's input lease",
         params: "",
         args: &[],
     },
     ActionSpec {
         name: "signal-terminal",
         category: Category::Pane,
-        description: "Signal the focused pane's process group (freeze/resume/kill, ADR-0033)",
+        description: "Signal the focused pane's process group (freeze, resume, kill)",
         params: "`signal` = `interrupt` | `freeze` | `resume` | `terminate` | `kill`",
         args: &[("signal", ArgValue::Str("freeze"))],
     },
     ActionSpec {
         name: "set-pane",
         category: Category::Pane,
-        description: "Toggle per-pane mouse opt-out for the focused pane (ADR-0048)",
+        description: "Toggle mouse capture for the focused pane",
         params: "`mouse` = `on` | `off` | `toggle`",
         args: &[("mouse", ArgValue::Str("toggle"))],
     },
@@ -433,6 +433,15 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
         reason: "parameterized by `index`, which the palette has no UI to \
                  collect; the window picker is the surface for \"jump to \
                  window N\"",
+    },
+    NonPaletteAction {
+        name: "move-window",
+        description: "Move the active window to another position in the window order",
+        params: "`index` (0-based destination) or `delta` (signed slots, e.g. `-1`); \
+                 clamped to the ends",
+        reason: "parameterized by direction; bound to `<` and `>` under the leader, \
+                 offered in the window context menu, and done by dragging a tab \
+                 or a sidebar window row",
     },
     NonPaletteAction {
         name: "switch-session",

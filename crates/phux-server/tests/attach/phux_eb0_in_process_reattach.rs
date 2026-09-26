@@ -34,9 +34,9 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, attach_by_name_with_id, recv_typed,
-    recv_until_detached, run_local, send_frame, spawn_server, spawn_server_seed_pty_no_cmd,
-    wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, attach_by_name_with_id, join_after_shutdown,
+    recv_typed, recv_until_detached, run_local, send_frame, spawn_server,
+    spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
 
 /// `ATTACH { CreateIfMissing { name } }` at the canonical 80x24 viewport.
@@ -192,8 +192,7 @@ fn reattach_to_other_session_on_same_connection_renders_b() {
         assert!(matches!(ready_b, FrameKind::BootstrapReady { .. }));
 
         drop(client);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -302,7 +301,6 @@ fn reattach_to_other_session_does_not_forward_old_session_output() {
         assert!(saw_beta, "B: expected live BETA output after reattach");
 
         drop(client);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

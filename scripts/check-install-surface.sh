@@ -244,8 +244,12 @@ require_fixed docs/site/public/_headers '/install-cockpit'
 
 require_fixed README.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
+require_fixed README.md 'npx skills add no-phux/skills'
+forbid_fixed README.md 'npx skills add no-phux/phux'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
+require_fixed docs/INSTALL.md 'npx skills add no-phux/skills'
+forbid_fixed docs/INSTALL.md 'npx skills add no-phux/phux'
 require_fixed docs/INSTALL.md '## Cockpit (native macOS)'
 require_fixed clients/cockpit/README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/site/DEPLOY.md '/install-cockpit'
@@ -269,19 +273,32 @@ forbid_fixed docs/RELEASING.md 'phall1/phux'
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
 forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
 require_fixed scripts/install.sh 'https://github.com/no-phux/phux/releases/download/${release_tag}'
-# The next-channel pointer must be an asset named channel.json. gh's
-# `file#label` syntax labels the asset; it does not rename it.
-require_fixed scripts/publish-next-channel.sh 'pointer_dir/channel.json'
+# The next-channel pointers must be assets named channel.json (phux) and
+# cockpit-channel.json (Cockpit). gh's `file#label` syntax labels the asset;
+# it does not rename it, so the pointer is written under its real basename.
+require_fixed scripts/publish-next-channel.sh 'pointer_name="channel.json"'
+require_fixed scripts/publish-next-channel.sh 'pointer_name="cockpit-channel.json"'
+require_fixed scripts/publish-next-channel.sh 'channel_json="$pointer_dir/$pointer_name"'
 require_fixed scripts/publish-next-channel.sh 'gh release upload next "$channel_json" --clobber'
-forbid_fixed scripts/publish-next-channel.sh 'channel_json#channel.json'
+forbid_fixed scripts/publish-next-channel.sh 'channel_json#'
+# Cockpit rides the same moving prerelease: the workflow publishes it, the
+# installer and in-app driver follow it, and `phux update` drives the driver.
+require_fixed .github/workflows/next-release.yml 'bash scripts/publish-next-channel.sh --cockpit'
+require_fixed .github/workflows/next-release.yml 'PHUX_BUILD_CHANNEL: next'
+require_fixed clients/cockpit/scripts/package-macos.sh 'PhuxChannel'
+require_fixed scripts/install-cockpit.sh 'releases/download/next/cockpit-channel.json'
+require_fixed scripts/install-cockpit.sh 'phux-cockpit-next.${next_sha}-macos-arm64.zip'
+require_fixed scripts/install-cockpit.sh 'PHUX_CHANNEL'
+require_fixed scripts/cockpit-self-update.sh 'PhuxBuildSHA'
+require_fixed crates/phux/src/commands/update/cockpit.rs 'scripts/cockpit-self-update.sh'
 require_fixed scripts/install-cockpit.sh 'https://github.com/no-phux/phux/releases/download/${version}'
 require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
-require_fixed justfile "release-preflight TAG:"
-require_fixed justfile "release-preflight-fast TAG:"
-require_fixed justfile "cargo build --locked -p phux -p phux-mcp --release"
-require_fixed justfile "cargo publish --locked --dry-run -p phux-protocol"
-require_fixed justfile "cargo publish --locked -p phux-protocol"
+require_fixed just/release.just "release-preflight TAG:"
+require_fixed just/release.just "release-preflight-fast TAG:"
+require_fixed just/build.just "cargo build --locked -p phux -p phux-mcp --release"
+require_fixed just/release.just "cargo publish --locked --dry-run -p phux-protocol"
+require_fixed just/release.just "cargo publish --locked -p phux-protocol"
 require_fixed scripts/release-preflight.sh "cargo publish --locked --dry-run --allow-dirty -p phux-protocol"
 require_fixed scripts/check-release-version.sh "cargo metadata --locked --format-version 1 --no-deps"
 
@@ -356,7 +373,7 @@ require_fixed .github/workflows/release.yml 'gh release edit "$TAG" --draft=fals
 require_fixed release-please-config.json '"draft": true'
 forbid_fixed .github/workflows/release.yml 'softprops/action-gh-release'
 forbid_fixed .github/workflows/release.yml 'generate_release_notes'
-# release.yml is called by release-please and must stay dispatch/call-only. It
+# publish.yml calls release.yml. release.yml stays call-only. It
 # must never create a tag, and must never publish to crates.io: an irreversible
 # publish has no human in an automated path. publish-crate.yml is that path.
 forbid_fixed .github/workflows/release.yml 'publish_protocol'
@@ -364,7 +381,9 @@ forbid_fixed .github/workflows/release.yml 'crates_io_confirm'
 forbid_fixed .github/workflows/release.yml 'cargo publish'
 
 require_fixed .github/workflows/release-please.yml 'googleapis/release-please-action'
-require_fixed .github/workflows/release-please.yml 'uses: ./.github/workflows/release.yml'
+require_fixed .github/workflows/publish.yml 'uses: ./.github/workflows/release.yml'
+forbid_fixed .github/workflows/release-please.yml 'wait_validation.py'
+forbid_fixed .github/workflows/release-please.yml 'uses: ./.github/workflows/release.yml'
 # release-please cannot update Cargo.lock; cargo re-resolves it on the PR
 # branch, against the toolchain rust-toolchain.toml pins — never a hardcoded
 # channel (see the release.yml guard above for why).
@@ -498,11 +517,15 @@ require_fixed docs/INSTALL.md 'sh -s -- --channel next'
 require_fixed docs/RELEASING.md 'This layout is a consumed contract'
 require_fixed docs/RELEASING.md 'scripts/pack-release.sh'
 
+require_fixed docs/site/public/llms.txt "npx skills add no-phux/skills"
+forbid_fixed docs/site/public/llms.txt "npx skills add no-phux/phux"
+
 if [ "$failures" -ne 0 ]; then
   printf 'install surface check failed: %d missing contract item(s)\n' "$failures" >&2
   exit 1
 fi
 
+bash "$ROOT/scripts/check-product-skills-export.sh"
 bash "$ROOT/scripts/test-pack-release.sh"
 bash "$ROOT/scripts/test-install.sh"
 bash "$ROOT/scripts/test-cockpit-self-update.sh"

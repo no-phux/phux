@@ -20,6 +20,14 @@ require clients/cockpit/scripts/build-phux-artifacts.sh 'target-cpu=apple-m1'
 require clients/cockpit/scripts/build-shipping-app.sh '-Dcpu=baseline'
 require docs/site/worker/Dockerfile 'RUSTFLAGS="-C target-cpu=x86-64"'
 require docs/site/worker/Dockerfile 'LIBGHOSTTY_VT_SYS_CPU=baseline'
+# The PhuxFFI xcframework lane: an explicit Rust floor per Apple target and
+# the engine on baseline, with no inherited RUSTFLAGS reaching a slice.
+require scripts/build-ffi-xcframework.sh 'target-cpu=apple-a7'
+require scripts/build-ffi-xcframework.sh 'target-cpu=apple-a12'
+require scripts/build-ffi-xcframework.sh 'target-cpu=apple-m1'
+require scripts/build-ffi-xcframework.sh 'LIBGHOSTTY_VT_SYS_CPU=baseline'
+require scripts/build-ffi-xcframework.sh 'unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS'
+require .github/workflows/ffi-xcframework.yml 'bash scripts/build-ffi-xcframework.sh --full'
 
 # Exercise the canonical builder without compiling. This pins every target's
 # exact Rust floor, the native-engine floor, and rejection of unknown targets.

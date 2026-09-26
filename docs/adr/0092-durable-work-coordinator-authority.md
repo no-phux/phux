@@ -15,6 +15,7 @@ consumers that issue commands and project coordinator state.
 Status: Proposed
 Date: 2026-08-18
 See [ADR-0130](./0130-on-disk-pty-journal-is-not-built.md) for the on-disk PTY journal named "design intent" below: decided, not built.
+See [ADR-0132](./0132-swarm-members-are-coordinator-clients.md) for Actor, optional bindings, and swarm members as coordinator clients.
 
 ## Context
 

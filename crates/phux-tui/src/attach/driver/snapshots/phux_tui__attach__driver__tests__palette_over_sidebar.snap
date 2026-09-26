@@ -1,28 +1,29 @@
 ---
 source: crates/phux-tui/src/attach/driver/tests.rs
+assertion_line: 1889
 expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")"
 ---
- Agents            │────────────────────────────────────────────────────────────
-   none running y… │PANE-BASE
+ Agents            ├────────────────────────────────────────────────────────────
+   —               │PANE-BASE
                    │
                    │
                    │
                    │
-                   │┌──────────────────── command palette ─────────────────────┐
-                   ││>                                                         │
-                   ││                                                          │
-                   ││detach                                                    │
-                   ││new-window                                                │
- Sessions          ││                                                          │
- ○ probe           ││Enter select  ·  Esc cancel  ·  type to filter            │
-   on probe-host   ││                                                          │
+                   │
+                   │┌ command palette ─────────────────────────────────────────┐
+                   ││ >                                                        │
+                   ││ detach                                                   │
+                   ││ new-window                                               │
+ Sessions        1 ││                                                          │
+ ○ probe           ││                                                          │
+   probe-host      ││                                                          │
    ● w1-agent      ││                                                          │
-                   ││                                                          │
                    ││                                                          │
                    ││                                                          │
                    │└──────────────────────────────────────────────────────────┘
                    │
                    │
                    │
- + new window      │
- = commands        ‹
+                   │
+                   │
+ + new window      ‹

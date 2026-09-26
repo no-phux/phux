@@ -78,6 +78,12 @@ impl HistoryCursor {
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// Whether this opaque cursor is exactly the supplied transport token.
+    #[must_use]
+    pub fn matches_bytes(&self, bytes: &[u8]) -> bool {
+        self.0.as_ref() == bytes
+    }
 }
 
 /// Stable cache identity of one immutable engine history page.

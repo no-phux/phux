@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-21
 ---
 
 # Decisions in force
@@ -38,6 +38,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Wire and codecs
 
+- [0137](./0137-server-feature-word-extends.md) The `ServerFeature` u32 is closed; the next capability is a trailing `features_ext` word that old clients ignore.
 - [0123](./0123-events-are-journaled.md) Every event is stamped with a server-wide sequence and journaled; a cursor replays it, and every loss is a typed gap.
 - [0086](./0086-shared-render-pool.md) One pooled libghostty render trio lives in `phux-protocol` behind the `server` feature.
 - [0117](./0117-wire-codec-stays-tlv.md) The wire codec stays hand-rolled TLV; protobuf considered and rejected, with a machine-readable schema as follow-up.
@@ -54,7 +55,8 @@ by a newer one, the newer line is the operative reading.
 ## Server process and actor model
 
 - [0130](./0130-on-disk-pty-journal-is-not-built.md) The server keeps no durable PTY output and ships no `--recover` mode; a crash loses scrollback and clients reattach to a fresh server.
-- [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives its last window until an explicit kill; default sessions still cascade.
+- [0131](./0131-last-shell-exit-keeps-a-terminal.md) Natural exit of a session's last shell respawns a default shell in that Terminal; kill and Close Tab still close.
+- [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives Close Tab of its last window until an explicit kill; default sessions still cascade on kill.
 - [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) Cockpit Close Pane/Tab ends work; Close Window/Quit detaches Phux views. Cockpit-created sessions opt into keep-empty; their last terminal leaves Empty session, whose closure retains the session.
 - [0096](./0096-always-on-performance-telemetry.md) Performance telemetry is always on, in-process, and read back through `GET_PERF`.
 - [0088](./0088-adopting-a-live-server-into-supervision.md) `install --adopt` arms a unit rather than loading it; the incumbent keeps its panes.
@@ -94,7 +96,8 @@ by a newer one, the newer line is the operative reading.
 - [0111](./0111-how-a-front-restore-is-judged.md) A front restore survives one failed connection of its host and is judged when the backoff redial, a lister, lists; This Mac's first projection at launch leaves a restored peer's tab in front; a record matches on coordinator, session id and creation time, so a graceful upgrade keeps it.
 - [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md) Cockpit keeps, beside each remembered host, the one session it showed; at launch every host lists, and only the one whose tab was in front is shown again, at the window's real size, once its own list still carries that session.
 - [0109](./0109-late-kills-are-conditional-on-instance-and-attachment.md) A late kill is `KILL_RESOURCE_IF`: the server kills only while the caller's instance token names its id space and no connection but the spawning one attached the resource; a hub relays the check to the satellite and vouches for its own consumers.
-- [0108](./0108-a-hub-relays-host-queries-per-request.md) A hub relays a host query that names a satellite (`LIST_DIRECTORY.host`) over that satellite's L3-negotiated link, one request at a time; it never relays metadata or chains, and every routing failure is an `OTHER` refusal naming the host.
+- [0136](./0136-hub-mirrors-satellite-agent-metadata.md) A hub keeps a read-only mirror of `phux.agent/v1` and `phux.agent.asked/v1` per satellite terminal, retagged `Local` to `Satellite`. Every other L3 key stays server-local.
+- [0108](./0108-a-hub-relays-host-queries-per-request.md) A hub relays a host query that names a satellite (`LIST_DIRECTORY.host`) over that satellite's L3-negotiated link, one request at a time. It does not chain. Routing failure is an `OTHER` refusal naming the host. The agent-metadata mirror is the separate carve-out above.
 - [0107](./0107-satellite-sessions-are-listed-never-adopted.md) A hub lists satellite sessions host-qualified under their own ids; selecting one opens its active pane through the resource relay.
 - [0122](./0122-host-add-is-the-front-door.md) `phux host add HOST` is the one front door for a machine: confirm, start and supervise, pair, probe, register; an attach whose saved route stops answering starts the server over ssh before it re-pairs.
 - [0093](./0093-remote-target-as-a-resolution-ladder.md) `--remote user@host` resolves to a `[[remote]]` entry and reuses the existing dial.
@@ -137,6 +140,10 @@ by a newer one, the newer line is the operative reading.
 
 ## TUI conventions
 
+- [0139](./0139-solid-desktop-over-native-runtime-views.md) The separate Solid desktop uses one native host and shared runtime views, an optional mechanical NAPI encoder, focused-writable geometry, and close-detaches semantics; independent views are first-release required.
+- [0135](./0135-one-binding-crate.md) A binding crate is one crate: `phux-client-ffi` derives the product vocabulary from the runtime once in `projection/`, and carries one encoder per language behind a feature (`c-abi` by default, `uniffi` for mobile); `phux-mobile-ffi` is deleted.
+- [0134](./0134-connected-lanes-refine-the-binding-boundary.md) A binding holds no connected-client state machine but may keep its decode point; the runtime owns each connected resource's engine thread; UniFFI stays for mobile with the shim in this repo; the C ABI has an embedded and a connected lane.
+- [0133](./0133-one-client-runtime-below-every-binding.md) `phux-client-runtime` is the one home for connected-client orchestration below the sans-IO kernel; `phux-client-ffi` and the mobile bridge are shims with no connected-client state machine, one cell layout lives in core, and a bindings generator is a per-shim choice.
 - [0129](./0129-projections-are-named-by-key.md) A named projection is a `--projection`-chosen metadata key, not a resource; durability is the workspace archive.
 - [0100](./0100-the-tui-is-its-own-crate.md) The TUI lives in `phux-tui`; `phux-client` is the headless library, dependency one-way.
 - [0089](./0089-three-zone-attention-sidebar.md) The sidebar projects peer metadata client-side; layout and ordering are amended by 0112.
@@ -168,6 +175,7 @@ by a newer one, the newer line is the operative reading.
 
 - [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
 - [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
+- [0138](./0138-cockpit-rides-the-next-channel.md) Cockpit rides `next` with its own pointer; the bundle bakes its channel; `phux update` moves Cockpit with the CLI; next queues, never cancels.
 - [0113](./0113-next-release-channel.md) `next` is an opt-in moving prerelease of green `main`; stable stays `vX.Y.Z` and Homebrew.
 - [0074](./0074-self-update-trust-boundary.md) `phux update` verifies the checksum before unpacking, swaps atomically, and refuses foreign installs.
 - [0069](./0069-generated-reference-docs.md) `docs/reference/` is rendered by the binary and byte-compared by a unit test.
@@ -177,6 +185,7 @@ by a newer one, the newer line is the operative reading.
 
 Drafted and under review; none of these governs anything yet.
 
+- [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients; TUI/Cockpit/mobile are projections; a Run may bind no Terminal.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
 - [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
 - [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.

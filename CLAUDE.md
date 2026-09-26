@@ -7,9 +7,8 @@ last-reviewed: 2026-09-08
 # phux Project Instructions for Agents
 
 **TL;DR.** phux-specific agent guidance layered on [`AGENTS.md`](./AGENTS.md)
-(universal rules): how to build and test (`nix develop`, `just ci`), the
-crate/architecture map, and the project conventions to follow when changing
-code or docs.
+(universal rules): how to build and test (`mise install` or `nix develop`,
+then `just ci`), the crate/architecture map, and the project conventions.
 
 See [`AGENTS.md`](./AGENTS.md) for universal agent instructions
 (shell hygiene, session completion protocol). This file adds
@@ -26,23 +25,19 @@ commit defaults in the managed Beads block and `bd prime`.
 
 ## Build & Test
 
-Start at [`docs/SETUP.md`](./docs/SETUP.md). Native tools and Nix are supported;
-select prerequisites by the work area instead of installing the full shell.
-Run `bash scripts/doctor.sh <area>` for prerequisites and the smallest relevant
-gate first. Expand validation for shared APIs, protocol/FFI, Cargo inputs, or
-build scripts. Report exact checks; a scoped pass is not a full CI pass.
-Keep setup/version details in that guide and the toolchain pins, not in agent
-instruction files. Browser engine regeneration uses verified pinned source.
-Beads is maintainer/agent task tracking, not a compiler or contributor gate
-dependency; outside contributors can use a GitHub issue/PR without it.
+Start at [`docs/SETUP.md`](./docs/SETUP.md). Pick `mise install` or
+`nix develop`, then the same commands. Keep setup/version details in that
+guide, not here. Browser engine regeneration uses verified pinned source.
+Beads is maintainer/agent task tracking, not a contributor gate.
 
 ```bash
+mise install        # or: nix develop
 just doctor native  # or core / docs / integrations / web / cockpit / ci
 just core-check     # example scoped loop; see SETUP.md for other areas
 just ci             # full root deterministic/unit gate set
 just ci-full        # ci + the real-server e2e and agent smoke lanes
-just check       # quick type-check
-just test        # cargo nextest run --workspace
+just check          # quick type-check
+just test           # cargo nextest run --workspace
 ```
 
 **`just ci-full` is the full root PR bar; scoped gates are the inner loop.** CI's
@@ -109,15 +104,22 @@ Authoritative docs, in order of priority:
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
 - [`docs/adr/`](./docs/adr/) — decisions, with rationale and tradeoffs.
 
-Crates: eighteen, all under `crates/*`, all workspace members. The ones
+Crates: twenty, all under `crates/*`, all workspace members. The ones
 you touch most: `phux-protocol` (wire), `phux-core` (domain),
-`phux-server` (daemon), `phux-tui` (the attach driver, libghostty
+`phux-agent-rules` (agent manifest evaluator: regions, TOML rules, offline
+explain), `phux-server` (daemon), `phux-tui` (the attach driver, libghostty
 replicas, and ratatui chrome), `phux-client` (the headless client library
 behind the agent verbs and MCP; no `ratatui`), `phux-client-core`
 (pane-interior substrate and session kernel; no `ratatui` and no `tokio`,
 so both boundaries are compiler-enforced, ADR-0020 and ADR-0100),
-`phux-client-ffi` (stable native C ABI over that kernel, for non-Rust
-embedders), `phux-config` (TOML + widgets + the settings catalogue), `phux` (binary).
+`phux-client-runtime` (the one client orchestration layer between that kernel
+and a binding: registry resolution, dial planning, reconnect policy, the relay
+tunnel; ADR-0133), `phux-client-ffi` (the one binding crate: `projection/`
+derives the product vocabulary from the runtime once, and two encoders sit
+behind features — `c-abi` for the stable native C ABI non-Rust embedders and
+Cockpit link, `uniffi` for the Swift/Kotlin artifact phux-mobile pins;
+ADR-0135), `phux-config` (TOML + widgets + the settings catalogue),
+`phux` (binary).
 The other nine are narrow single-purpose surfaces. Every crate has a section in
 [`docs/architecture/module-structure.md`](./docs/architecture/module-structure.md)
 — read it before assuming a capability is missing.

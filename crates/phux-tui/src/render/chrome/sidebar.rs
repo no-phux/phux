@@ -6,9 +6,10 @@
 //! window names directly beneath it. Neither area's position depends on its
 //! population, and empty areas keep their headers and placeholders.
 //!
-//! The strip's last two rows hold New window plus a shared Commands / Settings
-//! action row (phux-fce4), bottom-anchored, with a collapse chevron in the bottom
-//! corner cell (phux-foz.9; clicking it runs `toggle-sidebar`).
+//! The strip's last row holds New window (phux-fce4), bottom-anchored, with a
+//! collapse chevron in the bottom corner cell (phux-foz.9; clicking it runs
+//! `toggle-sidebar`). Commands and Settings stay on the palette and the
+//! context menu.
 //! [`hit_test`] maps a mouse position back onto the same row model so
 //! clicks land exactly where the paint says they should. A vertical rule
 //! on the strip's last column separates it from the panes. The
@@ -28,33 +29,28 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use crate::layout::Rect;
 use crate::render::Theme;
+use crate::render::chrome::{
+    AGENT_BLOCKED_GLYPH as AGENT_BLOCKED, AGENT_DONE_GLYPH as AGENT_DONE,
+    AGENT_WORKING_GLYPH as AGENT_WORKING,
+};
 use crate::render::overlay::HardcodedBinding;
 use crate::render::{clip_text, display_width};
 use phux_client::agent_meta::AgentMetaState;
+use phux_protocol::ids::{ResourceId, SessionId};
 
 /// Label of the "create" affordance row (phux-fce4).
 ///
 /// Clicking it runs the `new-window` action — the sidebar lists windows,
 /// so `+ new window` creates one.
 pub const NEW_LABEL: &str = "+ new window";
-/// Label of the "menu" affordance row (phux-fce4).
-///
-/// Clicking it opens the command palette — the one menu that covers
-/// window, session, and plugin actions (`new-session` included) through
-/// the action registry.
-pub const MENU_LABEL: &str = "= commands";
-/// Label of the Settings affordance on the shared footer row.
-pub const SETTINGS_LABEL: &str = "S settings";
-/// Gap between the two independently clickable actions on the footer's menu row.
-const FOOTER_ACTION_GAP: &str = "  ";
 /// Agents header. The legacy API name now refers to the full agent list.
 pub const NEEDS_YOU_HEADER: &str = "Agents";
 /// Sessions header, including the current session.
 pub const SPACES_HEADER: &str = "Sessions";
 /// Quiet placeholders keep both fixed areas recognizable.
-pub const AGENTS_EMPTY: &str = "none running yet";
+pub const AGENTS_EMPTY: &str = "—";
 /// Placeholder when no sessions are available.
-pub const SESSIONS_EMPTY: &str = "no sessions";
+pub const SESSIONS_EMPTY: &str = "—";
 /// Label of a truncated area's overflow row.
 pub const OVERFLOW_LABEL: &str = "more";
 /// The collapse chevron painted in the strip's bottom corner
@@ -91,14 +87,6 @@ pub static HELP_BINDINGS: &[HardcodedBinding] = &[
         action: "create a window (sidebar click)",
     },
     HardcodedBinding {
-        chord: MENU_LABEL,
-        action: "open the command palette (sidebar click)",
-    },
-    HardcodedBinding {
-        chord: SETTINGS_LABEL,
-        action: "open Settings (sidebar click)",
-    },
-    HardcodedBinding {
         chord: COLLAPSE_GLYPH,
         action: "collapse the sidebar (bottom-corner click)",
     },
@@ -129,6 +117,13 @@ pub struct AgentEntry {
     /// two are deliberately different types of click, not the same click with
     /// a different argument.
     pub session: Option<String>,
+    /// Stable identity of [`Self::session`] when the row came from the
+    /// session graph. `None` for the attached session (`session` is also
+    /// `None`) and for satellite hops whose ids are not attachable here.
+    pub session_id: Option<SessionId>,
+    /// Stable pane identity when the row came from a peer layout or the
+    /// server graph. `None` for a local row, which commits `select-window`.
+    pub resource: Option<ResourceId>,
     /// Index of the window holding the agent's pane (its `select-window`
     /// index) — clicking the row jumps there.
     pub window: usize,
@@ -149,6 +144,10 @@ pub struct AgentEntry {
     /// `true` when the agent is waiting on a human (declared high
     /// attention, or the pane's ADR-0035 asked flag).
     pub attention: bool,
+    /// Satellite host this agent is running on (ADR-0136). `None` for an
+    /// agent on the attached server. Painted in the chord color, the same
+    /// tone as a satellite pane's border badge.
+    pub host: Option<String>,
     /// `true` once the user has visited this agent's pane since its last
     /// state change. Drives the "finished but unreviewed" tier of
     /// [`attention_rank`] and the row's glyph: a `done` agent you have not
@@ -200,9 +199,11 @@ pub const fn attention_rank(state: AgentMetaState, attention: bool, seen: bool) 
 /// different morning than `!1`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionRosterEntry {
-    /// The session's name — also what a click commits as
-    /// `switch-session { name }`.
+    /// The session's name — the human-facing label a click still carries.
     pub name: String,
+    /// Stable session identity for local rows. `None` for satellite
+    /// placeholders: those ids are host-local and not attachable here.
+    pub id: Option<SessionId>,
     /// Display label of the serving host, supplied by the projection.
     pub host: String,
     /// Whether this is the session currently attached to the client.
@@ -273,6 +274,40 @@ pub struct SidebarCounts {
     pub roster: usize,
     /// Roster index whose windows expand, or None when there is no active entry.
     pub active_session: Option<usize>,
+    /// Which column carries the separator rule. Part of the shape because
+    /// it moves every hit target: the rule and its collapse chevron are not
+    /// row targets, and the rows shift away from a leading rule.
+    pub rule: SidebarRule,
+}
+
+/// The side of the strip that carries the separator rule: always the side
+/// that faces the panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarRule {
+    /// The last column, for a left-docked strip.
+    #[default]
+    Trailing,
+    /// The first column, for a right-docked strip.
+    Leading,
+}
+
+impl SidebarRule {
+    /// The strip-local column the rule occupies in a `width`-wide strip.
+    #[must_use]
+    pub const fn column(self, width: u16) -> u16 {
+        match self {
+            Self::Trailing => width.saturating_sub(1),
+            Self::Leading => 0,
+        }
+    }
+
+    /// The strip-local column where row content (gutter included) starts.
+    const fn content_x(self) -> u16 {
+        match self {
+            Self::Trailing => 0,
+            Self::Leading => 1,
+        }
+    }
 }
 
 /// One row of the strip, top to bottom. Both the painter and [`hit_test`]
@@ -303,8 +338,6 @@ pub enum SidebarRow {
     Blank,
     /// The `+ new` affordance (create a window).
     NewWindow,
-    /// The shared `= commands  S settings` affordance row.
-    Menu,
 }
 
 /// The interactive target a mouse position resolves to (phux-fce4).
@@ -327,10 +360,6 @@ pub enum SidebarHit {
     Sessions,
     /// The `+ new` affordance.
     NewWindow,
-    /// The `= menu` affordance.
-    Menu,
-    /// The `S settings` affordance.
-    Settings,
     /// The collapse chevron in the bottom corner (phux-foz.9) —
     /// clicking runs `toggle-sidebar`.
     Collapse,
@@ -344,12 +373,18 @@ pub enum SidebarTarget {
     /// A pane in another session: re-attach, select the window, focus the
     /// pane.
     Session {
-        /// The peer session's name.
+        /// The peer session's name (display / typed-name fallback).
         name: String,
-        /// Window index within that session.
-        window: usize,
-        /// Pane ordinal within that window.
-        pane: usize,
+        /// Stable identity when the row was projected from the session graph.
+        id: Option<SessionId>,
+        /// Window index within that session. Present only for a persisted
+        /// TUI layout; graph-only rows omit it so a click cannot fabricate
+        /// a TUI index.
+        window: Option<usize>,
+        /// Pane ordinal within that window. Present only for a layout leaf.
+        pane: Option<usize>,
+        /// Server graph / layout leaf the click must land on.
+        resource: Option<ResourceId>,
     },
 }
 
@@ -360,8 +395,8 @@ pub enum SidebarTarget {
 /// membership can change, so an index resolved against a newer table could
 /// send the user somewhere they did not click. A
 /// same-session `select-window` is forgiving of that; a `switch-session`
-/// re-attach is not, which is why the dispatcher commits the resolved NAME
-/// rather than re-deriving it.
+/// re-attach is not, which is why the dispatcher commits the resolved
+/// session id (and name as a fallback) rather than re-deriving it.
 #[derive(Debug, Clone, Default)]
 pub struct SidebarTargets {
     /// The counts the frame was painted from — the same ones [`hit_test`]
@@ -378,6 +413,8 @@ pub struct SidebarTargets {
 pub struct SessionRosterTarget {
     /// Session name, resolved against the painted frame.
     pub name: String,
+    /// Stable session identity when the row is a local-graph session.
+    pub id: Option<SessionId>,
     /// Satellite name passed to `switch-session`, if required.
     pub host: Option<String>,
 }
@@ -390,12 +427,8 @@ pub struct SessionRosterTarget {
 #[must_use]
 pub fn row_model(counts: SidebarCounts, h: u16) -> Vec<SidebarRow> {
     let h = usize::from(h);
-    let footer = if h >= usize::from(MIN_FOOTER_HEIGHT) {
-        2
-    } else {
-        0
-    };
-    let body = h - footer;
+    let show_footer = h >= usize::from(MIN_FOOTER_HEIGHT);
+    let body = h - usize::from(show_footer);
     let mut rows = Vec::with_capacity(h);
 
     if body == 1 {
@@ -407,9 +440,8 @@ pub fn row_model(counts: SidebarCounts, h: u16) -> Vec<SidebarRow> {
         push_sessions(&mut rows, counts, body - agents);
         rows.resize(body, SidebarRow::Blank);
     }
-    if footer == 2 {
+    if show_footer {
         rows.push(SidebarRow::NewWindow);
-        rows.push(SidebarRow::Menu);
     }
     rows
 }
@@ -498,37 +530,18 @@ pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<Sid
     if local_x >= rect.w || local_y >= rect.h {
         return None;
     }
-    // The bottom corner cell is the collapse chevron whenever the footer
+    let rule_x = counts.rule.column(rect.w);
+    // The rule's bottom cell is the collapse chevron whenever the footer
     // renders (same condition the painter uses).
-    if collapse_visible(rect) && local_x == rect.w - 1 && local_y == rect.h - 1 {
+    if collapse_visible(rect) && local_x == rule_x && local_y == rect.h - 1 {
         return Some(SidebarHit::Collapse);
     }
-    // The rest of the last column is the separator rule, not a target.
-    if local_x >= rect.w.saturating_sub(1) {
+    // The rest of the rule column is not a target.
+    if local_x == rule_x {
         return None;
     }
     let row = *row_model(counts, rect.h).get(usize::from(local_y))?;
-    if row == SidebarRow::Menu {
-        return footer_action_hit(local_x, rect.w);
-    }
     row_hit(row)
-}
-
-/// Resolve the two actions that share the final footer row against the exact
-/// text columns used by [`SidebarPainter::footer_actions_line`]. On narrow
-/// strips only the visible Commands label remains interactive.
-fn footer_action_hit(local_x: u16, width: u16) -> Option<SidebarHit> {
-    let text_w = usize::from(width.saturating_sub(1 + GUTTER * 2));
-    let content_x = usize::from(local_x.checked_sub(GUTTER)?);
-    let menu_w = display_width(MENU_LABEL).min(text_w);
-    if content_x < menu_w {
-        return Some(SidebarHit::Menu);
-    }
-
-    let settings_start = display_width(MENU_LABEL) + display_width(FOOTER_ACTION_GAP);
-    let settings_end = settings_start + display_width(SETTINGS_LABEL);
-    (settings_end <= text_w && (settings_start..settings_end).contains(&content_x))
-        .then_some(SidebarHit::Settings)
 }
 
 const fn collapse_visible(rect: Rect) -> bool {
@@ -543,10 +556,7 @@ const fn row_hit(row: SidebarRow) -> Option<SidebarHit> {
         SidebarRow::NeedsYouHeader | SidebarRow::NeedsYouOverflow => Some(SidebarHit::Fleet),
         SidebarRow::SpacesHeader | SidebarRow::RosterOverflow => Some(SidebarHit::Sessions),
         SidebarRow::NewWindow => Some(SidebarHit::NewWindow),
-        SidebarRow::Menu
-        | SidebarRow::AgentsEmpty
-        | SidebarRow::SessionsEmpty
-        | SidebarRow::Blank => None,
+        SidebarRow::AgentsEmpty | SidebarRow::SessionsEmpty | SidebarRow::Blank => None,
     }
 }
 
@@ -569,6 +579,35 @@ pub struct SidebarPainter {
     /// compare rendered rows so hidden/truncated changes emit no bytes.
     last: Option<(Rect, Buffer)>,
     dirty: bool,
+    rule: SidebarRule,
+    /// Window index under a live row drag, painted as the insertion
+    /// marker. `None` when no window drag is over this strip.
+    drop_at: Option<usize>,
+    /// Strip row where the pane grid's rail meets the separator rule, drawn
+    /// as a tee so the two read as one frame. `None` when no rail is laid.
+    junction: Option<u16>,
+}
+
+/// Open a satellite agent beside the focused pane. `None` when `resource`
+/// is local: that click stays a session switch.
+#[must_use]
+pub fn satellite_open_action(
+    resource: &ResourceId,
+) -> Option<phux_config::keybind::ResolvedAction> {
+    resource.host()?;
+    let mut args = std::collections::BTreeMap::new();
+    args.insert(
+        "direction".to_owned(),
+        toml::Value::String("horizontal".to_owned()),
+    );
+    args.insert(
+        "resource".to_owned(),
+        toml::Value::String(phux_client::selector::format_terminal_id(resource)),
+    );
+    Some(phux_config::keybind::ResolvedAction {
+        action: "split-pane".to_owned(),
+        args,
+    })
 }
 
 impl SidebarPainter {
@@ -582,6 +621,36 @@ impl SidebarPainter {
             theme,
             last: None,
             dirty: true,
+            rule: SidebarRule::Trailing,
+            drop_at: None,
+            junction: None,
+        }
+    }
+
+    /// The theme this strip paints with; other chrome resolves badges
+    /// through it so every surface shares one palette.
+    #[must_use]
+    pub const fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    /// Put the separator rule on the pane-facing side. Painters call this
+    /// with the reservation's edge before each paint, so the click targets
+    /// snapshotted from [`Self::click_targets`] match the frame on screen.
+    pub fn set_rule(&mut self, rule: SidebarRule) {
+        if self.rule != rule {
+            self.rule = rule;
+            self.dirty = true;
+        }
+    }
+
+    /// Tee the separator rule into the pane grid's rail at strip row `row`
+    /// (`None` clears it). Painters call this with the rail row the content
+    /// layout reserved, beside [`Self::set_rule`].
+    pub fn set_junction(&mut self, row: Option<u16>) {
+        if self.junction != row {
+            self.junction = row;
+            self.dirty = true;
         }
     }
 
@@ -632,6 +701,7 @@ impl SidebarPainter {
             windows: self.windows.len(),
             roster: self.roster.len(),
             active_session: self.roster.iter().position(|s| s.active),
+            rule: self.rule,
         }
     }
 
@@ -644,21 +714,18 @@ impl SidebarPainter {
             needs_you: self
                 .needs_you
                 .iter()
-                .map(|e| match (&e.session, e.pane) {
-                    (Some(name), Some(pane)) => SidebarTarget::Session {
-                        name: name.clone(),
-                        window: e.window,
-                        pane,
-                    },
-                    // A foreign row with no pane ordinal still switches
-                    // sessions; it just lands on the session's remembered
-                    // focus rather than the pane that wants you.
-                    (Some(name), None) => SidebarTarget::Session {
-                        name: name.clone(),
-                        window: e.window,
-                        pane: 0,
-                    },
-                    (None, _) => SidebarTarget::Window(e.window),
+                .map(|e| {
+                    e.session
+                        .as_ref()
+                        .map_or(SidebarTarget::Window(e.window), |name| {
+                            SidebarTarget::Session {
+                                name: name.clone(),
+                                id: e.session_id,
+                                window: e.pane.map(|_| e.window),
+                                pane: e.pane,
+                                resource: e.resource.clone(),
+                            }
+                        })
                 })
                 .collect(),
             roster: self
@@ -667,11 +734,23 @@ impl SidebarPainter {
                 .map(|s| {
                     s.selectable.then(|| SessionRosterTarget {
                         name: s.name.clone(),
+                        id: s.id,
                         host: s.route_host.clone(),
                     })
                 })
                 .collect(),
         }
+    }
+
+    /// Point (or clear) the live insertion marker at window `drop_at`.
+    /// Same change-report contract as [`Self::set_windows`].
+    pub fn set_drop_index(&mut self, drop_at: Option<usize>) -> bool {
+        if self.drop_at == drop_at {
+            return false;
+        }
+        self.drop_at = drop_at;
+        self.dirty = true;
+        true
     }
 
     /// Drop the paint cache so the next [`Self::paint`] re-emits even if its
@@ -689,7 +768,7 @@ impl SidebarPainter {
         if !self.dirty && self.last.as_ref().is_some_and(|(r, _)| *r == rect) {
             return Ok(());
         }
-        let buf = self.compose(rect);
+        let buf = self.compose(rect, self.rule, self.junction);
         let previous = self
             .last
             .as_ref()
@@ -706,18 +785,34 @@ impl SidebarPainter {
     /// (phux-l5xa / phux-4h5a). The VT [`Self::paint`] path uses the same
     /// `compose` step internally, so the cells match a live paint.
     #[must_use]
-    pub fn compose_buffer(&self, rect: Rect) -> Buffer {
-        self.compose(rect)
+    pub fn compose_buffer(&self, rect: Rect, rule: SidebarRule, junction: Option<u16>) -> Buffer {
+        self.compose(rect, rule, junction)
     }
 
-    /// Render a muted section header.
-    fn header_line(&self, label: &str, text_w: u16) -> Line<'static> {
-        Line::from(Span::styled(
-            truncate(label, usize::from(text_w)),
-            Style::default()
-                .fg(self.theme.sidebar_section)
-                .add_modifier(Modifier::BOLD),
-        ))
+    /// Render a section header: the label left, its population right.
+    ///
+    /// The count sits on the same right edge as every row's secondary
+    /// column, so the header reads as the top of a table rather than a
+    /// caption floating over it.
+    fn header_line(&self, label: &str, count: usize, text_w: u16) -> Line<'static> {
+        let right = if count == 0 {
+            Vec::new()
+        } else {
+            vec![Span::styled(
+                count.to_string(),
+                Style::default().fg(self.theme.dim),
+            )]
+        };
+        justify(
+            vec![Span::styled(
+                truncate(label, usize::from(text_w)),
+                Style::default()
+                    .fg(self.theme.sidebar_section)
+                    .add_modifier(Modifier::BOLD),
+            )],
+            right,
+            text_w,
+        )
     }
 
     /// Render a section's empty-state placeholder (phux-foz.13): the label
@@ -733,70 +828,102 @@ impl SidebarPainter {
         ))
     }
 
-    /// Render one window's name row: a status dot + the bold label.
+    /// Render one window's row, nested under its session: the window's
+    /// badge, its label, and its branch right-aligned.
+    ///
+    /// The glyph is the agent badge when the window's focused pane runs an
+    /// agent (the same one its tab and agent row show), otherwise a plain
+    /// dot: filled for the active window, hollow for the rest. A window
+    /// waiting on a human takes the attention dot either way. The active
+    /// row's selection bed is laid by [`Self::compose`] across the whole
+    /// strip, not just the text.
     fn name_line(&self, w: &WindowInfo, text_w: u16) -> Line<'static> {
-        // The dot carries status: filled + accent for the active window,
-        // hollow + dim otherwise, attention amber when the window is
-        // waiting on a human (ADR-0035).
-        let (dot, dot_color) = match (w.attention, w.active) {
-            (true, _) => ("●", self.theme.attention),
-            (false, true) => ("●", self.theme.accent),
-            (false, false) => ("○", self.theme.dim),
-        };
+        let (glyph, glyph_style) = self.window_glyph(w);
+        let exited = w.exited_marker();
+        let exited_w = exited.as_ref().map_or(0, |marker| display_width(marker));
         // phux-foz.1: reserve 2 cells for the ` !` attention
         // suffix so a long label can't push it off the strip.
+        // phux-fpgl.33: same for the retained-exit ` x` / ` xN` marker.
         let label_w = usize::from(text_w)
-            .saturating_sub(4) // nested indent + dot + space
-            .saturating_sub(if w.attention { 2 } else { 0 });
+            .saturating_sub(4) // nested indent + glyph + space
+            .saturating_sub(if w.attention { 2 } else { 0 })
+            .saturating_sub(exited_w);
         let label = truncate(&w.name, label_w);
-        let branch = fitting_branch(w, label_w.saturating_sub(display_width(&label)));
         let style = if w.active {
             Style::default()
-                .fg(self.theme.selection_fg)
+                .fg(self.theme.accent)
                 .add_modifier(Modifier::BOLD)
+        } else if w.exited.is_some() {
+            Style::default().fg(self.theme.dim)
         } else {
             Style::default().fg(self.theme.text)
         };
-        let mut spans = vec![
+        let mut left = vec![
             Span::raw("  "),
-            Span::styled(format!("{dot} "), Style::default().fg(dot_color)),
-            Span::styled(label, style),
+            Span::styled(format!("{glyph} "), glyph_style),
+            Span::styled(label.clone(), style),
         ];
         // phux-foz.1: a window holding a pane that asked for a
         // human answer (ADR-0035) gets a themed `!` marker.
         if w.attention {
-            spans.push(Span::styled(
+            left.push(Span::styled(
                 " !",
                 Style::default()
                     .fg(self.theme.attention)
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        if let Some(branch) = branch {
-            spans.push(Span::styled(
-                format!(" {branch}"),
-                Style::default().fg(self.theme.dim),
-            ));
+        if let Some(marker) = exited {
+            left.push(Span::styled(marker, Style::default().fg(self.theme.dim)));
         }
-        Line::from(spans)
+        let used = 4 + display_width(&label) + if w.attention { 2 } else { 0 } + exited_w;
+        let right = fitting_branch(w, usize::from(text_w).saturating_sub(used))
+            .map(|branch| {
+                vec![Span::styled(
+                    branch.to_owned(),
+                    Style::default().fg(self.theme.dim),
+                )]
+            })
+            .unwrap_or_default();
+        justify(left, right, text_w)
+    }
+
+    /// A window row's glyph and its style.
+    fn window_glyph(&self, w: &WindowInfo) -> (String, Style) {
+        if w.attention {
+            return ("●".to_owned(), Style::default().fg(self.theme.attention));
+        }
+        if let Some(badge) = &w.badge {
+            let mut style = Style::default().fg(badge
+                .style
+                .fg
+                .as_deref()
+                .and_then(|fg| fg.parse().ok())
+                .unwrap_or(self.theme.dim));
+            if badge.style.bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            return (badge.glyph.clone(), style);
+        }
+        if w.active {
+            ("●".to_owned(), Style::default().fg(self.theme.accent))
+        } else {
+            ("○".to_owned(), Style::default().fg(self.theme.dim))
+        }
     }
 
     /// Host identity is a separate, dim line and is never inferred here.
     fn host_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
-        let label = truncate(
-            &format!("on {}", s.host),
-            usize::from(text_w).saturating_sub(2),
-        );
+        let label = truncate(&s.host, usize::from(text_w).saturating_sub(2));
         Line::from(Span::styled(
             format!("  {label}"),
             Style::default().fg(self.theme.dim),
         ))
     }
 
-    /// Render one agent row (phux-foz.9): lifecycle glyph, window name,
-    /// then `state - agent-name` colored by state. The state segment keeps
-    /// first claim on width — it is the row's information — with a small
-    /// floor reserved for the window name so it stays identifiable.
+    /// Render one agent row (phux-foz.9): lifecycle glyph and locator on
+    /// the left, the agent's name flush right. The glyph carries state; the
+    /// locator says where to go; the name says who is there.
     ///
     /// The glyph carries the attention ladder ([`attention_rank`]), not just
     /// the state: an UNSEEN `done` agent gets the filled diamond and bold —
@@ -808,85 +935,121 @@ impl SidebarPainter {
         // a pane's own title (`render::chrome::dividers`), so a working
         // agent can never be a `◐` here and something else there.
         let badge = crate::render::chrome::agent_badge(&self.theme, e.state, e.attention, e.seen);
-        let color = badge.color;
-        let glyph = badge.glyph;
-        let avail = usize::from(text_w).saturating_sub(ICON_COLUMNS);
-        let state_text = format!("{} - {}", e.state.as_str(), e.name);
+        let host_label = e.host.as_deref().unwrap_or("");
+        let host_cols = if host_label.is_empty() {
+            0
+        } else {
+            display_width(host_label).saturating_add(1)
+        };
+        let avail = usize::from(text_w)
+            .saturating_sub(ICON_COLUMNS)
+            .saturating_sub(host_cols);
+        // A satellite row's locator is already the agent name (there is no
+        // attachable session to name). Painting that name again as the
+        // suffix would repeat it. The glyph still carries the live state.
+        let name = if e.host.is_some() && e.session.as_deref() == Some(e.name.as_str()) {
+            ""
+        } else {
+            e.name.as_str()
+        };
         // A cross-session row is labelled by its SESSION, not its window: the
         // row's job is to say where in the fleet to go, and a window name
         // out of its session's context ("edit") locates nothing.
         let locator = e.session.as_ref().unwrap_or(&e.window_name);
-        // The destination earns at least half the row. Previously the agent
-        // description could reduce a long session name to five characters.
-        let win_budget = avail
-            .saturating_sub(display_width(&state_text) + 1)
-            .max(avail / 2);
-        let win_label = truncate(locator, win_budget);
-        let state_budget = avail
-            .saturating_sub(display_width(&win_label))
-            .saturating_sub(1);
-        let state_label = truncate(
-            if display_width(&state_text) <= state_budget {
-                &state_text
-            } else {
-                &e.name
-            },
-            state_budget,
+        // The destination earns at least half the row; the name gives way.
+        let loc_budget = avail.saturating_sub(display_width(name) + 1).max(avail / 2);
+        let locator = truncate(locator, loc_budget);
+        let name = truncate(
+            name,
+            avail
+                .saturating_sub(display_width(&locator))
+                .saturating_sub(1),
         );
-        let mut glyph_style = Style::default().fg(color);
+        let mut glyph_style = Style::default().fg(badge.color);
         if badge.emphatic {
             glyph_style = glyph_style.add_modifier(Modifier::BOLD);
         }
-        Line::from(vec![
-            Span::styled(format!("{glyph} "), glyph_style),
-            Span::styled(win_label, Style::default().fg(self.theme.text)),
-            Span::styled(format!(" {state_label}"), Style::default().fg(color)),
-        ])
+        let mut left = vec![Span::styled(format!("{} ", badge.glyph), glyph_style)];
+        if let Some(host) = &e.host {
+            left.push(Span::styled(
+                format!("{host} "),
+                Style::default().fg(self.theme.chord),
+            ));
+        }
+        left.push(Span::styled(locator, Style::default().fg(self.theme.text)));
+        let right = if name.is_empty() {
+            Vec::new()
+        } else {
+            vec![Span::styled(name, Style::default().fg(self.theme.dim))]
+        };
+        justify(left, right, text_w)
     }
 
     /// Render one roster line (phux-k0cw): a status dot, the session name,
-    /// and a right-aligned state histogram (`!1 *2`).
+    /// and a right-aligned state histogram (`●1 ◐2`).
     ///
     /// The dot takes the session's worst rung via
     /// [`SessionRosterEntry::top_rank`], riding the SAME theme slots the
     /// agent rows use — a roster row and the agent row it summarizes must
-    /// never disagree about colour. A satellite session paints dim with a
-    /// `?` count: its per-Terminal metadata is not subscribable from here
-    /// (`docs/spec/L3.md` §5), and an unknowable session must not render as
-    /// a calm one.
+    /// never disagree about colour. Each histogram count wears its own
+    /// rung's glyph and colour, the same vocabulary as the badges, so `◐2`
+    /// here means what `◐` means on a tab. A satellite session paints dim
+    /// with a `?` count: its per-Terminal metadata is not subscribable from
+    /// here (`docs/spec/L3.md` §5), and an unknowable session must not render
+    /// as a calm one.
     fn roster_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
         let (dot, color) = self.roster_badge(s);
-        let counts = roster_histogram(s);
+        let counts = self.roster_histogram(s);
+        let counts_w: usize = counts.iter().map(|span| display_width(&span.content)).sum();
         let avail = usize::from(text_w).saturating_sub(2);
         // Identity keeps at least half the row even under a large histogram.
         let name_budget = avail
-            .saturating_sub(display_width(&counts) + usize::from(!counts.is_empty()))
+            .saturating_sub(counts_w + usize::from(counts_w > 0))
             .max(avail / 2);
         let name = truncate(&s.name, name_budget);
-        let counts = truncate(&counts, avail.saturating_sub(display_width(&name) + 1));
-        let pad = avail
-            .saturating_sub(display_width(&name))
-            .saturating_sub(display_width(&counts));
         let style = if s.active {
             Style::default()
-                .fg(self.theme.selection_fg)
+                .fg(self.theme.accent)
                 .add_modifier(Modifier::BOLD)
         } else if s.selectable {
             Style::default().fg(self.theme.text)
         } else {
             Style::default().fg(self.theme.dim)
         };
-        let mut spans = vec![
-            Span::styled(format!("{dot} "), Style::default().fg(color)),
-            Span::styled(name, style),
+        justify(
+            vec![
+                Span::styled(format!("{dot} "), Style::default().fg(color)),
+                Span::styled(name, style),
+            ],
+            counts,
+            text_w,
+        )
+    }
+
+    /// The per-rung counts, each in its own glyph and colour.
+    fn roster_histogram(&self, s: &SessionRosterEntry) -> Vec<Span<'static>> {
+        if s.satellite {
+            return vec![Span::styled(
+                format!("?{}", s.total()),
+                Style::default().fg(self.theme.dim),
+            )];
+        }
+        let rungs = [
+            (AGENT_BLOCKED, s.blocked, self.theme.agent_blocked),
+            (AGENT_DONE, s.done_unvisited, self.theme.agent_done),
+            (AGENT_WORKING, s.working, self.theme.agent_working),
         ];
-        if !counts.is_empty() {
+        let mut spans = Vec::new();
+        for (glyph, n, color) in rungs.into_iter().filter(|(_, n, _)| *n > 0) {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" "));
+            }
             spans.push(Span::styled(
-                format!("{}{counts}", " ".repeat(pad)),
+                format!("{glyph}{n}"),
                 Style::default().fg(color),
             ));
         }
-        Line::from(spans)
+        spans
     }
 
     const fn roster_badge(&self, s: &SessionRosterEntry) -> (&'static str, ratatui::style::Color) {
@@ -894,9 +1057,9 @@ impl SidebarPainter {
             ("○", self.theme.dim)
         } else {
             match s.top_rank() {
-                4 => ("●", self.theme.agent_blocked),
-                3 => ("◆", self.theme.agent_done),
-                2 => ("◐", self.theme.agent_working),
+                4 => (AGENT_BLOCKED, self.theme.agent_blocked),
+                3 => (AGENT_DONE, self.theme.agent_done),
+                2 => (AGENT_WORKING, self.theme.agent_working),
                 1 => ("○", self.theme.agent_idle),
                 _ => ("○", self.theme.dim),
             }
@@ -907,10 +1070,7 @@ impl SidebarPainter {
     /// like an empty state, because it is chrome rather than a target you
     /// aim at — though clicking it does open the fleet dashboard.
     fn overflow_line(&self, hidden: usize, text_w: u16) -> Line<'static> {
-        let label = truncate(
-            &format!("+{hidden} {OVERFLOW_LABEL}"),
-            usize::from(text_w).saturating_sub(2),
-        );
+        let label = truncate(&format!("+{hidden}"), usize::from(text_w).saturating_sub(2));
         Line::from(Span::styled(
             format!("  {label}"),
             Style::default().fg(self.theme.dim),
@@ -934,30 +1094,13 @@ impl SidebarPainter {
         let rest = chars.as_str().to_owned();
         vec![
             Span::styled(glyph, Style::default().fg(self.theme.chord)),
-            Span::styled(rest, Style::default().fg(self.theme.text)),
+            Span::styled(rest, Style::default().fg(self.theme.dim)),
         ]
-    }
-
-    /// Keep both global destinations permanently visible without taking a
-    /// third row away from agents and sessions. The minimum sidebar width fits
-    /// both labels; smaller embedded surfaces degrade to Commands alone.
-    fn footer_actions_line(&self, text_w: u16) -> Line<'static> {
-        let required = display_width(MENU_LABEL)
-            + display_width(FOOTER_ACTION_GAP)
-            + display_width(SETTINGS_LABEL);
-        if required > usize::from(text_w) {
-            return self.affordance_line(MENU_LABEL, text_w);
-        }
-
-        let mut spans = self.affordance_spans(MENU_LABEL);
-        spans.push(Span::raw(FOOTER_ACTION_GAP));
-        spans.extend(self.affordance_spans(SETTINGS_LABEL));
-        Line::from(spans)
     }
 
     /// Render the sections + affordances + separator into a fresh
     /// `rect`-sized buffer, row-for-row from [`row_model`].
-    fn compose(&self, rect: Rect) -> Buffer {
+    fn compose(&self, rect: Rect, rule: SidebarRule, junction: Option<u16>) -> Buffer {
         let area = RataRect::new(0, 0, rect.w, rect.h);
         let mut buf = Buffer::empty(area);
         buf.set_style(
@@ -974,34 +1117,85 @@ impl SidebarPainter {
                 .iter()
                 .map(|row| self.row_line(*row, hidden, text_w))
                 .collect();
-            Paragraph::new(lines).render(RataRect::new(GUTTER, 0, text_w, rect.h), &mut buf);
-            for (y, row) in (0..rect.h).zip(&model) {
-                if self.row_selected(*row) {
-                    buf.set_style(
-                        RataRect::new(0, y, rect.w.saturating_sub(1), 1),
-                        Style::default().bg(self.theme.selection_bg),
-                    );
-                }
-            }
+            let content_x = rule.content_x();
+            Paragraph::new(lines).render(
+                RataRect::new(content_x + GUTTER, 0, text_w, rect.h),
+                &mut buf,
+            );
         }
-        self.paint_separator(&mut buf, rect);
+        self.paint_selection_bed(&mut buf, rect, rule, &model);
+        paint_separator(&mut buf, rect, rule, &self.theme, junction);
+        self.paint_window_drop_marker(&mut buf, rect, rule);
         buf
     }
 
-    fn row_selected(&self, row: SidebarRow) -> bool {
-        match row {
-            SidebarRow::WindowName(i) => self.windows.get(i).is_some_and(|w| w.active),
-            SidebarRow::RosterEntry(j) | SidebarRow::RosterHost(j) => {
-                self.roster.get(j).is_some_and(|s| s.active)
+    /// Lay the selection bed under the active window's row, edge to edge
+    /// of the strip (gutters included, the rule excluded), so the selected
+    /// row is one band rather than a highlight hugging its glyphs.
+    fn paint_selection_bed(
+        &self,
+        buf: &mut Buffer,
+        rect: Rect,
+        rule: SidebarRule,
+        model: &[SidebarRow],
+    ) {
+        let Some(active) = self.windows.iter().position(|w| w.active) else {
+            return;
+        };
+        let Some(y) = model
+            .iter()
+            .position(|row| *row == SidebarRow::WindowName(active))
+            .and_then(|y| u16::try_from(y).ok())
+        else {
+            return;
+        };
+        let rule_x = rule.column(rect.w);
+        for x in (0..rect.w).filter(|x| *x != rule_x) {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_bg(self.theme.selection_bg);
             }
-            _ => false,
+        }
+    }
+
+    /// Reverse the window row under a live drag so the drop slot is
+    /// visible before release. Leaves the separator rule alone so the
+    /// handle stays a handle.
+    fn paint_window_drop_marker(&self, buf: &mut Buffer, rect: Rect, rule: SidebarRule) {
+        let Some(index) = self.drop_at else {
+            return;
+        };
+        let model = row_model(self.counts(), rect.h);
+        let Some(y) = model
+            .iter()
+            .position(|row| *row == SidebarRow::WindowName(index))
+            .and_then(|y| u16::try_from(y).ok())
+        else {
+            return;
+        };
+        if y >= rect.h {
+            return;
+        }
+        let rule_x = rule.column(rect.w);
+        for x in 0..rect.w {
+            if x == rule_x {
+                continue;
+            }
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_style(
+                    Style::default()
+                        .fg(self.theme.accent)
+                        .add_modifier(Modifier::REVERSED),
+                );
+            }
         }
     }
 
     fn row_line(&self, row: SidebarRow, hidden: SidebarCounts, text_w: u16) -> Line<'static> {
         match row {
-            SidebarRow::NeedsYouHeader => self.header_line(NEEDS_YOU_HEADER, text_w),
-            SidebarRow::SpacesHeader => self.header_line(SPACES_HEADER, text_w),
+            SidebarRow::NeedsYouHeader => {
+                self.header_line(NEEDS_YOU_HEADER, self.needs_you.len(), text_w)
+            }
+            SidebarRow::SpacesHeader => self.header_line(SPACES_HEADER, self.roster.len(), text_w),
             SidebarRow::AgentsEmpty => self.empty_line(AGENTS_EMPTY, text_w),
             SidebarRow::SessionsEmpty => self.empty_line(SESSIONS_EMPTY, text_w),
             SidebarRow::WindowName(i) => self
@@ -1024,7 +1218,6 @@ impl SidebarPainter {
             SidebarRow::RosterOverflow => self.sessions_overflow_line(hidden, text_w),
             SidebarRow::Blank => Line::from(""),
             SidebarRow::NewWindow => self.affordance_line(NEW_LABEL, text_w),
-            SidebarRow::Menu => self.footer_actions_line(text_w),
         }
     }
 
@@ -1041,36 +1234,36 @@ impl SidebarPainter {
         }
         self.affordance_line(&parts.join(", "), text_w)
     }
-
-    fn paint_separator(&self, buf: &mut Buffer, rect: Rect) {
-        let sep_x = rect.w.saturating_sub(1);
-        for y in 0..rect.h {
-            if let Some(cell) = buf.cell_mut((sep_x, y)) {
-                cell.set_symbol("│");
-                cell.set_style(Style::default().fg(self.theme.border));
-            }
-        }
-        // phux-foz.9: the collapse chevron claims the bottom corner cell
-        // whenever the footer renders (same condition as `hit_test`).
-        if collapse_visible(rect)
-            && let Some(cell) = buf.cell_mut((sep_x, rect.h - 1))
-        {
-            cell.set_symbol(COLLAPSE_GLYPH);
-            cell.set_style(Style::default().fg(self.theme.dim));
-        }
-    }
 }
 
-fn roster_histogram(s: &SessionRosterEntry) -> String {
-    if s.satellite {
-        return format!("?{}", s.total());
+fn paint_separator(
+    buf: &mut Buffer,
+    rect: Rect,
+    rule: SidebarRule,
+    theme: &Theme,
+    junction: Option<u16>,
+) {
+    let sep_x = rule.column(rect.w);
+    // The rail runs away from the strip, into the panes: rightward from a
+    // trailing rule, leftward from a leading one.
+    let tee = match rule {
+        SidebarRule::Trailing => "├",
+        SidebarRule::Leading => "┤",
+    };
+    for y in 0..rect.h {
+        if let Some(cell) = buf.cell_mut((sep_x, y)) {
+            cell.set_symbol(if junction == Some(y) { tee } else { "│" });
+            cell.set_style(Style::default().fg(theme.border));
+        }
     }
-    [("!", s.blocked), ("◆", s.done_unvisited), ("*", s.working)]
-        .into_iter()
-        .filter(|(_, n)| *n > 0)
-        .map(|(glyph, n)| format!("{glyph}{n}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+    // phux-foz.9: the collapse chevron claims the rule's bottom cell
+    // whenever the footer renders (same condition as `hit_test`).
+    if collapse_visible(rect)
+        && let Some(cell) = buf.cell_mut((sep_x, rect.h - 1))
+    {
+        cell.set_symbol(COLLAPSE_GLYPH);
+        cell.set_style(Style::default().fg(theme.dim));
+    }
 }
 
 /// Count actual item rows, never host lines or padding, for honest overflow.
@@ -1088,6 +1281,28 @@ fn hidden_counts(counts: SidebarCounts, model: &[SidebarRow]) -> SidebarCounts {
         }
     }
     hidden
+}
+
+/// Lay `left` flush left and `right` flush right on one `text_w`-cell row.
+///
+/// Every sidebar row shares this one right edge, so secondary text (counts,
+/// agent names, branches) lines up down the strip as a column. `right` is
+/// dropped whole rather than cut when it would touch `left`: callers budget
+/// the primary label first, and a secondary label that does not fit is
+/// better absent than clipped into something that reads as a different
+/// word.
+fn justify(left: Vec<Span<'static>>, right: Vec<Span<'static>>, text_w: u16) -> Line<'static> {
+    let width = |spans: &[Span<'_>]| -> usize {
+        spans.iter().map(|span| display_width(&span.content)).sum()
+    };
+    let (lw, rw) = (width(&left), width(&right));
+    let w = usize::from(text_w);
+    let mut spans = left;
+    if rw > 0 && lw + 1 + rw <= w {
+        spans.push(Span::raw(" ".repeat(w - lw - rw)));
+        spans.extend(right);
+    }
+    Line::from(spans)
 }
 
 /// Truncate `s` to `max` cells, marking the cut with `…`.
@@ -1163,12 +1378,21 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
+            badge: None,
         }
     }
 
     fn win_attention(name: &str, active: bool) -> WindowInfo {
         WindowInfo {
             attention: true,
+            ..win(name, active)
+        }
+    }
+
+    fn win_exited(name: &str, active: bool, status: &str) -> WindowInfo {
+        WindowInfo {
+            exited: Some(status.to_owned()),
             ..win(name, active)
         }
     }
@@ -1183,12 +1407,15 @@ mod tests {
     fn agent(window: usize, window_name: &str, name: &str, state: AgentMetaState) -> AgentEntry {
         AgentEntry {
             session: None,
+            session_id: None,
+            resource: None,
             window,
             window_name: window_name.to_owned(),
             pane: None,
             name: name.to_owned(),
             state,
             attention: false,
+            host: None,
             seen: false,
         }
     }
@@ -1241,10 +1468,12 @@ mod tests {
             vec![
                 Some(SessionRosterTarget {
                     name: "development".to_owned(),
+                    id: None,
                     host: None
                 }),
                 Some(SessionRosterTarget {
                     name: "development".to_owned(),
+                    id: None,
                     host: Some("satellite-dev".to_owned())
                 }),
                 None,
@@ -1306,19 +1535,20 @@ mod tests {
     fn overflow_counts_sessions_and_windows_without_counting_host_lines() {
         let c = SidebarCounts {
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
             ..counts(9, 5, 4)
         };
         let model = row_model(c, 14);
         let hidden = hidden_counts(c, &model);
         assert_eq!(hidden.needs_you, 5);
         assert_eq!(hidden.roster, 3);
-        assert_eq!(hidden.windows, 3);
+        assert_eq!(hidden.windows, 2);
         assert!(model.contains(&SidebarRow::RosterOverflow));
         assert!(model.contains(&SidebarRow::RosterHost(0)));
         let p = SidebarPainter::new(Theme::default());
         let line = p.sessions_overflow_line(hidden, 32);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "+3 sessions, +3 windows");
+        assert_eq!(text, "+3 sessions, +2 windows");
     }
 
     #[test]
@@ -1328,6 +1558,7 @@ mod tests {
             windows: usize::MAX,
             roster: usize::MAX,
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
         };
         assert_eq!(row_model(c, 1), vec![SidebarRow::RosterOverflow]);
         let rect = Rect {
@@ -1344,6 +1575,7 @@ mod tests {
         }
         let invalid = SidebarCounts {
             active_session: Some(9),
+            rule: SidebarRule::Trailing,
             ..counts(0, 100, 1)
         };
         assert!(
@@ -1380,7 +1612,7 @@ mod tests {
             w,
             h: 14,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let painted = paint_to_string(p, rect);
         for row in rows_of(&painted) {
             assert_eq!(display_width(&row), usize::from(w), "w={w}: {row:?}");
@@ -1510,7 +1742,11 @@ mod tests {
         let mut unseen = agent(0, "a", "claude", AgentMetaState::Done);
         unseen.seen = false;
         p.set_needs_you(vec![unseen.clone()]);
-        let row = row_text(&p.compose_buffer(rect), rect, 1);
+        let row = row_text(
+            &p.compose_buffer(rect, SidebarRule::Trailing, None),
+            rect,
+            1,
+        );
         assert!(row.contains('◆'), "unreviewed done: {row:?}");
 
         let seen = AgentEntry {
@@ -1518,11 +1754,19 @@ mod tests {
             ..unseen
         };
         p.set_needs_you(vec![seen]);
-        let row = row_text(&p.compose_buffer(rect), rect, 1);
+        let row = row_text(
+            &p.compose_buffer(rect, SidebarRule::Trailing, None),
+            rect,
+            1,
+        );
         assert!(row.contains('○'), "reviewed done relaxes: {row:?}");
 
         p.set_needs_you(vec![agent(0, "a", "claude", AgentMetaState::Working)]);
-        let row = row_text(&p.compose_buffer(rect), rect, 1);
+        let row = row_text(
+            &p.compose_buffer(rect, SidebarRule::Trailing, None),
+            rect,
+            1,
+        );
         assert!(row.contains('◐'), "working: {row:?}");
     }
 
@@ -1760,7 +2004,7 @@ mod tests {
             "one CUP for the changed host row"
         );
         assert!(changed.starts_with("\x1b[16;8H"));
-        assert!(strip_ansi(&changed).contains("on devbox"));
+        assert!(strip_ansi(&changed).contains("devbox"));
         assert!(!changed.contains("editor"));
         assert!(
             changed.len() * 8 < full.len(),
@@ -1788,18 +2032,22 @@ mod tests {
             w: 36,
             h: 12,
         };
-        let b = p.compose_buffer(rect);
-        for y in [6, 7, 8] {
-            assert_eq!(b[(0, y)].bg, p.theme.selection_bg);
-            assert_eq!(b[(34, y)].bg, p.theme.selection_bg);
+        let b = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        for y in [6, 7] {
+            assert_eq!(b[(0, y)].bg, p.theme.surface);
+            assert_eq!(b[(34, y)].bg, p.theme.surface);
             assert_eq!(b[(35, y)].bg, p.theme.surface);
         }
+        // The active window's bed spans both gutters, never the rule.
+        assert_eq!(b[(0, 8)].bg, p.theme.selection_bg);
+        assert_eq!(b[(34, 8)].bg, p.theme.selection_bg);
+        assert_eq!(b[(35, 8)].bg, p.theme.surface);
         assert_eq!(b[(3, 7)].fg, p.theme.dim);
         for name in ["构建工具", "cafe\u{301}", "build"] {
             let line = p.roster_line(&roster(name, 1, 2, 0), 30);
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert_eq!(display_width(&text), 30);
-            assert!(text.ends_with("!1 *2"));
+            assert!(text.ends_with("●1 ◐2"), "{text:?}");
         }
     }
 
@@ -1845,6 +2093,35 @@ mod tests {
         assert!(
             plain.contains("shell !"),
             "asking window tab must carry the marker: {plain:?}"
+        );
+    }
+
+    /// phux-fpgl.33: a window whose pane is retained after exit (ADR-0124)
+    /// carries a dim `x` marker plus the exit status on its sidebar tab.
+    #[test]
+    fn retained_window_gets_an_exit_marker() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_roster(vec![active_roster()]);
+        p.set_windows(vec![win("editor", true), win("shell", false)]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 14,
+        };
+        let plain = strip_ansi(&paint_to_string(&mut p, rect));
+        assert!(
+            !plain.contains(" x"),
+            "no retained pane, no exit marker: {plain:?}"
+        );
+        assert!(
+            p.set_windows(vec![win("editor", true), win_exited("shell", false, "3")]),
+            "exit mark flip must report a change"
+        );
+        let plain = strip_ansi(&paint_to_string(&mut p, rect));
+        assert!(
+            plain.contains("shell x3"),
+            "retained window tab must carry the exit marker: {plain:?}"
         );
     }
 
@@ -1900,15 +2177,67 @@ mod tests {
             w: 20,
             h: 18,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(row_text(&buf, rect, 8).contains(SPACES_HEADER));
         assert!(row_text(&buf, rect, 9).contains("development"));
-        assert!(row_text(&buf, rect, 10).contains("on mini"));
+        assert!(row_text(&buf, rect, 10).contains("mini"));
         assert!(row_text(&buf, rect, 11).starts_with("   ● phux"));
         assert!(row_text(&buf, rect, 12).starts_with("   ○ scratch"));
         assert!(row_text(&buf, rect, 13).contains("peer"));
-        assert!(row_text(&buf, rect, 14).contains("on mini"));
+        assert!(row_text(&buf, rect, 14).contains("mini"));
         assert!(!strip_text(&p, rect).contains("wave2/herdr"));
+    }
+
+    /// phux-mv5y: a live window-row drag paints the insertion marker on
+    /// the pointed-at row and clears it when the index is dropped.
+    #[test]
+    fn window_drop_marker_follows_the_index_and_clears() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_roster(vec![active_roster()]);
+        p.set_windows(vec![win("phux", true), win("scratch", false)]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 18,
+        };
+        let model = row_model(p.counts(), rect.h);
+        let y0 = window_row_y(&model, 0);
+        let y1 = window_row_y(&model, 1);
+        let unmarked = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        assert!(
+            !row_reversed(&unmarked, rect, y0) && !row_reversed(&unmarked, rect, y1),
+            "no drag, no marker"
+        );
+        assert!(p.set_drop_index(Some(1)));
+        assert!(!p.set_drop_index(Some(1)));
+        let marked = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        assert!(
+            row_reversed(&marked, rect, y1),
+            "drop index 1 must reverse that window row"
+        );
+        assert!(
+            !row_reversed(&marked, rect, y0),
+            "the other window row stays unmarked"
+        );
+        assert!(p.set_drop_index(None));
+        let cleared = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        assert!(
+            !row_reversed(&cleared, rect, y1),
+            "clearing the index must drop the marker"
+        );
+    }
+
+    fn window_row_y(model: &[SidebarRow], index: usize) -> u16 {
+        model
+            .iter()
+            .position(|row| *row == SidebarRow::WindowName(index))
+            .and_then(|y| u16::try_from(y).ok())
+            .expect("window row is on the strip")
+    }
+
+    fn row_reversed(buf: &Buffer, rect: Rect, y: u16) -> bool {
+        (0..rect.w.saturating_sub(1)).any(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
     }
 
     /// Every lifecycle stays in the caller's supplied display order.
@@ -1926,7 +2255,7 @@ mod tests {
             w: 36,
             h: 14,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
             "the queue tops the strip: {:?}",
@@ -1934,7 +2263,7 @@ mod tests {
         );
         let claude_row = row_text(&buf, rect, 1);
         assert!(
-            claude_row.contains("phux") && claude_row.contains("idle - claude"),
+            claude_row.contains("phux") && claude_row.contains("claude"),
             "queue row shows locator + state - name: {claude_row:?}"
         );
         let worker_row = row_text(&buf, rect, 2);
@@ -1955,7 +2284,7 @@ mod tests {
             agent(0, "phux", "claude", AgentMetaState::Done),
             agent(1, "scratch", "merge-queue-w5", AgentMetaState::Blocked),
         ]);
-        let changed = p.compose_buffer(rect);
+        let changed = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(row_text(&changed, rect, 1).contains("claude"));
         assert!(row_text(&changed, rect, 2).contains("merge-queue-w5"));
         assert_eq!(row_text(&buf, rect, 6), row_text(&changed, rect, 6));
@@ -1979,7 +2308,7 @@ mod tests {
             w: 36,
             h: 14,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let row = row_text(&buf, rect, 1);
         assert!(
             row.contains("phux-feat-auth"),
@@ -1988,6 +2317,87 @@ mod tests {
         assert!(
             !row.contains("edit"),
             "window name is not the locator: {row:?}"
+        );
+    }
+
+    /// ADR-0136: a satellite agent row badges its host and opens that pane.
+    #[test]
+    fn a_satellite_agent_row_badges_its_host_and_opens_the_pane() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_windows(vec![win("phux", true)]);
+        let resource = ResourceId::satellite("gpubox", 4);
+        p.set_needs_you(vec![AgentEntry {
+            session: Some("reviewer".to_owned()),
+            resource: Some(resource.clone()),
+            host: Some("gpubox".to_owned()),
+            ..agent(0, "edit", "reviewer", AgentMetaState::Working)
+        }]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 36,
+            h: 14,
+        };
+        let row = row_text(
+            &p.compose_buffer(rect, SidebarRule::Trailing, None),
+            rect,
+            1,
+        );
+        assert!(row.contains("gpubox"), "host badge: {row:?}");
+        assert!(row.contains("reviewer"), "agent name: {row:?}");
+        let action = satellite_open_action(&resource).expect("satellite click opens");
+        assert_eq!(action.action, "split-pane");
+        assert_eq!(
+            action.args.get("resource").and_then(|value| value.as_str()),
+            Some("gpubox/@4")
+        );
+        assert!(satellite_open_action(&ResourceId::local(1)).is_none());
+    }
+
+    /// phux-4s6o: a queue click must carry the peer's `SessionId` so a
+    /// rename of that session cannot retarget the switch.
+    #[test]
+    fn a_foreign_queue_click_carries_session_identity() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_needs_you(vec![AgentEntry {
+            session: Some("stale".to_owned()),
+            session_id: Some(SessionId::new(7)),
+            pane: Some(1),
+            ..agent(0, "edit", "claude", AgentMetaState::Blocked)
+        }]);
+        assert_eq!(
+            p.click_targets().needs_you,
+            vec![SidebarTarget::Session {
+                name: "stale".to_owned(),
+                id: Some(SessionId::new(7)),
+                window: Some(0),
+                pane: Some(1),
+                resource: None,
+            }]
+        );
+    }
+
+    /// phux-ah84: a graph-discovered agent click carries `ResourceId` and
+    /// omits fabricated window/pane indices.
+    #[test]
+    fn a_foreign_queue_click_carries_resource_identity() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_needs_you(vec![AgentEntry {
+            session: Some("peer".to_owned()),
+            session_id: Some(SessionId::new(2)),
+            resource: Some(ResourceId::local(10)),
+            pane: None,
+            ..agent(0, "main", "reviewer", AgentMetaState::Idle)
+        }]);
+        assert_eq!(
+            p.click_targets().needs_you,
+            vec![SidebarTarget::Session {
+                name: "peer".to_owned(),
+                id: Some(SessionId::new(2)),
+                window: None,
+                pane: None,
+                resource: Some(ResourceId::local(10)),
+            }]
         );
     }
 
@@ -2003,7 +2413,7 @@ mod tests {
             w: 24,
             h: 12,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
             "Agents tops a calm strip: {:?}",
@@ -2033,7 +2443,7 @@ mod tests {
             w: 24,
             h: 12,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
             row_text(&buf, rect, 5).contains(SPACES_HEADER),
             "Sessions header stays at midpoint: {:?}",
@@ -2071,7 +2481,7 @@ mod tests {
             w: 26,
             h: 16,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let model = row_model(p.counts(), rect.h);
         let first = model
             .iter()
@@ -2080,21 +2490,21 @@ mod tests {
         let busy = row_text(&buf, rect, u16::try_from(first).unwrap());
         assert!(busy.contains("feat-auth"), "session name: {busy:?}");
         assert!(
-            busy.contains("!1") && busy.contains("*2"),
+            busy.contains("●1") && busy.contains("◐2"),
             "histogram carries how much, not just what: {busy:?}"
         );
-        assert!(row_text(&buf, rect, u16::try_from(first + 1).unwrap()).contains("on mini"));
+        assert!(row_text(&buf, rect, u16::try_from(first + 1).unwrap()).contains("mini"));
         let sat = row_text(&buf, rect, u16::try_from(first + 2).unwrap());
         assert!(sat.contains("prod-3"), "satellite name: {sat:?}");
         assert!(
             sat.contains("?4"),
             "a satellite reads as unknown, never as a calm zero: {sat:?}"
         );
-        assert!(row_text(&buf, rect, u16::try_from(first + 3).unwrap()).contains("on devbox"));
+        assert!(row_text(&buf, rect, u16::try_from(first + 3).unwrap()).contains("devbox"));
     }
 
     fn strip_text(p: &SidebarPainter, rect: Rect) -> String {
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let mut out = String::new();
         for y in 0..rect.h {
             let mut row: String = (0..rect.w)
@@ -2193,11 +2603,11 @@ mod tests {
         insta::assert_snapshot!(strip_text(&p, rect));
     }
 
-    /// phux-fce4: the footer affordances render on the strip's last two
-    /// rows when the strip is tall enough, and drop out below the minimum.
+    /// phux-fce4: the New window footer renders on the strip's last row
+    /// when the strip is tall enough, and drops out below the minimum.
     /// phux-foz.9: the collapse chevron claims the bottom corner cell.
     #[test]
-    fn footer_affordances_render_on_the_last_two_rows() {
+    fn footer_affordance_renders_on_the_last_row() {
         let mut p = SidebarPainter::new(Theme::default());
         p.set_windows(vec![win("shell", true)]);
         let rect = Rect {
@@ -2206,20 +2616,10 @@ mod tests {
             w: 28,
             h: 8,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(
-            row_text(&buf, rect, 6).contains(NEW_LABEL),
-            "row 6 should hold the new affordance: {:?}",
-            row_text(&buf, rect, 6)
-        );
-        assert!(
-            row_text(&buf, rect, 7).contains(MENU_LABEL),
-            "row 7 should hold the menu affordance: {:?}",
-            row_text(&buf, rect, 7)
-        );
-        assert!(
-            row_text(&buf, rect, 7).contains(SETTINGS_LABEL),
-            "row 7 should hold the settings affordance: {:?}",
+            row_text(&buf, rect, 7).contains(NEW_LABEL),
+            "row 7 should hold the new affordance: {:?}",
             row_text(&buf, rect, 7)
         );
         // The bottom corner cell carries the collapse chevron instead of
@@ -2236,7 +2636,7 @@ mod tests {
         };
         let plain = strip_ansi(&paint_to_string(&mut p, short));
         assert!(
-            !plain.contains(NEW_LABEL) && !plain.contains(MENU_LABEL),
+            !plain.contains(NEW_LABEL),
             "short strip must not render the footer: {plain:?}"
         );
         assert!(
@@ -2245,10 +2645,55 @@ mod tests {
         );
     }
 
+    /// phux-kb91: a right-docked strip puts its rule (and the collapse
+    /// chevron) on its pane-facing first column, and every row target moves
+    /// one column away from it, out to the screen edge.
+    #[test]
+    fn a_leading_rule_mirrors_the_strip_toward_the_panes() {
+        let rect = Rect {
+            x: 52,
+            y: 0,
+            w: 28,
+            h: 14,
+        };
+        let leading = SidebarCounts {
+            active_session: Some(0),
+            rule: SidebarRule::Leading,
+            ..counts(0, 1, 1)
+        };
+        assert_eq!(
+            hit_test(rect, leading, 52, 9),
+            None,
+            "the rule is no row target"
+        );
+        assert_eq!(hit_test(rect, leading, 52, 13), Some(SidebarHit::Collapse));
+        assert_eq!(
+            hit_test(rect, leading, 79, 9),
+            Some(SidebarHit::Window(0)),
+            "the screen-edge column is row content, not a rule"
+        );
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_windows(vec![win("build", true)]);
+        let local = Rect { x: 0, ..rect };
+        let buf = p.compose_buffer(local, SidebarRule::Leading, None);
+        assert_eq!(
+            buf.cell((0, 0)).map(ratatui::buffer::Cell::symbol),
+            Some("│")
+        );
+        assert_ne!(
+            buf.cell((27, 0)).map(ratatui::buffer::Cell::symbol),
+            Some("│")
+        );
+        assert_eq!(
+            buf.cell((0, 13)).map(ratatui::buffer::Cell::symbol),
+            Some(COLLAPSE_GLYPH)
+        );
+    }
+
     /// phux-i0e8.10.3: every click the help table advertises resolves
     /// through the real [`hit_test`] to the target its row describes, on
-    /// a strip tall enough to render the footer. The affordance rows
-    /// match on the shared label consts, so renaming `+ new` / `= menu`
+    /// a strip tall enough to render the footer. The affordance row
+    /// matches on the shared label const, so renaming `+ new window`
     /// without updating the table (or vice versa) breaks here.
     #[test]
     fn help_table_matches_hit_targets() {
@@ -2260,6 +2705,7 @@ mod tests {
         };
         let quiet = SidebarCounts {
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
             ..counts(0, 1, 1)
         };
         for binding in HELP_BINDINGS {
@@ -2272,13 +2718,7 @@ mod tests {
                     );
                 }
                 NEW_LABEL => {
-                    assert_eq!(hit_test(rect, quiet, 3, 12), Some(SidebarHit::NewWindow));
-                }
-                MENU_LABEL => {
-                    assert_eq!(hit_test(rect, quiet, 3, 13), Some(SidebarHit::Menu));
-                }
-                SETTINGS_LABEL => {
-                    assert_eq!(hit_test(rect, quiet, 14, 13), Some(SidebarHit::Settings));
+                    assert_eq!(hit_test(rect, quiet, 3, 13), Some(SidebarHit::NewWindow));
                 }
                 COLLAPSE_GLYPH => {
                     assert_eq!(hit_test(rect, quiet, 27, 13), Some(SidebarHit::Collapse));
@@ -2328,6 +2768,7 @@ mod tests {
             windows,
             roster,
             active_session: None,
+            rule: SidebarRule::Trailing,
         }
     }
 
@@ -2335,24 +2776,21 @@ mod tests {
     fn row_model_reserves_footer_and_truncates_blocks() {
         let c = SidebarCounts {
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
             ..counts(0, 3, 1)
         };
         let rows = row_model(c, 9);
         assert_eq!(rows.len(), 9);
         assert_eq!(rows[0], SidebarRow::NeedsYouHeader);
         assert_eq!(rows[1], SidebarRow::AgentsEmpty);
-        assert_eq!(rows[3], SidebarRow::SpacesHeader);
-        assert_eq!(rows[4], SidebarRow::RosterEntry(0));
-        assert_eq!(rows[5], SidebarRow::RosterHost(0));
-        assert_eq!(rows[6], SidebarRow::RosterOverflow);
-        assert_eq!(rows[7], SidebarRow::NewWindow);
-        assert_eq!(rows[8], SidebarRow::Menu);
+        assert_eq!(rows[4], SidebarRow::SpacesHeader);
+        assert_eq!(rows[5], SidebarRow::RosterEntry(0));
+        assert_eq!(rows[6], SidebarRow::RosterHost(0));
+        assert_eq!(rows[8], SidebarRow::NewWindow);
         // Keep hidden windows reachable even when a pair and overflow cannot fit.
         let rows = row_model(c, 7);
-        assert_eq!(rows[3], SidebarRow::RosterOverflow);
-        assert_eq!(rows[4], SidebarRow::Blank);
-        assert_eq!(rows[5], SidebarRow::NewWindow);
-        assert_eq!(rows[6], SidebarRow::Menu);
+        assert_eq!(rows[3], SidebarRow::SpacesHeader);
+        assert_eq!(rows[6], SidebarRow::NewWindow);
         // Below the minimum height there is no footer.
         let rows = row_model(c, 3);
         assert_eq!(
@@ -2381,8 +2819,8 @@ mod tests {
                 SidebarRow::SessionsEmpty,
                 SidebarRow::Blank,
                 SidebarRow::Blank,
+                SidebarRow::Blank,
                 SidebarRow::NewWindow,
-                SidebarRow::Menu,
             ]
         );
         // Adding sessions preserves both header positions.
@@ -2418,7 +2856,7 @@ mod tests {
     fn agents_never_starve_sessions() {
         for h in MIN_FOOTER_HEIGHT..24 {
             let rows = row_model(counts(20, 2, 3), h);
-            let body = usize::from(h).saturating_sub(2);
+            let body = usize::from(h).saturating_sub(1);
             assert_eq!(rows[0], SidebarRow::NeedsYouHeader);
             assert_eq!(rows[body / 2], SidebarRow::SpacesHeader);
             let quiet = row_model(counts(0, 2, 3), h);
@@ -2484,6 +2922,7 @@ mod tests {
         };
         let c = SidebarCounts {
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
             ..counts(0, 2, 1)
         };
         assert_eq!(hit_test(rect, c, 3, 0), Some(SidebarHit::Fleet));
@@ -2491,9 +2930,8 @@ mod tests {
         assert_eq!(hit_test(rect, c, 3, 10), Some(SidebarHit::Window(1)));
         // Padding rows miss.
         assert_eq!(hit_test(rect, c, 3, 5), None);
-        // Footer rows.
-        assert_eq!(hit_test(rect, c, 3, 12), Some(SidebarHit::NewWindow));
-        assert_eq!(hit_test(rect, c, 3, 13), Some(SidebarHit::Menu));
+        // Footer row.
+        assert_eq!(hit_test(rect, c, 3, 13), Some(SidebarHit::NewWindow));
     }
 
     /// Agent and session rows retain their own destinations under overflow.
@@ -2609,8 +3047,8 @@ mod tests {
 
     /// Paint and hit-test derive from one row model: every row the painter
     /// fills with a window label hit-tests to that window, agent rows
-    /// hit-test to their windows, and the footer rows hit-test to their
-    /// affordances.
+    /// hit-test to their windows, and the footer row hit-tests to its
+    /// affordance.
     #[test]
     fn paint_and_hit_test_agree_row_for_row() {
         let rect = Rect {
@@ -2633,7 +3071,7 @@ mod tests {
         p.set_windows(windows.clone());
         p.set_needs_you(agents.clone());
         p.set_roster(peers.clone());
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         let c = p.counts();
         for (y, row) in row_model(c, rect.h).iter().enumerate() {
             let y16 = u16::try_from(y).expect("row fits u16");
@@ -2667,7 +3105,7 @@ mod tests {
                     assert_eq!(hit, Some(SidebarHit::Roster(*j)));
                 }
                 SidebarRow::RosterHost(j) => {
-                    assert!(row_text(&buf, rect, y16).contains(&format!("on {}", peers[*j].host)));
+                    assert!(row_text(&buf, rect, y16).contains(&peers[*j].host));
                     assert_eq!(hit, Some(SidebarHit::Roster(*j)));
                 }
                 SidebarRow::NeedsYouOverflow => {
@@ -2684,13 +3122,59 @@ mod tests {
                     assert!(row_text(&buf, rect, y16).contains(NEW_LABEL));
                     assert_eq!(hit, Some(SidebarHit::NewWindow));
                 }
-                SidebarRow::Menu => {
-                    assert!(row_text(&buf, rect, y16).contains(MENU_LABEL));
-                    assert!(row_text(&buf, rect, y16).contains(SETTINGS_LABEL));
-                    assert_eq!(hit, Some(SidebarHit::Menu));
-                    assert_eq!(hit_test(rect, c, 14, y16), Some(SidebarHit::Settings));
-                }
             }
         }
+    }
+
+    /// The rail tees into the separator on the pane-facing side, so the
+    /// grid and the strip read as one frame.
+    #[test]
+    fn the_rail_junction_tees_into_the_panes() {
+        let p = SidebarPainter::new(Theme::default());
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 10,
+        };
+        let left = p.compose_buffer(rect, SidebarRule::Trailing, Some(1));
+        assert_eq!(left[(19, 1)].symbol(), "├");
+        assert_eq!(left[(19, 2)].symbol(), "│");
+        let right = p.compose_buffer(rect, SidebarRule::Leading, Some(1));
+        assert_eq!(right[(0, 1)].symbol(), "┤");
+        let none = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        assert_eq!(none[(19, 1)].symbol(), "│");
+    }
+
+    /// Headers carry their count and every row's secondary text lands on
+    /// the same right edge, so the strip reads as a table.
+    #[test]
+    fn headers_count_and_secondary_text_share_one_right_edge() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_needs_you(vec![
+            agent(0, "editor", "claude", AgentMetaState::Working),
+            agent(1, "build", "codex", AgentMetaState::Idle),
+        ]);
+        p.set_roster(vec![active_roster()]);
+        p.set_windows(vec![win_branch("editor", true, "main")]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 30,
+            h: 16,
+        };
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
+        let rows: Vec<String> = (0..rect.h).map(|y| row_text(&buf, rect, y)).collect();
+        assert!(
+            rows[0].starts_with(" Agents") && rows[0].ends_with("2 "),
+            "{rows:?}"
+        );
+        assert!(rows[1].ends_with("claude "), "{rows:?}");
+        assert!(rows[2].ends_with("codex "), "{rows:?}");
+        let window = rows
+            .iter()
+            .find(|row| row.contains("editor") && row.contains("main"))
+            .expect("window row");
+        assert!(window.ends_with("main "), "branch flush right: {window:?}");
     }
 }

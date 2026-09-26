@@ -378,6 +378,19 @@ pub(crate) fn synthesized_bootstrap_frames(
     Ok(frames)
 }
 
+/// How a resync bootstrap met the consumer mailbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapshotQueue {
+    /// Every bootstrap frame is on the mailbox, with nothing else between them.
+    Queued,
+    /// The mailbox is full and this snapshot is not the final grid. The pump
+    /// stays fenced and keeps draining the broadcast, so an exit snapshot can
+    /// still reach it (phux-fpgl.28).
+    Deferred,
+    /// The consumer is gone.
+    Closed,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_synthesized_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
@@ -391,7 +404,7 @@ pub(crate) async fn send_synthesized_bootstrap(
     base_seq: u64,
     payloads: impl IntoIterator<Item = bytes::Bytes>,
 ) -> Result<(), ()> {
-    for frame in synthesized_bootstrap_frames(
+    let frames = synthesized_bootstrap_frames(
         terminal_id,
         stream_id,
         bootstrap_id,
@@ -401,8 +414,107 @@ pub(crate) async fn send_synthesized_bootstrap(
         rows,
         base_seq,
         payloads,
-    )? {
-        out_tx.send(Outbound::Frame(frame)).await.map_err(|_| ())?;
+    )?;
+    send_frames_contiguously(out_tx, &frames).await
+}
+
+/// Queue a resync bootstrap.
+///
+/// A fenced pump defers a non-final snapshot that fits in the mailbox but
+/// cannot be queued yet. Parking there holds the pump off the broadcast, so
+/// the exit snapshot published later is still unread when `RESOURCE_CLOSED`
+/// takes the next free slot and the writer drops the chunk that carries the
+/// grid (phux-fpgl.28). A snapshot larger than the mailbox cannot be reserved
+/// as one unit, so it is sent frame by frame, the way a one-slot consumer
+/// already drains a bootstrap. An unfenced pump still waits: that snapshot
+/// is a resize the client has to adopt. The exit snapshot always waits, and
+/// when it fits it reserves every frame before the first one is visible, so
+/// close cannot land between `BOOTSTRAP_BEGIN` and that chunk.
+pub(crate) async fn queue_resync_bootstrap(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    reason: crate::terminal_actor::ResyncReason,
+    frames: Vec<FrameKind>,
+    defer_if_full: bool,
+) -> SnapshotQueue {
+    if frames.is_empty() {
+        return SnapshotQueue::Queued;
+    }
+    let fits = frames.len() <= out_tx.max_capacity();
+    let must_deliver =
+        !fits || matches!(reason, crate::terminal_actor::ResyncReason::Exit) || !defer_if_full;
+    if !must_deliver {
+        return match try_queue_frames(out_tx, &frames) {
+            Ok(()) => SnapshotQueue::Queued,
+            Err(QueueFramesError::Full) => SnapshotQueue::Deferred,
+            Err(QueueFramesError::Closed) => SnapshotQueue::Closed,
+        };
+    }
+    match try_queue_frames(out_tx, &frames) {
+        Ok(()) => SnapshotQueue::Queued,
+        Err(QueueFramesError::Closed) => SnapshotQueue::Closed,
+        Err(QueueFramesError::Full) => match send_frames_contiguously(out_tx, &frames).await {
+            Ok(()) => SnapshotQueue::Queued,
+            Err(()) => SnapshotQueue::Closed,
+        },
+    }
+}
+
+enum QueueFramesError {
+    Full,
+    Closed,
+}
+
+/// Reserve every frame, then send them. A later `send` cannot take a slot
+/// in the middle of the bootstrap.
+fn try_queue_frames(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    frames: &[FrameKind],
+) -> Result<(), QueueFramesError> {
+    if frames.is_empty() {
+        return Ok(());
+    }
+    if frames.len() > out_tx.max_capacity() {
+        return Err(QueueFramesError::Full);
+    }
+    let mut permits = out_tx
+        .try_reserve_many(frames.len())
+        .map_err(|err| match err {
+            tokio::sync::mpsc::error::TrySendError::Full(()) => QueueFramesError::Full,
+            tokio::sync::mpsc::error::TrySendError::Closed(()) => QueueFramesError::Closed,
+        })?;
+    for frame in frames {
+        let Some(permit) = permits.next() else {
+            return Err(QueueFramesError::Closed);
+        };
+        permit.send(Outbound::Frame(frame.clone()));
+    }
+    Ok(())
+}
+
+async fn send_frames_contiguously(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    frames: &[FrameKind],
+) -> Result<(), ()> {
+    if frames.is_empty() {
+        return Ok(());
+    }
+    if frames.len() <= out_tx.max_capacity() {
+        let Ok(mut permits) = out_tx.reserve_many(frames.len()).await else {
+            return Err(());
+        };
+        for frame in frames {
+            let Some(permit) = permits.next() else {
+                return Err(());
+            };
+            permit.send(Outbound::Frame(frame.clone()));
+        }
+        return Ok(());
+    }
+    for frame in frames {
+        out_tx
+            .send(Outbound::Frame(frame.clone()))
+            .await
+            .map_err(|_| ())?;
     }
     Ok(())
 }
@@ -496,7 +608,8 @@ const fn tombstone_reason_for(
         crate::terminal_actor::ResyncReason::Resize => {
             phux_protocol::wire::frame::TombstoneReason::Resize
         }
-        crate::terminal_actor::ResyncReason::OutboundGap => {
+        crate::terminal_actor::ResyncReason::OutboundGap
+        | crate::terminal_actor::ResyncReason::Exit => {
             phux_protocol::wire::frame::TombstoneReason::OutboundGap
         }
     }
@@ -609,6 +722,11 @@ impl OutputPumpContext {
 
     /// Forward one live PTY chunk, dropping anything a tombstone voided or the
     /// published bootstrap already covered.
+    ///
+    /// A full consumer mailbox is a gap: parking on `send` would keep this
+    /// pump off the broadcast until the consumer drains, so a pane that exits
+    /// in that window cannot deliver the resync the pump is about to ask for
+    /// (phux-fpgl.28). Fence and skip to a fresh screen instead.
     async fn forward_live(
         &self,
         generation: &mut PumpGeneration,
@@ -619,14 +737,20 @@ impl OutputPumpContext {
             return ControlFlow::Continue(());
         }
         let frame = self.output_frame(generation, seq, bytes);
-        if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return ControlFlow::Break(Some(PumpFault::OutboundClosed));
+        match pump::try_send_frame(&self.out_tx, frame) {
+            pump::MailboxForward::Sent => {
+                crate::perf::PUMP_FRAMES.incr();
+                crate::perf::PUMP_BYTES.add_len(bytes.len());
+                crate::perf::PUMP_FRAME_BYTES.record_len(bytes.len());
+                generation.note_forwarded(seq);
+                ControlFlow::Continue(())
+            }
+            pump::MailboxForward::Closed => ControlFlow::Break(Some(PumpFault::OutboundClosed)),
+            pump::MailboxForward::Full => {
+                self.request_gap_resync(generation, GapCause::Backpressure)
+                    .await
+            }
         }
-        crate::perf::PUMP_FRAMES.incr();
-        crate::perf::PUMP_BYTES.add_len(bytes.len());
-        crate::perf::PUMP_FRAME_BYTES.record_len(bytes.len());
-        generation.note_forwarded(seq);
-        ControlFlow::Continue(())
     }
 
     /// Does this ordered control frame name this pump's terminal, stream, and
@@ -751,18 +875,21 @@ impl OutputPumpContext {
         {
             return Err(PumpFault::TombstoneNotQueued);
         }
-        let reply = self
-            .capture_native_checkpoint(generation.bootstrap_id())
-            .await?;
+        // Same rule as the synthesized path: the id advances only once the
+        // replacement frames are queued. A capture or publish failure leaves
+        // the generation on the id the client already has.
+        let bootstrap_id = next_bootstrap_id(prior_bootstrap_id);
+        let reply = self.capture_native_checkpoint(bootstrap_id).await?;
         let (cut, cursor) = publish_native_bootstrap(&self.out_tx, reply)
             .await
             .map_err(|()| PumpFault::GenerationLost)?;
+        generation.set_bootstrap_id(bootstrap_id);
         let publication = activate_native_publication(
             &self.terminal,
             self.client_id.0,
             self.wire_terminal_id.clone(),
             self.stream_id,
-            generation.bootstrap_id(),
+            bootstrap_id,
             cursor,
         )
         .await
@@ -800,25 +927,33 @@ impl OutputPumpContext {
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
         let payload = downsample_for_caps(&resync.bytes, self.client_caps);
-        if send_synthesized_bootstrap(
-            &self.out_tx,
+        let bootstrap_id = next_bootstrap_id(generation.bootstrap_id());
+        let Ok(frames) = synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
             self.stream_id,
-            generation.bootstrap_id(),
+            bootstrap_id,
             self.profile,
             self.limits,
             resync.cols,
             resync.rows,
             resync.base_seq,
             [payload],
-        )
-        .await
-        .is_err()
-        {
+        ) else {
             return ControlFlow::Break(Some(PumpFault::OutboundClosed));
+        };
+        match queue_resync_bootstrap(&self.out_tx, resync.reason, frames, generation.is_fenced())
+            .await
+        {
+            SnapshotQueue::Queued => {
+                generation.set_bootstrap_id(bootstrap_id);
+                generation.republished_at(resync.base_seq);
+                ControlFlow::Continue(())
+            }
+            // Still fenced, still on the previous generation. The exit
+            // snapshot is later on this same broadcast.
+            SnapshotQueue::Deferred => ControlFlow::Continue(()),
+            SnapshotQueue::Closed => ControlFlow::Break(Some(PumpFault::OutboundClosed)),
         }
-        generation.republished_at(resync.base_seq);
-        ControlFlow::Continue(())
     }
 
     /// Replace the published generation after the actor resynchronized the
@@ -834,10 +969,8 @@ impl OutputPumpContext {
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let prior_bootstrap_id = generation.bootstrap_id();
-        generation.set_bootstrap_id(next_bootstrap_id(generation.bootstrap_id()));
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if self.publishes_native_checkpoints() {
+            let prior_bootstrap_id = generation.bootstrap_id();
             return match self
                 .republish_native_generation(
                     generation,
@@ -900,6 +1033,10 @@ impl OutputPumpContext {
         if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
         }
+        if self.resize.is_closed() {
+            // Pane actor is gone; RESOURCE_CLOSED is the terminal signal.
+            return ControlFlow::Break(None);
+        }
         self.fail_unrecoverable_gap().await
     }
 
@@ -927,6 +1064,9 @@ impl OutputPumpContext {
         generation.note_resync_requested();
         if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
+        }
+        if self.resize.is_closed() {
+            return ControlFlow::Break(None);
         }
         self.fail_unrecoverable_gap().await
     }
@@ -969,6 +1109,9 @@ enum GapCause {
     /// The chunk in hand was read from the pane this long ago, past
     /// [`pump::STALE_OUTPUT_BUDGET`].
     Stale(std::time::Duration),
+    /// The consumer mailbox was full; parking would have kept the pump off
+    /// the broadcast (phux-fpgl.28).
+    Backpressure,
 }
 
 impl std::fmt::Display for GapCause {
@@ -976,6 +1119,7 @@ impl std::fmt::Display for GapCause {
         match self {
             Self::Dropped(n) => write!(f, "broadcast dropped {n} chunks"),
             Self::Stale(age) => write!(f, "chunk {}ms old", age.as_millis()),
+            Self::Backpressure => write!(f, "consumer mailbox full"),
         }
     }
 }
@@ -2009,7 +2153,11 @@ pub(crate) async fn handle_spawn_terminal(
                 term,
                 owner_terminal,
                 initial_size,
-                resource: forwarded_resource(bind_instance, attribution.operation_id),
+                resource: forwarded_resource(
+                    bind_instance,
+                    attribution.operation_id,
+                    resource.as_ref().and_then(|r| r.retain_secs),
+                ),
             },
         );
         dispatch_satellite_spawn(state, client_id, out_tx, request_id, &host, spawn).await;
@@ -2105,18 +2253,23 @@ pub(crate) async fn handle_spawn_terminal(
 }
 
 /// The resource record a satellite Terminal spawn forwards: the bind request
-/// (ADR-0109) and the idempotency key (ADR-0126), when the consumer sent
-/// them. The satellite answers with its own instance token and evaluates the
-/// key itself; the hub relays both answers unchanged.
+/// (ADR-0109), the idempotency key (ADR-0126), and `retain_secs` (ADR-0124),
+/// when the consumer sent them. The satellite answers with its own instance
+/// token, evaluates the key, and applies retention itself; the hub relays
+/// those answers unchanged. A satellite that did not advertise the matching
+/// bit is refused in the relay, not here, so the field is never silently
+/// dropped.
 fn forwarded_resource(
     bind_instance: bool,
     idempotency_key: Option<phux_protocol::ids::IdempotencyKey>,
+    retain_secs: Option<u32>,
 ) -> Option<Box<phux_protocol::wire::frame::SpawnResource>> {
-    (bind_instance || idempotency_key.is_some()).then(|| {
+    (bind_instance || idempotency_key.is_some() || retain_secs.is_some()).then(|| {
         Box::new(
             phux_protocol::wire::frame::SpawnResource::default()
                 .with_bind_instance(bind_instance)
-                .with_idempotency_key(idempotency_key),
+                .with_idempotency_key(idempotency_key)
+                .with_retain_secs(retain_secs),
         )
     })
 }
@@ -4003,6 +4156,133 @@ pub(crate) fn apply_attach_viewport(
 mod tests {
     use super::*;
 
+    fn final_screen_frames(terminal_id: &phux_protocol::ids::ResourceId) -> Vec<FrameKind> {
+        synthesized_bootstrap_frames(
+            terminal_id.clone(),
+            phux_protocol::ids::StreamId::new(1).expect("stream id"),
+            phux_protocol::ids::BootstrapId::new(2).expect("bootstrap id"),
+            BootstrapStreamProfile::SynthesizedVtRaw,
+            BootstrapLimits::default(),
+            80,
+            24,
+            9,
+            [bytes::Bytes::from_static(b"FINAL_SCREEN")],
+        )
+        .expect("bootstrap frames")
+    }
+
+    /// phux-fpgl.28: a lagged mailbox is full. A gap resync must not park on
+    /// it, and the exit snapshot's chunk — the final screen — must be queued
+    /// ahead of `RESOURCE_CLOSED`, not split off after `BOOTSTRAP_BEGIN`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_resync_on_a_full_mailbox_precedes_close() {
+        use phux_protocol::wire::frame::CloseReason;
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<Outbound>(crate::mailbox::DEFAULT_CLIENT_MAILBOX);
+        for nonce in 0..u64::try_from(tx.max_capacity()).expect("mailbox depth fits u64") {
+            tx.try_send(Outbound::Frame(FrameKind::Pong { nonce }))
+                .expect("fill the lagged mailbox");
+        }
+        let terminal_id = phux_protocol::ids::ResourceId::local(1);
+        let frames = final_screen_frames(&terminal_id);
+        assert!(frames.len() > 1 && frames.len() <= tx.max_capacity());
+
+        let deferred = queue_resync_bootstrap(
+            &tx,
+            crate::terminal_actor::ResyncReason::OutboundGap,
+            frames.clone(),
+            true,
+        )
+        .await;
+        assert_eq!((deferred, tx.capacity()), (SnapshotQueue::Deferred, 0));
+
+        // Park the exit reservation on this task before close asks for a
+        // slot. `yield_now` does not order two spawned waiters, and the
+        // first one in the semaphore queue takes every freed slot.
+        let exit =
+            queue_resync_bootstrap(&tx, crate::terminal_actor::ResyncReason::Exit, frames, true);
+        tokio::pin!(exit);
+        std::future::poll_fn(|cx| match std::future::Future::poll(exit.as_mut(), cx) {
+            std::task::Poll::Pending => std::task::Poll::Ready(()),
+            std::task::Poll::Ready(queue) => {
+                panic!("exit bootstrap finished on a full mailbox: {queue:?}")
+            }
+        })
+        .await;
+        let close = tx.send(Outbound::Frame(FrameKind::ResourceClosed {
+            terminal_id,
+            exit_status: Some(0),
+            reason: CloseReason::Exited,
+            signal: None,
+        }));
+        tokio::pin!(close);
+        tokio::select! {
+            biased;
+            queue = &mut exit => panic!("exit bootstrap finished before any drain: {queue:?}"),
+            result = &mut close => {
+                panic!("close took a slot ahead of the exit bootstrap: {result:?}")
+            }
+            () = std::future::ready(()) => {}
+        }
+        assert_eq!(tx.capacity(), 0);
+
+        let mut saw_chunk = false;
+        let mut saw_ready = false;
+        let mut exit_queued = false;
+        let mut close_queued = false;
+        loop {
+            tokio::select! {
+                biased;
+                queue = &mut exit, if !exit_queued => {
+                    assert_eq!(queue, SnapshotQueue::Queued);
+                    exit_queued = true;
+                }
+                result = &mut close, if !close_queued => {
+                    result.expect("queue RESOURCE_CLOSED");
+                    close_queued = true;
+                }
+                message = rx.recv() => {
+                    match message {
+                        Some(Outbound::Frame(FrameKind::BootstrapChunk { payload, .. })) => {
+                            assert_eq!(payload.as_ref(), b"FINAL_SCREEN");
+                            saw_chunk = true;
+                        }
+                        Some(Outbound::Frame(FrameKind::BootstrapReady { .. })) => {
+                            assert!(saw_chunk, "READY arrived before the final chunk");
+                            saw_ready = true;
+                        }
+                        Some(Outbound::Frame(FrameKind::ResourceClosed { .. })) => break,
+                        Some(_) => {}
+                        None => panic!("mailbox closed before RESOURCE_CLOSED"),
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_chunk && saw_ready && exit_queued && close_queued,
+            "RESOURCE_CLOSED split the final screen off the bootstrap"
+        );
+    }
+
+    /// ADR-0124 / ADR-0126: the hub's forwarded spawn carries `retain_secs`
+    /// alongside bind and the idempotency key; omitting every field writes
+    /// no resource record.
+    #[test]
+    fn forwarded_resource_carries_retain_secs() {
+        assert!(forwarded_resource(false, None, None).is_none());
+        let retain_only = forwarded_resource(false, None, Some(600)).expect("retain_secs alone");
+        assert_eq!(retain_only.retain_secs, Some(600));
+        assert!(!retain_only.bind_instance);
+        assert!(retain_only.idempotency_key.is_none());
+
+        let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
+        let combined = forwarded_resource(true, key, Some(0)).expect("all three fields");
+        assert!(combined.bind_instance);
+        assert_eq!(combined.idempotency_key, key);
+        assert_eq!(combined.retain_secs, Some(0));
+    }
+
     fn tiny_staged_pane(pane: u32) -> Vec<FrameKind> {
         let terminal_id = phux_protocol::ids::ResourceId::local(pane + 1);
         let stream_id = StreamId::new(1).expect("stream id");
@@ -4476,13 +4756,13 @@ mod tests {
             generation: BootstrapId,
         },
         Tombstone,
-        Other,
+        Other(String),
     }
 
     impl Seen {
         fn of(outbound: Outbound) -> Self {
             let Outbound::Frame(frame) = outbound else {
-                return Self::Other;
+                return Self::Other(format!("{outbound:?}"));
             };
             match frame {
                 FrameKind::ResourceOutput {
@@ -4504,7 +4784,7 @@ mod tests {
                     generation: bootstrap_id,
                 },
                 FrameKind::BootstrapTombstone { .. } => Self::Tombstone,
-                _ => Self::Other,
+                other => Self::Other(format!("{other:?}")),
             }
         }
     }
@@ -4739,10 +5019,12 @@ mod tests {
             .await;
     }
 
-    /// phux-auqy, the `Lagged` half: a consumer whose mailbox stalls long
-    /// enough for the broadcast to overwrite its window is re-bootstrapped
-    /// alone. Its neighbour, draining promptly, sees every chunk on its
-    /// original generation and never a republish.
+    /// phux-auqy + phux-fpgl.28: a consumer whose mailbox fills is
+    /// re-bootstrapped alone. A full mailbox is itself a gap — parking
+    /// would keep the pump off the broadcast — so the resync is requested
+    /// without waiting for the consumer to drain. Its neighbour, draining
+    /// promptly, sees every chunk on its original generation and never a
+    /// republish.
     #[tokio::test(flavor = "current_thread")]
     async fn a_lagged_consumer_resyncs_without_republishing_its_neighbour() {
         let local = tokio::task::LocalSet::new();
@@ -4755,35 +5037,15 @@ mod tests {
                 let initial = two_pump_initial_generation();
                 let replacement = next_bootstrap_id(initial);
 
-                // Nobody drains the lagging consumer yet, so its link is
-                // stalled: its one mailbox slot takes seq 1 and its pump
-                // blocks forwarding seq 2 while the four-slot ring moves on
-                // past the chunks it has not read.
+                // Nobody drains the lagging consumer: its one mailbox slot
+                // takes seq 1, and seq 2 finds the mailbox full. That is a
+                // gap (phux-fpgl.28); the pump fences and asks for a resync
+                // instead of parking while the four-slot ring moves on.
                 let now = std::time::Instant::now();
                 for seq in 1..=9 {
                     output.send(live(seq, now)).expect("pumps subscribed");
                     let_pumps_run().await;
                 }
-                assert!(
-                    resize_rx.try_recv().is_err(),
-                    "a stalled pump has not observed its gap yet",
-                );
-
-                // The link drains; only now does the pump find its window
-                // overwritten and ask for a resync.
-                assert_eq!(
-                    frames_seen(&mut lagging, 2).await,
-                    vec![
-                        Seen::Output {
-                            generation: initial,
-                            seq: 1
-                        },
-                        Seen::Output {
-                            generation: initial,
-                            seq: 2
-                        },
-                    ],
-                );
                 let request = resync_request_from(&mut resize_rx, &mut lagging).await;
                 assert_eq!(
                     request.resync_for,
@@ -4794,18 +5056,19 @@ mod tests {
                     }),
                     "the resync names the lagging pump, not the pane",
                 );
-                answer_gap_resync(&output, &request, 9);
-                output.send(live(10, now)).expect("pumps subscribed");
 
-                let expected_fresh: Vec<_> = (1..=10)
-                    .map(|seq| Seen::Output {
-                        generation: initial,
-                        seq,
-                    })
-                    .collect();
-                assert_eq!(frames_seen(&mut fresh, 10).await, expected_fresh);
+                // The one live frame that made it before the fence. Draining
+                // it gives republish room on the one-slot mailbox.
                 assert_eq!(
-                    frames_seen(&mut lagging, 4).await,
+                    frames_seen(&mut lagging, 1).await,
+                    vec![Seen::Output {
+                        generation: initial,
+                        seq: 1
+                    }],
+                );
+                answer_gap_resync(&output, &request, 9);
+                assert_eq!(
+                    frames_seen(&mut lagging, 3).await,
                     vec![
                         Seen::Begin {
                             generation: replacement,
@@ -4815,11 +5078,30 @@ mod tests {
                         Seen::Ready {
                             generation: replacement
                         },
-                        Seen::Output {
-                            generation: replacement,
-                            seq: 10
-                        },
                     ],
+                    "the lagging consumer converges onto a fresh generation",
+                );
+
+                // Stamp seq 10 after the republish so it cannot sit in the
+                // four-slot ring (or age past the stale budget) while the
+                // one-slot mailbox drains Begin/Chunk/Ready.
+                output
+                    .send(live(10, std::time::Instant::now()))
+                    .expect("pumps subscribed");
+
+                let expected_fresh: Vec<_> = (1..=10)
+                    .map(|seq| Seen::Output {
+                        generation: initial,
+                        seq,
+                    })
+                    .collect();
+                assert_eq!(frames_seen(&mut fresh, 10).await, expected_fresh);
+                assert_eq!(
+                    frames_seen(&mut lagging, 1).await,
+                    vec![Seen::Output {
+                        generation: replacement,
+                        seq: 10
+                    }],
                 );
                 assert_quiet(&mut fresh, "the fresh consumer").await;
                 assert_quiet(&mut lagging, "the lagging consumer").await;

@@ -76,6 +76,13 @@ rail; the terminal area is shared by the painter, pointer targets, and viewport
 sizing. The compiled markup owns those bands. Their token and spacing contract
 is documented in [Design System](docs/DESIGN_SYSTEM.md).
 
+The toolbar and side rail use host-native materials: Liquid Glass on macOS 26
+and later, with an AppKit visual-effect fallback on older supported macOS.
+Chrome follows system appearance; terminal colors remain independently
+configured. Terminal cells and gutters stay opaque above the material.
+The Commands toolbar button opens the command navigator; Escape returns to the
+terminal, and clicking outside dismisses without activating a control beneath it.
+
 **`cmd+shift+P` summons a switcher** that floats over the grid instead of taking
 room from it — type to filter by title, working directory, provider, window,
 or session, then press `enter` to go. Open panes, available durable terminals,
@@ -250,11 +257,18 @@ of those **outranks** it, wherever the two lines happen to sit in the file. It
 deliberately leaves the ANSI-16 palette alone, so a terminal red stays a
 terminal red — see [Decisions](docs/DECISIONS.md).
 
-**`cmd+,`** (or **View > Settings…**) opens the settings surface. Up and down
-preview a theme LIVE against whatever is on screen, `return` saves the choice
-into your config file, and `esc` puts back the one you had. The panel writes
-only the `theme` line: your comments, your spacing, and any key this build has
-never heard of are copied through untouched.
+**`cmd+,`** (or **View > Settings…**) opens the settings surface. Choose a
+supported font, cursor shape or tab placement directly; On/Off choices control
+cursor blink and working-directory inheritance. Font-size buttons preview a size change.
+Free-form values retain an explicit Edit → Preview step. Each setting explains
+its scope and when it takes effect: scratch-terminal defaults do not configure
+the serving Phux machine.
+
+Changes preview together until **Save changes** writes them or **Cancel**
+restores the values from when Settings opened. A failed Save keeps the preview
+open and cancellable. Saving rewrites changed configuration keys while preserving
+comments and unrelated keys. In Appearance, up and down preview themes; the
+theme/follow-system field accepts `auto` to resume following macOS.
 
 The panel also shows the **contrast ratio** between the foreground and
 background actually being painted, and flags it when it drops below the WCAG AA
@@ -271,11 +285,12 @@ attach` keeps its argument. It runs via the login shell with `exec`, so the
 program you name is the pty's own process. A value that is empty, over-long, or
 carries a NUL is refused and the built-in shell stands.
 
-`font-family` and `selection-foreground` are parsed but **cannot** be applied in
-this build: the SDK selects faces from a fixed registered set rather than by
-family name, and a terminal grid carries one selection colour rather than a
-foreground override. Setting either raises the notice above, and logs a line,
-saying so.
+`font-family` supports the bundled **JetBrains Mono NL Nerd Font Mono** and
+**Geist Mono**. An empty value selects the bundled face. Other family names are
+retained in configuration but display an unsupported-family notice and use the
+bundled face; opening Settings does not rewrite them. `selection-foreground`
+remains unsupported: a terminal grid carries one selection colour rather than a
+foreground override.
 
 ## Install
 
@@ -360,11 +375,21 @@ Clicking a tab switches surfaces without stopping hidden execution. Clicking a
 split pane moves input ownership to it. The divider supports pointer dragging,
 arrow-key adjustment, Home, and End. Trackpad and wheel input route only to the
 terminal under the pointer. Dragging a selection beyond the top or bottom edge
-autoscrolls through history. Right-click or control-click opens native Copy and
-Paste actions while Cockpit owns pointer selection or the process has ended.
-While a live TUI enables mouse reporting, it exclusively owns secondary click,
-so the native menu is intentionally unavailable; Shift-drag selection remains
-copyable with `cmd+C`. `cmd+click` opens a URL under the pointer, and works
+autoscrolls through history. Copy and Paste are available from the Edit menu and
+with `cmd+C` / `cmd+V`. While a live TUI enables mouse reporting, it owns
+secondary click; Shift-drag selection remains copyable with `cmd+C`.
+
+Secondary-clicking a top or rail tab offers one-step axis movement and
+Close Tab. The action stays bound to the tab that opened the menu, including a
+background tab owned by another attached Phux session; it never selects that tab
+just to operate on it. Tab dragging and Close Others do not ship yet.
+
+Right-click or control-click also opens Copy/Paste actions for that pane on
+both direct PTYs and Phux-backed terminals. An ended direct PTY allows copying
+a retained selection; Paste is disabled. A Phux terminal's exit closes its pane
+and invalidates any open menu. Each menu action retains its exact provider
+replica and visible placement across focus changes.
+`cmd+click` opens a URL under the pointer, and works
 even while a TUI owns mouse reporting — a program that prints links should not
 have to give up mouse input for them to be clickable. It is deliberately a
 heuristic that fails toward "not a link": only `http`, `https` and `mailto` are
@@ -372,17 +397,9 @@ recognised, so a printed `file:` or `javascript:` path is never something the
 OS can be asked to open. A `cmd+click` on ordinary text is an ordinary click. A copied range remains highlighted until typing or
 another selection clears it.
 
-**Tabs drag.** Pick one up and carry it along the strip: the reorder happens as
-the pointer moves, so the tab under the cursor is the tab that will be there
-when you let go — there is no landing animation to disagree with. Escape puts it
-back where you picked it up. A click still selects; only a gesture past the
-runtime's own drag slop reorders. The menu command and `cmd+shift+arrow` are
-unchanged.
-
-**Right-clicking a tab** opens its own menu — New Terminal, Move Left, Move
-Right, Close, Close Others. Every verb acts on the tab under the pointer rather
-than on the selected one, which is the whole reason the menu exists; the ends of
-the strip disable Move rather than hiding it, so the menu never changes shape.
+**Reorder the selected tab** with Move Tab Left / Move Tab Right in the Window
+menu or `cmd+shift+arrow-left` / `cmd+shift+arrow-right`. Reordering preserves
+the terminal's identity and running work.
 
 **Dropping files** from Finder onto a pane types their paths into that pane's
 shell — quoted, space-separated, and delivered through the same bracketed-paste
@@ -393,32 +410,32 @@ than as a command. The pointer decides the pane, and focus follows the drop.
 naming the terminal. In the foreground it stays a dot in the tab strip: a banner
 for the pane you are typing in is how notifications get turned off wholesale.
 
-**The menu-bar extra** (`PX`) carries the open terminal count, turns its title
-warning-toned when one of them wants something, and lists every terminal in the
-active window with a row that goes straight to it — raising the window on the
-way, since a menu-bar pick happens while Cockpit is behind whatever you were
-actually looking at.
-
 ## Requirements
 
 - Apple silicon Mac running macOS 11 or later
 - For source builds, follow [Contributor setup](../../docs/SETUP.md#cockpit)
-  for the SDK, Rust/FFI, Zig, and TypeScript toolchain. Native setup and Nix use
-  the same build commands. Internet access is needed to fetch pinned dependencies.
+  (`mise install` or `nix develop`). The same `just cockpit-*` commands run in
+  either environment. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@06e64d28`](https://github.com/phall1/native/commit/06e64d28054d9994cc56d4e24a89694636fc31b6),
-the fork's Cockpit v0.10.4 lineage: terminal interaction, viewport, and
+[`phall1/native@d6e85cd9`](https://github.com/phall1/native/commit/d6e85cd943c5746f03a57ddd1297620010f1a79b),
+the fork's cockpit/v0.10.5 lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
+device-pixel-partitioned terminal backgrounds without fractional-edge seams,
 per-window `ChromeContext` on `build_window` and `web_panes`, `fx.openUrl`, the
 `native_extension` hook that keeps the TypeScript-core graph's engine native,
 axis-aware native split dividers, scoped post-present display-list refresh
 batching, symlink-safe whole-file writes that retain file-access confinement,
-the native macOS app-updater surface, the Metal Hybrid C signed cell (4x) and
-text (2x) paint ceilings, balanced wide-model Corewire decode guards, bounded
-32-entry nested markup-recipe scopes, a matching 32-slot null-platform
-window-drag mirror, and ScriptC 0.1.1.
+the native macOS app-updater surface, the Metal Hybrid C signed cell
+(4x) and text (2x) paint ceilings, a 32-slot null-platform window-drag region
+mirror matching the runtime collector cap, a `cell_grid`-capable opt-in GPU
+composite path with configurable real-frame capture cadence, and ScriptC 0.1.1
+(balanced wide-model decode guards, nested recipe scope 32). Cold composite
+startup also initializes the final drawable presenter. This pin includes
+host-native glass behind transparent canvas content, window composition lifetime
+handling, and complete modal-dismissal gesture ownership without click-through
+or contamination of the next click's count.
 The pin is a tarball SHA rather than a branch, so a push to the fork can never
 break a checkout of Cockpit — see [docs/SDK_PIN.md](docs/SDK_PIN.md) for how the
 fork and this repo stay in contract, and what to run before moving the pin.
@@ -662,6 +679,69 @@ appear beside them. That path has no environment override, so two instances
 launched from the same directory share one dropbox — which is why `dev-run.sh`
 launches from the dev home.
 
+### Native SDK live development
+
+`dev-run.sh` is the isolated shipping-app loop. For UI iteration against the
+SDK's [native dev](https://native-sdk.dev/docs/cli/dev) CLI, use the fork
+pinned in `build.zig.zon` and build its matching CLI once rather than an
+unrelated npm CLI. From the repository root:
+
+```sh
+just cockpit-ffi
+cd clients/cockpit
+eval "$(./scripts/build-automation-cli.sh --export)"
+export ZIG_GLOBAL_CACHE_DIR="$PWD/.zig-global-cache"
+mkdir -p .dev-run/native-real
+touch .dev-run/native-real/config
+export PHUX_COCKPIT_CONFIG="$PWD/.dev-run/native-real/config"
+export PHUX_COCKPIT_STATE="$PWD/.dev-run/native-real/layout.json"
+export PHUX_SOCKET="/tmp/phux-$USER/phux.sock"
+"$NATIVE" dev -Dautomation=true -Dphux-enabled=true \
+  -Dphux-client-ffi-profile=ffi-dev \
+  -Dphux-client-ffi-include-dir="$PWD/../../crates/phux-client-ffi/include" \
+  -Dphux-client-ffi-lib-dir="$PWD/../../target/ffi-dev"
+```
+
+Set `PHUX_SOCKET` to the endpoint reported by `phux status --json`; the example
+uses the normal local endpoint when `XDG_RUNTIME_DIR` is unset. Set
+`PHUX_SESSION` to select a session. Keep the working directory at
+`clients/cockpit`: registered fragment paths start with `src/`. Native's Debug
+default enables the hot-reload watcher; ReleaseSafe disables it. Markup edits
+reload in the running window. TypeScript, Zig, and FFI changes need a
+rebuild/relaunch; rerun the command, rebuilding `cockpit-ffi` first if Rust
+changed. To run the existing binary without a build, execute
+`./zig-out/bin/phux-cockpit` from this same directory and environment. At the
+current pin, `native dev --binary` is the WebView frontend workflow and
+refuses Cockpit with `MissingFrontend`.
+
+In a second shell at the same app root, use the matching CLI's
+[`automate`](https://native-sdk.dev/docs/automation) commands: `snapshot`,
+`assert`, and `profile on`. Verify `publisher_pid` against the launched process
+and `markup_watch=armed` before live editing. The SDK also provides `provenance`
+and `edit`, but Cockpit's composed toolbar currently reports `authored=zig`,
+so source write-back is unavailable there; edit the `.native` source directly.
+
+With that Debug run publishing, bind its PID from a second shell at
+`clients/cockpit` without compiling or restarting the app:
+
+```sh
+# APP_PID must be the process launched by your native dev invocation.
+RUN="$(python3 scripts/dev-diagnostics.py begin --pid "$APP_PID" \
+  --native "$NATIVE" --require-markup-watch \
+  --ffi-lib "$PWD/../../target/ffi-dev/libphux_client_ffi.a" \
+  --socket "$PHUX_SOCKET")"
+python3 scripts/dev-diagnostics.py watch --run "$RUN"
+```
+
+`begin` prints the retained directory even if its first snapshot check fails;
+check its exit status before starting `watch`. Captures retain the typed first
+header only: the current SDK writes unescaped labels into the snapshot body,
+so the body is omitted. A valid capture proves publisher/header checks, not a
+healthy UI. Offline checks for this companion are
+`python3 clients/cockpit/scripts/dev-diagnostics_test.py` from the repository
+root. `dev-run.sh --fresh` removes the default `.dev-run` home, including
+retained diagnostics.
+
 ## Package
 
 Create an arm64 app, ZIP, DMG, and `SHA256SUMS` under `zig-out/release`:
@@ -720,13 +800,13 @@ The packaging script validates the bundle identifier, display name, version,
 executable, arm64 architecture, and code signature before producing archives.
 The root Release Please workflow maintains Cockpit as an independent component
 inside the shared draft version PR. Merging that PR creates a
-`cockpit-vX.Y.Z` tag and draft GitHub release; the **Release Cockpit** workflow
-builds, verifies, and attaches the macOS artifacts before publishing the release and
-regenerating `Casks/phux-cockpit.rb` in
-[`no-phux/homebrew-tap`](https://github.com/no-phux/homebrew-tap). The tap's
+`cockpit-vX.Y.Z` tag and draft GitHub release. The **publish** workflow, once
+`ci` is green for that commit, builds, verifies, and attaches the macOS
+artifacts before publishing the release and regenerating `Casks/phux-cockpit.rb`
+in [`no-phux/homebrew-tap`](https://github.com/no-phux/homebrew-tap). The tap's
 scheduled updater independently repairs a missed release update.
-A failed artifact pass can be resumed by manually dispatching the **Release
-Cockpit** workflow against the existing draft tag.
+A failed artifact pass can be resumed by dispatching **publish** against the
+existing draft tag.
 
 ## Limitations
 

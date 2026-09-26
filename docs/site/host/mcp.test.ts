@@ -147,6 +147,14 @@ describe("MCP JSON-RPC", () => {
       "get_install_command",
       "latest_release",
     ]);
+    const install = body.result.tools.find(
+      (tool: { name: string }) => tool.name === "get_install_command",
+    );
+    expect(install.inputSchema.properties.target.enum).toEqual([
+      "cli",
+      "cockpit",
+      "skills",
+    ]);
   });
 
   test("search_docs ranks title matches", async () => {
@@ -176,6 +184,37 @@ describe("MCP JSON-RPC", () => {
     expect(body.result.content[0].text).toContain("Only phux.sh");
   });
 
+  test("get_page refuses scheme-relative pathnames on an allowlisted host", async () => {
+    const seen: string[] = [];
+    const env = {
+      ASSETS: {
+        fetch: async (input: Request) => {
+          seen.push(new URL(input.url).href);
+          return new Response("not found", { status: 404 });
+        },
+      },
+    };
+    const response = (await handleMcpRequest(
+      new Request("https://phux.sh/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "get_page",
+            arguments: { path: "https://phux.sh//evil.example/x" },
+          },
+        }),
+      }),
+      env,
+    ))!;
+    const body = await response.json();
+    expect(body.result.content[0].text).toContain("Only phux.sh");
+    expect(seen).toEqual([]);
+  });
+
   test("get_install_command and latest_release", async () => {
     const install = await rpc("tools/call", {
       name: "get_install_command",
@@ -184,6 +223,11 @@ describe("MCP JSON-RPC", () => {
     expect(install.body.result.content[0].text).toBe(
       "curl -fsSL https://phux.sh/install-cockpit | sh",
     );
+    const skills = await rpc("tools/call", {
+      name: "get_install_command",
+      arguments: { target: "skills" },
+    });
+    expect(skills.body.result.content[0].text).toBe("npx skills add no-phux/skills");
     const release = await rpc("tools/call", { name: "latest_release", arguments: {} });
     expect(release.body.result.content[0].text).toContain("v0.37.0");
     expect(release.body.result.content[0].text).toContain("cockpit-v0.24.0");

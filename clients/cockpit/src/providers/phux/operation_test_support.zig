@@ -19,6 +19,14 @@ pub const AgentSessionFixture = struct {
     state: []const u8 = "",
 };
 
+/// A `phux.agent/v1` facet attached to a Terminal, not an AgentSession child.
+pub const AgentIdentityFixture = struct {
+    terminal: u32,
+    provider_name: []const u8,
+    native_id: []const u8 = "",
+    state: []const u8 = "",
+};
+
 /// Adopt a hand-built resource catalog, exactly as an attach snapshot does.
 ///
 /// There is no wire fixture to stage and none to regenerate: the resource
@@ -38,6 +46,20 @@ pub fn adoptAgentSessions(host: anytype, rows: []const AgentSessionFixture) !voi
         };
     }
     try host.agents.adopt(host.gpa, entries[0..rows.len]);
+}
+
+pub fn adoptAgentIdentities(host: anytype, rows: []const AgentIdentityFixture) !void {
+    std.debug.assert(rows.len <= max_agent_fixture_rows);
+    var entries: [max_agent_fixture_rows]agent_sessions.IdentityEntry = undefined;
+    for (rows, entries[0..rows.len]) |row, *entry| {
+        entry.* = .{
+            .terminal = try provider.RemoteResourceId.fromPhux(0, row.terminal, ""),
+            .provider_name = row.provider_name,
+            .native_id = row.native_id,
+            .state = row.state,
+        };
+    }
+    try host.agents.adoptIdentities(host.gpa, entries[0..rows.len]);
 }
 
 /// Fold one hand-built AGENT_RECORDS batch, exactly as `captureEffects` does.
@@ -73,6 +95,24 @@ pub fn stageFixture(bridge: anytype, name: []const u8) !void {
 
 pub fn attachHost(host: anytype) !void {
     return attachHostWith(host, "hello.bin");
+}
+
+/// Attach the canonical independent session used by same-coordinator tests.
+pub fn attachSiblingHost(host: anytype) !void {
+    try host.start("operations-test-sibling");
+    try stageFixture(host.bridge, "hello.bin");
+    _ = try host.drainReadiness();
+    try host.attachSessionId(2, .{ .cols = 80, .rows = 24 });
+    try stageFixture(host.bridge, "attached_session_b.bin");
+    const delta = try host.drainReadiness();
+    try std.testing.expect(delta.ready_published);
+    try std.testing.expectEqual(.unavailable, host.workspaceSnapshot().state);
+    try stageWorkspaceFixture(host.bridge, "workspace_session2_initial_metadata.bin");
+    try stageWorkspaceFixture(host.bridge, "workspace_session2_initial_state.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expectEqual(.confirmed, host.workspaceSnapshot().status);
+    try std.testing.expectEqual(@as(?u32, 2), host.selectedSessionId());
+    host.bridge.outgoing.reset();
 }
 
 /// `hello_directory.bin` also advertises LIST_DIRECTORY; `hello.bin` does not.

@@ -1,10 +1,11 @@
 //! phux-w7z2.57 — a `SUBSCRIBE_METADATA` naming a satellite pane is refused
 //! **on the wire**, not silently accepted.
 //!
-//! L3 metadata does not federate: the hub relay carries L1 commands and
-//! `SUBSCRIBE_EVENTS` across a satellite link and nothing else, so a
-//! subscription to `Scope::Resource(Satellite { .. })` can never produce a
-//! `METADATA_CHANGED`. Before this ticket the server recorded it anyway, and
+//! L3 metadata does not federate in general. A non-hub server, which this
+//! test starts, still refuses `SUBSCRIBE_METADATA` on a satellite scope.
+//! A hub that routes the host mirrors only `phux.agent/v1` and
+//! `phux.agent.asked/v1` (ADR-0136). Before this ticket the server recorded
+//! the subscription anyway, and
 //! the consumer waited forever for a frame no code path emits — which is how
 //! `phux agent wait host/@N` came to report `no_agent_record` about a live
 //! remote agent.
@@ -36,7 +37,8 @@ use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope, TYPE_ERROR, TYPE_M
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, recv_typed, run_local, send_frame, spawn_server, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, join_after_shutdown, recv_typed, run_local, send_frame, spawn_server,
+    wait_for_socket,
 };
 
 const AGENT_KEY: &str = "phux.agent/v1";
@@ -141,7 +143,6 @@ fn subscribe_metadata_on_a_satellite_scope_is_refused_on_the_wire() {
         }
 
         drop(stream);
-        let _ = shutdown_tx.send(());
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

@@ -460,7 +460,7 @@ pub(crate) enum Command {
         )]
         remote: Option<String>,
 
-        /// Pair `--remote` from a `https://phux.phall.io/connect?...` link
+        /// Pair `--remote` from a `https://phux.sh/connect?...` link
         /// (or its `phux://connect?...` spelling) instead of over ssh — the
         /// same link `phux pair` prints and `phux pair --qr` renders. Quote
         /// it: it contains `&`.
@@ -520,8 +520,7 @@ pub(crate) enum Command {
         /// Attach as a viewer: watch every pane, type into none.
         /// The server refuses this attach's input, and widening it takes a
         /// fresh attach without the flag, which every watcher sees. Your
-        /// viewport still sizes the panes, and an app waiting on a
-        /// terminal-query reply times out.
+        /// viewport still sizes the panes.
         #[usage(long, conflicts("--take"), help_heading = "Attach role")]
         viewer: bool,
 
@@ -568,6 +567,12 @@ pub(crate) enum Command {
             )
         )]
         ensure: bool,
+
+        /// Emit the stable coordinator-availability result document.
+        /// On failure, stdout stays empty and stderr carries one JSON error
+        /// object. Requires `--ensure`.
+        #[usage(flatten)]
+        json: JsonOpt,
 
         /// Name of the pre-seeded session. Matches what
         /// `phux attach <name>` will request.
@@ -1294,6 +1299,9 @@ pub(crate) enum Command {
             rather than overwritten.\n\n\
             The previous binaries are kept beside the new ones; `--rollback` puts \
             them back.\n\n\
+            On macOS, an installed Phux Cockpit follows the same channel: it is \
+            reported by `--check` and reinstalled through the Cockpit installer \
+            when it is behind. A Homebrew Cockpit gets `brew upgrade` instead.\n\n\
             Examples:\n  \
             phux update --check\n  \
             phux update --check --json\n  \
@@ -1319,7 +1327,8 @@ pub(crate) enum Command {
             is published there. `phux channel next` follows green `main`; \
             `phux channel latest` (also `stable`) follows the numbered GitHub \
             releases. Switching persists the choice and runs the same update \
-            path as `phux update --channel`, so live panes survive.\n\n\
+            path as `phux update --channel`, so live panes survive. An installed \
+            Phux Cockpit switches with it.\n\n\
             Examples:\n  \
             phux channel\n  \
             phux channel next\n  \
@@ -1951,7 +1960,10 @@ pub(crate) enum Command {
         long_help = "Run a command in a pane and capture its exit code.\n\n\
             Reports the command's exit code, output, and duration. \
             Brackets the command with sentinels to capture `$?`, so it \
-            assumes a POSIX shell (sh/bash/zsh). The process exit code mirrors \
+            assumes a POSIX shell (sh/bash/zsh) — and refuses (exit 2) when a \
+            shell is not what is reading the pane, since against `vim` or \
+            `less` the same bytes are keystrokes, not a command; `--force` \
+            skips that precondition. The process exit code mirrors \
             the command's — and is 125 when `phux` gives up on `--timeout` — so \
             `phux run … && next` composes like a shell. The timeout is one \
             budget for the whole run — connecting, target resolution, input \
@@ -1964,8 +1976,8 @@ pub(crate) enum Command {
             already delivered. TARGET is a selector \
             (see the top-level help), resolved client-side to one pane; the \
             command routes to it by id (no attach, no resize).\n\n\
-            Flags (`--timeout`, `--json`, `--socket`) MUST precede TARGET, or \
-            they are swallowed into the trailing command.\n\n\
+            Flags (`--timeout`, `--force`, `--json`, `--socket`) MUST precede \
+            TARGET, or they are swallowed into the trailing command.\n\n\
             Examples:\n  \
             phux run build \"cargo test\"\n  \
             phux run --timeout 30 work:1.0 \"cargo test\""
@@ -1987,6 +1999,11 @@ pub(crate) enum Command {
         /// wait indefinitely.
         #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
+
+        /// Skip the available-shell precondition. Types the command line
+        /// into the pane whatever is running there.
+        #[usage(long)]
+        force: bool,
 
         #[usage(flatten)]
         json: JsonOpt,
@@ -2093,13 +2110,15 @@ pub(crate) enum Command {
         action: relay::RelayAction,
     },
 
-    /// Mint, rotate, or revoke remote credentials
+    /// Mint, rotate, revoke, list, or prune remote credentials
     ///
     /// With no subcommand, mint one credential into the server's store and
     /// print its stable ID, one-time bearer secret, and certificate fingerprint.
-    /// `rotate` replaces the bearer with a bounded overlap; `revoke` denies all
-    /// generations on future connections. These operations update the store
-    /// directly and take effect without restarting the server.
+    /// `ls` lists ids with mint time, last seen, and revoked status; `prune
+    /// --unused-for DURATION` revokes idle credentials; `rotate` replaces the
+    /// bearer with a bounded overlap; `revoke` denies all generations on
+    /// future connections. These operations update the store directly and take
+    /// effect without restarting the server.
     ///
     /// This never contacts a running server — it only writes the token file.
     #[usage(help_heading = "Machines", display_order = 43)]
@@ -2117,7 +2136,7 @@ pub(crate) enum Command {
         cert: Option<std::path::PathBuf>,
 
         /// Also render the pairing payload as a scannable QR code. The QR
-        /// encodes the same `https://phux.phall.io/connect` one-tap link
+        /// encodes the same `https://phux.sh/connect` one-tap link
         /// printed as text, so a phone can pair by scanning instead of typing. Needs a server
         /// address: pass `--host`, or let it fall back to a detected overlay
         /// address plus the `PHUX_WS_ADDR` port.
@@ -2137,8 +2156,8 @@ pub(crate) enum Command {
         #[usage(long, value_name = "NAME")]
         name: Option<String>,
 
-        /// Emit the mint, rotation, or revocation result as JSON on stdout.
-        /// `phux host add` consumes the mint document over ssh.
+        /// Emit the mint, rotation, revocation, list, or prune result as JSON
+        /// on stdout. `phux host add` consumes the mint document over ssh.
         #[usage(long, global)]
         json: bool,
 
@@ -2146,6 +2165,12 @@ pub(crate) enum Command {
         /// Conversion preserves each bearer secret but stores only its verifier.
         #[usage(long)]
         migrate_legacy: bool,
+
+        /// When minting, revoke any live credential whose bearer matches this
+        /// hex token first. `phux host add` passes the previously enrolled
+        /// token so re-enrollment does not leave abandoned live credentials.
+        #[usage(long, value_name = "HEX")]
+        replace_token: Option<String>,
     },
 
     /// Manage the mTLS workload authority

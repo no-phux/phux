@@ -287,7 +287,7 @@ test('a protocol-valid snapshot cannot focus a secondary slot it does not declar
 
 test('every window template binds its own context, not the ambient primary labels', () => {
   const markup = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
-  const header = markup.slice(markup.indexOf('<row height="50"'), markup.indexOf('<row grow="1">'));
+  const header = markup.slice(markup.indexOf('<dropdown-menu'), markup.indexOf('</dropdown-menu>'));
   assert.match(header, /\{title\}/);
   assert.match(header, /\{detail\}/);
   assert.doesNotMatch(header, /workspaceLabel|machineLabel/);

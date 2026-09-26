@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-20
 ---
 
 # Install
@@ -22,6 +22,7 @@ releases. Windows and `cargo install phux` are not supported.
 | Homebrew | Recommended day-to-day on supported Homebrew platforms | Primary binary path where the tap has an artifact |
 | Release tarball | Manual install and verification | CI-built tarballs include `phux`, `phux-mcp`, licenses, README, and `.sha256` sidecars |
 | From source | Contributors and source-first users | Clone, build, and install with native tools or Nix |
+| Agent skills | Harnesses that load SKILL.md | `npx skills add no-phux/skills` |
 
 The public install page is
 [https://docs.phux.sh/quickstart/install](https://docs.phux.sh/quickstart/install).
@@ -106,8 +107,15 @@ curl -fsSL https://phux.sh/install-cockpit | sh
 That URL serves `scripts/install-cockpit.sh` from this repository byte for
 byte, the same way `/install` serves the CLI installer — read it before you
 pipe it anywhere. With no `--version`, it installs the latest `cockpit-vX.Y.Z`
-release; pin one with `sh -s -- --version cockpit-vX.Y.Z`. It verifies the
-release `SHA256SUMS` before unpacking, places **Phux Cockpit.app** in
+release; pin one with `sh -s -- --version cockpit-vX.Y.Z`. Pass
+`--channel next` (or set `PHUX_CHANNEL=next`) for the build of green `main`
+instead:
+
+```sh
+curl -fsSL https://phux.sh/install-cockpit | sh -s -- --channel next
+```
+
+It verifies the release checksum before unpacking, places **Phux Cockpit.app** in
 `/Applications` (`~/Applications` when `/Applications` is not writable),
 writes a `phux-cockpit` launcher into
 `${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-$HOME/.local/bin}}`,
@@ -130,13 +138,29 @@ Cockpit requires Apple silicon macOS 11 or later. Intel Macs have no release
 artifact; the curl installer and the cask both refuse there.
 
 From a running installer-placed app, **Check for Updates…** (View menu, or
-Settings → About) compares `CFBundleShortVersionString` to the latest
-`cockpit-vX.Y.Z` GitHub release the same way `scripts/install-cockpit.sh` does.
-If a newer release exists, Install drives that script — SHA256SUMS, atomic
+Settings → About) checks the channel the app was installed from. A stable
+app compares `CFBundleShortVersionString` to the latest `cockpit-vX.Y.Z`
+release. A next app compares its build SHA to the head of `next`. If a
+newer build exists, Install drives `scripts/install-cockpit.sh` — SHA256SUMS, atomic
 replace, quarantine-clear, and rollback on placement failure. After a
 successful replace the new binary relaunches; Phux-backed remote sessions stay
 on the server. Homebrew, Nix, and development copies refuse and print the
 native command instead of overwriting.
+
+## Agent skills
+
+Harnesses that load Agent Skills install the product skills from the publish
+mirror:
+
+```sh
+npx skills add no-phux/skills
+```
+
+That installs `using-phux` and `using-phux-mcp`. Pass `--skill using-phux` or
+`--skill using-phux-mcp` to take one. The same skills are also served from
+`https://phux.sh` (`npx skills add https://phux.sh`). `phux --skill` and
+`phux mcp --skill` remain the version-matched copies compiled into the
+installed binaries. See [Agents](./consumers/agents.md).
 
 ## Release tarball
 
@@ -191,23 +215,18 @@ Nix setup and scoped checks in [`SETUP.md`](./SETUP.md).
 For a checkout you edit continuously, install the current debug build with:
 
 ```sh
-just install-dev             # build phux + phux-mcp and install both
+just install-dev             # build phux + phux-mcp into ~/.cargo/bin
 hash -r                      # refresh an older shell's command cache if needed
-command -v phux              # should print ~/.cargo/bin/phux
+command -v phux              # inside the checkout: ~/.cargo/bin/phux
 ```
 
-`install-dev` writes the binaries atomically to `${CARGO_HOME:-~/.cargo}/bin`,
-matching a normal source install. That directory must precede
-`/opt/homebrew/bin` in `PATH`; the standard phux developer environment uses
-that order. The Homebrew package can remain installed as a released fallback.
-`just rebuild` installs the next build and asks a source-installed server to
-re-exec the newly installed binary while preserving its live sessions.
-
-A server already launched from Homebrew cannot change its executable path via
-the same-path re-exec mechanism. Detach and stop that server once, verify
-`command -v phux` resolves to `~/.cargo/bin/phux`, then start `phux` again.
-Existing source-installed servers under `~/.cargo/bin` can upgrade in place;
-subsequent `just rebuild` invocations stay entirely on the developer binary.
+`install-dev` writes debug binaries to `${CARGO_HOME:-~/.cargo}/bin` only.
+`curl | sh` owns `~/.local/bin`. A debug build already uses the `dev`
+profile (separate socket and state), so the two cannot steal each other's
+sessions. Inside this checkout, direnv / `nix develop` put Cargo's bin
+ahead of `~/.local/bin`; leave the repo and `phux` is the user install
+again. `just rebuild` installs the next debug build and hot-swaps the
+dev-profile server.
 
 ## Updating
 
@@ -231,6 +250,16 @@ green `main` ([ADR-0113](adr/0113-next-release-channel.md)); `phux channel
 latest` (also `stable`) is the numbered releases. The choice is remembered in
 `<bindir>/.phux-channel` so later `phux update` stays on that rail. Homebrew
 stays on stable. `phux update --channel next` is the same switch.
+
+On macOS, an installed Phux Cockpit moves with the CLI
+([ADR-0138](adr/0138-cockpit-rides-the-next-channel.md)). `phux update`
+reinstalls it through the Cockpit installer when it is behind, and
+`phux channel next` or `phux channel latest` switches both. `--check` reports
+Cockpit on its own `cockpit:` line, and the JSON adds a `cockpit` object.
+Homebrew and development copies of Cockpit are reported, never overwritten.
+If another `phux` comes first on `PATH`, such as a stale `cargo install` or a
+version-manager shim, `phux update` warns and names it. The JSON reports it as
+`path_shadowed_by`.
 
 ### What `phux update` does
 

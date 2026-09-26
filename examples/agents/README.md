@@ -98,6 +98,7 @@ That command may invoke configured account/API behavior; it is never run by CI.
   CLI skill, including when to use phux and the full supervision loop.
 - [`using-phux-mcp`](../../.agents/skills/using-phux-mcp/SKILL.md) — the
   canonical MCP skill and live-schema workflow.
+- Install the published copies with `npx skills add no-phux/skills`.
 - [`../../docs/consumers/tui.md`](../../docs/consumers/tui.md) — the full
   CLI shape.
 - [`../../docs/consumers/pi.md`](../../docs/consumers/pi.md) — package setup

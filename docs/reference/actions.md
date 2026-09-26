@@ -20,7 +20,7 @@ The **Palette** column is the command-palette section the action is offered unde
 
 | Action | Palette | Parameters | Description |
 |---|---|---|---|
-| `split-pane` | Pane | `direction` = `horizontal` \| `vertical` | Split the focused pane side-by-side (vertical divider) |
+| `split-pane` | Pane | `direction` = `horizontal` \| `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`) | Split the focused pane side-by-side (vertical divider) |
 | `move-pane` | Pane | `target` (local Terminal id; picker-supplied) | Move the focused pane beside another pane… |
 | `kill-pane` | Pane |  | Close the focused pane |
 | `new-window` | Window | `cwd?` (working directory on the attached server's host) | Open a new window |
@@ -29,6 +29,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `next-window` | Window |  | Switch to the next window |
 | `previous-window` | Window |  | Switch to the previous window |
 | `select-window` | — | `index` (0-based window position) | Focus the window at a given index |
+| `move-window` | — | `index` (0-based destination) or `delta` (signed slots, e.g. `-1`); clamped to the ends | Move the active window to another position in the window order |
 | `rename-window` | Window | `name?` (bare opens an interactive prompt) | Rename the active window (interactive prompt) |
 | `rename-session` | Session | `name?` (bare opens an interactive prompt) | Rename the current session (interactive prompt) |
 | `focus-direction` | Pane | `direction` = `left` \| `right` \| `up` \| `down` | Move focus to the pane on the left |
@@ -43,7 +44,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `toggle-zoom` | Pane |  | Zoom the focused pane to fill the window (toggle) |
 | `toggle-sidebar` | View |  | Show or hide the window sidebar (toggle) |
 | `command-palette` | — |  | Open the fuzzy commands and help finder |
-| `context-menu` | Pane |  | Open the context menu for the focused pane (ADR-0058) |
+| `context-menu` | Pane |  | Open the context menu for the focused pane |
 | `window-picker` | Window |  | Pick a window from all sessions (grouped) |
 | `session-picker` | Session |  | Browse sessions and live host availability |
 | `agent-fleet` | View |  | Agent fleet: every pane's agent, state, and attention |
@@ -52,10 +53,10 @@ The **Palette** column is the command-palette section the action is offered unde
 | `return-from-attention` | Pane |  | Return to where attention navigation started |
 | `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window); `host?` (a satellite of this hub: opens that session's active pane here through the relay instead of re-attaching) | Re-attach this client to another session |
 | `new-session` | Session | `name?` (bare opens an interactive prompt) | Create a new session and switch to it |
-| `take-input` | Pane |  | Take the wheel: seize exclusive input over the focused pane (ADR-0033) |
-| `give-input` | Pane |  | Give back the wheel: release the focused pane's input lease (ADR-0033) |
-| `signal-terminal` | Pane | `signal` = `interrupt` \| `freeze` \| `resume` \| `terminate` \| `kill` | Signal the focused pane's process group (freeze/resume/kill, ADR-0033) |
-| `set-pane` | Pane | `mouse` = `on` \| `off` \| `toggle` | Toggle per-pane mouse opt-out for the focused pane (ADR-0048) |
+| `take-input` | Pane |  | Take the wheel: seize exclusive input over the focused pane |
+| `give-input` | Pane |  | Give back the wheel: release the focused pane's input lease |
+| `signal-terminal` | Pane | `signal` = `interrupt` \| `freeze` \| `resume` \| `terminate` \| `kill` | Signal the focused pane's process group (freeze, resume, kill) |
+| `set-pane` | Pane | `mouse` = `on` \| `off` \| `toggle` | Toggle mouse capture for the focused pane |
 | `plugin-action` | — | `plugin`, `action` | Run an enabled plugin's manifest action |
 | `plugin-pane` | — | `plugin`, `pane` | Open an enabled plugin's manifest pane |
 | `reload-config` | View |  | Reload the config file (keybindings, theme, status bar) |
@@ -67,6 +68,7 @@ Why the dash rows have no palette entry:
 - `command-palette` — it is an entry alias for the finder, so listing it inside the finder would recurse.
 - `show-help` — it is an entry alias for the same finder as `command-palette`, so listing it would duplicate that surface.
 - `select-window` — parameterized by `index`, which the palette has no UI to collect; the window picker is the surface for "jump to window N".
+- `move-window` — parameterized by direction; bound to `<` and `>` under the leader, offered in the window context menu, and done by dragging a tab or a sidebar window row.
 - `switch-session` — requires a `name` arg supplied by the session picker (or the fleet's foreign rows), so a bare palette row would have no target to act on.
 - `copy-mode` — a modal input surface entered from its keybinding, not a one-shot command the palette can commit.
 - `plugin-action` — its palette rows are built dynamically from enabled plugins' manifests, one per manifest action, carrying `plugin`/`action` args a static row could not supply.

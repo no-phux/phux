@@ -211,6 +211,7 @@ impl Rig {
             &mut self.pending_splits,
             &mut self.pending_windows,
             &mut std::collections::HashSet::new(),
+            &mut std::collections::HashMap::new(),
             &mut self.agent_meta,
             self.overlay_active,
             false,

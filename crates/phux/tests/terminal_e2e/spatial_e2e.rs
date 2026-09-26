@@ -12,9 +12,7 @@
 mod common;
 
 use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
@@ -24,29 +22,25 @@ use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-/// Idle lifetime for this file's harness server, as a backstop UNDER the
-/// `Drop` kill (ADR-0063). The guard is still the primary cleanup; it cannot
-/// run if the test process is `SIGKILL`ed or the runner is reaped mid-job, and
-/// what leaks then is a daemon holding a live PTY on a socket nobody will
-/// ever look at again. Ten minutes is far longer than any gap between this
-/// file's client connections, so it can only fire after the harness is gone.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
-
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
 /// Unattached no-TTY grid from `GET_SCREEN`. A tiled pane leaving this size
 /// (or any previously observed size) is how this file knows the attached
 /// client reconciled a layout broadcast — `RESIZE_TERMINAL` is the side
 /// effect of that reconcile, not of the CLI `SET_METADATA` itself.
 const NO_TTY_DEFAULT: (u64, u64) = (80, 24);
-static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
+    inner: common::ServerGuard,
     dir: tempfile::TempDir,
+}
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl ServerGuard {
@@ -55,14 +49,7 @@ impl ServerGuard {
         for name in ["home", "config", "state", "runtime"] {
             std::fs::create_dir(dir.path().join(name)).expect("create isolated server directory");
         }
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = dir
-            .path()
-            .join(format!("spatial-{}-{n}.sock", std::process::id()));
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
+        let inner = common::ServerGuard::builder("spatial")
             // Panes run the server's `$SHELL`. Inherited, that is the CI
             // devshell's minimal bash sourcing the runner's `~/.bashrc`, whose
             // startup noise buries the typed markers; pin the `/bin/sh` the
@@ -72,24 +59,8 @@ impl ServerGuard {
             .env("XDG_CONFIG_HOME", dir.path().join("config"))
             .env("XDG_STATE_HOME", dir.path().join("state"))
             .env("XDG_RUNTIME_DIR", dir.path().join("runtime"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            dir,
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!("server did not bind {}", guard.socket.display());
+            .start();
+        Self { inner, dir }
     }
 
     fn command(&self, args: &[&str]) -> std::process::Output {

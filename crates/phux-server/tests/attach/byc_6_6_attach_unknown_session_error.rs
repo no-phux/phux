@@ -38,8 +38,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, recv_typed,
-    run_local, send_frame, spawn_server, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame, join_after_shutdown,
+    recv_typed, run_local, send_frame, spawn_server, wait_for_socket,
 };
 
 /// Distinctive PING nonce for the post-error liveness probe. Any value
@@ -133,7 +133,6 @@ fn byc_6_6_attach_unknown_session_returns_error_keeps_connection_open() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

@@ -17,7 +17,7 @@ use super::Page;
 #[path = "../../../phux-mcp/src/tool_table.rs"]
 mod tool_table;
 
-use tool_table::{CLI_ONLY, DESTRUCTIVE_SOURCE, Exec, MIRROR_NOTE, Surface, TOOLS};
+use tool_table::{CLI_ONLY, DESTRUCTIVE_SOURCE, Exec, Surface, TOOLS};
 
 /// Render `docs/reference/parity.md`.
 pub(crate) fn page() -> Page {
@@ -25,10 +25,7 @@ pub(crate) fn page() -> Page {
         "Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it \
          mirrors, and how it runs. `in-process` tools spawn no subprocess \
          and return the document the CLI verb prints, built by the same \
-         `phux-client` function. `in-process (mirror)` tools also spawn no \
-         subprocess, but their orchestration is a copy in `phux-mcp` over \
-         the same lower-level `phux-client` wire helpers the CLI uses; \
-         unifying them is tracked separately. The CLI residue runs the \
+         `phux-client` function. The CLI residue runs the \
          canonical `phux` binary with argv, never a shell, for the reason \
          listed. The parity gate holds this table to the live tool catalog, \
          the CLI grammar, and the kind table, so it cannot drift from the \
@@ -45,14 +42,12 @@ pub(crate) fn page() -> Page {
             verb(row.surface),
             match row.exec {
                 Exec::InProcess => "in-process",
-                Exec::InProcessMirror(_) => "in-process (mirror)",
                 Exec::Cli(_) => "CLI",
             },
             yes_no(hints.read_only),
             yes_no(hints.destructive),
         );
     }
-    push_mirrors(&mut body);
     push_residue(&mut body);
     push_automation_only(&mut body);
     push_cli_only(&mut body);
@@ -85,18 +80,6 @@ fn verb(surface: Surface) -> String {
 
 const fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
-}
-
-fn push_mirrors(body: &mut String) {
-    let _ = write!(
-        body,
-        "\n## In-process mirrors\n\nEach of these is {MIRROR_NOTE}:\n\n"
-    );
-    for row in TOOLS {
-        if let Exec::InProcessMirror(reason) = row.exec {
-            let _ = writeln!(body, "- `{}`: {reason}.", row.name);
-        }
-    }
 }
 
 fn push_residue(body: &mut String) {

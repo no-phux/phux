@@ -25,8 +25,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_seed_pty_no_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown, recv_typed,
+    run_local, send_frame, spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
 
 /// Drain until the matching `RESOURCE_SPAWNED` arrives; return its result.
@@ -178,12 +178,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server task join")
-            .expect("server run_async returned an error");
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -229,12 +224,7 @@ fn kill_last_pane_reaps_session_cleanly() {
         // The server self-exits after the last session reaps. Awaiting the
         // join confirms a clean exit (no panic in the reap/self-exit path);
         // a hang would trip the timeout.
-        shutdown_tx.send(()).ok();
-        timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down within 5s after kill-last-pane")
-            .expect("server task join")
-            .expect("server run_async returned an error");
+        join_after_shutdown(shutdown_tx, server_handle).await;
         assert!(
             !socket_path.exists(),
             "socket leaked after kill-last-pane reap: {}",

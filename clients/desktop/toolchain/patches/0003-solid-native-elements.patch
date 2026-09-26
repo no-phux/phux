@@ -1,0 +1,336 @@
+diff --git a/.changeset/solid-native-elements.md b/.changeset/solid-native-elements.md
+new file mode 100644
+index 0000000..020c430
+--- /dev/null
++++ b/.changeset/solid-native-elements.md
+@@ -0,0 +1,10 @@
++---
++"@gpuix/native": minor
++"@gpuix/solid": minor
++---
++
++Add explicit framework-neutral custom host-element registration and branded
++element names. Solid consumes the shared allowlist and checks an initialized
++macOS renderer's native factory registry before mounting custom tags. Schema
++registration does not load native code or seal native installation. Applications
++augment the existing Solid JSX intrinsic-elements interface for custom props.
+diff --git a/README.md b/README.md
+index e7813df..bdcc74d 100644
+--- a/README.md
++++ b/README.md
+@@ -32,6 +32,50 @@ absolute canonical path before importing `@gpuix/native`. Application bindings
+ must load that same file. Loading a second addon creates separate native state.
+ This extension API does not add multi-window support.
+ 
++### Admitting extension tags in Solid
++
++After the application installs its native factories, register their names in
++the framework-neutral host schema before mounting Solid:
++
++```tsx
++import { registerCustomElementType } from '@gpuix/native/host'
++import type { HostProps } from '@gpuix/native/host'
++import type { SolidHostProps } from '@gpuix/solid/jsx-runtime'
++
++registerCustomElementType('acme-panel')
++
++declare module '@gpuix/solid/jsx-runtime' {
++  namespace JSX {
++    interface IntrinsicElements {
++      'acme-panel': SolidHostProps<HostProps & { label: string }>
++    }
++  }
++}
++// Inside a normal createRoot(renderer).render callback:
++// <acme-panel label={reactiveLabel()} onClick={onClick} />
++```
++
++`registerCustomElementType(name)` accepts lowercase ASCII hyphen-separated
++names (for example `acme-panel`), rejects built-in overrides including
++`virtual-list`, and returns a branded `CustomElementType` assignable to
++`ElementType`. Repeating registration is idempotent across module reloads.
++`isHostElementType(name)` recognizes built-ins plus registered custom names;
++`isCustomElementType(name)` recognizes only the registered names. These exports
++are shared by adapters and do not import the addon. Registration never creates
++a native registry/instance, installs a factory, or seals native startup. The
++schema is process-local and additive; there is no runtime unregister operation.
++
++Solid rejects unregistered names rather than rendering a fallback. On macOS,
++`GpuixRenderer.hasCustomElementType(name)` inspects that initialized window's
++existing native factory registry without creating an instance. It rejects
++uninitialized or closed windows. Solid checks this capability before mounting
++registered custom elements and throws a clear missing-factory error instead of
++letting native render an empty element. Other backends without the optional
++query still require explicit JS registration but cannot prove native availability.
++Initialize the renderer before mounting; use the same installed addon for both
++the host and framework. Custom props, events and instance lifetimes then use the
++normal Solid mutation path, including reactive updates and unmount/remount.
++
+ ## Multiple native windows on macOS
+ 
+ Create one `GpuixRenderer` per window and call `init` on each. They share one
+diff --git a/packages/native/index.d.ts b/packages/native/index.d.ts
+index 0c1186a..bce32fa 100644
+--- a/packages/native/index.d.ts
++++ b/packages/native/index.d.ts
+@@ -66,6 +66,11 @@ export declare class GpuixRenderer {
+    * is never rebound; construct a new renderer for a new window generation.
+    */
+   isWindowOpen(): boolean
++  /**
++   * macOS: inspect this initialized window's installed factories. Does not
++   * construct a registry or custom element; closed/uninitialized windows reject.
++   */
++  hasCustomElementType(elementType: string): boolean
+   /** macOS: close this window only. Other renderers keep the shared app alive. */
+   closeWindow(): void
+   /** macOS: the platform window's actual title, after its last render. */
+diff --git a/packages/native/js/__tests__/custom-element-types.test.ts b/packages/native/js/__tests__/custom-element-types.test.ts
+new file mode 100644
+index 0000000..01c4821
+--- /dev/null
++++ b/packages/native/js/__tests__/custom-element-types.test.ts
+@@ -0,0 +1,37 @@
++import { describe, expect, it, vi } from "vitest"
++import {
++  isCustomElementType,
++  isHostElementType,
++  registerCustomElementType,
++  type ElementType,
++} from "../host.js"
++import { createHostElement } from "../../../solid/src/host.js"
++
++describe("explicit shared custom element admission", () => {
++  it("preserves built-ins and rejects overriding them", () => {
++    for (const name of ["div", "text", "img", "svg", "canvas", "input", "textarea", "anchored", "code", "diff", "markdown", "virtual-list"]) {
++      expect(isHostElementType(name)).toBe(true)
++      expect(() => registerCustomElementType(name)).toThrow(/built-in/)
++    }
++  })
++
++  it("requires a lowercase hyphenated name and explicit registration", () => {
++    for (const name of ["", "plain", "Bad-name", "bad--name", "-bad", "bad-", "bad name", "bad/name", "bad.name", 7, null]) {
++      expect(() => registerCustomElementType(name as string)).toThrow(/hyphen-separated/)
++    }
++    expect(() => createHostElement("test-not-registered")).toThrow(/register custom types/)
++    const name: ElementType = registerCustomElementType("test-native-probe")
++    expect(createHostElement(name).type).toBe(name)
++    expect(isCustomElementType(name)).toBe(true)
++    expect(isCustomElementType("div")).toBe(false)
++  })
++
++  it("is idempotent across module reloads without loading native code", async () => {
++    const first = registerCustomElementType("test-shared-reload")
++    vi.resetModules()
++    const other = await import("../host.js")
++    expect(other.registerCustomElementType(first)).toBe(first)
++    expect(other.isHostElementType(first)).toBe(true)
++    expect(createHostElement(first).type).toBe(first)
++  })
++})
+diff --git a/packages/native/js/host.ts b/packages/native/js/host.ts
+index 7a4f609..1bb5cc9 100644
+--- a/packages/native/js/host.ts
++++ b/packages/native/js/host.ts
+@@ -211,20 +211,43 @@ export interface StyleDesc {
+   active?: Omit<StyleDesc, "hover" | "active">
+ }
+ 
+-// Element types supported by GPUIX
+-export type ElementType =
+-  | "div"
+-  | "text"
+-  | "img"
+-  | "svg"
+-  | "canvas"
+-  | "input"
+-  | "textarea"
+-  | "anchored"
+-  | "code"
+-  | "diff"
+-  | "markdown"
+-  | "virtual-list"
++const HOST_ELEMENT_TYPES = [
++  "div", "text", "img", "svg", "canvas", "input", "textarea",
++  "anchored", "code", "diff", "markdown", "virtual-list",
++] as const
++const BUILTIN_HOST_ELEMENTS: ReadonlySet<string> = new Set(HOST_ELEMENT_TYPES)
++declare const registeredCustomElementType: unique symbol
++/** A name admitted explicitly by registerCustomElementType, not arbitrary text. */
++export type CustomElementType = string & { readonly [registeredCustomElementType]: true }
++export type ElementType = typeof HOST_ELEMENT_TYPES[number] | CustomElementType
++
++const CUSTOM_ELEMENT_TYPES = Symbol.for("@gpuix/native/custom-element-types")
++
++function customElementTypes(): Set<string> {
++  const global = globalThis as typeof globalThis & { [CUSTOM_ELEMENT_TYPES]?: Set<string> }
++  return global[CUSTOM_ELEMENT_TYPES] ??= new Set<string>()
++}
++
++/** Register a JS host schema name. Does not load native code or install a factory. */
++export function registerCustomElementType(type: string): CustomElementType {
++  if (BUILTIN_HOST_ELEMENTS.has(type)) {
++    throw new Error(`Cannot register built-in GPUIX element <${type}>`)
++  }
++  if (typeof type !== "string" || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(type)) {
++    throw new TypeError("Custom GPUIX element names must be lowercase hyphen-separated names")
++  }
++  customElementTypes().add(type)
++  return type as CustomElementType
++}
++
++/** Admission shared by framework adapters; registration is idempotent across reloads. */
++export function isHostElementType(type: string): type is ElementType {
++  return BUILTIN_HOST_ELEMENTS.has(type) || customElementTypes().has(type)
++}
++
++export function isCustomElementType(type: string): type is CustomElementType {
++  return customElementTypes().has(type)
++}
+ 
+ // ── Theme ────────────────────────────────────────────────────────────
+ 
+@@ -610,6 +633,8 @@ export interface AnchoredProps extends HostProps {
+ export type MutationHost = Pick<GpuixRenderer, "applyBatch"> & {
+   /** macOS live-window fence; absent on offscreen and other platform hosts. */
+   isWindowOpen?(): boolean
++  /** Query an already-initialized native registry without creating an instance. */
++  hasCustomElementType?(type: string): boolean
+ }
+ export type WindowSizeHost = Pick<GpuixRenderer, "getWindowSize">
+ export type WindowInsetsHost = Pick<GpuixRenderer, "getWindowInsets">
+diff --git a/packages/native/src/custom_elements/mod.rs b/packages/native/src/custom_elements/mod.rs
+index 3706db3..3d17b25 100644
+--- a/packages/native/src/custom_elements/mod.rs
++++ b/packages/native/src/custom_elements/mod.rs
+@@ -331,6 +331,11 @@ impl CustomElementRegistry {
+             .insert(factory.element_type().to_string(), factory);
+     }
+ 
++    /// Inspect installed factories without creating an element or another registry.
++    pub fn has_factory(&self, element_type: &str) -> bool {
++        self.factories.contains_key(element_type)
++    }
++
+     /// Get an existing adapter or create one via the registered factory.
+     /// Reusing an ID for another type destroys the old adapter first.
+     fn get_or_create(&mut self, id: u64, element_type: &str) -> Option<&mut CustomElementEntry> {
+diff --git a/packages/native/src/renderer.rs b/packages/native/src/renderer.rs
+index 2b30a5a..8f11723 100644
+--- a/packages/native/src/renderer.rs
++++ b/packages/native/src/renderer.rs
+@@ -1361,6 +1361,14 @@ impl GpuixRenderer {
+             .load(std::sync::atomic::Ordering::Acquire)
+     }
+ 
++    /// macOS: inspect this initialized window's installed factories. Does not
++    /// construct a registry or custom element; closed/uninitialized windows reject.
++    #[cfg(target_os = "macos")]
++    #[napi]
++    pub fn has_custom_element_type(&self, element_type: String) -> Result<bool> {
++        self.update_window(|view, _, _| view.custom_registry.has_factory(&element_type))
++    }
++
+     /// macOS: close this window only. Other renderers keep the shared app alive.
+     #[cfg(target_os = "macos")]
+     #[napi]
+diff --git a/packages/solid/src/host.ts b/packages/solid/src/host.ts
+index 7de8737..7fac5f2 100644
+--- a/packages/solid/src/host.ts
++++ b/packages/solid/src/host.ts
+@@ -5,6 +5,8 @@ import {
+   EVENT_PROPS,
+   EVENT_PROP_NAMES,
+   UNIVERSAL_PROPS,
++  isHostElementType,
++  isCustomElementType,
+   registerEventHandler,
+   serializeCustomProp,
+   unregisterEventHandler,
+@@ -107,30 +109,10 @@ export class HostText {
+ }
+ 
+ export function createHostElement(type: string): HostElement {
+-  if (!isElementType(type)) throw new Error(`Unsupported GPUIX element <${type}>`)
++  if (!isHostElementType(type)) throw new Error(`Unsupported GPUIX element <${type}>; register custom types before mounting`)
+   return new HostElement(type)
+ }
+ 
+-function isElementType(type: string): type is ElementType {
+-  switch (type) {
+-    case "div":
+-    case "text":
+-    case "img":
+-    case "svg":
+-    case "canvas":
+-    case "input":
+-    case "textarea":
+-    case "anchored":
+-    case "code":
+-    case "diff":
+-    case "markdown":
+-    case "virtual-list":
+-      return true
+-    default:
+-      return false
+-  }
+-}
+-
+ export function createHostText(value: string): HostText {
+   return new HostText(String(value))
+ }
+@@ -202,25 +184,13 @@ function mount(root: HostRoot, node: HostNode): void {
+   node.root = root
+   if (!node.id) node.id = root.allocateId()
+   if (node.mounted) return
++  validateNativeFactory(root.nativeRenderer, node)
+   node.mounted = true
+   root.mutations.createElement(node.id, node.kind === "text" ? "text" : node.type)
+   if (node.kind === "text") {
+     root.mutations.setText(node.id, node.text)
+   } else {
+-    if (Object.keys(node.style).length > 0) root.mutations.setStyle(node.id, node.style)
+-    for (const [name, value] of node.props) {
+-      const eventType = eventTypeFor(name)
+-      if (eventType && isEventHandler(value)) {
+-        registerEventHandler(root.eventHandlers, node.id, eventType, value)
+-        root.mutations.setEventListener(node.id, eventType, true)
+-      } else if (!EVENT_PROP_NAMES.has(name) && customPropAllowed(node, name)) {
+-        root.mutations.setCustomProp(
+-          node.id,
+-          name,
+-          serializeCustomProp(value)
+-        )
+-      }
+-    }
++    mountProperties(root, node)
+   }
+   for (const child of node.children) {
+     mount(root, child)
+@@ -228,6 +198,26 @@ function mount(root: HostRoot, node: HostNode): void {
+   }
+ }
+ 
++function validateNativeFactory(renderer: NativeRenderer, node: HostNode): void {
++  if (node.kind === "text" || !isCustomElementType(node.type)) return
++  if (renderer.hasCustomElementType?.(node.type) === false) {
++    throw new Error(`No native factory for GPUIX element <${node.type}>; install it before renderer.init()`)
++  }
++}
++
++function mountProperties(root: HostRoot, node: HostElement): void {
++  if (Object.keys(node.style).length > 0) root.mutations.setStyle(node.id, node.style)
++  for (const [name, value] of node.props) {
++    const eventType = eventTypeFor(name)
++    if (eventType && isEventHandler(value)) {
++      registerEventHandler(root.eventHandlers, node.id, eventType, value)
++      root.mutations.setEventListener(node.id, eventType, true)
++    } else if (!EVENT_PROP_NAMES.has(name) && customPropAllowed(node, name)) {
++      root.mutations.setCustomProp(node.id, name, serializeCustomProp(value))
++    }
++  }
++}
++
+ function removeFromParent(node: HostNode): void {
+   const parent = node.parent
+   if (!parent) return

@@ -33,6 +33,12 @@
 //!   machine this harness was developed on. Its probe is `#[ignore]`d
 //!   rather than skipped-by-probe so that running it is always a
 //!   deliberate act; see `htop_quits_on_q_under_term_ghostty`.
+//! - "the app quit" is observed as the probed pane's `RESOURCE_CLOSED`
+//!   with `CloseReason::Exited`. That requires the probed pane NOT to be
+//!   its session's only Terminal — a sole Terminal's natural exit
+//!   respawns a default shell in place instead of closing the pane — so
+//!   every probe pins a second, inert pane into the same window before
+//!   the scenario runs (phux-5y00). See `TuiProbe::pin_anchor_pane`.
 //!
 //! FINDINGS (2026-07-10, macOS host, all probes green on first run):
 //!
@@ -80,21 +86,24 @@
 #![allow(clippy::print_stderr, reason = "skip markers + KIP forensics")]
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_OUTPUT,
+    CloseReason, FrameKind, SpawnResult, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
+use phux_server::DEFAULT_GROUP_ID;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd_and_term, try_recv_typed, wait_for_socket,
+    spawn_server_with_seed_cmd_and_term, try_recv_typed, wait_for_server_screen_text,
+    wait_for_socket,
 };
 
 // ---------------------------------------------------------------------------
@@ -285,10 +294,27 @@ const fn named_key(key: PhysicalKey) -> KeyEvent {
 /// (for reaction assertions) and raw (for kitty-activity forensics).
 struct TuiProbe {
     stream: UnixStream,
+    /// HELLO'd socket path for a second, unsubscribed `GET_SCREEN` probe.
+    /// `wait_for_server_screen_text` must not share the attached stream:
+    /// that helper skips `RESOURCE_OUTPUT`, which would blind the Screen
+    /// oracle.
+    socket_path: PathBuf,
     terminal_id: ResourceId,
     screen: Screen,
     raw: Vec<u8>,
-    closed: bool,
+    /// The probed pane's `RESOURCE_CLOSED`, once it arrives.
+    closed: Option<TerminalClose>,
+    /// The server dropped the connection. Never expected here (the anchor
+    /// pane below keeps the session non-empty, so the phux-60s last-session
+    /// self-exit cannot fire), so this is a fault, not an ending.
+    transport_eof: bool,
+}
+
+/// What the probed pane's `RESOURCE_CLOSED` reported.
+#[derive(Debug, Clone, Copy)]
+struct TerminalClose {
+    reason: CloseReason,
+    exit_status: Option<i32>,
 }
 
 impl TuiProbe {
@@ -300,7 +326,7 @@ impl TuiProbe {
     /// command's first paint) arrives here and never again as
     /// `RESOURCE_OUTPUT`. Dropping it would blind the `Screen` oracle to
     /// the pane's first paint and make fast-printing scenarios flake.
-    async fn attach(mut stream: UnixStream) -> Self {
+    async fn attach(mut stream: UnixStream, socket_path: PathBuf) -> Self {
         send_frame(&mut stream, &attach_by_name("default")).await;
         let (type_byte, attached) = recv_typed(&mut stream).await;
         assert_eq!(type_byte, TYPE_ATTACHED, "first frame must be ATTACHED");
@@ -316,10 +342,12 @@ impl TuiProbe {
         assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
         let mut probe = Self {
             stream,
+            socket_path,
             terminal_id,
             screen: Screen::new(80, 24).expect("screen oracle"),
             raw: Vec::new(),
-            closed: false,
+            closed: None,
+            transport_eof: false,
         };
         let (_, chunk) = recv_typed(&mut probe.stream).await;
         match chunk {
@@ -331,7 +359,65 @@ impl TuiProbe {
         }
         let (_, ready) = recv_typed(&mut probe.stream).await;
         assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
+        probe.pin_anchor_pane().await;
         probe
+    }
+
+    /// Spawn a second, inert Terminal into the probed pane's window.
+    ///
+    /// Load-bearing, not scaffolding. The seed pane runs the TUI, so
+    /// without this it is the ONLY Terminal in the only session — and
+    /// `ServerState::should_replace_last_shell` then turns that pane's
+    /// natural exit into "respawn a default shell in place" rather than a
+    /// close (`crates/phux-server/src/state/sessions.rs`,
+    /// `runtime/client.rs::replace_last_shell`). The app really did quit,
+    /// but the pane stays, no `RESOURCE_CLOSED` is ever sent, and what the
+    /// probe observes then depends on whether that respawn happened to
+    /// succeed — which is exactly the nondeterminism `expect_closed` used
+    /// to trip over. A second Terminal in the same window puts the probed
+    /// pane back on the ordinary close path, which is the path
+    /// `expect_closed` is written about, and keeps the session non-empty
+    /// so the phux-60s last-session self-exit cannot race it either.
+    ///
+    /// `/bin/cat` is the repo's inert PTY fixture: with no argv and nobody
+    /// writing to it, it emits nothing and never exits on its own. The
+    /// probe filters every frame by `terminal_id` regardless, so the
+    /// anchor cannot reach the `Screen` oracle or the raw forensics buffer.
+    async fn pin_anchor_pane(&mut self) {
+        const ANCHOR_REQUEST_ID: u32 = 9001;
+        let spawn = FrameKind::SpawnResource {
+            request_id: ANCHOR_REQUEST_ID,
+            group: DEFAULT_GROUP_ID,
+            command: Some(vec!["/bin/cat".to_owned()]),
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: None,
+            // Ownership address, not geometry: pins the new pane into the
+            // window that owns the probed pane, so the two really are in
+            // one session (layout stays client-owned L3 metadata).
+            owner_terminal: Some(self.terminal_id.clone()),
+            agent_session: None,
+            initial_size: None,
+            resource: None,
+        };
+        send_frame(&mut self.stream, &spawn).await;
+        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        // Pump rather than `recv_typed`: the probed pane is already
+        // painting, and dropping its output here would blind the oracle
+        // exactly as dropping the bootstrap replay would.
+        while let Some(frame) = self.pump_once(deadline).await {
+            let FrameKind::ResourceSpawned { request_id, result } = frame else {
+                continue;
+            };
+            assert_eq!(request_id, ANCHOR_REQUEST_ID, "unexpected spawn reply");
+            assert!(
+                matches!(result, SpawnResult::Ok(_)),
+                "anchor pane spawn failed: {result:?}",
+            );
+            return;
+        }
+        panic!("anchor pane never spawned; the probed pane would be the session's only Terminal");
     }
 
     async fn send_key(&mut self, event: KeyEvent) {
@@ -349,34 +435,50 @@ impl TuiProbe {
         }
     }
 
-    /// Pump one server frame into the accumulators. `false` on EOF /
-    /// `RESOURCE_CLOSED` / deadline.
-    async fn pump_once(&mut self, deadline: tokio::time::Instant) -> bool {
-        if self.closed {
-            return false;
+    /// Pump one server frame, folding the probed pane's output into the
+    /// accumulators and returning the frame. `None` when the probed pane
+    /// closed, the transport died, or the deadline elapsed.
+    ///
+    /// Every frame is matched against `self.terminal_id`: since the anchor
+    /// pane joined the session this connection carries two panes' traffic,
+    /// and only the probed one is evidence about the app under test.
+    async fn pump_once(&mut self, deadline: tokio::time::Instant) -> Option<FrameKind> {
+        if self.closed.is_some() || self.transport_eof {
+            return None;
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return false;
+            return None;
         }
         let Ok(maybe) = timeout(deadline - now, try_recv_typed(&mut self.stream)).await else {
-            return false;
+            return None;
         };
-        let Some((type_byte, frame)) = maybe else {
-            self.closed = true; // server closed the connection
-            return false;
+        let Some((_type_byte, frame)) = maybe else {
+            self.transport_eof = true; // server closed the connection
+            return None;
         };
-        if type_byte == TYPE_RESOURCE_CLOSED {
-            self.closed = true;
-            return false;
+        match &frame {
+            FrameKind::ResourceOutput {
+                terminal_id, bytes, ..
+            } if *terminal_id == self.terminal_id => {
+                self.raw.extend_from_slice(bytes);
+                self.screen.write(bytes);
+            }
+            FrameKind::ResourceClosed {
+                terminal_id,
+                exit_status,
+                reason,
+                ..
+            } if *terminal_id == self.terminal_id => {
+                self.closed = Some(TerminalClose {
+                    reason: *reason,
+                    exit_status: *exit_status,
+                });
+                return None;
+            }
+            _ => {}
         }
-        if type_byte == TYPE_RESOURCE_OUTPUT
-            && let FrameKind::ResourceOutput { bytes, .. } = frame
-        {
-            self.raw.extend_from_slice(&bytes);
-            self.screen.write(&bytes);
-        }
-        true
+        Some(frame)
     }
 
     /// Drain output until the rendered screen contains `needle` or the
@@ -387,7 +489,7 @@ impl TuiProbe {
             if self.screen.contains(needle) {
                 return true;
             }
-            if !self.pump_once(deadline).await {
+            if self.pump_once(deadline).await.is_none() {
                 return self.screen.contains(needle);
             }
         }
@@ -402,15 +504,59 @@ impl TuiProbe {
         );
     }
 
-    /// Drain until the pane closes (child exited → `RESOURCE_CLOSED`
-    /// and/or server self-exit → EOF). Panics if it never does.
+    /// Poll the pane actor's grid via `GET_SCREEN` until `needle` appears.
+    ///
+    /// Uses a fresh unsubscribed connection so replies are not interleaved
+    /// with this probe's `RESOURCE_OUTPUT`. `deadline` is a hang guard, not
+    /// a latency assertion (phux-7y78).
+    async fn wait_server_screen_text(&self, needle: &str, deadline: Duration) {
+        let mut control = wait_for_socket(&self.socket_path, SOCKET_CONNECT_DEADLINE).await;
+        wait_for_server_screen_text(&mut control, &self.terminal_id, needle, deadline).await;
+    }
+
+    /// Drain until the probed pane's `RESOURCE_CLOSED` arrives, and assert
+    /// it reports a natural process exit — i.e. the app really quit, of its
+    /// own accord, in reaction to the keys this probe sent.
+    ///
+    /// `CloseReason::Exited` is the assertion that carries the meaning:
+    /// `Killed` / `ParentClosed` / `ServerShutdown` would each be a pane
+    /// that went away for a reason having nothing to do with the keystroke
+    /// under test, and the old "any close at all" check could not tell
+    /// those apart from a quit.
+    ///
+    /// The exit status is reported, not asserted, on purpose: it comes from
+    /// a `try_wait` retry loop on PTY EOF with a 20ms budget
+    /// (`resource/terminal/io.rs::reap_child_if_any`), so a loaded host can
+    /// legitimately report `None` for a child that exited cleanly a moment
+    /// later. `reason` is claimed from the close ledger and has no such
+    /// race, which is why it is the one that gets asserted.
     async fn expect_closed(&mut self, what: &str) {
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        while self.pump_once(deadline).await {}
+        while self.pump_once(deadline).await.is_some() {}
         assert!(
-            self.closed,
-            "{what}: pane never closed.\n--- screen ---\n{}\n--- end ---",
+            !self.transport_eof,
+            "{what}: server dropped the transport before RESOURCE_CLOSED.\n\
+             --- screen ---\n{}\n--- end ---",
             self.screen.snapshot_text(),
+        );
+        let Some(close) = self.closed else {
+            panic!(
+                "{what}: pane never closed.\n--- screen ---\n{}\n--- end ---",
+                self.screen.snapshot_text(),
+            );
+        };
+        assert_eq!(
+            close.reason,
+            CloseReason::Exited,
+            "{what}: pane closed as {:?} (exit status {:?}), not a natural \
+             process exit.\n--- screen ---\n{}\n--- end ---",
+            close.reason,
+            close.exit_status,
+            self.screen.snapshot_text(),
+        );
+        eprintln!(
+            "kip_roundtrip({what}): exit status = {:?}",
+            close.exit_status
         );
     }
 
@@ -464,7 +610,7 @@ where
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd_and_term(socket_path.clone(), "default", cmd, term);
         let stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        let mut probe = TuiProbe::attach(stream).await;
+        let mut probe = TuiProbe::attach(stream, socket_path).await;
 
         scenario(&mut probe).await;
 
@@ -667,6 +813,10 @@ fn nvim_kip_insert_and_quit_under_term_ghostty() {
 // keep working in legacy/modifyOtherKeys mode.
 // ---------------------------------------------------------------------------
 
+/// Hang guard for vim's startup/input loop under CPU starvation (phux-7y78).
+/// Quiet runs finish in tens of milliseconds; this only fails a hung child.
+const VIM_HANG_GUARD: Duration = Duration::from_secs(60);
+
 /// vim under `TERM=ghostty`: insert-mode text entry and `:q!` must work.
 #[test]
 fn vim_insert_and_quit_under_term_ghostty() {
@@ -680,15 +830,18 @@ fn vim_insert_and_quit_under_term_ghostty() {
     cmd.arg("NONE");
 
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        // The vanilla vim intro screen names itself.
+        // Wait on the pane actor's grid before sending keys. A lone `i` is
+        // consumed as wait_return "continue" rather than insert, so Enter
+        // dismisses the splash first (phux-7y78). The 60s bound is a hang
+        // guard, not a latency assertion.
         probe
-            .expect_screen_contains("VIM - Vi IMproved", "vim startup")
+            .wait_server_screen_text("VIM - Vi IMproved", VIM_HANG_GUARD)
             .await;
-
+        probe.send_key(named_key(PhysicalKey::Enter)).await;
         probe.send_key(printable_key('i')).await;
         probe.type_str("kip roundtrip ok").await;
         probe
-            .expect_screen_contains("kip roundtrip ok", "vim insert-mode echo")
+            .wait_server_screen_text("kip roundtrip ok", VIM_HANG_GUARD)
             .await;
 
         probe.send_key(named_key(PhysicalKey::Escape)).await;

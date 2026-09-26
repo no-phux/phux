@@ -26,8 +26,12 @@ jobs:
     timeout-minutes: 5
     outputs:
       cockpit_needed: ${{ steps.detect.outputs.cockpit_needed }}
+      ffi_needed: ${{ steps.detect.outputs.ffi_needed }}
+      cli_needed: ${{ steps.detect.outputs.cli_needed }}
+      zig_needed: ${{ steps.detect.outputs.zig_needed }}
+      shipping_needed: ${{ steps.detect.outputs.shipping_needed }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: detect
@@ -38,7 +42,7 @@ jobs:
     if: needs.changes.outputs.cockpit_needed == 'true'
     needs: changes
     # Standard public GitHub Apple-silicon runner; no paid larger-runner label.
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 45
     # One checkout, nothing to starve: use the machine Zig cache and let the
     # job timeout own the limit. Isolated mode plus a 600s wrapper watchdog
@@ -47,7 +51,7 @@ jobs:
       PHUX_ZIG_CACHE_MODE: shared
       PHUX_ZIG_BUILD_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -67,20 +71,42 @@ jobs:
       - name: Check native Cockpit prerequisites
         run: bash scripts/doctor.sh cockpit
 
+      # Exact-input FFI and CLI, keyed on the files that enter each binary.
+      # Compute identity before Node tests: npm leaves worktree dirt that is
+      # unrelated to Rust inputs but used to fail a whole-tree clean check.
+      # A test file does not miss. The CLI is not built before zig tests.
+      - name: Cockpit Rust artifact identity
+        id: rust-artifacts
+        run: python3 scripts/ci/cockpit_artifacts.py key
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/ci-cockpit-artifacts/ffi
+          key: ${{ steps.rust-artifacts.outputs.ffi_key }}
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/ci-cockpit-artifacts/cli
+          key: ${{ steps.rust-artifacts.outputs.cli_key }}
+
+      - name: Restore exact-input FFI and CLI
+        id: rust-restore
+        run: python3 scripts/ci/cockpit_artifacts.py restore
+
       # Node 24 will not strip @native-sdk/core .ts under node_modules; the
       # navigation-loader does. The helper is also the canonical local gate.
       - name: Test Cockpit model and presentation contracts
+      if: needs.changes.outputs.zig_needed == 'true'
         working-directory: clients/cockpit
         run: ./scripts/cockpit-node-test.sh
 
-      # rust-cache keys on Cargo.lock itself; the shared key keeps this
-      # macOS ffi-release cache disjoint from ci.yml's Linux check/test
-      # profiles. Save only from main pushes — GitHub's Actions cache is a
-      # hard 10 GB per repo with LRU eviction, and PR saves would thrash the
-      # warm base (same policy as ci.yml's lanes). Workspace crates are not
-      # in that archive; sccache is the same GHA wrapper Linux already uses.
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      # rust-cache is the dependency archive for a miss. The fat-LTO link is
+      # the exact-input artifact above; sccache does not cache that link.
+      # Save only from main — the Actions cache is a hard 10 GB LRU.
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        if: steps.rust-restore.outputs.ffi_restored != 'true' || steps.rust-restore.outputs.cli_restored != 'true'
       - name: enable sccache
+        if: steps.rust-restore.outputs.ffi_restored != 'true' || steps.rust-restore.outputs.cli_restored != 'true'
         env:
           SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
         run: |
@@ -90,31 +116,31 @@ jobs:
             echo "SCCACHE_GHA_RW_MODE=${SCCACHE_RW_MODE}"
             echo "CARGO_INCREMENTAL=0"
           } >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.rust-restore.outputs.ffi_restored != 'true' || steps.rust-restore.outputs.cli_restored != 'true'
         with:
           shared-key: mini-v1-cockpit-ffi
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Zig compilation dominates the rest of the job. Restore on every run;
-      # save only from main, mirroring the rust-cache policy. Keyed on the
-      # build manifest and Zig version — not the commit SHA (phux-6khi).
-      # CI uses the shared global cache (`~/.cache/zig`) plus the checkout
-      # local cache. Do not cache `.zig-global-cache`: that isolated dir's
-      # `p/` symlink duplicated the package cache into a 4.4GB restore.
+      # Keyed on Zig sources and the shipping flags, not build.zig alone and
+      # not the commit SHA (phux-6khi). A hit restores the ReleaseSafe object
+      # instead of compiling it again. Save only from main, and only on a
+      # miss, so the entry updates when sources change and stays frozen when
+      # they do not. Do not cache `.zig-global-cache`: its `p/` symlink
+      # duplicated the package cache into a 4.4GB restore.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true'
         id: zig-cache
         with:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
-          key: mini-v2-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+          key: mini-v3-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-relsafe-aarch64-baseline-phux-traceoff-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon', 'clients/cockpit/src/**', 'clients/cockpit/**/*.zig', 'clients/cockpit/**/*.ts', 'clients/cockpit/**/*.native', '.config/zig-toolchain.json', 'clients/cockpit/scripts/build-shipping-app.sh', 'clients/cockpit/scripts/zig-build.sh', 'clients/cockpit/scripts/build-phux-cli.sh', 'clients/cockpit/scripts/build-phux-artifacts.sh', 'clients/cockpit/scripts/native-cargo-target.sh', 'scripts/install-zig.sh') }}
           restore-keys: |
-            mini-v2-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
+            mini-v3-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
 
-      # mini-v2 is a new path list, so the first runs miss and Zig has to
-      # fetch nested tarballs. zig-build.sh retries --fetch on
-      # HttpConnectionClosing.
       - name: Fetch Zig packages
+        if: needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true'
         working-directory: clients/cockpit
         run: |
           if [ -d "${HOME}/.cache/zig/p" ] && [ -n "$(ls -A "${HOME}/.cache/zig/p" 2>/dev/null)" ]; then
@@ -124,6 +150,7 @@ jobs:
           fi
 
       - name: Check release, SDK, and measurement contracts
+        if: needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true'
         working-directory: clients/cockpit
         run: |
           ./scripts/check-release-version.sh
@@ -135,69 +162,85 @@ jobs:
           ./scripts/lib/zon_test.sh
           ./scripts/lib/measure_test.sh
           ./scripts/glyph-visibility-diagnose_test.sh
+          ./scripts/generate-operation-fixtures_test.sh
           ./scripts/verify-phux-ffi.py --phux-tree ../..
 
       - name: Materialize the pinned SDK source
+        if: needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true'
         working-directory: clients/cockpit
         run: ./scripts/build-automation-cli.sh --checkout-only
 
+      # THE FLOOR tracks what the hosted runner prints, never a guess. macOS 26
+      # runners printed cell_grid solid=4179 on every run; the xcode-27 image
+      # (macOS 27.0, run 36260456111) prints solid=4170, the same text through
+      # the new OS's CoreText. The defect class lands near 3081, so the 9-pixel
+      # move costs the check no power. Re-derive from the log on the next OS.
       - name: Check the host rasterizer's glyph weight
+        if: needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true'
         working-directory: clients/cockpit
         run: |
           defaults -currentHost read -g AppleFontSmoothing 2>/dev/null \
             || echo 'AppleFontSmoothing: unset (the state the floor was derived on)'
-          ./scripts/host-raster-check.sh --min-solid 4179
+          ./scripts/host-raster-check.sh --min-solid 4170
 
-      - name: Build the same-checkout Phux FFI and coordinator CLI
-        run: bash clients/cockpit/scripts/build-phux-artifacts.sh
+      - name: Build the same-checkout Phux FFI
+        if: steps.rust-restore.outputs.ffi_restored != 'true' && (needs.changes.outputs.ffi_needed == 'true' || needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true')
+        run: bash clients/cockpit/scripts/build-phux-artifacts.sh --only staticlib
 
       # One test graph. DisabledPhuxProvider is typechecked inside this
       # invocation as the compile-only `disabled-phux-provider` step (phux-q0i3,
       # phux-9ajd); do not add a second `zig build test` just to compile it.
+      # Tests do not build or run the CLI.
       - name: Test the shipping TypeScript and native provider graph
+        if: needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.ffi_needed == 'true'
         working-directory: clients/cockpit
         run: ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all
 
-      # The null-platform tests do not compile the AppKit executable. Keep one
-      # real production build on PRs while reserving archive/DMG work for main.
-      # package-macos.sh owns the main-path shipping compile; skipping this
-      # step on push is required (one compile owner), not a missing artifact.
+      # PRs prove the CLI links with ffi-dev (no fat LTO). Main and the merge
+      # queue build ffi-release, which is the artifact release restores.
+      - name: Build the coordinator CLI
+        if: steps.rust-restore.outputs.cli_restored != 'true' && (needs.changes.outputs.cli_needed == 'true' || (needs.changes.outputs.shipping_needed == 'true' && github.event_name != 'pull_request'))
+        run: bash clients/cockpit/scripts/build-phux-artifacts.sh --only cli ${{ github.event_name == 'pull_request' && 'ffi-dev' || 'ffi-release' }}
+
+      - name: Record verified coordinator bytes
+        if: needs.changes.outputs.shipping_needed == 'true' && github.event_name != 'pull_request'
+        run: |
+          python3 scripts/ci/cockpit_artifacts.py save
+          python3 scripts/ci/cockpit_artifacts.py verify
+          echo 'PHUX_CI_ARTIFACTS_VERIFIED=true' >> "$GITHUB_ENV"
+
+      # ReleaseSafe is the slow compile. PRs run the Debug test graph above.
+      # Main and the merge queue own the shipping compile and the dead_strip check.
       - name: Build the production macOS app
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: needs.changes.outputs.shipping_needed == 'true' && github.event_name != 'pull_request'
         working-directory: clients/cockpit
         run: bash ./scripts/build-shipping-app.sh --summary all
 
       - name: Check ring P-256 helpers survived dead_strip
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: needs.changes.outputs.shipping_needed == 'true' && github.event_name != 'pull_request'
         working-directory: clients/cockpit
         run: python3 ./scripts/check-ring-p256-helpers.py zig-out/bin/phux-cockpit
 
-      - name: Package and verify the arm64 macOS app
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
-        run: |
-          set -euo pipefail
-          VERSION="$(< clients/cockpit/version.txt)"
-          VERSION="$VERSION" clients/cockpit/scripts/package-macos.sh
-          clients/cockpit/scripts/soak-macos-app.sh \
-            --app "clients/cockpit/zig-out/release/Phux Cockpit.app" \
-            --cycles 3 \
-            --artifacts clients/cockpit/zig-out/soak-ci
-
-      # The soak's failure directory carries the app log, the coordinator log,
-      # and the process table; without it a red soak is one line of stderr.
-      - name: Upload soak diagnostics
-        if: failure() && hashFiles('clients/cockpit/zig-out/soak-ci/**') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: cockpit-soak-diagnostics
-          path: clients/cockpit/zig-out/soak-ci
-          if-no-files-found: ignore
-          retention-days: 7
+      - name: Save exact-input artifact manifests
+        if: github.ref == 'refs/heads/main' && (steps.rust-restore.outputs.ffi_restored != 'true' || steps.rust-restore.outputs.cli_restored != 'true')
+        run: python3 scripts/ci/cockpit_artifacts.py save
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: github.ref == 'refs/heads/main' && steps.zig-cache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.rust-restore.outputs.ffi_restored != 'true'
+        with:
+          path: target/ci-cockpit-artifacts/ffi
+          key: ${{ steps.rust-artifacts.outputs.ffi_key }}
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.ref == 'refs/heads/main' && steps.rust-restore.outputs.cli_restored != 'true'
+        with:
+          path: target/ci-cockpit-artifacts/cli
+          key: ${{ steps.rust-artifacts.outputs.cli_key }}
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.ref == 'refs/heads/main' && (needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true') && steps.zig-cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
-          key: mini-v2-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+          key: mini-v3-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-relsafe-aarch64-baseline-phux-traceoff-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon', 'clients/cockpit/src/**', 'clients/cockpit/**/*.zig', 'clients/cockpit/**/*.ts', 'clients/cockpit/**/*.native', '.config/zig-toolchain.json', 'clients/cockpit/scripts/build-shipping-app.sh', 'clients/cockpit/scripts/zig-build.sh', 'clients/cockpit/scripts/build-phux-cli.sh', 'clients/cockpit/scripts/build-phux-artifacts.sh', 'clients/cockpit/scripts/native-cargo-target.sh', 'scripts/install-zig.sh') }}

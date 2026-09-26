@@ -29,9 +29,6 @@
 mod common;
 
 use std::io::Read;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -55,71 +52,30 @@ const PEER: &str = "scratch";
 const SESSION_ID_SCAN: u32 = 8;
 /// How long to wait for the briefly attached peer client to write its layout.
 const LAYOUT_DEADLINE: Duration = Duration::from_secs(20);
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
 /// Generous on purpose: the roster is deliberately allowed to arrive late now,
 /// so this is a liveness bound, not a latency assertion. The latency half of
 /// phux-k0cw.10's acceptance is structural (the sweep is issued from the
 /// repaint drain, not from bootstrap) and is not what this test measures.
 const ROSTER_DEADLINE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
-static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
     fn start() -> Self {
-        let dir = tempfile::tempdir().expect("server tempdir");
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = dir
-            .path()
-            .join(format!("fleet-sidebar-{}-{n}.sock", std::process::id()));
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", common::SERVER_IDLE_LIMIT_SECS])
-            // Panes run the server's `$SHELL`; never inherit the runner's.
-            .env("SHELL", "/bin/sh")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!("server did not bind {}", guard.socket.display());
-    }
-
-    fn success(&self, args: &[&str]) -> String {
-        let (verb, rest) = args.split_first().expect("verb");
-        let output = Command::new(PHUX)
-            .arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux command");
-        assert!(
-            output.status.success(),
-            "phux {args:?} failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        String::from_utf8_lossy(&output.stdout).into_owned()
+        Self(
+            common::ServerGuard::builder("fleet-sidebar")
+                // Panes run the server's `$SHELL`; never inherit the runner's.
+                .env("SHELL", "/bin/sh")
+                .start(),
+        )
     }
 
     /// The peer's seed pane, read back rather than assumed.
@@ -328,7 +284,7 @@ fn latest_roster_cell<'a>(painted: &'a str, name: &str) -> Option<&'a str> {
             };
             (suffix.is_empty() || suffix.starts_with(char::is_whitespace))
                 && suffix.chars().all(|c| {
-                    c.is_whitespace() || c.is_ascii_digit() || matches!(c, '!' | '◆' | '*' | '?')
+                    c.is_whitespace() || c.is_ascii_digit() || matches!(c, '●' | '◆' | '◐' | '?')
                 })
         })
     })
@@ -336,8 +292,8 @@ fn latest_roster_cell<'a>(painted: &'a str, name: &str) -> Option<&'a str> {
 
 #[test]
 fn roster_cell_parser_ignores_agent_rows_and_status_shortcuts() {
-    let painted = "Agents│● scratch blocked - claude│Sessions│○ work│● scratch !1│C-a s Sessions";
-    assert_eq!(latest_roster_cell(painted, "scratch"), Some("● scratch !1"));
+    let painted = "Agents│● scratch blocked - claude│Sessions│○ work│● scratch ●1│C-a s Sessions";
+    assert_eq!(latest_roster_cell(painted, "scratch"), Some("● scratch ●1"));
     assert_eq!(latest_roster_cell(painted, "work"), Some("○ work"));
 }
 
@@ -372,7 +328,7 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
     server.success(&["spawn", "--target", &peer_selector]);
     server.wait_for_persisted_layout(&peer_pane);
 
-    // `blocked` is the top rung, so it renders as `!1` and also puts the pane
+    // `blocked` is the top rung, so it renders as `●1` and also puts the pane
     // in zone 1. Any other state would either render nothing (`unknown` and
     // `idle` are omitted from the histogram by design, so the calm case adds
     // no noise) or share a glyph with a less specific rung. Targeted at the
@@ -391,11 +347,11 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
 
     let client = AttachedClient::start(&server);
 
-    // `!1` is the whole point: one blocked pane in the peer session, a count
+    // `●1` is the whole point: one blocked pane in the peer session, a count
     // the client can only know by fetching that peer's layout and then that
     // pane's agent record. The Sessions header and the peer name come free
     // with the session graph and are asserted only to keep a failure legible.
-    let painted = client.wait_for_all(&["Sessions", PEER, "!1"]);
+    let painted = client.wait_for_all(&["Sessions", PEER, "●1"]);
 
     // ADR-0112 lists the attached session in the same panel, so the peer's
     // histogram must land on the peer's OWN row: a sweep that leaked the
@@ -408,13 +364,13 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
     let peer_row = latest_roster_cell(&painted, PEER)
         .unwrap_or_else(|| panic!("no Sessions row for {PEER}:\n{painted}"));
     assert!(
-        peer_row.contains("!1"),
+        peer_row.contains("●1"),
         "the peer's row carries its swept histogram:\n{painted}"
     );
     let session_row = latest_roster_cell(&painted, SESSION)
         .unwrap_or_else(|| panic!("no Sessions row for {SESSION}:\n{painted}"));
     assert!(
-        !session_row.contains('!'),
+        !session_row.contains("●1"),
         "the peer's histogram must not leak into the attached session's row:\n{painted}"
     );
 }

@@ -372,6 +372,11 @@ class Journey:
         before = self.snapshot("commands-before")
         window = active_window(before)
         self.assertion("Commands initially closed", not named(before, "Search commands", role="textbox"), "negative control")
+        self.chord("k", "command down")
+        sessions = self.snapshot("sessions-switcher-open")
+        self.assertion("Cmd+K opens Sessions", named(sessions, "Search navigator", role="textbox", window=window),
+                       "the searchable Sessions switcher must own Cmd+K")
+        self.escape()
         self.chord("p", "command down, shift down")
         after = self.snapshot("commands-open")
         self.assertion("Cmd+Shift+P opens Commands", named(after, "Search commands", role="textbox", window=window),

@@ -1,22 +1,23 @@
 ---
 source: crates/phux-tui/src/render/chrome/sidebar.rs
+assertion_line: 2556
 expression: "strip_text(&p, rect)"
 ---
- Agents                  │
- ● phux blocked - codex  │
- ● feat-auth claude      │
- ◐ wave-0 claude         │
- ◐ wave-1 claude         │
- ◐ wave-2 claude         │
- ◐ wave-3 claude         │
-   +3 more               │
- Sessions                │
+ Agents                9 │
+ ● phux            codex │
+ ● feat-auth      claude │
+ ◐ wave-0         claude │
+ ◐ wave-1         claude │
+ ◐ wave-2         claude │
+ ◐ wave-3         claude │
+   +3                    │
+ Sessions              2 │
  ○ development           │
-   on mini               │
-   ● phux main           │
- ● feat-auth          !1 │
-   on mini               │
+   mini                  │
+   ● phux           main │
+ ● feat-auth          ●1 │
+   mini                  │
                          │
                          │
- + new window            │
- = commands  S settings  ‹
+                         │
+ + new window            ‹

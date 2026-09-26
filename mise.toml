@@ -21,7 +21,7 @@ node = "24"
 # docs/site/worker/Dockerfile pins the same tag for production builds.
 # flake.nix reads this value directly, so the Nix shell cannot lag behind it
 # the way it did at 1.3.13 while this said 1.4.0.
-bun = "1.4.0"
+bun = "1.4.2"
 
 # --- Root gate tools --------------------------------------------------------
 # With these installed, the Mise path runs `just ci`, not just `cargo` loops.
@@ -35,10 +35,10 @@ shellcheck = "0.11.0"
 jq = "1.8.2"
 python = "3.14.7"
 # The usage CLI (jdx/usage) lints and renders the portable spec the phux
-# binary emits. Pin the same 6.9.x train as the `usage-rs` crate. nixpkgs
-# currently ships 6.4.1/6.6.1, so flake.nix reads this value and fetches the
+# binary emits. Pin the same train as the `usage-rs` crate. nixpkgs
+# has lagged this CLI, so flake.nix reads this value and fetches the
 # GitHub release until nixpkgs catches up — the bun pin, applied to a CLI.
-usage = "6.9.0"
+usage = "6.11.1"
 
 # --- Deliberately absent ----------------------------------------------------
 # cargo-nextest has no prebuilt entry in Mise's registry, and the `cargo:`

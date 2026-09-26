@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-23
 ---
 
 # The phux reference TUI
@@ -42,8 +42,9 @@ Install, then:
 phux
 ```
 
-Work in it like a normal terminal. The default prefix is `Ctrl-A`. The status
-bar also exposes the main destinations as clickable labels. These continuations
+Work in it like a normal terminal. The default prefix is `Ctrl-A`. Window tabs
+on the status bar are clickable; everything else is a prefix chord, the
+command palette (`C-a Space` or `:`), or a right-click. These continuations
 are enough for a first run:
 
 | Keys | Action |
@@ -195,6 +196,7 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a c` | `new-window` |
 | `C-a n/p` | `next-window` / `previous-window` |
 | `C-a 0`–`9` | `select-window` by index |
+| `C-a <` / `C-a >` | `move-window` one slot left / right |
 | `C-a G` | `go-to-directory` |
 | `C-a w` | `window-picker` |
 | `C-a s` | `session-picker` (`C-a a` is a kept alias) |
@@ -263,11 +265,24 @@ geometry, 80 columns by 24 rows; a tiny automation viewport therefore cannot
 strand a durable shell at 1x1. `manual` is the setting for a scripted geometry
 and holds an explicit size across detach.
 
-**Satellite splits.** With a satellite pane focused, `split-pane` opens
-the new pane on that same satellite, through the hub. The split appears
-once the new pane attaches; a refused spawn leaves no dead split and
-tries to kill the spawned pane. Against a hub that cannot spawn there,
-the split opens on the hub and a notice says so.
+**Satellite splits.** A window may hold local and satellite panes side by
+side. With a satellite pane focused, `split-pane` opens the new pane on
+that same satellite, through the hub. `split-pane` with `host` spawns on
+that satellite even when the focused pane is local (`owner_terminal`
+stays unset, so the hub places the pane). `split-pane` with `resource`
+set to `host/@N` or `@N` attaches that existing pane into the current
+window. The split appears once the pane attaches. A refused spawn leaves
+no dead split and tries to kill a pane this client spawned; opening an
+existing pane never kills it. Against a hub that cannot spawn there, the
+split opens on the hub and a notice says so.
+
+A satellite pane's border and the status bar name its host. When the hub
+reports that satellite unreachable, the pane stays in the layout, the
+border and badge go grey, and keys to it are dropped. When a later host
+inventory says the satellite is back, the client reattaches and replays
+the snapshot into the same slot. Web and Cockpit see the same mixed
+window through the shared layout document: satellite ids already
+serialize there.
 
 ## Status, sidebar, and theme
 
@@ -280,7 +295,7 @@ widgets:
 ```toml
 [status]
 left   = [{ kind = "windows" }]
-center = [{ kind = "help-hints" }]
+center = []
 right  = ["session-name", { kind = "time", format = " %H:%M" }]
 position = "top"
 ```
@@ -293,14 +308,15 @@ validation is dropped with a warning.
 When the three slots want more than the row, **right** takes up to half,
 **left** (the tab strip) gets the rest, **center** gets the surviving
 gap. Within a slot, later widgets yield first. Widgets drop whole units,
-never fragments: `windows` drops whole tabs around the active one;
-`help-hints` shows Sessions, Commands, Settings, Help, and Copy. Each complete
-label is a click target for the same action as its keybinding; the prefix and
-separators are inert. It drops whole hints from the right, leaving Sessions as
-the last route on a tight bar. `min-cols` / `max-cols` hide a widget
-outright. The shipped lineup uses that to change shape at 64 columns:
-session name and clock give way to a clickable `switch` chip that opens
-the fleet dashboard.
+never fragments: `windows` drops whole tabs around the active one.
+`help-hints` is opt-in teaching chrome (Sessions, Commands, Settings, Help,
+Copy); it is not in the shipped center slot. Each of its complete labels is
+a click target for the same action as its keybinding. `min-cols` /
+`max-cols` hide a widget outright. The shipped lineup uses that to change
+shape at 64 columns: session name and clock give way to a clickable
+`switch` chip that opens the fleet dashboard. A focused satellite pane
+adds its host to the supervisory badge (`devbox`, or `devbox down` while
+that satellite is unreachable).
 
 ### Spacer
 
@@ -313,8 +329,8 @@ The bar is not multi-row and not a styling engine. Per-widget `style`
 tables only.
 
 **Asked chrome.** When an agent in a pane blocks for a human, the asking
-window gets a ` !` suffix on its tab, and a right-aligned `[ ASK ]`
-chip appears on the bar (`[ ASK xN ]` for several). `C-a q`
+window gets a ` !` suffix on its tab, and a right-aligned `ask`
+mark appears on the bar (`ask·N` for several). `C-a q`
 (`next-attention`) jumps to the next asking pane in window then
 depth-first leaf order, wrapping; the first jump saves where you came
 from. `C-a Q` (`return-from-attention`) returns there once. Both are
@@ -331,16 +347,20 @@ the TUI's ordinary subscription renders that the same as an explicit
 non-zero exit (clean `exit 0` and a kill you requested are silent), and
 re-attach after a server restart. An empty `[status]` reserves no row, so
 notices degrade to log lines.
-When the last pane of a default session dies, the TUI tears down and prints one
-cooked-terminal line naming the exit. A keep-empty session stays attached and
-paints `Empty session` with the `new-window` chord.
+When the last pane of a default session is killed, the TUI tears down and prints one
+cooked-terminal line naming the exit. Natural `exit` of that last shell is
+replaced in place by the server, so the attach stays on a fresh prompt.
+A keep-empty session stays attached and paints `Empty session` with the
+`new-window` chord after Close Tab of its last pane.
 
 **Retained panes.** A pane whose spawner asked the server to retain it
 (`SPAWN_RESOURCE.retain_secs`, or `defaults.retain-on-exit`, ADR-0124) does not
 close when its process exits. It keeps its place in the layout and shows its
-last screen, and the bar shows `[ exited N ]` (`[ exited signal N ]` for a
-signal death) while it is focused. Keys, pastes, and mouse reports to it are
-dropped; scrolling its history and copy-mode still work. It closes like any
+last screen. The sidebar and window tabs mark it with a dim `x` plus the exit
+status (`x3`, `xsig9`, or `x`) so it is visible without focus, and the bar
+shows `[ exited N ]` (`[ exited signal N ]` for a signal death) while it is
+focused. Keys, pastes, and mouse reports to it are dropped; scrolling its
+history and copy-mode still work. It closes like any
 other pane when the server purges it: on expiry, when the retained count bound
 evicts it, or when you kill it. The TUI's own splits and windows never ask for
 retention; with `defaults.retain-on-exit` set, every pane is retained, the seed
@@ -368,16 +388,16 @@ positive width is exact. Automatic width depends only on viewport size,
 so changing titles never reflows work.
 
 The strip runs the full height of the terminal. The status bar yields
-its columns rather than spanning underneath. After two footer rows, the
+its columns rather than spanning underneath. After the footer row, the
 upper half is **Agents** and the lower half is **Sessions**. The split
 depends only on viewport height.
 
 **Agents** lists agent rows in session / window / pane order. A filled
 dot (`●`) is blocked on you; a half-filled ring (`◐`) is still working.
-When none are running, the list says `none running yet`. Status updates
+When none are running, the list is a quiet em dash. Status updates
 in place; the list does not sort by urgency. A local row selects that
 window; a peer row is a one-step `switch-session` onto that pane.
-Overflow is a `+N more` row that opens the fleet dashboard.
+Overflow is a `+N` row that opens the fleet dashboard.
 
 <!-- impl-status: shipped; probe: AgentSessionRow -->
 > **Status: shipped.** When a pane has a live agent session, the sidebar
@@ -395,16 +415,18 @@ per-terminal metadata is not subscribable from here.
 Click targets commit the same actions as keys. The **Agents** and **Sessions**
 headings open their full management views; window and roster rows select their
 destination; overflow opens the matching view. The footer keeps `+ new window`
-on one row and `= commands  S settings` on the next, with an independent target
-for each action. The collapse chevron runs `toggle-sidebar`. Pointer events over
-the strip never leak into pane routing.
+as the create affordance. Commands and Settings stay on the palette
+(`C-a Space` / `:`) and the context menu. The collapse chevron runs
+`toggle-sidebar`. Pointer events over the strip never leak into pane routing.
 
 ### Small terminals
 
 A viewport is **compact** on an axis at or below 64 columns or 18 rows,
 judged independently. Overlays go full-bleed on the starved axis (still
 stopping at a docked sidebar). List rows yield their secondary column
-before the label, then clip with `…`. The sidebar is not reserved below
+before the label, then clip with `…`; a short secondary such as a bound
+chord (at most a third of the row) stays whole and the label clips
+instead. The sidebar is not reserved below
 resolved sidebar width + 40 columns; `C-a b` rings the bell at those
 widths rather than flipping a flag with no visible effect. Turning the
 strip off is always allowed.
@@ -470,7 +492,7 @@ terminal **keeps** copy-mode open and adopts the new size.
 ## Command palette, pickers, and settings
 
 `C-a :` (`command-palette`) and `C-a ?` (`show-help`) are two aliases
-for one filterable **Commands & Help** overlay. Every action is annotated
+for one filterable **Commands** overlay. Every action is annotated
 with its currently-bound chord. Empty query: rows grouped under Pane,
 Window, Session, View. Typing ranks a fuzzy match; Enter commits through
 the same dispatcher a keybinding uses. Navigate with arrows / `C-n` /
@@ -561,34 +583,44 @@ phux report new "note"   # logs-and-version only, when the TUI itself is down
 
 `C-a A` (`agent-fleet`) is the one-view answer to which agent needs you:
 a filterable overlay of every pane of the attached session, grouped
-under session headers. Each row carries the agent's name and kind, a
-state glyph (`!` blocked, `*` working, `-` idle, `.` done, `?` unknown),
+under session headers, plus every satellite agent grouped by agent name
+rather than by machine. Each row carries the agent's name and kind, a
+state glyph from the same badge vocabulary as the tabs and sidebar
+(`●` blocked, `◐` working, `◆` done, `○` idle or unknown),
 an attention highlight when the pane has a pending question, and branch
-or cwd in the dim right column.
+or cwd in the dim right column. A satellite row badges its host and
+opens that pane beside the focused one.
 
-Enter focuses the chosen pane. Rows under other sessions are one-step
-cross-session focus when that peer's layout is cached; otherwise a
-single "switch to this session" row. Foreign rows carry no asked flag or
-branch — those need a live subscription. The dashboard is live: while it
-is open, record changes, asks, spawns, and layout changes rebuild rows
-in place without disturbing the query. `phux agent list` remains the
-exhaustive cross-session CLI projection.
+Enter focuses the chosen pane. Rows under other sessions on this server
+are one-step cross-session focus when that peer's layout is cached;
+otherwise a single "switch to this session" row. The Agents list in the
+sidebar appends the same satellite agents, host badge included, after
+the local rows. Live state comes from `phux.agent/v1` and the mirrored
+asked flag. The dashboard is live: while it is open, record changes,
+asks, spawns, and layout changes rebuild rows in place without
+disturbing the query. `phux agent list` remains the exhaustive
+cross-session CLI projection. The session picker stays grouped by host.
 
 ## Mouse
 
 Mouse handling is on by default. On attach the client enables button-event
 tracking plus SGR coordinates on the *outer* terminal and restores them
-on detach, so divider drags work in a plain shell.
+on detach, so divider, sidebar, and tab drags work in a plain shell. It also
+turns on focus reports, so the focused pane sees the window gain and lose
+focus, and a drag whose button goes up outside the window ends cleanly.
 
 | Event | Action |
 |---|---|
 | Click in a pane | Focus, then forward |
 | Press / drag a divider | Resize; release commits the layout |
-| Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback, alt screen becomes arrows |
+| Drag the sidebar's separator rule | Resize the strip for this attach; `sidebar.width` in the config is unchanged |
+| Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback (forwarded if the viewport cannot move); alt screen becomes arrows, or is forwarded if alternate-scroll is off |
 | Right-click in a pane | Pane context menu, unless the inner program has mouse tracking |
 | Click a status-bar tab | `select-window` |
+| Drag a status-bar tab onto another tab | Move the window into that slot; an insertion marker follows the pointer |
 | Click a status-bar destination | Open Sessions, Commands, Settings, Help, or Copy |
 | Click a sidebar row | The same action the keyboard binding would run |
+| Drag a sidebar window row onto another window row | Move the window into that slot; an insertion marker follows the pointer |
 
 Hold **Shift** to bypass application mouse reporting and use the host
 terminal's native selection. `mouse = false` in `[defaults]` skips
@@ -597,8 +629,8 @@ this client's mouse handling while that pane is focused; a click on it
 still focuses it, which is the path back in.
 
 Right-click opens a menu for the pane, the window, or the session,
-listing the actions that apply. The session menu includes Sessions & hosts,
-Agent fleet, Settings, and Commands & Help. Each row commits the same action a
+listing the actions that apply. The session menu includes sessions, fleet,
+settings, and commands. Each row commits the same action a
 keybinding would. An inner program with mouse tracking on keeps every
 button, so no menu opens over it; bind `context-menu` for the keyboard
 path. A terminal resize closes the menu; other overlays reflow.

@@ -39,9 +39,12 @@ and through crates.io for published consumers:
 
 - **default** — stable IDs (`ids`), capability atoms (`caps`), and the
   protocol-version constant.
-- **`server`** — the full type surface: the `input` and `wire` modules and
-  the libghostty input-atom re-exports. Every in-workspace consumer enables
-  it; an external consumer that vendors libghostty will too.
+- **`render-pool`** — `render_pool` only. Enables `libghostty-vt` with no
+  png and no kitty graphics (ADR-0086).
+- **`server`** — the full type surface: the `input` and `wire` modules,
+  `render-pool`, and the libghostty input-atom re-exports. Every in-workspace
+  native consumer enables it; an external consumer that vendors libghostty
+  will too.
 
 ```toml
 [dependencies]

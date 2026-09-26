@@ -1,0 +1,8 @@
+# Kotlin-only UniFFI config for the Android artifact. Passed via --config so
+# the crate's Swift uniffi.toml stays the Apple producer.
+[bindings.kotlin]
+package_name = "dev.phux.mobile.ffi"
+android = true
+# No `cdylib_name`: the shipped .so is the one cargo links,
+# `libphux_client_ffi.so`, so UniFFI's default (the crate's own name) is
+# already the right `loadLibrary` argument (ADR-0135).

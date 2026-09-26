@@ -26,7 +26,9 @@
 //! 4. Pane death surfaces exit status — audited: a dying pane discarded
 //!    its exit status (`server_frame.rs:1169-1216`). Fixed:
 //!    `RESOURCE_CLOSED` carries it and the client prints
-//!    "session ended: the last pane exited N" on teardown (phux-i0e8.2.2).
+//!    "session ended: the last pane ..." on teardown (phux-i0e8.2.2).
+//!    Natural last-shell `exit` now respawns in place (ADR-0131); this
+//!    scenario kills the last pane so the close still happens.
 //! 5. Server SIGKILL shows the reconnect indicator — audited: a server
 //!    crash was ~10s of blank screen (`attach.rs:272-341`). Fixed: the
 //!    client drops to the cooked screen and announces the loss with a live
@@ -58,17 +60,10 @@ mod common;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-
-/// Idle lifetime for this file's harness servers, as a backstop UNDER the
-/// `Drop` kill (ADR-0063): the guard cannot run if the test process is
-/// `SIGKILL`ed mid-job, and what would leak is a daemon on a socket nobody
-/// will ever dial again.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
 
 /// The freshly built binary under test, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -86,9 +81,6 @@ const POLL: Duration = Duration::from_millis(50);
 /// How long an attached client gets to reach a scripted state (exit,
 /// output marker) before the test declares the scenario broken.
 const CLIENT_DEADLINE: Duration = Duration::from_secs(20);
-
-/// Monotonic counter so scenarios never collide on a socket path.
-static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 // ---------------------------------------------------------------------------
 // harness
@@ -192,50 +184,34 @@ impl Isolation {
 }
 
 /// A running `phux server` on a private socket, killed on drop.
-struct ServerGuard {
-    process: common::ServerProcess,
-    socket: PathBuf,
-    // Held to keep the socket's temp dir alive for the guard's lifetime.
-    _dir: tempfile::TempDir,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ServerGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl ServerGuard {
     /// Spawn `phux server --session work --socket <unique>` inside `iso`
     /// and block until the socket file appears. `SHELL=/bin/sh` keeps the
     /// seed pane deterministic (no user rc noise in scenario output).
+    ///
+    /// Socket paths live at the root of `/tmp`: `sun_path` caps UDS paths at
+    /// ~104 bytes.
     fn start(iso: &Isolation) -> Self {
-        let dir = tempfile::tempdir().expect("socket tempdir");
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        // Short name on purpose: sun_path caps UDS paths at ~104 bytes.
-        let socket = dir
-            .path()
-            .join(format!("fx-{}-{n}.sock", std::process::id()));
-        let mut cmd = Command::new(PHUX);
-        cmd.args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            .env("SHELL", "/bin/sh")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        iso.apply(&mut cmd);
-        let child = cmd.spawn().expect("spawn phux server");
-        let guard = Self {
-            process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            guard.socket.display()
-        );
+        Self(
+            common::ServerGuard::builder("fx")
+                .env("SHELL", "/bin/sh")
+                .start_with(|cmd| iso.apply(cmd)),
+        )
     }
 
     /// `phux <verb> --socket <sock> <rest...>` inside `iso`. `--socket`
@@ -251,13 +227,6 @@ impl ServerGuard {
             .stdin(Stdio::null());
         iso.apply(&mut cmd);
         cmd
-    }
-
-    /// SIGKILL the server NOW (scenario 5's crash injection). `Child::kill`
-    /// is SIGKILL on unix — no shutdown handler runs, and the socket file
-    /// is left behind, exactly like a real crash.
-    fn sigkill(&mut self) {
-        self.process.sigkill();
     }
 }
 
@@ -362,9 +331,9 @@ impl AttachedClient {
     /// only that `phux attach` reached its terminal setup — it is emitted
     /// before the socket is even dialled — so the 500ms was the entire barrier,
     /// and it is a bet rather than a fact. When it lost, the scenario's
-    /// stimulus (a `send-keys` that kills the last pane) landed on a server
-    /// this client had not attached to yet, and the failure said nothing at all
-    /// about the behavior under test.
+    /// stimulus (a kill of the last pane) landed on a server this client had
+    /// not attached to yet, and the failure said nothing at all about the
+    /// behavior under test.
     ///
     /// The replacement is a real barrier, on the server's side of the wire:
     /// `phux ls --json` reports `attached_clients`, and that counter only
@@ -611,12 +580,11 @@ fn last_pane_death_surfaces_its_exit_status() {
     let mut client = AttachedClient::start(&server, &iso);
     client.wait_until_attached(&server, &iso);
 
-    // Kill the seed pane's shell with a distinctive status. The exit code
-    // must ride RESOURCE_CLOSED to the client and come out in the
-    // teardown line — not be discarded as it was when audited.
-    let (code, _stdout, stderr) =
-        run_captured(&mut server.cmd(&iso, &["send-keys", SESSION, "exit 7", "Enter"]));
-    assert_eq!(code, 0, "send-keys must succeed; stderr:\n{stderr}");
+    // Natural `exit` in the last shell respawns in place (ADR-0131). Kill
+    // the last pane so RESOURCE_CLOSED still reaches the client and the
+    // teardown line explains the ending — not discarded as when audited.
+    let (code, _stdout, stderr) = run_captured(&mut server.cmd(&iso, &["kill", "--yes", SESSION]));
+    assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
 
     let status = client.wait_exit();
     assert!(
@@ -624,7 +592,7 @@ fn last_pane_death_surfaces_its_exit_status() {
         "a last-pane death is an explained ending, not a client failure; output:\n{}",
         client.output_text(),
     );
-    client.wait_for_output("the last pane exited 7");
+    client.wait_for_output("the last pane");
 }
 
 // ---------------------------------------------------------------------------

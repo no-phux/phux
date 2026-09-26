@@ -9,8 +9,10 @@
 # stranger's install.
 #
 # What it does: downloads the `phux-cockpit-<semver>-macos-arm64.zip` asset
-# from the latest `cockpit-vX.Y.Z` GitHub release, verifies it against the
-# release SHA256SUMS, and places `Phux Cockpit.app` in /Applications (or
+# from the latest `cockpit-vX.Y.Z` GitHub release (or, with `--channel next`,
+# the green-main bundle named by the moving `next` prerelease's
+# cockpit-channel.json), verifies it against the published checksum before
+# unpacking, and places `Phux Cockpit.app` in /Applications (or
 # ~/Applications when /Applications is not writable). It also writes a
 # `phux-cockpit` CLI launcher into ${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-$HOME/.local/bin}}.
 # The quarantine attribute is cleared, the same step the Homebrew cask
@@ -20,11 +22,14 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install-cockpit.sh [--version <cockpit-vX.Y.Z>] [options]
+Usage: scripts/install-cockpit.sh [--version <cockpit-vX.Y.Z>] [--channel stable|next] [options]
 
 Options:
   --version <cockpit-vX.Y.Z|X.Y.Z>
                          Cockpit release to install (default: latest GitHub release).
+  --channel <stable|latest|next>
+                         Release channel (default: stable, or $PHUX_CHANNEL).
+                         next is the moving build of green main.
   --applications-dir <dir>
                          Directory for Phux Cockpit.app (default: /Applications
                          when writable, else $HOME/Applications).
@@ -91,6 +96,7 @@ write_cli_launcher() {
 }
 
 version=""
+channel=""
 applications_dir="${PHUX_COCKPIT_APPLICATIONS_DIR:-}"
 bin_dir="${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-}}"
 os=""
@@ -103,6 +109,11 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "--version requires a value"
       [ -n "$2" ] || die "--version requires a nonempty release tag"
       version="$2"
+      shift 2
+      ;;
+    --channel)
+      [ "$#" -ge 2 ] || die "--channel requires a value"
+      channel="$2"
       shift 2
       ;;
     --applications-dir)
@@ -381,17 +392,60 @@ resolve_latest_version() (
 )
 # END shared release resolver
 
-if [ -z "$version" ]; then
-  version="$(resolve_latest_version cockpit-v)"
+# The next channel's pointer names the green-main SHA whose bundle is attached
+# to the moving `next` prerelease. stdout: "<sha> <version>".
+resolve_next_head() {
+  pointer_url="https://github.com/no-phux/phux/releases/download/next/cockpit-channel.json"
+  if command -v curl >/dev/null 2>&1; then
+    body="$(curl -fsSL "$pointer_url")" \
+      || die "could not download the Cockpit next channel pointer"
+  elif command -v wget >/dev/null 2>&1; then
+    body="$(wget -qO- "$pointer_url")" \
+      || die "could not download the Cockpit next channel pointer"
+  else
+    die "curl or wget is required to resolve the next channel"
+  fi
+  head_sha="$(printf '%s\n' "$body" \
+    | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' \
+    | head -n 1)"
+  head_version="$(printf '%s\n' "$body" \
+    | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' \
+    | head -n 1)"
+  [ -n "$head_sha" ] || die "the Cockpit next channel pointer named no SHA"
+  printf '%s %s\n' "$head_sha" "${head_version:-0.0.0}"
+}
+
+if [ -z "$channel" ]; then
+  channel="${PHUX_CHANNEL:-stable}"
+fi
+case "$channel" in
+  latest) channel="stable" ;;
+  stable|next) ;;
+  *) die "--channel must be stable, latest, or next" ;;
+esac
+if [ "$channel" = "next" ] && [ -n "$version" ]; then
+  die "--version pins a stable tag; omit it when using --channel next"
 fi
 
-# Accept a bare semver as shorthand; the release tag carries the prefix.
-case "$version" in
-  cockpit-v*) semver="${version#cockpit-v}" ;;
-  *) semver="$version"; version="cockpit-v$semver" ;;
-esac
-valid_release_tag "$version" cockpit-v \
-  || die "--version must be a release like cockpit-vX.Y.Z (got ${version})"
+next_sha=""
+if [ "$channel" = "next" ]; then
+  next_head="$(resolve_next_head)"
+  next_sha="${next_head%% *}"
+  semver="${next_head#* }"
+  version="next.${next_sha}"
+else
+  if [ -z "$version" ]; then
+    version="$(resolve_latest_version cockpit-v)"
+  fi
+
+  # Accept a bare semver as shorthand; the release tag carries the prefix.
+  case "$version" in
+    cockpit-v*) semver="${version#cockpit-v}" ;;
+    *) semver="$version"; version="cockpit-v$semver" ;;
+  esac
+  valid_release_tag "$version" cockpit-v \
+    || die "--version must be a release like cockpit-vX.Y.Z (got ${version})"
+fi
 
 if [ -z "$os" ]; then
   case "$(uname -s)" in
@@ -422,13 +476,25 @@ if [ -z "$bin_dir" ] && [ -n "${HOME:-}" ]; then
   bin_dir="${HOME}/.local/bin"
 fi
 
-base_url="https://github.com/no-phux/phux/releases/download/${version}"
-zip_name="phux-cockpit-${semver}-macos-arm64.zip"
+if [ "$channel" = "next" ]; then
+  # One zip per SHA with a .sha256 sidecar in the same `<digest>  <name>` form.
+  base_url="https://github.com/no-phux/phux/releases/download/next"
+  zip_name="phux-cockpit-next.${next_sha}-macos-arm64.zip"
+  sums_url="${base_url}/${zip_name}.sha256"
+else
+  base_url="https://github.com/no-phux/phux/releases/download/${version}"
+  zip_name="phux-cockpit-${semver}-macos-arm64.zip"
+  sums_url="${base_url}/SHA256SUMS"
+fi
 zip_url="${base_url}/${zip_name}"
-sums_url="${base_url}/SHA256SUMS"
 
 if [ "$dry_run" -eq 1 ]; then
+  echo "channel: ${channel}"
   echo "tag: ${version}"
+  if [ "$channel" = "next" ]; then
+    echo "sha: ${next_sha}"
+    echo "version: ${semver}"
+  fi
   echo "zip_url: ${zip_url}"
   echo "sha256_url: ${sums_url}"
   echo "applications_dir: ${applications_dir}"

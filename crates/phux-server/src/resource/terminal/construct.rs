@@ -398,14 +398,21 @@ impl TerminalActor {
         if queries == 0 {
             return;
         }
-        let terminal = self.terminal.borrow();
+        let canonical = self.terminal.borrow();
+        let Some(terminal) = canonical.try_terminal() else {
+            // The palette lives in the terminal; without it there is no
+            // honest answer, and a wrong colour is worse than none. The
+            // querying app re-asks, and the capture is bounded.
+            tracing::trace!("colour query unanswered: canonical terminal is on loan");
+            return;
+        };
         let foreground = (queries & 1 != 0)
             .then(|| terminal.fg_color().ok().flatten())
             .flatten();
         let background = (queries & 2 != 0)
             .then(|| terminal.bg_color().ok().flatten())
             .flatten();
-        drop(terminal);
+        drop(canonical);
 
         let Some(pty_tx) = &self.pty_tx else {
             return;

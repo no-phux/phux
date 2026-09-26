@@ -1,12 +1,12 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-19
 ---
 
 # Vision
 
-**TL;DR.** The long arc: lazy state synchronization as the wire's destination, a durable work coordinator that does not ship today, and federation as the default deployment shape. This is direction, not a schedule. The wire was shaped to leave room for it.
+**TL;DR.** The long arc: lazy state synchronization as the wire's destination, a durable work coordinator that does not ship today, swarm members as first-class clients of that coordinator, and federation as the default deployment shape. This is direction, not a schedule. The wire was shaped to leave room for it.
 
 ---
 
@@ -53,11 +53,14 @@ The research note (now archived) captures the algorithm composition:
 ## A durable work coordinator, not shipped
 
 Durable work identity and evidence belong to a phux coordinator; clients
-own presentation. Objective, Run, WorkSession, Artifact, and Signal are not
-TUI layout vocabulary and are not inferred independently by each client. The
-proposed contract and its delivery order live in
-[ADR-0092](adr/0092-durable-work-coordinator-authority.md). That surface
-does not ship.
+own presentation. Swarm members authenticate to that coordinator as
+first-class clients; TUI, Cockpit, web, and mobile are projections. A Run
+may bind no Terminal. Objective, Run, WorkSession, Actor, Artifact, and
+Signal are not TUI layout vocabulary and are not inferred independently by
+each client. The proposed contract and its delivery order live in
+[ADR-0092](adr/0092-durable-work-coordinator-authority.md); swarm-as-client
+positioning is [ADR-0132](adr/0132-swarm-members-are-coordinator-clients.md).
+That surface does not ship.
 
 ## Milestones
 

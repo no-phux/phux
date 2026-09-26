@@ -14,32 +14,28 @@ use std::collections::BTreeMap;
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     FrameKind, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX,
-    SESSION_NAME_KEY, Scope,
+    Scope,
 };
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout::Workspace;
 use crate::layout_ops::{LayoutOps, LayoutOpsError};
+use crate::rename::{BarrierVerdict, NamedSession, RenamePlan, RenameRefusal};
+use phux_protocol::wire::info::SessionSnapshot;
 
-/// The conventional rename write: `current\0new` under [`SESSION_NAME_KEY`].
+/// The conventional rename write: `current\0new` under
+/// [`SESSION_NAME_KEY`](phux_protocol::wire::frame::SESSION_NAME_KEY).
 ///
 /// Since the v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) dissolved the
 /// L2 collection tier and removed the `RENAME_SESSION` verb, a rename is
 /// expressed as an L3 `SET_METADATA` write of this conventional key
 /// (`Scope::Global`, value `current\0new`). The server is authoritative —
-/// it intercepts this write and applies the registry rename.
+/// it intercepts this write and applies the registry rename. The bytes are
+/// [`crate::rename::write_frame`].
 #[must_use]
 pub fn rename_frame(request_id: u32, session: &str, new_name: &str) -> FrameKind {
-    let mut value = session.as_bytes().to_vec();
-    value.push(0);
-    value.extend_from_slice(new_name.as_bytes());
-    FrameKind::SetMetadata {
-        request_id,
-        scope: Scope::Global,
-        key: SESSION_NAME_KEY.to_owned(),
-        value,
-    }
+    crate::rename::write_frame(request_id, session, new_name)
 }
 
 /// Send the fire-and-forget rename write.
@@ -65,6 +61,111 @@ pub async fn rename(
 ) -> Result<(), AttachError> {
     conn.send(&rename_frame(request_id, session, new_name))
         .await
+}
+
+/// Why [`rename_checked`] refused to send the write.
+#[derive(Debug, thiserror::Error)]
+pub enum RenameError {
+    /// `session` is not in the snapshot. Session names are hub-local.
+    #[error("no such session")]
+    NoSuchSession,
+    /// `new_name` is already held by another session.
+    #[error("{new_name:?} already exists")]
+    AlreadyExists {
+        /// The name that collided.
+        new_name: String,
+    },
+    /// The barrier snapshot no longer lists the session.
+    #[error("the session no longer exists")]
+    SessionGone,
+    /// The barrier snapshot still has the session under another name.
+    #[error("the server did not rename the session (the name may have been taken meanwhile)")]
+    NotApplied,
+    /// Transport or decode failure.
+    #[error(transparent)]
+    Attach(#[from] AttachError),
+}
+
+impl From<RenameRefusal> for RenameError {
+    fn from(refusal: RenameRefusal) -> Self {
+        match refusal {
+            RenameRefusal::NoSuchSession => Self::NoSuchSession,
+            RenameRefusal::AlreadyExists { new_name } => Self::AlreadyExists { new_name },
+        }
+    }
+}
+
+impl RenameError {
+    /// The refusal reason both surfaces interpolate after `rename refused
+    /// for session …:`.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::NoSuchSession => "no such session".to_owned(),
+            Self::AlreadyExists { new_name } => format!("{new_name:?} already exists"),
+            Self::SessionGone | Self::NotApplied | Self::Attach(_) => self.to_string(),
+        }
+    }
+}
+
+/// Why the rename must not be sent, judged against a pre-write snapshot:
+/// an unknown session, or a new name another session already holds.
+#[must_use]
+pub fn rename_refusal(
+    snapshot: &SessionSnapshot,
+    session: &str,
+    new_name: &str,
+) -> Option<RenameError> {
+    match crate::rename::plan_rename(&named(snapshot), session, new_name) {
+        RenamePlan::Refused(refusal) => Some(refusal.into()),
+        RenamePlan::Unchanged { .. } | RenamePlan::Send { .. } => None,
+    }
+}
+
+fn named(snapshot: &SessionSnapshot) -> Vec<NamedSession<'_>> {
+    snapshot
+        .sessions
+        .iter()
+        .map(|session| NamedSession {
+            id: session.id,
+            name: session.name.as_str(),
+        })
+        .collect()
+}
+
+/// The checked rename: the shared [`crate::rename`] policy on this connection.
+///
+/// Refuses against a fresh snapshot, skips a no-op (the session already has
+/// `new_name`), writes, then reads `GET_STATE`. That read is the ordering
+/// barrier and the outcome: the snapshot must show the new name on the same
+/// session id, or the rename is refused. Snapshot notices from both reads
+/// are appended to `notices` (a rename cannot be misled by a partial fleet
+/// — session names are hub-local — but the CLI still warns).
+///
+/// # Errors
+///
+/// [`RenameError`] — see its variants.
+pub async fn rename_checked(
+    conn: &mut Connection,
+    session: &str,
+    new_name: &str,
+    notices: &mut Vec<String>,
+) -> Result<(), RenameError> {
+    let (snapshot, degradation) = crate::state::get_state_on(conn).await?.into_parts();
+    notices.extend(degradation.notices().iter().cloned());
+    let session_id = match crate::rename::plan_rename(&named(&snapshot), session, new_name) {
+        RenamePlan::Unchanged { .. } => return Ok(()),
+        RenamePlan::Refused(refusal) => return Err(refusal.into()),
+        RenamePlan::Send { session_id } => session_id,
+    };
+    rename(conn, 1, session, new_name).await?;
+    let (after, degradation) = crate::state::get_state_on(conn).await?.into_parts();
+    notices.extend(degradation.notices().iter().cloned());
+    match crate::rename::barrier_verdict(&named(&after), session_id, new_name) {
+        BarrierVerdict::Applied => Ok(()),
+        BarrierVerdict::Gone => Err(RenameError::SessionGone),
+        BarrierVerdict::NotApplied => Err(RenameError::NotApplied),
+    }
 }
 
 /// Failure composing the `SESSION_CREATE_KEY` request document.
@@ -503,6 +604,7 @@ mod tests {
     use super::*;
     use crate::testkit::ScriptSpec;
     use phux_protocol::ids::WindowId;
+    use phux_protocol::wire::frame::SESSION_NAME_KEY;
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
     #[test]
@@ -588,6 +690,148 @@ mod tests {
                 value: b"work\0play".to_vec(),
             }
         );
+    }
+
+    #[test]
+    fn refuses_an_unknown_session_and_a_taken_name() {
+        let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
+            .with_sessions(vec![
+                SessionInfo::new(SessionId::new(0), "work"),
+                SessionInfo::new(SessionId::new(1), "play"),
+            ]);
+        assert!(matches!(
+            rename_refusal(&snap, "gone", "x"),
+            Some(RenameError::NoSuchSession)
+        ));
+        assert!(matches!(
+            rename_refusal(&snap, "work", "play"),
+            Some(RenameError::AlreadyExists { ref new_name }) if new_name == "play"
+        ));
+        assert!(rename_refusal(&snap, "work", "fresh").is_none());
+        assert!(rename_refusal(&snap, "work", "work").is_none());
+    }
+
+    fn snap(names: &[(&str, u32)]) -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_sessions(
+                names
+                    .iter()
+                    .map(|(name, id)| SessionInfo::new(SessionId::new(*id), *name))
+                    .collect(),
+            )
+    }
+
+    #[tokio::test]
+    async fn rename_checked_warns_on_a_partial_view_then_writes() {
+        const NOTICE: &str = "satellite edge is unreachable: timed out";
+        // Pre-check sees "work"; the barrier snapshot is the applied name.
+        let spec = ScriptSpec::new()
+            .states([snap(&[("work", 1)]), snap(&[("play", 1)])])
+            .degradation_notice(NOTICE);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+        let server =
+            tokio::spawn(
+                async move { crate::testkit::ScriptedServer::accept(&listener, spec).await },
+            );
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let mut notices = Vec::new();
+        rename_checked(&mut conn, "work", "play", &mut notices)
+            .await
+            .expect("rename");
+        drop(conn);
+        let seen = server.await.expect("scripted server");
+        assert_eq!(notices, [NOTICE]);
+        assert!(
+            seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SetMetadata { key, .. } if key == SESSION_NAME_KEY
+            )),
+            "expected the rename write; sent {seen:?}"
+        );
+        let gets = seen
+            .iter()
+            .filter(|frame| {
+                matches!(
+                    frame,
+                    FrameKind::Command {
+                        command: phux_protocol::wire::frame::Command::GetState { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            gets, 2,
+            "pre-check and barrier each read GET_STATE; sent {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_checked_refuses_without_writing() {
+        let spec = ScriptSpec::new().state(snap(&[("work", 1), ("play", 2)]));
+        let (socket, _dir, server) = scripted(spec);
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let mut notices = Vec::new();
+        let unknown = rename_checked(&mut conn, "gone", "x", &mut notices)
+            .await
+            .expect_err("unknown session");
+        assert_eq!(unknown.reason(), "no such session");
+        let taken = rename_checked(&mut conn, "work", "play", &mut notices)
+            .await
+            .expect_err("taken name");
+        assert_eq!(taken.reason(), "\"play\" already exists");
+        rename_checked(&mut conn, "work", "work", &mut notices)
+            .await
+            .expect("already named");
+        drop(conn);
+        let seen = server.await.expect("scripted server");
+        assert!(
+            !seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SetMetadata { key, .. } if key == SESSION_NAME_KEY
+            )),
+            "a refusal or a no-op must not write; sent {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_checked_barrier_reports_a_name_the_server_did_not_apply() {
+        let spec = ScriptSpec::new().states([snap(&[("work", 1)]), snap(&[("work", 1)])]);
+        let (socket, _dir, server) = scripted(spec);
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let mut notices = Vec::new();
+        let err = rename_checked(&mut conn, "work", "notes", &mut notices)
+            .await
+            .expect_err("barrier still shows the old name");
+        assert!(err.reason().contains("did not rename"), "{}", err.reason());
+        drop(conn);
+        let seen = server.await.expect("scripted server");
+        assert!(
+            seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SetMetadata { key, value, .. }
+                    if key == SESSION_NAME_KEY && value == b"work\0notes"
+            )),
+            "the write is sent before the barrier can refuse it; sent {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_checked_barrier_reports_a_session_that_disappeared() {
+        let spec = ScriptSpec::new().states([snap(&[("work", 1)]), snap(&[("other", 2)])]);
+        let (socket, _dir, server) = scripted(spec);
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let mut notices = Vec::new();
+        let err = rename_checked(&mut conn, "work", "notes", &mut notices)
+            .await
+            .expect_err("session gone");
+        assert_eq!(err.reason(), "the session no longer exists");
+        drop(conn);
+        let _ = server.await.expect("scripted server");
     }
 
     #[tokio::test]

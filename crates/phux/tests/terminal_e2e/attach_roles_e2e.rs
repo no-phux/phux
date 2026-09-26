@@ -15,9 +15,8 @@
 mod common;
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
@@ -27,44 +26,28 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
 const DEADLINE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 /// How long refused keystrokes get to prove they went nowhere.
 const SETTLE: Duration = Duration::from_secs(2);
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
 /// A running `phux server`, killed and unlinked when the guard drops.
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
     fn start() -> Self {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = PathBuf::from(format!(
-            "/tmp/phux-roles-e2e-{}-{n}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            .env("SHELL", "/bin/sh")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-        };
-        wait_until("the server binds its socket", || guard.socket.exists());
-        guard
+        Self(
+            common::ServerGuard::builder("roles")
+                .env("SHELL", "/bin/sh")
+                .start(),
+        )
     }
 
     /// The seed pane's screen text, as `phux snapshot` renders it.

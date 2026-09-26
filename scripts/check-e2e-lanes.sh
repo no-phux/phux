@@ -55,27 +55,28 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-JUSTFILE="justfile"
-
-if [ ! -f "$JUSTFILE" ]; then
-    echo "error: ${JUSTFILE} not found" >&2
+# Recipes live in just/*.just; the root justfile is imports + default.
+shopt -s nullglob
+RECIPE_FILES=(justfile just/*.just)
+if [ ! -f justfile ]; then
+    echo "error: justfile not found" >&2
     exit 1
 fi
 
 # The lane recipes: everything from `e2e:` to the end of `stress:`. Reading
-# the whole justfile would let a `binary_id(...)` mentioned in a comment
+# every recipe file would let a `binary_id(...)` mentioned in a comment
 # elsewhere satisfy the gate; restricting to the recipe bodies keeps the
 # evidence to text nextest actually receives. `just --dump` is not used on
 # purpose -- it needs `just` on PATH, and this gate runs in jobs that have
 # only bash.
-lanes="$(awk '
+lanes="$(cat "${RECIPE_FILES[@]}" | awk '
     /^(e2e|stress):/            { inrecipe = 1 }
     inrecipe && /^[^ \t#]/ && !/^(e2e|stress):/ { inrecipe = 0 }
     inrecipe                    { print }
-' "$JUSTFILE")"
+')"
 
 if [ -z "$lanes" ]; then
-    echo "error: found no e2e/stress recipe bodies in ${JUSTFILE}" >&2
+    echo "error: found no e2e/stress recipe bodies in just/test.just" >&2
     echo "  if those recipes were renamed, update this gate to match." >&2
     exit 1
 fi

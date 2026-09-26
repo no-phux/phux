@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/remorses/gpuix.git",
+  "revision": "6d5e6887ad8dc6e94eb66043394f3d17a462c56a",
+  "zedRevision": "81c99f816b4a5f69d3c014774068034c24d1d7af",
+  "version": "0.10.0",
+  "patches": {
+    "patches/0001-native-extensions.patch": "42d56bb564ea8e87d0c0a872a918c05d597881fd0a1cd69a04287ad9aa69132d",
+    "patches/0002-multi-window.patch": "d346c3923e556dd135158f0998363811f8a8311ae2262d3518dab070062dbaf4",
+    "patches/0003-solid-native-elements.patch": "9dd437ce3533243eb35047cdbd404bcc50003463ecf3fb85a51dda17b98e166d",
+    "patches/0004-close-window-on-reset.patch": "3753c44db19fc3ab62cff00b77e9cae1d9a28f35363c062ef4aab7b837b036f1"
+  },
+  "sha256": {
+    "bun.lock": "f5a5e05a042ca67bdf88c074986c9d0e77ef5482dc521b24a344d18359bb1f92",
+    "packages/native/Cargo.lock": "d1417b28f512985fca4e0228b13080a1cd7e67a11b5e2b872e4d127c3f81985a"
+  }
+}

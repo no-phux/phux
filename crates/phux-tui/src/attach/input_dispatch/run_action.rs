@@ -28,8 +28,9 @@ use crate::render::overlay::{
 use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
 use super::args::{
-    PaneMouseArg, amount_arg, direction_arg, focus_terminal, index_arg, mouse_arg, name_arg,
-    ordered_workspace_panes, signal_arg, soft_kill_input_frames, split_dir_arg, str_arg, usize_arg,
+    PaneMouseArg, amount_arg, direction_arg, focus_terminal, index_arg, kill_resource_frame,
+    mouse_arg, name_arg, ordered_workspace_panes, resource_id_arg, session_id_arg, signal_arg,
+    split_dir_arg, str_arg, usize_arg,
 };
 use super::ctx::DispatchCtx;
 use super::dispatch::{
@@ -51,11 +52,8 @@ pub(super) fn push_action_finder(ctx: &mut DispatchCtx<'_>) {
         ctx.plugin_actions,
         ctx.plugin_panes,
     );
-    ctx.overlays.push(Box::new(SelectList::new(
-        "Commands & Help",
-        items,
-        ctx.theme,
-    )));
+    ctx.overlays
+        .push(Box::new(SelectList::new("Commands", items, ctx.theme)));
 }
 
 /// Take the next client request id, advancing the driver's counter.
@@ -97,7 +95,7 @@ pub(super) fn run_action(
     match resolved.action.as_str() {
         "split-pane" => split_pane(resolved, ctx, focused, panes, e),
         "move-pane" => move_pane(resolved, ctx, focused, e),
-        "kill-pane" => kill_focused_pane(focused, e),
+        "kill-pane" => kill_focused_pane(ctx, focused, e),
         "take-input" => take_input(ctx, focused, e),
         "give-input" => give_input(ctx, focused, e),
         "signal-terminal" => signal_terminal(resolved, ctx, focused, e),
@@ -108,6 +106,7 @@ pub(super) fn run_action(
         "next-window" => switch_window(ctx, e, Workspace::next),
         "previous-window" => switch_window(ctx, e, Workspace::prev),
         "select-window" => select_window(resolved, ctx, e),
+        "move-window" => move_window(resolved, ctx, e),
         "rename-window" => rename_window(resolved, ctx, e),
         "rename-session" => rename_session(resolved, ctx, e),
         "focus-direction" => focus_direction(resolved, ctx, e),
@@ -228,8 +227,22 @@ fn split_pane(
         effects.bell = true;
         return;
     };
+    // phux-lxov.1: `resource = "host/@N"` (or `@N`) opens that existing
+    // pane into this window. A spawn is the other shape, below.
+    if resolved.args.contains_key("resource") {
+        let Some(target) = resource_id_arg(resolved) else {
+            tracing::warn!(
+                args = ?resolved.args,
+                "split-pane `resource` is not `@N` or `host/@N`",
+            );
+            effects.bell = true;
+            return;
+        };
+        open_existing_pane(ctx, effects, focused_id, dir, target);
+        return;
+    }
     let request_id = take_request_id(ctx);
-    let host = split_host(&focused_id, ctx.directory_support);
+    let host = explicit_split_host(host_arg(resolved), &focused_id, ctx.directory_support);
     let satellite = match &host {
         SplitHost::Satellite(satellite) => Some(satellite.clone()),
         SplitHost::Attached | SplitHost::AttachedInsteadOf(_) => None,
@@ -248,6 +261,7 @@ fn split_pane(
         zoom_on_spawn: false,
         host,
         adopt: None,
+        open_existing: None,
     };
     let mut frame = FrameKind::SpawnResource {
         request_id,
@@ -283,6 +297,78 @@ fn bind_satellite_spawn(frame: &mut FrameKind) {
     }
 }
 
+/// phux-lxov.1: attach `target` and split it into the current window.
+///
+/// A pane already in this workspace is focused rather than opened twice.
+/// The attach is parked on the split: the leaf appears only when
+/// `ATTACH_RESOURCE` succeeds, and a refusal does not kill a pane this
+/// client did not spawn.
+fn open_existing_pane(
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+    focused_id: ResourceId,
+    dir: SplitDir,
+    target: ResourceId,
+) {
+    if let Some(index) = window_holding(ctx.workspace, &target) {
+        focus_open_satellite_pane(ctx, effects, index, target);
+        return;
+    }
+    if attach_in_flight(ctx.pending_windows, &target)
+        || ctx.pending_splits.values().any(|split| {
+            split.open_existing.as_ref() == Some(&target)
+                || split.adopt.as_ref().map(|spawned| &spawned.id) == Some(&target)
+        })
+    {
+        return;
+    }
+    let request_id = take_request_id(ctx);
+    let host = match target.host().cloned() {
+        Some(host) if ctx.directory_support == DirectorySupport::HostAware => {
+            SplitHost::Satellite(host)
+        }
+        Some(host) => SplitHost::AttachedInsteadOf(host),
+        None => SplitHost::Attached,
+    };
+    let pending = PendingSplit {
+        focused_at_request: focused_id,
+        dir,
+        zoom_on_spawn: false,
+        host,
+        adopt: None,
+        open_existing: Some(target.clone()),
+    };
+    effects.spawn_terminal = Some((
+        request_id,
+        pending,
+        FrameKind::Command {
+            request_id,
+            command: Command::AttachResource {
+                terminal_id: target,
+                role_policy: crate::attach::attach_role::pane_attach_role(),
+            },
+        },
+    ));
+}
+
+/// The host a split spawns on.
+///
+/// `wanted` is `split-pane { host }` (phux-lxov.1): the new pane is spawned
+/// on that satellite with `owner_terminal: None`, and the returned
+/// Satellite id is what the layout leaf stores. Absent `wanted`, a split
+/// follows the focused pane (phux-c2td.18).
+fn explicit_split_host(
+    wanted: Option<SatelliteHost>,
+    focused: &ResourceId,
+    support: DirectorySupport,
+) -> SplitHost {
+    match wanted {
+        Some(host) if support == DirectorySupport::HostAware => SplitHost::Satellite(host),
+        Some(host) => SplitHost::AttachedInsteadOf(host),
+        None => split_host(focused, support),
+    }
+}
+
 /// The host a split of `focused` spawns on (phux-c2td.18).
 ///
 /// A local pane splits on the attached server. A satellite pane splits on
@@ -302,26 +388,27 @@ fn split_host(focused: &ResourceId, support: DirectorySupport) -> SplitHost {
     }
 }
 
-/// phux-4li.12: soft-kill — write `exit\n` as a sequence of
-/// `INPUT_KEY` events to the focused Terminal. When the shell
-/// processes those keystrokes it exits, the PTY closes, and
-/// the server broadcasts `RESOURCE_CLOSED` which we then fold
-/// out of the layout in `handle_server_frame`.
+/// Close the focused pane: one correlated `KILL_RESOURCE` for its Terminal.
+/// The server tears the resource down and broadcasts `RESOURCE_CLOSED`, which
+/// `handle_server_frame` folds out of the layout; a `TerminalNotFound`
+/// refusal folds the leaf out just the same, so a pane whose resource died
+/// under us (a server restart, a reaped PTY) can still be dismissed.
 ///
-/// Caveat: this is softer than tmux's `kill-pane`, which
-/// sends SIGKILL to the entire process group. If the
-/// focused pane has an unresponsive foreground process
-/// (e.g. a stuck `cat` blocked on a non-existent FIFO) the
-/// keystrokes go nowhere. A future ticket may add an
-/// explicit `KILL_RESOURCE` wire frame; for v0.1 this gets
-/// the daily-drive flow working end-to-end.
-fn kill_focused_pane(focused: Option<&ResourceId>, effects: &mut ActionEffects) {
+/// This replaced the phux-4li.12 soft-kill, which typed `exit\n` at the pane
+/// and only closed panes whose foreground process was a cooperative shell.
+fn kill_focused_pane(
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    effects: &mut ActionEffects,
+) {
     let Some(focused_id) = focused.cloned() else {
         tracing::warn!("kill-pane: no focused pane to kill; dropping action");
         effects.bell = true;
         return;
     };
-    effects.kill_frames = soft_kill_input_frames(&focused_id);
+    let request_id = take_request_id(ctx);
+    effects.kill_frames = vec![kill_resource_frame(&focused_id, request_id)];
+    effects.kill_requests = vec![(request_id, focused_id.clone())];
     // phux-i0e8.2.2: mark the close as ours so the resulting
     // RESOURCE_CLOSED does not raise a pane-exit notice.
     effects.expected_closes = vec![focused_id];
@@ -581,12 +668,13 @@ fn placeholder_label(host: &ListingHost, path: &str) -> String {
         .map_or_else(|| shown.to_owned(), |host| format!("{shown} on {host}"))
 }
 
-/// phux-4li.15: soft-kill every pane in the active window, the
-/// same `exit\n` mechanism as `kill-pane`. As each
-/// `RESOURCE_CLOSED` lands, `handle_server_frame` folds the pane
-/// out; when the window's tree empties it is pruned and the
-/// new layout broadcast. No synchronous window removal here.
-fn kill_active_window(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
+/// phux-4li.15: close every pane in the active window, one correlated
+/// `KILL_RESOURCE` each (the same mechanism as `kill-pane`). As each
+/// `RESOURCE_CLOSED` — or each `TerminalNotFound` refusal for a leaf whose
+/// resource is already gone — lands, `handle_server_frame` folds the pane
+/// out; when the window's tree empties it is pruned and the new layout
+/// broadcast. No synchronous window removal here.
+fn kill_active_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let leaves = ctx
         .workspace
         .active_window()
@@ -597,7 +685,15 @@ fn kill_active_window(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
         effects.bell = true;
         return;
     }
-    effects.kill_frames = leaves.iter().flat_map(soft_kill_input_frames).collect();
+    effects.kill_requests = leaves
+        .iter()
+        .map(|leaf| (take_request_id(ctx), leaf.clone()))
+        .collect();
+    effects.kill_frames = effects
+        .kill_requests
+        .iter()
+        .map(|(request_id, leaf)| kill_resource_frame(leaf, *request_id))
+        .collect();
     // phux-i0e8.2.2: every pane in the window dies at our request;
     // none of those closes is news.
     effects.expected_closes = leaves;
@@ -617,6 +713,47 @@ fn select_window(
     switch_window(ctx, effects, |w| {
         w.select(index);
     });
+}
+
+/// Move the active window to another position in the window order: to
+/// `index` when given, otherwise `delta` slots along (negative is left),
+/// clamped to the ends. The window stays active. Order is shared window
+/// state, so a move broadcasts like a rename does.
+fn move_window(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+) {
+    let from = ctx.workspace.active;
+    let last = ctx.workspace.windows.len().saturating_sub(1);
+    let target = index_arg(resolved)
+        .map(|index| index.min(last))
+        .or_else(|| {
+            let delta = resolved.args.get("delta")?.as_integer()?;
+            Some(offset_index(from, delta, ctx.workspace.windows.len()))
+        });
+    let Some(to) = target else {
+        tracing::warn!(args = ?resolved.args, "move-window needs `index` or `delta`");
+        effects.bell = true;
+        return;
+    };
+    if !ctx.workspace.move_window(from, to) {
+        effects.bell = true;
+        return;
+    }
+    effects.layout_mutated = true;
+    effects.set_metadata = true;
+}
+
+/// `from` moved `delta` slots, clamped to `0..len`.
+fn offset_index(from: usize, delta: i64, len: usize) -> usize {
+    let last = len.saturating_sub(1);
+    let magnitude = usize::try_from(delta.unsigned_abs()).unwrap_or(usize::MAX);
+    if delta < 0 {
+        from.saturating_sub(magnitude)
+    } else {
+        from.saturating_add(magnitude).min(last)
+    }
 }
 
 /// Rename the active window, directly or through the interactive prompt.
@@ -915,8 +1052,7 @@ fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
     let items = session_picker_rows(ctx.sessions, ctx.focused_session, ctx.hosts, ctx.workspace);
     *ctx.host_refresh_request = true;
     ctx.overlays.push(Box::new(
-        SelectList::new("Sessions & hosts", items, ctx.theme)
-            .with_live_key(SESSION_PICKER_LIVE_KEY),
+        SelectList::new("Sessions", items, ctx.theme).with_live_key(SESSION_PICKER_LIVE_KEY),
     ));
 }
 
@@ -946,7 +1082,7 @@ fn push_agent_fleet(
         ctx.vcs,
         &crate::attach::agent_rows::agent_session_rows(ctx.engine_kernel),
     );
-    let items = crate::attach::fleet::fleet_items(
+    let mut items = crate::attach::fleet::fleet_items(
         ctx.workspace,
         ctx.sessions,
         ctx.focused_session,
@@ -955,12 +1091,17 @@ fn push_agent_fleet(
         ctx.foreign_layouts,
         ctx.foreign_agents,
     );
+    items.extend(crate::attach::fleet::satellite_agent_items(
+        ctx.foreign_agents,
+        ctx.foreign_attention,
+        ctx.workspace,
+    ));
     if items.iter().all(SelectItem::is_header) {
         effects.bell = true;
         return;
     }
     ctx.overlays.push(Box::new(
-        SelectList::new("Agent fleet", items, ctx.theme)
+        SelectList::new("Fleet", items, ctx.theme)
             .with_live_key(crate::attach::fleet::FLEET_LIVE_KEY),
     ));
 }
@@ -1111,7 +1252,13 @@ fn switch_session(
     }
     let window = usize_arg(resolved, "window");
     let pane = usize_arg(resolved, "pane");
-    effects.reattach = Some(ReattachTarget::Existing { name, window, pane });
+    effects.reattach = Some(ReattachTarget::Existing {
+        name,
+        id: session_id_arg(resolved),
+        window,
+        pane,
+        resource: resource_id_arg(resolved),
+    });
 }
 
 /// phux-c2td.3: `switch-session { name, host }` — select a session that
@@ -1327,6 +1474,7 @@ fn plugin_pane(
                 zoom_on_spawn: entry.placement == HostedPlacement::Zoomed,
                 host: SplitHost::Attached,
                 adopt: None,
+                open_existing: None,
             };
             set_spawn_initial_size(&mut frame, predicted_split_size(ctx, &pending));
             effects.spawn_terminal = Some((request_id, pending, frame));
@@ -1430,7 +1578,7 @@ const fn toggle_sidebar(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
         && crate::attach::paint::sidebar_reservation(
             ctx.viewport.0,
             true,
-            ctx.sidebar_width,
+            *ctx.sidebar_width,
             crate::attach::paint::SidebarEdge::Left,
             ctx.chrome.min_pane_cols,
         )
@@ -1442,11 +1590,6 @@ const fn toggle_sidebar(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
     // phux-4h5a: show/hide the window sidebar. The driver owns
     // `sidebar_enabled`; we signal intent + a repaint so the panes
     // reflow into/out of the reserved columns.
-    // phux-4h5a P4 follow-up: a `focus-window`-by-index action (the
-    // keyboard companion to clicking a strip row) is deferred; the
-    // existing `select-window` jumps by tab position, but a strip-row
-    // index action that pairs with mouse click-to-focus is not yet
-    // wired.
     effects.toggle_sidebar = true;
     effects.layout_mutated = true;
 }
