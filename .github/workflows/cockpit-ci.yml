@@ -96,7 +96,7 @@ jobs:
       # Node 24 will not strip @native-sdk/core .ts under node_modules; the
       # navigation-loader does. The helper is also the canonical local gate.
       - name: Test Cockpit model and presentation contracts
-      if: needs.changes.outputs.zig_needed == 'true'
+        if: needs.changes.outputs.zig_needed == 'true'
         working-directory: clients/cockpit
         run: ./scripts/cockpit-node-test.sh
 
