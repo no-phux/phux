@@ -1,1 +1,2 @@
-PLACEHOLDER_REPLACE_WITH_FILE
+#!/usr/bin/env bash
+# LOAD_FROM_FILE:/workspace/fixed_content.txt
