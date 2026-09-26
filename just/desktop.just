@@ -25,7 +25,7 @@ desktop-source-test:
     cd clients/desktop/toolchain/gpuix/packages/solid && bun run test
 
 [group('desktop')]
-[doc('Launch the Solid desktop against an existing daemon socket')]
+[doc('Launch the Solid desktop against the running server, or $PHUX_SOCKET')]
 desktop-app: desktop-native-build
     cd clients/desktop && PHUX_DESKTOP_ADDON="$PWD/.cache/host/phux-desktop-native.darwin-arm64.node" bun scripts/launch-desktop.ts
 
