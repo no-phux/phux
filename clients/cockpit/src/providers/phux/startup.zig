@@ -511,6 +511,28 @@ pub const TestFixture = struct {
         return true;
     }
 
+    /// Fail with the fixture files that exist. `calls` is the script body's
+    /// first write, before the pid rename; both absent means the helper has
+    /// not reached that write (spawn/exec still in progress, or it exited first).
+    pub fn expectReady(self: *TestFixture) !void {
+        if (self.ready()) return;
+        std.debug.print(
+            "coordinator fixture not ready: pid={s} calls={s} release={s} exit-code={s}\n",
+            .{
+                self.markerState("pid"),
+                self.markerState("calls"),
+                self.markerState("release"),
+                self.markerState("exit-code"),
+            },
+        );
+        return error.HelperNotReady;
+    }
+
+    fn markerState(self: *TestFixture, name: []const u8) []const u8 {
+        self.tmp.dir.access(std.testing.io, name, .{}) catch |err| return @errorName(err);
+        return "present";
+    }
+
     pub fn release(self: *TestFixture, code: []const u8) !void {
         try self.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "release.tmp", .data = code });
         try self.tmp.dir.rename("release.tmp", self.tmp.dir, "release", std.testing.io);
@@ -555,6 +577,81 @@ pub const TestFixture = struct {
     }
 };
 
+const Readiness = enum { ready, wait, not_ready };
+
+/// The hosted failure (phux-oh5o, `extension.zig:827`) asserted a 5s clock
+/// after an earlier `!ready()` sample, while no disconnect had been posted.
+/// The marker at this decision is authoritative; the budget only stops waiting.
+fn classifyReadiness(ready_now: bool, deadline_reached: bool) Readiness {
+    if (ready_now) return .ready;
+    if (deadline_reached) return .not_ready;
+    return .wait;
+}
+
+fn waitUntilReady(fixture: *TestFixture, budget_ms: u32, done: *const std.atomic.Value(bool)) !void {
+    const io = std.testing.io;
+    const started = std.Io.Clock.awake.now(io);
+    while (true) {
+        const deadline_reached = started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() >= budget_ms;
+        switch (classifyReadiness(fixture.ready(), deadline_reached)) {
+            .ready => return,
+            .not_ready => return fixture.expectReady(),
+            .wait => {
+                if (done.load(.acquire)) return error.EnsureReturnedBeforeReady;
+                try std.Io.sleep(io, .fromMilliseconds(10), .awake);
+            },
+        }
+    }
+}
+
+test "readiness failure requires the marker to be absent at the deadline" {
+    try std.testing.expectEqual(Readiness.ready, classifyReadiness(true, true));
+    try std.testing.expectEqual(Readiness.ready, classifyReadiness(true, false));
+    try std.testing.expectEqual(Readiness.wait, classifyReadiness(false, false));
+    try std.testing.expectEqual(Readiness.not_ready, classifyReadiness(false, true));
+}
+
+test "ensure reaches the helper ready marker before any socket exists" {
+    var fixture = try TestFixture.init();
+    defer fixture.deinit();
+    var stopping = std.atomic.Value(bool).init(false);
+    const Runner = struct {
+        fixture: *TestFixture,
+        stopping: *const std.atomic.Value(bool),
+        failed: ?anyerror = null,
+        done: std.atomic.Value(bool) = .init(false),
+
+        fn run(self: *@This()) void {
+            ensure(std.testing.allocator, std.testing.io, self.fixture.socket, self.stopping, .{ .cli_path = self.fixture.cli }) catch |err| {
+                self.failed = err;
+            };
+            self.done.store(true, .release);
+        }
+    };
+    var runner = Runner{ .fixture = &fixture, .stopping = &stopping };
+    const thread = try std.Thread.spawn(.{}, Runner.run, .{&runner});
+    var joined = false;
+    errdefer if (!joined) {
+        stopping.store(true, .release);
+        thread.join();
+    };
+    waitUntilReady(&fixture, (Options{}).timeout_ms, &runner.done) catch |err| {
+        if (runner.done.load(.acquire)) {
+            if (runner.failed) |cause| std.debug.print("ensure finished before the ready marker: {s}\n", .{@errorName(cause)});
+        }
+        return err;
+    };
+    // Still inside ensure: provider open connects only after ensure returns.
+    try std.testing.expect(!runner.done.load(.acquire));
+    try std.testing.expect(!try serverPresent(fixture.socket));
+    try fixture.release("0");
+    thread.join();
+    joined = true;
+    if (runner.failed) |err| return err;
+    try fixture.checkArguments();
+    try fixture.expectExitCode("0");
+}
+
 test "ensure bounds an unresponsive helper and reaps it" {
     var fixture = try TestFixture.init();
     defer fixture.deinit();
@@ -565,7 +662,7 @@ test "ensure bounds an unresponsive helper and reaps it" {
     // cannot fire EnsureTimedOut before the pid file exists (phux-7v35). This
     // is a timeout/reap contract, not a performance assertion.
     try std.testing.expectError(error.EnsureTimedOut, ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli, .timeout_ms = (Options{}).timeout_ms }));
-    try std.testing.expect(fixture.ready());
+    try fixture.expectReady();
     try fixture.checkArguments();
     try fixture.expectReaped();
     try fixture.expectProbeStopped();
