@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.45.1](https://github.com/no-phux/phux/compare/v0.45.0...v0.45.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **ci:** skip compile lanes on release-metadata version bumps ([#856](https://github.com/no-phux/phux/issues/856)) ([7428cb4](https://github.com/no-phux/phux/commit/7428cb4404351533910098bfc3e935beb5f01d7b))
+* **release:** keep the desktop host lock in step with release versions ([#855](https://github.com/no-phux/phux/issues/855)) ([ba1f1f9](https://github.com/no-phux/phux/commit/ba1f1f9a74c18316c3a5df4f1635ab63fcf6ef41))
+
 ## [0.45.0](https://github.com/no-phux/phux/compare/v0.44.0...v0.45.0) (2026-09-25)
 
 
