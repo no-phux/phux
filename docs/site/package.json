@@ -7,7 +7,7 @@
     "build": "bun run sync-docs && bun run sync-agent-skills && bun run fetch-release && astro build",
     "sync-agent-skills": "bun run scripts/sync-agent-skills.ts",
     "preview": "astro preview",
-    "check": "bun run fetch-release && astro check",
+    "check": "bun run fetch-release && astro sync && bun run scripts/typecheck.ts",
     "test": "bun test worker/src host src/components/terminal src/components/attention-demo scripts/*.test.ts",
     "check:links": "bun run scripts/check-links.ts",
     "verify:demo": "bun run scripts/verify-demo.ts",
@@ -41,7 +41,7 @@
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.10",
+    "@astrojs/ts-content-mapper": "0.2.0",
     "@cloudflare/workers-types": "^5.20260926.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "^1.4.2",
@@ -50,7 +50,7 @@
     "astro": "^7.3.5",
     "playwright-core": "^1.63.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "6.0.3",
+    "typescript": "7.1.0-dev.20260926.1",
     "wrangler": "^4.141.0"
   },
   "overrides": {
