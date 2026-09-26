@@ -46,6 +46,7 @@ impl CustomElementFactory for TerminalFactory {
             surface: presentation::Surface::default(),
             input: None,
             rebind: Arc::new(AtomicBool::new(false)),
+            was_focused: false,
         })
     }
 }
@@ -59,6 +60,7 @@ struct Terminal {
     surface: presentation::Surface,
     input: Option<BoundInput>,
     rebind: Arc<AtomicBool>,
+    was_focused: bool,
 }
 
 struct BoundInput {
@@ -153,6 +155,10 @@ impl CustomElement for Terminal {
                 state.set_option_as_alt(self.settings.option_as_alt);
             });
             let focus = input.read(cx).focus_handle().clone();
+            if self.settings.focused && !self.was_focused && !focus.is_focused(window) {
+                focus.focus(window, cx);
+            }
+            self.was_focused = self.settings.focused;
             let down = input.clone();
             let up = input.clone();
             let press = input.clone();
