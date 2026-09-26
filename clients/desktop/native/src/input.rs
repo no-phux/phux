@@ -485,10 +485,11 @@ impl EntityInputHandler for TerminalInput {
         (!self.composition.text.is_empty()).then(|| 0..self.composition.len())
     }
 
-    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // insertText commits; unmark alone discards local preedit, never sends it.
         self.composition.clear();
         self.pending_key = None;
+        window.invalidate_character_coordinates();
         cx.notify();
     }
 
@@ -501,6 +502,7 @@ impl EntityInputHandler for TerminalInput {
     ) {
         let result = self.commit(range, text, window, cx);
         self.record(result);
+        window.invalidate_character_coordinates();
         cx.notify();
     }
 
@@ -520,6 +522,7 @@ impl EntityInputHandler for TerminalInput {
                 .ok_or(InputError::InvalidRange)
         });
         self.record(result);
+        window.invalidate_character_coordinates();
         cx.notify();
     }
 

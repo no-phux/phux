@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-23
+last-reviewed: 2026-09-26
 ---
 
 # Native terminal input foundation
@@ -124,8 +124,10 @@ and keypad fidelity are **not qualified**. Option-as-Alt defaults off and can be
 configured with `set_option_as_alt`; native IME-first Option behavior still needs
 real-platform testing.
 
-Manual acceptance remains: Japanese/Chinese/Korean/dead-key OS IMEs, candidate
-placement under scale changes, AppKit activation and focus loss mid-composition,
+Paint and IME edits call GPUI `invalidate_character_coordinates`, the same
+hook Zed's terminal uses to move the candidate panel. Manual acceptance remains:
+Japanese/Chinese/Korean/dead-key OS IMEs, candidate placement under scale
+changes, AppKit activation and focus loss mid-composition,
 native menu ownership, clipboard integration with other applications, VoiceOver
 and the terminal accessibility tree, and hardware keyboard layouts/keypads.
 Selection autoscroll, search UI, link activation, and full accessibility are not

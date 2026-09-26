@@ -45,6 +45,9 @@ pub(super) fn present(
         gpui::ElementInputHandler::new(report.geometry.bounds, input.clone()),
         cx,
     );
+    // Zed's terminal invalidates the IME candidate on every wakeup so the panel
+    // tracks the cursor. Paint is this surface's wakeup.
+    window.invalidate_character_coordinates();
 }
 
 pub(super) fn on_key_down(
