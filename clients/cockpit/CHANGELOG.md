@@ -3,6 +3,18 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0](https://github.com/no-phux/phux/compare/cockpit-v0.30.0...cockpit-v0.31.0) (2026-09-26)
+
+
+### Features
+
+* **cockpit:** land window-owned UX and live acceptance ([#871](https://github.com/no-phux/phux/issues/871)) ([b53daad](https://github.com/no-phux/phux/commit/b53daad3b5cdc46139c0a474faeb1d0af1a506ee))
+
+
+### Bug Fixes
+
+* **cockpit:** preserve EXIT status after wait_named failure ([bdb041e](https://github.com/no-phux/phux/commit/bdb041ed6aa933d1a469858a9161815832674f71))
+
 ## [0.30.0](https://github.com/no-phux/phux/compare/cockpit-v0.29.0...cockpit-v0.30.0) (2026-09-23)
 
 

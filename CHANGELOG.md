@@ -9,6 +9,39 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.46.0](https://github.com/no-phux/phux/compare/v0.45.0...v0.46.0) (2026-09-26)
+
+
+### Features
+
+* **channel:** name both rail switches in the check report ([#862](https://github.com/no-phux/phux/issues/862)) ([055f072](https://github.com/no-phux/phux/commit/055f072e22979662a73bac372e77a958d52d761a))
+* **cli:** make host management easier across machine registries ([#860](https://github.com/no-phux/phux/issues/860)) ([b0c6858](https://github.com/no-phux/phux/commit/b0c685882bf746ea0e0748b61e9722de89590983))
+* **cockpit:** land window-owned UX and live acceptance ([#871](https://github.com/no-phux/phux/issues/871)) ([b53daad](https://github.com/no-phux/phux/commit/b53daad3b5cdc46139c0a474faeb1d0af1a506ee))
+* **desktop:** acknowledge unknown delivery from a Metal present receipt ([957a434](https://github.com/no-phux/phux/commit/957a43410b7174d28a847e6890614b2ec5db6a9b))
+* **desktop:** add the terminal shortcuts a daily driver actually hits ([856d826](https://github.com/no-phux/phux/commit/856d8264f53093960ad9036c3c81db44ba5f11d7))
+* **desktop:** focus the active terminal and step through search ([85fed31](https://github.com/no-phux/phux/commit/85fed315bc7c26b468c999d4341ff657e63fa652))
+* **desktop:** highlight the focused pane and follow live with Command-L ([25d4e44](https://github.com/no-phux/phux/commit/25d4e44bc74d85d124f00fd43b2b2f47d20aea23))
+* **desktop:** run the GPUIX app from a fresh checkout ([548b417](https://github.com/no-phux/phux/commit/548b4172a1fbf754fbb2e349db1d80acdefb5854))
+* **desktop:** show the daily shortcuts in the toolbar ([63f8e81](https://github.com/no-phux/phux/commit/63f8e81fb0a2d5e3dbfa8608c82e0e84e5be5deb))
+* **desktop:** track the IME candidate and keep display prefs ([b3963c7](https://github.com/no-phux/phux/commit/b3963c74425773aa3f3c23009b01390617a83e48))
+* **opencode:** v2 plugin, drop the v1 adapter ([#866](https://github.com/no-phux/phux/issues/866)) ([7a9c515](https://github.com/no-phux/phux/commit/7a9c515696175c0023b99dd846b17c823f23a6e0))
+* **tui:** toast when a newer phux is available ([#864](https://github.com/no-phux/phux/issues/864)) ([4e6f171](https://github.com/no-phux/phux/commit/4e6f1718fca824954f5bc0e79226f3f7e36ff6e1))
+
+
+### Bug Fixes
+
+* **ci:** skip compile lanes on release-metadata version bumps ([#856](https://github.com/no-phux/phux/issues/856)) ([7428cb4](https://github.com/no-phux/phux/commit/7428cb4404351533910098bfc3e935beb5f01d7b))
+* **desktop:** attach just desktop-app to the running server by default ([389d37d](https://github.com/no-phux/phux/commit/389d37df5ba696aa9646eb1d1863de594afd0b4d))
+* **desktop:** create the desktop session before just desktop-app attaches ([1dffa0b](https://github.com/no-phux/phux/commit/1dffa0bf3391c5c2b98dcacfb1f63f46bb272afe))
+* **desktop:** spawn into the attached session on a fresh server ([32c1897](https://github.com/no-phux/phux/commit/32c189779f8a2b80180190a70584b617a4b4b395))
+* **opencode:** build declarations with TypeScript 7 ([#863](https://github.com/no-phux/phux/issues/863)) ([d527f26](https://github.com/no-phux/phux/commit/d527f26b87a7af6a7c6391daa9ad92f2f482bf19))
+* **quic:** bind a spawned pane's Terminal stream instead of ending the attach ([#870](https://github.com/no-phux/phux/issues/870)) ([b36275c](https://github.com/no-phux/phux/commit/b36275cdb1ffadbdbc26f2d50b87cc643e72a03b))
+* **release:** keep the desktop host lock in step with release versions ([#855](https://github.com/no-phux/phux/issues/855)) ([ba1f1f9](https://github.com/no-phux/phux/commit/ba1f1f9a74c18316c3a5df4f1635ab63fcf6ef41))
+* **remote:** bind remote listeners before the credential store loads ([#861](https://github.com/no-phux/phux/issues/861)) ([c4d3224](https://github.com/no-phux/phux/commit/c4d32243f24b21c154638dc986cd629973cb32d5))
+* **site:** pin hosted native to 0.45.0 ([#869](https://github.com/no-phux/phux/issues/869)) ([ce3084b](https://github.com/no-phux/phux/commit/ce3084b68d45306d860f12953939728985334442))
+* **site:** typecheck on TypeScript 7 ([#867](https://github.com/no-phux/phux/issues/867)) ([fc0d453](https://github.com/no-phux/phux/commit/fc0d453fe42bacf3bc63800d094cd7b0d4cfbd9f))
+* **tui:** stop quit from dumping color replies and reconnect banners ([#865](https://github.com/no-phux/phux/issues/865)) ([dcb60a5](https://github.com/no-phux/phux/commit/dcb60a52553edd3bf6565f61933f50adc171d448))
+
 ## [0.45.0](https://github.com/no-phux/phux/compare/v0.44.0...v0.45.0) (2026-09-25)
 
 
