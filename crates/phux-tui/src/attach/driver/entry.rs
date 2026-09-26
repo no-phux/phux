@@ -51,6 +51,10 @@ async fn run_from_start(
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
+    // phux-8n4w: kick the best-effort release check before the loop. It runs
+    // off-thread and leaves an answer in the state cache that the driver's
+    // bar tick reads; nothing here blocks on the network.
+    crate::attach::update_notice::spawn_background_refresh();
     let (mut sink, writer) = crate::attach::stdout_writer::spawn_stdout_writer();
     // Cloned BEFORE any wrap: the resync flag belongs to the StdoutSink, not
     // to whatever is layered on top of it.

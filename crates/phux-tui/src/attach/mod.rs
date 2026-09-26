@@ -84,6 +84,7 @@ mod terminal_probe;
 // because "how stdin is read" is a transport concern with its own fallback
 // ladder, not part of the loop's state machine.
 mod tty_input;
+pub mod update_notice;
 
 // The headless attach vocabulary, owned by `phux_client` and re-exported so
 // the driver and its siblings keep their `crate::attach::...` /
