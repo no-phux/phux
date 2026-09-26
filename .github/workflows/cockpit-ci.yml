@@ -170,13 +170,18 @@ jobs:
         working-directory: clients/cockpit
         run: ./scripts/build-automation-cli.sh --checkout-only
 
+      # THE FLOOR tracks what the hosted runner prints, never a guess. macOS 26
+      # runners printed cell_grid solid=4179 on every run; the xcode-27 image
+      # (macOS 27.0, run 36260456111) prints solid=4170, the same text through
+      # the new OS's CoreText. The defect class lands near 3081, so the 9-pixel
+      # move costs the check no power. Re-derive from the log on the next OS.
       - name: Check the host rasterizer's glyph weight
         if: needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true'
         working-directory: clients/cockpit
         run: |
           defaults -currentHost read -g AppleFontSmoothing 2>/dev/null \
             || echo 'AppleFontSmoothing: unset (the state the floor was derived on)'
-          ./scripts/host-raster-check.sh --min-solid 4179
+          ./scripts/host-raster-check.sh --min-solid 4170
 
       - name: Build the same-checkout Phux FFI
         if: steps.rust-restore.outputs.ffi_restored != 'true' && (needs.changes.outputs.ffi_needed == 'true' || needs.changes.outputs.zig_needed == 'true' || needs.changes.outputs.shipping_needed == 'true')
