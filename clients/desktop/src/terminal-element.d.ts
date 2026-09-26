@@ -2,6 +2,7 @@ import type { HostProps } from "@gpuix/native/host";
 import type { SolidHostProps } from "@gpuix/solid/jsx-runtime";
 
 declare global {
+  var phuxShortcut: ((chord: string) => void) | undefined;
   var phuxOpenWindow:
     | ((placement: {
         clientHandle: string;

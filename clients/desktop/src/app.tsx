@@ -1,5 +1,5 @@
-import { createSignal, For, onCleanup, onMount, Show, type Accessor, type JSX } from "solid-js";
-import { render, resetRender } from "@gpuix/solid";
+import { createEffect, createSignal, For, onCleanup, onMount, Show, type Accessor, type JSX } from "solid-js";
+import { render, resetRender, useGpuix } from "@gpuix/solid";
 import type {
   DesktopClient,
   DesktopEvent,
@@ -51,6 +51,10 @@ function DesktopApp(props: AppProps): JSX.Element {
   const [fontSize, setFontSize] = createSignal(14);
   const [optionAsAlt, setOptionAsAlt] = createSignal(false);
   let owner: DesktopClient | undefined;
+  let pendingNew = false;
+  const shortcutBridge: { run: (chord: string) => void } = { run: () => {} };
+  shortcutBridge.run = runShortcut;
+  const gpuix = useGpuix();
   const [generation, setGeneration] = createSignal(0);
   let closed = false;
 
@@ -83,6 +87,10 @@ function DesktopApp(props: AppProps): JSX.Element {
   function accept(batch: DesktopEvent[]): void {
     for (const event of batch) {
       if (event.kind === "ServerError") setDetail(event.message);
+      if (event.kind === "SpawnAnswered" && event.error) {
+        pendingNew = false;
+        setDetail(event.error);
+      }
       if (event.kind === "InputDelivery" && event.outcome === "Unknown") setFenced(true);
       if (event.kind === "Closed") removeTerminal(event.terminalId);
       if (event.kind === "AgentBadge") {
@@ -111,7 +119,19 @@ function DesktopApp(props: AppProps): JSX.Element {
     if (info) setIdentity(info);
     const placement = selectedPlacement();
     if (placement) setFenced(session().inputReadiness(placement.terminalId).deliveryFenced);
+    openPendingTerminal();
     setRevision((value) => value + 1);
+  }
+
+  function openPendingTerminal(): void {
+    if (!pendingNew) return;
+    const open = new Set(tabs().flatMap((tab) => tab.placements.map((item) => item.terminalId)));
+    const fresh = panes().find(
+      (pane) => !open.has(pane.terminalId) && session().inputReadiness(pane.terminalId).ready,
+    );
+    if (!fresh) return;
+    pendingNew = false;
+    openTerminal(fresh);
   }
 
   function activity(handle: string): void {
@@ -194,6 +214,32 @@ function DesktopApp(props: AppProps): JSX.Element {
       return;
     }
     if (session().inputReadiness(pane.terminalId).ready) openTerminal(pane);
+  }
+
+  function newTerminal(): void {
+    if (session().status() !== "Attached") return;
+    const home = session().topology()?.sessions[0];
+    if (!home) return;
+    pendingNew = true;
+    session().spawnTerminal(home.id);
+  }
+
+  function focusTerminal(pane: DesktopPane): void {
+    for (const tab of tabs()) {
+      const placement = tab.placements.find((item) => item.terminalId === pane.terminalId);
+      if (!placement) continue;
+      setTabId(tab.id);
+      setTabs((current) =>
+        current.map((item) => (item.id === tab.id ? { ...item, focusedId: placement.id } : item)),
+      );
+      return;
+    }
+    openTerminal(pane);
+  }
+
+  function focusPaneIndex(index: number): void {
+    const pane = panes()[index];
+    if (pane) focusTerminal(pane);
   }
 
   function openTerminal(pane: DesktopPane): void {
@@ -281,6 +327,18 @@ function DesktopApp(props: AppProps): JSX.Element {
     setMatches(`${index + 1} of ${found.length}`);
   }
 
+  function runShortcut(chord: string): void {
+    if (chord === "t") newTerminal();
+    else if (chord === "w") closeView();
+    else if (chord === "d") anotherView();
+    else if (chord === "f") search();
+    else if (chord === "g") stepHit(1);
+    else if (chord === "shift+g") stepHit(-1);
+    else if (chord === "=" || chord === "+") changeFont(1);
+    else if (chord === "-") changeFont(-1);
+    else if (chord >= "1" && chord <= "9") focusPaneIndex(Number(chord) - 1);
+  }
+
   function stepHit(delta: number): void {
     const found = hits();
     if (found.length === 0) {
@@ -312,7 +370,17 @@ function DesktopApp(props: AppProps): JSX.Element {
     setTabId(first.id);
   }
 
+  createEffect(() => {
+    const placement = selectedPlacement();
+    const pane = panes().find((item) => item.terminalId === placement?.terminalId);
+    const title = pane?.title || placement?.terminalId || props.sessionName;
+    gpuix?.renderer.setWindowTitle?.(`phux — ${title}`);
+  });
+
   onMount(() => {
+    globalThis.phuxShortcut = (chord) => {
+      shortcutBridge.run(chord);
+    };
     const saved = parseLayout(props.layouts.read());
     if (saved) {
       setFontSize(saved.display.fontSize);
@@ -322,6 +390,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     connect();
   });
   onCleanup(() => {
+    globalThis.phuxShortcut = undefined;
     if (closed) return;
     closed = true;
     for (const tab of tabs()) {
@@ -331,7 +400,10 @@ function DesktopApp(props: AppProps): JSX.Element {
   });
 
   return (
-    <div style={{ display: "flex", height: "100%", backgroundColor: "#15171c", color: "#eeeeee" }}>
+    <div
+      style={{ display: "flex", height: "100%", backgroundColor: "#15171c", color: "#eeeeee" }}
+      onKeyDown={(event) => runShortcut(chordFrom(event))}
+    >
       <div style={{ width: 220, padding: 12, backgroundColor: "#101218" }}>
         <text>{`Status: ${status()}`}</text>
         <text>{detail() || props.socketPath}</text>
@@ -339,7 +411,7 @@ function DesktopApp(props: AppProps): JSX.Element {
           {(pane): JSX.Element => (
             <div
               style={{ padding: 8, cursor: "pointer" }}
-              onClick={() => openTerminal(pane)}
+              onClick={() => focusTerminal(pane)}
               onMouseDown={(event) => beginPaneDrag(pane.terminalId, event)}
               onMouseUp={(event) => {
                 const dragged = endPaneDrag(event);
@@ -355,7 +427,7 @@ function DesktopApp(props: AppProps): JSX.Element {
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, padding: 12, gap: 8 }}>
         <div style={{ display: "flex", gap: 8 }}>
           <Command label="Retry" run={retry} />
-          <Command label="New terminal" run={ensureTerminal} />
+          <Command label="New terminal" run={newTerminal} />
           <Command label="Another view" run={anotherView} />
           <Command label="Close view" run={closeView} />
           <Command label="Terminate" run={terminate} />
@@ -367,8 +439,8 @@ function DesktopApp(props: AppProps): JSX.Element {
         </div>
         <Show when={palette()}>
           <text>
-            Close drops the view and leaves the process. Terminate kills that terminal only. Unknown
-            delivery is never resent.
+            ⌘T new terminal. ⌘W close view. ⌘D another view. ⌘F search. ⌘G next. ⌘1–9 focus a
+            pane. Close leaves the process. Terminate kills that terminal only.
           </text>
         </Show>
         <Show when={fenced()}>
@@ -430,6 +502,17 @@ function endPaneDrag(event: { x?: number; y?: number }): { terminalId: string } 
   return { terminalId: start.terminalId };
 }
 
+function chordFrom(event: {
+  isHeld?: boolean;
+  key?: string;
+  modifiers?: { cmd: boolean; alt: boolean; ctrl: boolean; shift: boolean };
+}): string {
+  if (event.isHeld || !event.modifiers?.cmd || event.modifiers.alt || event.modifiers.ctrl) return "";
+  const key = event.key;
+  if (!key) return "";
+  return event.modifiers.shift ? `shift+${key}` : key;
+}
+
 function Command(props: { label: string; run: () => void }): JSX.Element {
   return (
     <div
@@ -456,6 +539,9 @@ export function mount(
       width: 1280,
       height: 800,
       focus: false,
+      onKeyDown(event) {
+        globalThis.phuxShortcut?.(chordFrom(event));
+      },
       onUncaughtError: (error) => {
         resetRender();
         throw error;
