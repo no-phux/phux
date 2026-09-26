@@ -27,9 +27,9 @@ def verify_clean(source: Path) -> None:
         raise SystemExit(f"Modified source in {source}; preserve it and investigate:\n{changes}")
 
 
-def pinned_patches(pin: dict) -> list[Path]:
+def pinned_patches(pin: dict, key: str) -> list[Path]:
     patches = []
-    for relative, expected in pin.get("patches", {}).items():
+    for relative, expected in pin.get(key, {}).items():
         patch = DESKTOP / "toolchain" / relative
         if hashlib.sha256(patch.read_bytes()).hexdigest() != expected:
             raise SystemExit(f"Source patch checksum mismatch: {relative}")
@@ -37,7 +37,9 @@ def pinned_patches(pin: dict) -> list[Path]:
     return patches
 
 
-def patch_tree_changes(source: Path, patches: list[Path]) -> str:
+def patch_tree_changes(
+    source: Path, patches: list[Path], ignored: frozenset[str] = frozenset()
+) -> str:
     # A temporary index describes the reviewed patch tree without changing the
     # user's index. New patch files must be compared too, not merely tracked diffs.
     with tempfile.TemporaryDirectory(prefix="phux-source-index-") as scratch:
@@ -52,7 +54,12 @@ def patch_tree_changes(source: Path, patches: list[Path]) -> str:
         untracked = subprocess.check_output(
             [*command, "ls-files", "--others", "--exclude-standard"], env=environment, text=True
         ).strip()
-        return "\n".join(filter(None, [changed, untracked]))
+        visible = [
+            line
+            for line in filter(None, [*changed.splitlines(), *untracked.splitlines()])
+            if line not in ignored
+        ]
+        return "\n".join(visible)
 
 
 def verify_destination(source: Path, relative: str) -> None:
@@ -85,7 +92,9 @@ def verify_created_paths(source: Path, patches: list[Path], prefix: int) -> None
                 verify_destination(source, relative)
 
 
-def prepare_patches(source: Path, patches: list[Path]) -> None:
+def prepare_patches(
+    source: Path, patches: list[Path], ignored: frozenset[str] = frozenset()
+) -> None:
     if not patches:
         verify_clean(source)
         return
@@ -95,12 +104,12 @@ def prepare_patches(source: Path, patches: list[Path]) -> None:
     # An exact earlier prefix can advance when a new reviewed patch is added.
     # Partial or independently edited prefixes are never repaired in place.
     for count in range(len(patches), -1, -1):
-        if patch_tree_changes(source, patches[:count]):
+        if patch_tree_changes(source, patches[:count], ignored):
             continue
         verify_created_paths(source, patches, count)
         for patch in patches[count:]:
             git(source, "apply", str(patch))
-        changes = patch_tree_changes(source, patches)
+        changes = patch_tree_changes(source, patches, ignored)
         if changes:
             raise SystemExit(f"Patched source verification failed in {source}:\n{changes}")
         return
@@ -120,8 +129,9 @@ def verify_source(source: Path, pin: dict) -> None:
         manifest = json.loads((source / "packages" / package / "package.json").read_text())
         if manifest["version"] != pin["version"]:
             raise SystemExit(f"Mismatched @gpuix/{package} version")
-    verify_clean(source / "zed")
-    prepare_patches(source, pinned_patches(pin))
+    prepare_patches(source / "zed", pinned_patches(pin, "zedPatches"))
+    # Zed's own patch check owns that submodule. A dirty gitlink is expected.
+    prepare_patches(source, pinned_patches(pin, "patches"), frozenset({"zed"}))
 
 
 def main() -> None:

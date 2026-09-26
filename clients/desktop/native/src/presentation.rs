@@ -3,7 +3,7 @@
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use gpuix_native::native_extensions::gpui::{App, Window};
+use gpuix_native::native_extensions::gpui::{self, App, Window};
 use phux_client_runtime::{
     Client, ViewId,
     control::{ControlPlane, ProjectionFence, Status},
@@ -109,9 +109,8 @@ impl Ticket {
         Arc::clone(&self.frame)
     }
 
-    /// Not callable in production until GPUI supplies a real presentation
-    /// receipt. In particular, neither canvas paint nor on_next_frame can mint
-    /// Presented. See ../PRESENTATION.md for the bounded platform seam.
+    /// Revalidate this ticket against a drawable-presented receipt. Canvas paint
+    /// and `on_next_frame` cannot mint [`Presented`].
     pub(crate) fn acknowledge(self, presented: Presented, cx: &App) -> Result<(), Rejection> {
         self.check_receipt(&presented)?;
         with_registered(&self.handle, cx, |control| {
@@ -154,14 +153,60 @@ impl Ticket {
     }
 }
 
-/// No production constructor exists. The platform must eventually mint this
-/// only for a successfully presented drawable in a visible, non-minimized native
-/// window, correlated with the successful terminal paint and its live root.
-/// Keeping the fields private makes the missing platform evidence fail closed.
+/// Minted only from [`schedule_recovery`], after GPUI reports that the exact
+/// drawable was presented on a still-visible window.
 pub(crate) struct Presented {
     window: u64,
     lifetime: Weak<()>,
     frame: Arc<GridFrame>,
+}
+
+pub(crate) fn schedule_recovery(
+    ticket: Ticket,
+    painted: &Arc<GridFrame>,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if ticket.fence.is_none() || !Arc::ptr_eq(painted, &ticket.frame) {
+        return;
+    }
+    if !visible_unclipped(bounds, window) {
+        return;
+    }
+    let frame = Arc::clone(painted);
+    let lifetime = ticket.lifetime.clone();
+    let expected_window = ticket.window;
+    window.on_drawable_presented(move |window, cx| {
+        if window.window_handle().window_id().as_u64() != expected_window {
+            return;
+        }
+        if !visible_unclipped(bounds, window) {
+            return;
+        }
+        let presented = Presented {
+            window: expected_window,
+            lifetime,
+            frame,
+        };
+        // A rejected receipt leaves the fence set. There is no second acknowledgement path.
+        if ticket.acknowledge(presented, cx).is_err() {
+            return;
+        }
+    });
+}
+
+fn visible_unclipped(bounds: gpui::Bounds<gpui::Pixels>, window: &Window) -> bool {
+    window.native_visibility() == gpui::NativeVisibility::Visible
+        && bounds_cover(window.content_mask().bounds, bounds)
+}
+
+fn bounds_cover(mask: gpui::Bounds<gpui::Pixels>, bounds: gpui::Bounds<gpui::Pixels>) -> bool {
+    if bounds.size.width <= gpui::px(0.) || bounds.size.height <= gpui::px(0.) {
+        return false;
+    }
+    let hit = mask.intersect(&bounds);
+    hit.origin == bounds.origin && hit.size == bounds.size
 }
 
 fn recovery_frame(

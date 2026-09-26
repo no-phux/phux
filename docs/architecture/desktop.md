@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-23
+last-reviewed: 2026-09-26
 ---
 
 # Desktop architecture
@@ -203,7 +203,9 @@ Physical key events and IME/text commits have one arbitration path.
 
 Unknown delivery is terminal-wide, not view-local. A fresh authoritative frame
 must reach a visible presentation before the host invokes
-`acknowledge_projection`. Record the qualified terminal, view, connection,
+`acknowledge_projection`. The desktop registers that call only from GPUI's
+drawable-presented callback, after AppKit visibility and an unclipped terminal
+bounds check. Paint and `on_next_frame` do not clear the fence. Record the qualified terminal, view, connection,
 stream/bootstrap, and actually presented generation in that acknowledgement
 path. Acquisition, background layout, hidden windows, and queued-but-cancelled
 paint are insufficient. Revalidate after a reconnect or root replacement so a

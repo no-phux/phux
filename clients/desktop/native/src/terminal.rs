@@ -7,9 +7,12 @@ mod input_host;
 mod paint;
 mod settings;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::presentation::{self, Ticket};
 use gpui::prelude::*;
 use gpuix_native::native_extensions::{
     CustomElement, CustomElementFactory, CustomElementRegistry, CustomRenderContext, GpuixView,
@@ -40,6 +43,7 @@ impl CustomElementFactory for TerminalFactory {
             element_id: gpui::ElementId::Name(format!("__phux_terminal_{id}").into()),
             settings: Settings::default(),
             observation,
+            surface: presentation::Surface::default(),
             input: None,
             rebind: Arc::new(AtomicBool::new(false)),
         })
@@ -52,6 +56,7 @@ struct Terminal {
     // The surface owns the acceptance record. Pending paint closures hold only
     // Weak references, so removal cannot resurrect a detached view's report.
     observation: Arc<Mutex<paint::Observation>>,
+    surface: presentation::Surface,
     input: Option<BoundInput>,
     rebind: Arc<AtomicBool>,
 }
@@ -64,17 +69,24 @@ struct BoundInput {
 }
 
 impl Terminal {
-    fn acquire(&self) -> Result<Arc<GridFrame>, String> {
-        let view = self.settings.view_id.ok_or("missing viewId")?;
-        let client = phux_client_ffi::napi::initialize()
-            .client(&self.settings.client_handle)
-            .map_err(|error| error.to_string())?;
-        let frame = client.acquire_view(view).ok_or("view has no publication")?;
-        if phux_client_ffi::projection::id::encode(&frame.terminal_id) != self.settings.terminal_id
-        {
-            return Err("terminalId does not match viewId".into());
+    fn painted_frame(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (Result<Arc<GridFrame>, String>, Option<Ticket>) {
+        let Some(view) = self.settings.view_id else {
+            return (Err("missing viewId".into()), None);
+        };
+        match self.surface.acquire(
+            &self.settings.client_handle,
+            &self.settings.terminal_id,
+            view,
+            window,
+            cx,
+        ) {
+            Ok(ticket) => (Ok(ticket.frame()), Some(ticket)),
+            Err(error) => (Err(error.to_string()), None),
         }
-        Ok(frame)
     }
 }
 
@@ -128,7 +140,8 @@ impl CustomElement for Terminal {
     ) -> gpui::AnyElement {
         // Always reacquire, including after removal, skipped generations, or a
         // slot replacement. Dirty rows are not a cache-coherency contract.
-        let frame = self.acquire();
+        let (frame, recovery) = self.painted_frame(window, cx);
+        let scheduled = Rc::new(RefCell::new(recovery));
         let settings = self.settings.clone();
         let observation = Arc::downgrade(&self.observation);
         let input = self.ensure_input(window, cx);
@@ -194,10 +207,19 @@ impl CustomElement for Terminal {
                                 cx,
                             );
                         }
+                        let painted_frame = report.frame.clone();
+                        let bounds = report.geometry.bounds;
+                        let failed = report.error.is_some();
                         if let Some(observation) = observation.upgrade() {
                             *observation
                                 .lock()
                                 .unwrap_or_else(|error| error.into_inner()) = report;
+                        }
+                        if !failed
+                            && let Some(frame) = painted_frame.as_ref()
+                            && let Some(ticket) = scheduled.borrow_mut().take()
+                        {
+                            presentation::schedule_recovery(ticket, frame, bounds, window, cx);
                         }
                     },
                 )
@@ -207,6 +229,9 @@ impl CustomElement for Terminal {
     }
 
     fn set_prop(&mut self, key: &str, value: serde_json::Value) {
+        if matches!(key, "clientHandle" | "terminalId" | "viewId") {
+            self.surface.invalidate();
+        }
         self.settings.set(key, &value);
     }
 
@@ -230,6 +255,7 @@ impl CustomElement for Terminal {
     }
 
     fn destroy(&mut self) {
+        self.surface.invalidate();
         self.input = None;
         self.rebind.store(false, Ordering::Release);
         self.observation = Arc::new(Mutex::new(paint::Observation::default()));

@@ -1,0 +1,486 @@
+diff --git a/crates/gpui/src/app/bench_context.rs b/crates/gpui/src/app/bench_context.rs
+index 7fc5831..e30896b 100644
+--- a/crates/gpui/src/app/bench_context.rs
++++ b/crates/gpui/src/app/bench_context.rs
+@@ -757,8 +757,8 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
+             // Submit the frame drawn by the update's effect flush, mirroring
+             // production where every drawn frame is presented. With a headless
+             // renderer this includes scene submission to the GPU.
+-            self.with_window(view.entity_id(), |window, _| {
+-                window.present_if_needed();
++            self.with_window(view.entity_id(), |window, cx| {
++                window.present_if_needed(cx);
+             })
+             .expect("cannot benchmark renderer for entity without a current window");
+         };
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index e37ab99..056e49a 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -818,6 +818,20 @@ pub enum TextInputStateChange {
+     ContentChanged,
+ }
+ 
++/// Whether a native window can currently show a drawable.
++///
++/// Headless and test windows are [`NativeVisibility::Unavailable`], never
++/// visible. Query this on the UI thread.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeVisibility {
++    /// The native window is visible, not miniaturized, and occlusion-visible.
++    Visible,
++    /// A real native window exists, but it is hidden, minimized, or occluded.
++    Obscured,
++    /// This platform cannot prove a drawable reached a visible window.
++    Unavailable,
++}
++
+ #[expect(missing_docs)]
+ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     fn bounds(&self) -> Bounds<Pixels>;
+@@ -870,7 +884,24 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     fn on_close(&self, callback: Box<dyn FnOnce()>);
+     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
+     fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
++    fn native_visibility(&self) -> NativeVisibility {
++        NativeVisibility::Unavailable
++    }
+     fn draw(&self, scene: &Scene);
++    /// Submit `scene`. When this exact drawable is later presented, call
++    /// `on_presented` with its id and whether its presented time is nonzero.
++    ///
++    /// The default draws and never calls `on_presented`. A missing drawable,
++    /// failed render, or offscreen capture must drop the callback. Do not wait
++    /// for GPU completion on the UI thread.
++    fn draw_for_presentation(
++        &self,
++        scene: &Scene,
++        _on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++    ) -> Option<u64> {
++        self.draw(scene);
++        None
++    }
+     fn schedule_frame(&self) {}
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+     fn is_subpixel_rendering_supported(&self) -> bool;
+diff --git a/crates/gpui/src/profiler/hang.rs b/crates/gpui/src/profiler/hang.rs
+index 9514931..1371ba3 100644
+--- a/crates/gpui/src/profiler/hang.rs
++++ b/crates/gpui/src/profiler/hang.rs
+@@ -1223,7 +1223,7 @@ mod tests {
+     fn draw_window(cx: &mut VisualTestContext) {
+         cx.update(|window, cx| {
+             let arena_clear = window.draw(cx);
+-            window.present_if_needed();
++            window.present_if_needed(cx);
+             arena_clear.clear(cx);
+         });
+     }
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 3e55040..e3cb473 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -6,23 +6,23 @@ use crate::Inspector;
+ use crate::profiler;
+ use crate::{
+     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
+-    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
+-    Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
++    AsyncApp, AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds,
++    BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
+     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
+     Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, KeyListener,
+     Keystroke, KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
+-    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
+-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+-    PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
+-    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
+-    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
+-    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
+-    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
+-    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
+-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
+-    WindowInsets, WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, px, rems, size,
+-    transparent_black,
++    MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, NativeVisibility,
++    Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler,
++    PlatformWindow, Point, PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render,
++    RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge,
++    SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
++    SharedString, Size, StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription,
++    SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
++    TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState, TransformationMatrix,
++    Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
++    WindowControls, WindowDecorations, WindowInsets, WindowOptions, WindowParams, WindowTextSystem,
++    point, prelude::*, px, rems, size, transparent_black,
+ };
+ 
+ use anyhow::{Context as _, Result, anyhow};
+@@ -724,6 +724,42 @@ pub struct DismissEvent;
+ 
+ type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
+ 
++struct DrawableNotice {
++    drawable_id: u64,
++    presented: bool,
++}
++
++async fn deliver_drawable_presentation(
++    cx: &mut AsyncApp,
++    handle: AnyWindowHandle,
++    receiver: oneshot::Receiver<DrawableNotice>,
++    serial: u64,
++    callbacks: Vec<FrameCallback>,
++) {
++    let Ok(notice) = receiver.await else {
++        return;
++    };
++    if !notice.presented {
++        return;
++    }
++    handle
++        .update(cx, |_, window, cx| {
++            if window.presentation_serial.get() != serial || window.removed {
++                return;
++            }
++            if window.submitted_drawable.get() != Some(notice.drawable_id) {
++                return;
++            }
++            if window.platform_window.native_visibility() != NativeVisibility::Visible {
++                return;
++            }
++            for callback in callbacks {
++                callback(window, cx);
++            }
++        })
++        .log_err();
++}
++
+ pub(crate) type AnyMouseListener =
+     Box<dyn FnMut(&dyn Any, DispatchPhase, &mut Window, &mut App) + 'static>;
+ 
+@@ -1171,6 +1207,9 @@ pub struct Window {
+     pub(crate) next_tooltip_id: TooltipId,
+     pub(crate) tooltip_bounds: Option<TooltipBounds>,
+     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
++    drawable_presented_callbacks: RefCell<Vec<FrameCallback>>,
++    presentation_serial: Cell<u64>,
++    submitted_drawable: Cell<Option<u64>>,
+     pub(crate) dirty_views: FxHashSet<EntityId>,
+     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
+     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
+@@ -1649,14 +1688,14 @@ impl Window {
+                                     window.refresh();
+                                 }
+                                 let arena_clear_needed = window.draw(cx);
+-                                window.present();
++                                window.present(cx);
+                                 arena_clear_needed.clear(cx);
+                             })
+                             .log_err();
+                     })
+                 } else if needs_present {
+                     handle
+-                        .update(&mut cx, |_, window, _| window.present())
++                        .update(&mut cx, |_, window, cx| window.present(cx))
+                         .log_err();
+                 }
+ 
+@@ -1862,6 +1901,9 @@ impl Window {
+             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
+             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
+             next_frame_callbacks,
++            drawable_presented_callbacks: RefCell::new(Vec::new()),
++            presentation_serial: Cell::new(0),
++            submitted_drawable: Cell::new(None),
+             next_hitbox_id: HitboxId(0),
+             next_tooltip_id: TooltipId::default(),
+             tooltip_bounds: None,
+@@ -2398,6 +2440,21 @@ impl Window {
+         AsyncWindowContext::new_context(cx.to_async(), self.handle)
+     }
+ 
++    /// Register work that runs only after the scene being painted is submitted
++    /// and its exact drawable is presented on a still-visible native window.
++    ///
++    /// Paint, `on_next_frame`, and command-buffer completion are not this event.
++    pub fn on_drawable_presented(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
++        self.drawable_presented_callbacks
++            .borrow_mut()
++            .push(Box::new(callback));
++    }
++
++    /// Native visibility of this window. Unavailable is not visible.
++    pub fn native_visibility(&self) -> NativeVisibility {
++        self.platform_window.native_visibility()
++    }
++
+     /// Schedule the given closure to be run directly after the current frame is rendered.
+     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
+@@ -3082,12 +3139,19 @@ impl Window {
+     }
+ 
+     #[profiling::function]
+-    fn present(&mut self) {
++    fn present(&mut self, cx: &App) {
+         #[cfg(feature = "profiler")]
+         let _foreground_turn = profiler::journal::foreground_turn();
+         #[cfg(feature = "profiler")]
+         let present_start = Instant::now();
+-        self.platform_window.draw(&self.rendered_frame.scene);
++        let callbacks = self.drawable_presented_callbacks.take();
++        let serial = self.presentation_serial.get().wrapping_add(1);
++        self.presentation_serial.set(serial);
++        let on_presented = self.arm_drawable_presentation(cx, callbacks, serial);
++        let drawable_id = self
++            .platform_window
++            .draw_for_presentation(&self.rendered_frame.scene, on_presented);
++        self.submitted_drawable.set(drawable_id);
+         #[cfg(feature = "profiler")]
+         self.window_profiler.record_present(
+             present_start,
+@@ -3099,12 +3163,42 @@ impl Window {
+         profiling::finish_frame!();
+     }
+ 
++    fn arm_drawable_presentation(
++        &self,
++        cx: &App,
++        callbacks: Vec<FrameCallback>,
++        serial: u64,
++    ) -> Option<Box<dyn FnOnce(u64, bool) + Send>> {
++        if callbacks.is_empty()
++            || self.platform_window.native_visibility() != NativeVisibility::Visible
++        {
++            return None;
++        }
++        let (sender, receiver) = oneshot::channel();
++        let handle = self.handle;
++        cx.spawn(async move |cx| {
++            deliver_drawable_presentation(cx, handle, receiver, serial, callbacks).await;
++        })
++        .detach();
++        Some(Box::new(move |drawable_id, presented| {
++            match sender.send(DrawableNotice {
++                drawable_id,
++                presented,
++            }) {
++                Ok(()) => {}
++                Err(_) => {
++                    // The window waiter is gone. Nothing remains that can acknowledge.
++                }
++            }
++        }))
++    }
++
+     /// Presents the current scene again without drawing or invalidating views.
+     ///
+     /// This is intended for stable scenes whose external GPU resources changed,
+     /// such as an atlas image updated in place.
+-    pub fn present_cached_frame(&mut self) {
+-        self.present();
++    pub fn present_cached_frame(&mut self, cx: &App) {
++        self.present(cx);
+     }
+ 
+     /// Presents the most recently drawn frame if it hasn't been presented yet.
+@@ -3113,9 +3207,9 @@ impl Window {
+     /// frame-request loop, so they call this after each measured update to
+     /// submit the frame like production presentation would.
+     #[cfg(any(feature = "bench", all(test, feature = "profiler")))]
+-    pub fn present_if_needed(&mut self) {
++    pub fn present_if_needed(&mut self, cx: &App) {
+         if self.needs_present.get() {
+-            self.present();
++            self.present(cx);
+         }
+     }
+ 
+diff --git a/crates/gpui_apple/src/metal_renderer.rs b/crates/gpui_apple/src/metal_renderer.rs
+index e4411d2..68715b3 100644
+--- a/crates/gpui_apple/src/metal_renderer.rs
++++ b/crates/gpui_apple/src/metal_renderer.rs
+@@ -148,6 +148,47 @@ pub struct PathRasterizationVertex {
+     pub bounds: Bounds<ScaledPixels>,
+ }
+ 
++fn drawable_viewport(layer: &metal::MetalLayer) -> Size<DevicePixels> {
++    let viewport_size = layer.drawable_size();
++    size(
++        (viewport_size.width.ceil() as i32).into(),
++        (viewport_size.height.ceil() as i32).into(),
++    )
++}
++
++fn observe_drawable_presentation(
++    drawable: &metal::MetalDrawableRef,
++    drawable_id: u64,
++    on_presented: Box<dyn FnOnce(u64, bool) + Send>,
++) {
++    let callback = Mutex::new(Some(on_presented));
++    let block = ConcreteBlock::new(move |presented: &metal::DrawableRef| {
++        let Some(callback) = callback.lock().take() else {
++            return;
++        };
++        let shown =
++            presented.drawable_id() as u64 == drawable_id && presented.presented_time() > 0.0;
++        callback(drawable_id, shown);
++    });
++    let block = block.copy();
++    drawable.add_presented_handler(&block);
++}
++
++fn submit_drawable(
++    presents_with_transaction: bool,
++    command_buffer: &metal::CommandBufferRef,
++    drawable: &metal::MetalDrawableRef,
++) {
++    if presents_with_transaction {
++        command_buffer.commit();
++        command_buffer.wait_until_scheduled();
++        drawable.present();
++        return;
++    }
++    command_buffer.present_drawable(drawable);
++    command_buffer.commit();
++}
++
+ impl MetalRenderer {
+     /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
+     pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
+@@ -445,46 +486,39 @@ impl MetalRenderer {
+     }
+ 
+     pub fn draw(&mut self, scene: &Scene) {
+-        let layer = match &self.layer {
+-            Some(l) => l.clone(),
+-            None => {
+-                log::error!(
+-                    "draw() called on headless renderer - use render_scene_to_image() instead"
+-                );
+-                return;
+-            }
+-        };
+-        let viewport_size = layer.drawable_size();
+-        let viewport_size: Size<DevicePixels> = size(
+-            (viewport_size.width.ceil() as i32).into(),
+-            (viewport_size.height.ceil() as i32).into(),
+-        );
+-        let drawable = if let Some(drawable) = layer.next_drawable() {
+-            drawable
+-        } else {
++        let _ = self.draw_for_presentation(scene, None);
++    }
++
++    /// Submit `scene` and, on success, register `on_presented` for that drawable.
++    /// Returns the drawable id only when the presented handler was registered.
++    pub fn draw_for_presentation(
++        &mut self,
++        scene: &Scene,
++        on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++    ) -> Option<u64> {
++        let layer = self.layer.clone()?;
++        let viewport_size = drawable_viewport(&layer);
++        let drawable = layer.next_drawable().or_else(|| {
+             log::error!(
+                 "failed to retrieve next drawable, drawable size: {:?}",
+                 viewport_size
+             );
+-            return;
+-        };
+-
++            None
++        })?;
+         let command_buffer = match self.render_frame(scene, drawable.texture(), viewport_size) {
+             Ok(command_buffer) => command_buffer,
+             Err(error) => {
+                 log::error!("failed to render: {error:#}");
+-                return;
++                return None;
+             }
+         };
+-
+-        if self.presents_with_transaction {
+-            command_buffer.commit();
+-            command_buffer.wait_until_scheduled();
+-            drawable.present();
+-        } else {
+-            command_buffer.present_drawable(drawable);
+-            command_buffer.commit();
++        let drawable_id = drawable.drawable_id() as u64;
++        let registered = on_presented.is_some();
++        if let Some(on_presented) = on_presented {
++            observe_drawable_presentation(&drawable, drawable_id, on_presented);
+         }
++        submit_drawable(self.presents_with_transaction, &command_buffer, &drawable);
++        registered.then_some(drawable_id)
+     }
+ 
+     fn render_frame(
+diff --git a/crates/gpui_macos/src/window.rs b/crates/gpui_macos/src/window.rs
+index faf27e0..b95472e 100644
+--- a/crates/gpui_macos/src/window.rs
++++ b/crates/gpui_macos/src/window.rs
+@@ -1333,6 +1333,32 @@ fn if_window_not_closed(closed: Arc<AtomicBool>, f: impl FnOnce()) {
+     }
+ }
+ 
++fn native_window_visibility(window: id) -> gpui::NativeVisibility {
++    if window.is_null() {
++        return gpui::NativeVisibility::Unavailable;
++    }
++    unsafe {
++        let visible: BOOL = msg_send![window, isVisible];
++        let miniaturized: BOOL = msg_send![window, isMiniaturized];
++        let occlusion_visible = window
++            .occlusionState()
++            .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible);
++        if visible == YES && miniaturized == NO && occlusion_visible {
++            gpui::NativeVisibility::Visible
++        } else {
++            gpui::NativeVisibility::Obscured
++        }
++    }
++}
++
++fn hop_presentation_to_main(
++    on_presented: Box<dyn FnOnce(u64, bool) + Send>,
++) -> Box<dyn FnOnce(u64, bool) + Send> {
++    Box::new(move |drawable_id, presented| {
++        DispatchQueue::main().exec_async(move || on_presented(drawable_id, presented));
++    })
++}
++
+ impl PlatformWindow for MacWindow {
+     fn bounds(&self) -> Bounds<Pixels> {
+         self.0.as_ref().lock().bounds()
+@@ -1903,11 +1929,27 @@ impl PlatformWindow for MacWindow {
+         self.0.as_ref().lock().toggle_tab_bar_callback = Some(callback);
+     }
+ 
++    fn native_visibility(&self) -> gpui::NativeVisibility {
++        native_window_visibility(self.0.lock().native_window)
++    }
++
+     fn draw(&self, scene: &gpui::Scene) {
+         let mut this = self.0.lock();
+         this.renderer.draw(scene);
+     }
+ 
++    fn draw_for_presentation(
++        &self,
++        scene: &gpui::Scene,
++        on_presented: Option<Box<dyn FnOnce(u64, bool) + Send>>,
++    ) -> Option<u64> {
++        let on_presented = on_presented.map(hop_presentation_to_main);
++        self.0
++            .lock()
++            .renderer
++            .draw_for_presentation(scene, on_presented)
++    }
++
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+         self.0.lock().renderer.sprite_atlas().clone()
+     }

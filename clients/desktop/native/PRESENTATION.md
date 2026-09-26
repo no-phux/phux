@@ -1,17 +1,14 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-23
+last-reviewed: 2026-09-26
 ---
 
-# Native presentation acknowledgement foundation
+# Native presentation acknowledgement
 
-**TL;DR.** `src/presentation.rs` acquires an authoritative recovery ticket and
-implements conditional revalidation. Production cannot construct its `Presented`
-receipt yet: the pinned GPUI API exposes neither native visibility nor a
-successful drawable-presentation notification. Do not connect acknowledgement to
-canvas paint or `on_next_frame`. The terminal's Unknown-delivery fence must remain
-until the platform evidence exists.
+**TL;DR.** Unknown-delivery recovery clears only after Metal reports that the
+exact drawable was presented on a still-visible window. Paint, `on_next_frame`,
+and command-buffer completion do not mint `Presented`.
 
 The product contract lives in [desktop architecture](../../../docs/architecture/desktop.md#frames-wakes-and-input).
 
@@ -61,59 +58,33 @@ Invalidating on an equal value is conservative and safe. In `destroy`, invalidat
 before releasing UI objects. The callback owns only the ticket's weak lifetime.
 
 After `prepared.paint`, a successful observation must identify the same frame,
-have no error, and cover the terminal's actual visible bounds. Only then may the
-future platform seam register that ticket for the current scene's presentation.
-Dropping the ticket on failed/empty/clipped paint or destruction does nothing.
-Do not construct a `Presented` value in `terminal.rs`; its private fields are an
-intentional fail-closed boundary. Until the following seam lands, capture and
-paint are usable but no production recovery acknowledgement is enabled.
+have no error, and cover the terminal's actual visible bounds. Only then does
+`schedule_recovery` register that ticket with `Window::on_drawable_presented`.
+Dropping the ticket on failed, empty, or clipped paint does nothing.
+Do not construct a `Presented` value in `terminal.rs`; its private fields stay
+inside the presentation module.
 
 Native unit tests need a dev dependency on the existing workspace
 `phux-protocol` crate. The tests are included from
 `tests/native/presentation.rs` by `src/presentation.rs`. The integration parent
 owns the manifest and module wiring.
 
-## What the pinned GPUI source actually guarantees
+## Platform receipt
 
-Paths below are relative to `toolchain/gpuix/zed/crates`:
+`toolchain/patches/0005-drawable-presented.patch` is applied inside the pinned
+Zed checkout by source bootstrap. It is not a GPUIX registry API.
 
-| Source | Observation |
-| --- | --- |
-| `gpui/src/window.rs:1624-1653` | Pending `on_next_frame` callbacks run before the next draw/present. They carry no previous drawable success result. |
-| `gpui/src/window.rs:2401-2438` | `on_next_frame` queues work; test support can run it with `simulate_next_frame` without presentation. |
-| `gpui/src/window.rs:3085-3100` | `present` calls `PlatformWindow::draw` without a success receipt. |
-| `gpui/src/platform.rs:821-875` | `PlatformWindow` exposes activity, not visibility/minimization; `draw` returns `()`. |
-| `gpui_macos/src/window.rs:1906-1908` | AppKit delegates draw to the Metal renderer without returning a result. |
-| `gpui_macos/src/window.rs:2706-2719` | Native occlusion state is available internally, but only starts/stops the display link. |
-| `gpui_apple/src/metal_renderer.rs:447-487` | Missing drawable or render failure logs and returns; success only schedules presentation. |
-| `gpui_apple/src/metal_renderer.rs:521-529` | A command-buffer completion handler recycles buffers; it does not report drawable presentation. |
-| `gpui/src/platform.rs:1013-1037` | Screenshot/offscreen rendering explicitly does not present to the display. |
-
-Window activity is not visibility: an unfocused window may be visible. Sleeping
-until another frame, recording a successful text paint, or receiving GPU command
-completion is not proof that a drawable reached the visible native window.
-
-## Bounded missing platform seam
-
-Implement this inside the pinned GPUI/Metal source, then expose it through GPUI's
-normal Rust API; no application-specific API belongs in the GPUIX registry:
-
-1. Expose native visibility from AppKit's real window: `isVisible`,
-   `!isMiniaturized`, and visible occlusion state. Headless/test windows return
-   unavailable, never visible. Query on the UI thread, at submission and completion.
-2. Associate callbacks registered during successful paint with the **exact scene
-   serial and drawable** submitted by `Window::present`. Reject failed draws,
-   missing drawables, replaced scenes, closed windows and offscreen rendering.
-3. Bridge Metal drawable presentation notification back to GPUI's UI executor.
-   A command-buffer completion callback alone is insufficient; use the drawable's
-   presented callback/time and preserve failure information. Never wait for GPU
-   completion or join a driver on the UI thread.
-4. The native host checks the live weak root, successful observation, visible
-   unclipped terminal bounds, exact frame and matching window before minting
-   `Presented`. `Ticket::acknowledge` then performs its serialized revalidation.
-
-This requires coordinated edits to GPUI core, its AppKit window and Metal
-renderer. A host-only timer or `on_next_frame` wrapper cannot provide this evidence.
+1. `NativeVisibility` reads AppKit `isVisible`, `!isMiniaturized`, and occlusion
+   `Visible`. Headless and test windows stay `Unavailable`.
+2. `Window::on_drawable_presented` registers paint-time callbacks. `present`
+   binds them to that submission's scene serial and drawable id.
+3. Metal `addPresentedHandler` reports that drawable's id and whether
+   `presentedTime` is nonzero. The handler hops to the main queue and does not
+   wait for GPU completion. A missing drawable, failed render, replaced scene,
+   closed window, or offscreen capture drops the callback.
+4. The terminal schedules recovery only for a successful, unclipped paint of the
+   ticket's frame. The callback rechecks visibility and bounds, then
+   `Ticket::acknowledge` revalidates on the control owner.
 
 ## Verification boundary
 
@@ -125,9 +96,7 @@ receipt identity and serialized competing input. They exercise the private
 conditional-clear core directly; synthetic receipt correlation is explicitly
 not a GPU acceptance test.
 
-No visible-window presentation success is claimed. Before enabling recovery,
-extend the existing native child-process harness with visible, hidden, minimized,
-offscreen, failed-draw and cancelled-callback cases, bounded artifact deadlines
-and guaranteed child reaping. A genuine visible drawable must clear the fence;
-all other cases must leave it. This remaining test is blocked on the platform
-receipt seam rather than replaced with a boolean fixture acknowledgement.
+Recovery is wired to that receipt. A visible-window child-process harness for
+hidden, minimized, offscreen, failed-draw, and cancelled-callback cases is still
+the acceptance proof that a genuine drawable clears the fence and every other
+case leaves it. Synthetic receipt correlation is not that proof.
