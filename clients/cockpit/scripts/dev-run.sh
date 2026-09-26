@@ -283,6 +283,10 @@ if [[ "$MEASURE_FIRST_FRAME" == "1" ]]; then
     launch_env+=(NATIVE_SDK_WINDOW_TIMING=1 NATIVE_SDK_GPU_DRAW_TRACE=1)
 fi
 cleanup() {
+    # Preserve the status that triggered EXIT. Bare `|| true` cleanup lines would
+    # otherwise make a failed wait_named / validation look like success under
+    # --detach (bash EXIT traps use the trap's last command status).
+    local status=$?
     if [[ -n "$FRONT_PID" ]]; then
         kill -KILL "$FRONT_PID" 2>/dev/null || true
         wait "$FRONT_PID" 2>/dev/null || true
@@ -292,6 +296,7 @@ cleanup() {
         wait "$DEV_APP_PID" 2>/dev/null || true
         DEV_APP_OWNED=0
     fi
+    return "$status"
 }
 trap cleanup EXIT
 
