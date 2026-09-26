@@ -66,5 +66,5 @@ a detector state.
 - Do not treat `idle` from `phux agent show` as completion. Completion
   is an observed edge (`phux agent wait`). See [`agents.md`](./agents.md).
 
-Shipped integrations: [`opencode.md`](./opencode.md), [`pi.md`](./pi.md),
+Shipped integrations: [`opencode-v2.md`](./opencode-v2.md), [`pi.md`](./pi.md),
 [`claude.md`](./claude.md).

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { isWriteTool, parentPane, parentWriteError, samePane } from "../src/parent.js";
 import { createGuardedTools } from "../src/tools.js";
-import type { PhuxToolRuntime } from "../../opencode/src/tools.js";
+import type { PhuxToolRuntime } from "../src/tools-core.js";
 
 describe("parent pane", () => {
   test("normalizes a bare terminal id", () => {

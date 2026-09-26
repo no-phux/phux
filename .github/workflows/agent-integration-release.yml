@@ -101,14 +101,13 @@ jobs:
           set -euo pipefail
           tag="$DISPATCH_TAG"
           dry_run="$DISPATCH_DRY_RUN"
-          if [[ ! "$tag" =~ ^(opencode-plugin|pi-extension|claude-plugin)-v([0-9]+[.][0-9]+[.][0-9]+)$ ]]; then
-            echo "::error::tag must be opencode-plugin-vX.Y.Z, pi-extension-vX.Y.Z, or claude-plugin-vX.Y.Z"
+          if [[ ! "$tag" =~ ^(pi-extension|claude-plugin)-v([0-9]+[.][0-9]+[.][0-9]+)$ ]]; then
+            echo "::error::tag must be pi-extension-vX.Y.Z or claude-plugin-vX.Y.Z"
             exit 1
           fi
           component="${BASH_REMATCH[1]}"
           version="${BASH_REMATCH[2]}"
           case "$component" in
-            opencode-plugin) directory=integrations/opencode; publish_npm=true ;;
             pi-extension) directory=integrations/pi; publish_npm=true ;;
             claude-plugin) directory=integrations/claude; publish_npm=false ;;
           esac

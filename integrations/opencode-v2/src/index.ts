@@ -6,14 +6,14 @@ import {
   contextAwarenessEnabled,
   normalizeTerminalIdentity,
 } from "../../runtime/src/awareness.js";
-import { OpenCodeLifecycle, handleLifecycleEvent } from "../../opencode/src/lifecycle.js";
-import type { ToolContext } from "../../opencode/src/tools.js";
-import { deletedSessionId, toLifecycleEvent } from "./events.js";
+import { deletedSessionId, applyServerEvent } from "./events.js";
+import { OpenCodeLifecycle } from "./lifecycle.js";
+import type { ToolContext } from "./tools-core.js";
 import { PARENT_PANE_RULE, parentPane } from "./parent.js";
 import { createGuardedTools } from "./tools.js";
 
 export { PARENT_PANE_RULE, parentPane, samePane } from "./parent.js";
-export { toLifecycleEvent, deletedSessionId } from "./events.js";
+export { applyServerEvent, deletedSessionId } from "./events.js";
 export { createGuardedTools } from "./tools.js";
 
 export interface PhuxOpenCodeV2Options {
@@ -108,8 +108,7 @@ export default Plugin.define({
     const controller = new AbortController();
     const events = (async () => {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-        const mapped = toLifecycleEvent(event);
-        if (mapped !== undefined) await handleLifecycleEvent(lifecycle, mapped);
+        await applyServerEvent(lifecycle, event);
         const deleted = deletedSessionId(event);
         if (deleted !== undefined) {
           awareness.delete(deleted);

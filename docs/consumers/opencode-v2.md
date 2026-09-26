@@ -6,10 +6,10 @@ last-reviewed: 2026-09-26
 
 # OpenCode V2 integration
 
-**TL;DR.** `@phux/opencode-v2` is the V2 plugin. phux owns the PTY. OpenCode
-owns the session. The plugin is the AgentSession producer and the sibling
-terminal tools. It does not own a second PTY and it does not tunnel OpenCode's
-HTTP API. The OpenCode 1 package remains [`opencode.md`](./opencode.md).
+**TL;DR.** `@phux/opencode-v2` is the OpenCode plugin. phux owns the PTY.
+OpenCode owns the session. The plugin is the AgentSession producer and the
+sibling terminal tools. It does not own a second PTY and it does not tunnel
+OpenCode's HTTP API. There is no V1 adapter.
 
 ---
 

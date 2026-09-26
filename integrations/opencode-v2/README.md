@@ -3,9 +3,6 @@
 OpenCode V2 plugin. phux owns the PTY. OpenCode owns the session. This package
 is the join, not a tunnel.
 
-The OpenCode 1 adapter stays at [`../opencode`](../opencode). V1 plugins do not
-run in V2. This package does not replace that one.
-
 ## The seam
 
 ```text
@@ -43,7 +40,15 @@ tool record carries a name.
 
 ## Load
 
-OpenCode resolves `@opencode/plugin` when it loads the package. From a checkout:
+OpenCode imports `index.js`, not the TypeScript source. `bun run build` refreshes it.
+
+```sh
+cd integrations/opencode-v2
+bun install
+bun run build
+```
+
+This checkout's `opencode.jsonc` loads `./integrations/opencode-v2`. From another project:
 
 ```jsonc
 {

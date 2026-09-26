@@ -1,4 +1,4 @@
-import { createPhuxTools, resolveTarget, type PhuxToolDefinition, type PhuxToolRuntime, type ToolContext } from "../../opencode/src/tools.js";
+import { createPhuxTools, resolveTarget, type PhuxToolDefinition, type PhuxToolRuntime, type ToolContext } from "./tools-core.js";
 import { isWriteTool, parentWriteError, samePane } from "./parent.js";
 
 const WRITE_NOTE = " Refuses the pane this OpenCode process is running in. Create a sibling with phux_create and target that.";
