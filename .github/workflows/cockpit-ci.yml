@@ -42,7 +42,7 @@ jobs:
     if: needs.changes.outputs.cockpit_needed == 'true'
     needs: changes
     # Standard public GitHub Apple-silicon runner; no paid larger-runner label.
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 45
     # One checkout, nothing to starve: use the machine Zig cache and let the
     # job timeout own the limit. Isolated mode plus a 600s wrapper watchdog

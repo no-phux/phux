@@ -134,7 +134,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-26
+          - os: xcode-27
             container: "null"
             target: aarch64-apple-darwin
           - os: ubuntu-24.04
@@ -226,7 +226,7 @@ jobs:
     name: build Phux Cockpit (macOS arm64)
     needs: gate
     if: needs.gate.outputs.cockpit_build == 'true'
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 45
     env:
       LIBGHOSTTY_VT_SYS_CPU: baseline

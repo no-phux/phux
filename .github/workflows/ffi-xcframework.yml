@@ -69,9 +69,9 @@ concurrency:
 jobs:
   build:
     name: build native xcframeworks
-    # Standard macos-26 is an arm64 GitHub-hosted runner with Xcode and the
+    # Standard xcode-27 is an arm64 GitHub-hosted runner with Xcode 27 and the
     # iOS SDK; device and simulator slices need both.
-    runs-on: macos-26
+    runs-on: xcode-27
     # A cold run compiles ghostty's xcframework emit for both iOS targets;
     # retain a conservative ceiling until hosted timings justify tightening it.
     timeout-minutes: 180

@@ -10,6 +10,13 @@
 # snapshot (re-run `actionlint .github/workflows/*.yml` without them to
 # check).
 # Only standard GitHub-hosted labels are allowed; no custom paid runner labels.
+#
+# `xcode-27` is GitHub's standard hosted macOS 27 + Xcode 27 image
+# (actions/runner-images#14404). actionlint 1.7.12 predates it, so it is
+# declared here; drop this once actionlint lists the label itself.
+self-hosted-runner:
+  labels:
+    - xcode-27
 
 paths:
   .github/workflows/ci.yml:

@@ -123,7 +123,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-26
+          - os: xcode-27
             container: "null"
             target: aarch64-apple-darwin
           - os: ubuntu-24.04

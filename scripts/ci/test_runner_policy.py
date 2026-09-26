@@ -15,7 +15,7 @@ WORKFLOWS = ROOT / ".github/workflows"
 RELEASE = (WORKFLOWS / "release.yml").read_text()
 NEXT_RELEASE = (WORKFLOWS / "next-release.yml").read_text()
 LINUX_RELEASE_SETUP = (ROOT / "scripts/ci/setup-linux-release-userspace.sh").read_text()
-STANDARD = {"ubuntu-latest", "ubuntu-24.04", "ubuntu-24.04-arm", "macos-26"}
+STANDARD = {"ubuntu-latest", "ubuntu-24.04", "ubuntu-24.04-arm", "xcode-27"}
 RETIRED_UBUNTU_2204 = re.compile(
     r"(?m)^[ \t]*(?:runs-on:|- os:) ubuntu-22\.04(?:-arm)?[ \t]*$"
 )

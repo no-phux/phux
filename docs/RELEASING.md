@@ -89,8 +89,8 @@ tap build.
 This repository is public. Standard GitHub-hosted runners are
 [free for public repositories](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
 and do not consume the private-repository minute allowance. Workflows use only
-standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `macos-26`
-labels. Blacksmith and larger hosted runners are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
+standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `xcode-27`
+labels (`xcode-27` is macOS 27 with Xcode 27). Blacksmith and larger hosted runners are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
 runner registration. GitHub artifact/cache storage is a separate billing surface.
 
 ### Cache budget
@@ -125,7 +125,7 @@ Root release targets retain their artifact names and native architectures:
 
 | Target | Standard runner | Build userspace |
 |---|---|---|
-| `aarch64-apple-darwin` | `macos-26` | Native Apple-silicon macOS |
+| `aarch64-apple-darwin` | `xcode-27` | Native Apple-silicon macOS |
 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | `ubuntu:22.04` container (glibc 2.35) |
 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `ubuntu:22.04` container (glibc 2.35) |
 
@@ -590,7 +590,7 @@ arm64-only xcframework path. The script then builds and runs a throwaway
 SwiftPM executable against the macOS slice, which proves the module map and
 the archive link the way a real consumer uses them.
 
-`ffi-xcframework.yml` runs it on `macos-26` for every root release
+`ffi-xcframework.yml` runs it on `xcode-27` for every root release
 (release-please calls it beside `release.yml`) and on dispatch, uploads the
 `PhuxFFI-xcframework` workflow artifact, and with a tag attaches three assets
 to that release:

@@ -25,12 +25,18 @@
 # precisely to keep this floor low, and a runner image bump would silently raise
 # it. PHUX_GLIBC_MAX overrides the ceiling.
 #
+# THE MACOS DEPLOYMENT FLOOR is checked for the same reason: the LC_BUILD_VERSION
+# `minos` must stay at or below 11.0 (rustc's arm64 default), so an Xcode/SDK
+# bump on the runner cannot silently stop the binary launching on older macOS.
+# PHUX_MACOS_MIN_MAX overrides the ceiling.
+#
 # CPU inputs are pinned by scripts/build-release-binaries.sh. ELF GNU property
 # notes are checked below as a second, artifact-level guard against a compiler
 # declaring an x86-64-v2-or-newer requirement.
 set -euo pipefail
 
 GLIBC_MAX="${PHUX_GLIBC_MAX:-2.35}"
+MACOS_MIN_MAX="${PHUX_MACOS_MIN_MAX:-11.0}"
 failures=0
 
 fail() {
@@ -66,6 +72,16 @@ check_macho() {
         ;;
     esac
   done < <(otool -L "$bin" | tail -n +2)
+
+  local minos
+  minos="$(otool -l "$bin" | awk '$1 == "minos" { print $2; exit }')"
+  if [ -z "$minos" ]; then
+    fail "$bin carries no LC_BUILD_VERSION minos"
+  elif [ "$(ver_key "$minos")" -gt "$(ver_key "$MACOS_MIN_MAX")" ]; then
+    fail "$bin requires macOS $minos, above the $MACOS_MIN_MAX floor (Xcode/SDK drift?)"
+  else
+    printf 'portability: %s requires macOS %s (floor %s)\n' "$bin" "$minos" "$MACOS_MIN_MAX"
+  fi
 }
 
 check_elf() {
