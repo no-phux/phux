@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-26
 ---
 
 # proto — connection lifecycle, framing, and protocol meta
@@ -170,7 +170,9 @@ single-stream is their permanent shape.
   correlation stays connection-wide via `request_id`.
 - **Terminal streams.** The client opens one bidi stream per Terminal it
   attaches to (session `ATTACH` opens one per pane in the snapshot;
-  `ATTACH_RESOURCE` opens one for that resource); the server never
+  `ATTACH_RESOURCE` opens one for that resource; a `SPAWN_RESOURCE` from
+  an attached client opens one on `RESOURCE_SPAWNED { Ok }`, and the
+  server publishes nothing for that pane before it); the server never
   opens one. Each carries exactly that Terminal's `RESOURCE_OUTPUT`,
   `BOOTSTRAP_*`, `HISTORY_*`, `FRAME_ACK`, and `INPUT_*` frames — the
   L1 §4 mapping is normative for which frames ride where. QUIC orders

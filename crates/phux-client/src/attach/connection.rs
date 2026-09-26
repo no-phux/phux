@@ -150,6 +150,11 @@ struct Multistream {
     frames_tx: tokio::sync::mpsc::Sender<MuxItem>,
     /// Connection-wide queued/incomplete Terminal-stream frame byte budget.
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
+    /// Terminals whose stream the server ended (death or teardown) and that
+    /// have not been re-bound. The end races the `RESOURCE_CLOSED` on control
+    /// (L1 §4.9), so a caller can still address the Terminal for a moment:
+    /// such a frame is dropped, and the close on control is how it learns.
+    ended: std::collections::HashSet<ResourceId>,
     #[cfg(feature = "testkit")]
     /// Maximum time from a Terminal frame's first byte to its complete body.
     terminal_frame_deadline: std::time::Duration,
@@ -214,8 +219,26 @@ impl Multistream {
             frames_rx,
             frames_tx,
             frame_bytes: std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_FRAME_BYTES)),
+            ended: std::collections::HashSet::new(),
             #[cfg(feature = "testkit")]
             terminal_frame_deadline: TERMINAL_FRAME_DEADLINE,
+        }
+    }
+
+    /// Retire the binding a server-side stream end names, if it is still the
+    /// current one; a stale end from a replaced generation is ignored.
+    fn end_stream(
+        &mut self,
+        terminal_id: ResourceId,
+        stream_id: StreamId,
+        active: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        if !mux_origin_is_current(self, &terminal_id, stream_id, active) {
+            return;
+        }
+        if let Some(mut binding) = self.bindings.remove(&terminal_id) {
+            binding.retire();
+            self.ended.insert(terminal_id);
         }
     }
 
@@ -905,6 +928,13 @@ impl Connection {
                 ));
             };
             let Some(binding) = mux.bindings.get_mut(terminal_id) else {
+                if mux.ended.contains(terminal_id) {
+                    tracing::debug!(
+                        ?terminal_id,
+                        "Terminal frame dropped: its stream already ended",
+                    );
+                    return Ok(());
+                }
                 return Err(AttachError::Protocol(format!(
                     "Terminal frame requires a live QUIC binding: {terminal_id:?}"
                 )));
@@ -1008,6 +1038,7 @@ impl Connection {
         ) {
             replaced.retire();
         }
+        mux.ended.remove(terminal_id);
         Ok(())
     }
 
@@ -1026,6 +1057,7 @@ impl Connection {
             for (_, mut binding) in mux.bindings.drain() {
                 binding.retire();
             }
+            mux.ended.clear();
         }
     }
 
@@ -1125,10 +1157,7 @@ impl Connection {
                             );
                         }
                         MuxItem::End { terminal_id, stream_id, active } => {
-                            if mux_origin_is_current(mux, &terminal_id, stream_id, &active)
-                                && let Some(mut binding) = mux.bindings.remove(&terminal_id) {
-                                binding.retire();
-                            }
+                            mux.end_stream(terminal_id, stream_id, &active);
                         }
                     }
                 }
@@ -1175,13 +1204,7 @@ impl Connection {
                         terminal_id,
                         stream_id,
                         active,
-                    } => {
-                        if mux_origin_is_current(mux, &terminal_id, stream_id, &active)
-                            && let Some(mut binding) = mux.bindings.remove(&terminal_id)
-                        {
-                            binding.retire();
-                        }
-                    }
+                    } => mux.end_stream(terminal_id, stream_id, &active),
                 }
             }
         }
