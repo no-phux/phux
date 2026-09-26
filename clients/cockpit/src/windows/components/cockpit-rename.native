@@ -1,0 +1,22 @@
+<template name="cockpit-rename" args="renameopen">
+  <stack>
+    <if test="{renameopen}">
+      <dialog width="640" height="1000" padding="16" on-dismiss="rename_close">
+        <column gap="8">
+          <row cross="center" gap="8">
+            <text grow="1" overflow="ellipsis">{renameTitle}</text>
+            <button size="sm" variant="ghost" icon="x" label="Close Rename Session" on-press="rename_close" />
+          </row>
+          <input text="{renameQuery}" placeholder="New session name" autofocus="true" on-input="rename_edit" on-submit="rename_submit" label="New session name" />
+          <text wrap="true" foreground="text_muted">{renameNotice}</text>
+          <row gap="8" cross="center">
+            <spacer grow="1" />
+            <button size="sm" variant="ghost" on-press="rename_close">Cancel</button>
+            <if test="{creatingSession}"><button size="sm" disabled="{renameBusy}" on-press="rename_submit">Create Session</button></if>
+            <else><button size="sm" disabled="{renameBusy}" on-press="rename_submit">Rename</button></else>
+          </row>
+        </column>
+      </dialog>
+    </if>
+  </stack>
+</template>

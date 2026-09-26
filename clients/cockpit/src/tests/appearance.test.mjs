@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { initialModel, update } from '../core.ts';
 import { appearanceResponse } from '../appearance.ts';
 
@@ -21,8 +22,17 @@ function replyV2({ values = ['', '14', 'phux-dark', '3', 'block', 'true', '52428
   return new Uint8Array([...base, 0, ...records]);
 }
 function opened(body = reply()) {
-  const model = step(initialModel()[0], { kind: 'settings_open' })[0];
-  return step(model, { kind: 'appearance_loaded', body })[0];
+  let model = step(initialModel()[0], { kind: 'settings_open' })[0];
+  model = step(model, { kind: 'appearance_loaded', body })[0];
+  return step(model, { kind: 'keybindings_loaded', body: new Uint8Array([1, 0, 0, 0]) })[0];
+}
+function keybindingReply(binding = 'Cmd+Shift+t', defaultBinding = 'Cmd+t') {
+  const command = bytes('terminal.new');
+  const label = bytes('New Tab');
+  const current = bytes(binding);
+  const fallback = bytes(defaultBinding);
+  return new Uint8Array([1, 1, 0, 0, 0, +(binding !== defaultBinding), command.length, label.length,
+    current.length, fallback.length, ...command, ...label, ...current, ...fallback]);
 }
 
 test('appearance response rejects malformed lengths and flags', () => {
@@ -198,6 +208,20 @@ test('a failed rollback still dismisses Settings and releases the keyboard', () 
   assert.ok(cmd.cmds.some(effect => effect.name === 'cockpit.navigation'));
 });
 
+test('repeated Cancel during rollback emits one rollback request', () => {
+  let [model, cmd] = step(opened(), { kind: 'settings_close' });
+  assert.equal(model.appearanceClosing, true);
+  assert.equal(model.settingsOpen, true);
+  assert.deepEqual([...cmd.payload], [1, 6, 0]);
+  const [again, againCmd] = step(model, { kind: 'settings_close' });
+  assert.equal(again.appearanceClosing, true);
+  assert.equal(again.settingsOpen, true);
+  assert.equal(againCmd, null);
+  const [fromNav, navCmd] = step(again, { kind: 'palette_open' });
+  assert.equal(fromNav.navigationAfterSettings, true);
+  assert.equal(navCmd, null);
+});
+
 test('without a native transaction Cancel closes locally, while a failed Save keeps the preview', () => {
   let [model] = step(initialModel()[0], { kind: 'settings_open' });
   [model] = step(model, { kind: 'appearance_failed', error: bytes('engine unavailable') });
@@ -237,13 +261,129 @@ test('Workspace and Connection arrow keys never change a hidden theme', () => {
   }
 });
 
-test('Connection and About are read-only; editable groups keep Save', () => {
+test('About is a reachable Settings group', () => {
+  const [model] = step(opened(), { kind: 'settings_section', section: 5 });
+  assert.equal(model.settingsSection, 5);
+  assert.equal(model.settingEditId, 65535);
+});
+
+test('Settings details open one accordion at a time and keep the editor outside', () => {
+  let [model] = step(opened(replyV2()), { kind: 'settings_detail', id: 0 });
+  assert.equal(model.settingsDetailId, 0);
+  [model] = step(model, { kind: 'settings_detail', id: 1 });
+  assert.equal(model.settingsDetailId, 1);
+  [model] = step(model, { kind: 'settings_select', id: 1 });
+  assert.equal(model.settingEditId, 1);
+  assert.equal(model.settingsDetailId, 1);
+  [model] = step(model, { kind: 'settings_detail', id: 1 });
+  assert.equal(model.settingsDetailId, 65535);
+  assert.equal(model.settingEditId, 1);
+});
+
+test('search reveals concealed matching details without using a search-field', () => {
+  const [hidden] = step(opened(), { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Geist Mono') } });
+  assert.deepEqual(hidden.settingRows.map(row => row.id), [0]);
+  assert.equal(hidden.settingsDetailId, 0);
+  assert.match(text(hidden.settingRows[0].applicability), /Geist Mono/);
+  const [timing] = step(opened(), { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Live preview') } });
+  assert.ok(timing.settingRows.some(row => row.id === 0));
+  assert.equal(timing.settingsDetailId, 65535);
+});
+
+test('Settings search sanitizes an invalid detail identity at the model boundary', () => {
+  const corrupt = { ...opened(), settingsDetailId: Number.NaN };
+  const [model] = step(corrupt, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Live preview') } });
+  assert.equal(model.settingsDetailId, 65535);
+});
+
+test('fresh Settings loads chords so global search reveals a concealed default', () => {
+  let [loading, cmd] = step(initialModel()[0], { kind: 'settings_open' });
+  assert.equal(cmd.cmds.at(-1).name, 'cockpit.appearance');
+  [loading, cmd] = step(loading, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(cmd.name, 'cockpit.keybindings');
+  const [loaded] = step(loading, { kind: 'keybindings_loaded', body: keybindingReply() });
+  assert.equal(loaded.showBindingRows, false);
+  const [matched] = step(loaded, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Cmd+t') } });
+  assert.equal(matched.showBindingRows, true);
+  assert.equal(matched.bindingRows.length, 1);
+  assert.equal(matched.bindingDetailIndex, 0);
+});
+
+test('late keybinding discovery cannot release a newer appearance preview', () => {
+  let [model] = step(initialModel()[0], { kind: 'settings_open' });
+  [model] = step(model, { kind: 'appearance_loaded', body: replyV2() });
+  assert.equal(model.bindingsPending, true);
+  [model] = step(model, { kind: 'settings_font', direction: 1 });
+  assert.equal(model.appearanceBusy, true);
+  assert.equal(model.bindingsOwnsBusy, false);
+  [model] = step(model, { kind: 'keybindings_loaded', body: new Uint8Array([1, 0, 0, 0]) });
+  assert.equal(model.appearanceBusy, true);
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(model.appearanceBusy, false);
+});
+
+test('keybinding failure cannot release a newer Settings rollback', () => {
+  let [model] = step(initialModel()[0], { kind: 'settings_open' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  [model] = step(model, { kind: 'settings_close' });
+  assert.equal(model.appearanceClosing, true);
+  [model] = step(model, { kind: 'keybindings_failed', error: bytes('registry unavailable') });
+  assert.equal(model.appearanceClosing, true);
+  assert.equal(model.appearanceBusy, true);
+});
+
+test('Keyboard cannot take the busy gate from appearance or discovery', () => {
+  let [model] = step(initialModel()[0], { kind: 'settings_open' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  const [discovering, discoverCmd] = step(model, { kind: 'settings_section', section: 2 });
+  assert.deepEqual(discovering, model);
+  assert.equal(discoverCmd, null);
+  [model] = step(model, { kind: 'settings_font', direction: 1 });
+  const [previewing, previewCmd] = step(model, { kind: 'settings_section', section: 2 });
+  assert.deepEqual(previewing, model);
+  assert.equal(previewCmd, null);
+});
+
+test('reopening Settings withdraws stale binding authority during discovery', () => {
+  let model = opened();
+  [model] = step(model, { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(model.bindings.rows.length, 1);
+  [model] = step(model, { kind: 'settings_close' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply({ active: false, outcome: 2 }) });
+  [model] = step(model, { kind: 'settings_open' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(model.bindingsPending, true);
+  assert.equal(model.bindings.rows.length, 0);
+  assert.equal(model.bindingRows.length, 0);
+  const [ignored, cmd] = step(model, { kind: 'binding_reset', index: 0 });
+  assert.deepEqual(ignored, model);
+  assert.equal(cmd, null);
+});
+
+test('Settings groups cannot retain keyboard rows or share the connection accordion identity', () => {
+  let [loaded] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  [loaded] = step(loaded, { kind: 'appearance_loaded', body: reply() });
+  let [keyboard] = step(loaded, { kind: 'settings_section', section: 2 });
+  [keyboard] = step(keyboard, { kind: 'keybindings_loaded', body: keybindingReply() });
+  assert.equal(keyboard.showBindingRows, true);
+  const [connection] = step(keyboard, { kind: 'settings_section', section: 4 });
+  assert.equal(connection.showBindingRows, false);
+  assert.deepEqual(connection.settingRows.map(row => row.id), []);
+
+  const markup = readFileSync(new URL('../windows/components/cockpit-settings.native', import.meta.url), 'utf8');
+  assert.equal(markup.match(/on-toggle="settings_detail:12"/g)?.length ?? 0, 0);
+  assert.equal(markup.match(/setting\.id == 12/g)?.length ?? 0, 0);
+  assert.match(markup, /accordion text="Details" label="\{setting\.label\}"/);
+  assert.match(markup, /accordion text="Details" label="\{binding\.label\}"/);
+  assert.match(markup, /if test="\{settingsFooterSave\}"/);
+});
+
+test('Connection and About are read-only while editable groups keep Save', () => {
   const openedSettings = opened();
   assert.equal(text(openedSettings.settingsSections[4].label), 'Connection');
   assert.equal(openedSettings.settingsFooterSave, true);
   const [connection] = step(openedSettings, { kind: 'settings_section', section: 4 });
-  assert.equal(connection.settingsSection, 4);
-  assert.deepEqual(connection.settingRows.map(row => row.id), []);
   assert.equal(connection.settingsFooterSave, false);
   assert.deepEqual(step(connection, { kind: 'settings_commit' }), [connection, null]);
   assert.equal(connection.noSettingRows, false);
@@ -252,8 +392,6 @@ test('Connection and About are read-only; editable groups keep Save', () => {
   const [keyboard] = step(openedSettings, { kind: 'settings_section', section: 2 });
   assert.equal(keyboard.settingsFooterSave, true);
   const dirty = step(openedSettings, { kind: 'appearance_loaded', body: reply({ dirty: true }) })[0];
-  assert.equal(dirty.appearance.dirty, true);
-  assert.equal(dirty.settingsFooterSave, true);
   const [dirtyConnection] = step(dirty, { kind: 'settings_section', section: 4 });
   assert.equal(dirtyConnection.appearance.dirty, true);
   assert.equal(dirtyConnection.settingsFooterSave, true);
@@ -267,4 +405,34 @@ test('Connection and About are read-only; editable groups keep Save', () => {
   assert.equal(fromConnection.settingsOpen, true);
   assert.equal(fromConnection.paletteOpen, false);
   assert.deepEqual([...cmd.payload], [1, 6, 0]);
+});
+
+test('global search results stay disclosure-only in read-only Settings groups', () => {
+  let [model] = step(opened(), { kind: 'settings_section', section: 4 });
+  [model] = step(model, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Geist Mono') } });
+  assert.deepEqual(model.settingRows.map(row => row.id), [0]);
+  const [setting] = step(model, { kind: 'settings_select', id: 0 });
+  assert.equal(setting.settingEditId, 65535);
+
+  [model] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  [model] = step(model, { kind: 'settings_section', section: 5 });
+  assert.equal(model.settingsSection, 5);
+  [model] = step(model, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Cmd+t') } });
+  assert.equal(model.showBindingRows, true);
+  const [binding] = step(model, { kind: 'binding_select', index: 0 });
+  assert.equal(binding.bindingEditIndex, 65535);
+});
+
+test('switching to a read-only group clears and conceals a keyboard editor', () => {
+  let [model] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  [model] = step(model, { kind: 'settings_section', section: 2 });
+  [model] = step(model, { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'binding_select', index: 0 });
+  assert.equal(model.bindingEditIndex, 0);
+  [model] = step(model, { kind: 'settings_section', section: 4 });
+  assert.equal(model.bindingEditIndex, 65535);
+  const markup = readFileSync(new URL('../windows/components/cockpit-settings.native', import.meta.url), 'utf8');
+  assert.match(markup, /if test="\{settingsFooterSave\}">\s*<if test="\{bindingEditIndex == binding.index\}"/);
 });

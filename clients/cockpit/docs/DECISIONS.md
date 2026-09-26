@@ -136,10 +136,27 @@ one still cannot.
 Every colour in the block is measured against the ground it sits on with the
 same WCAG formula the panel reports, and clears AA (4.5:1) on both grounds:
 ink 19.03, muted ink 9.08, pass green 12.38, fail red 7.55 on `#101010`. The
-invariant is pinned by `settings_theme_tests.zig`, "the settings surface stays
-readable when the theme is broken", which measures the tree rather than
-comparing against the constants — so a future palette swap still has to keep it
-readable.
+invariant is pinned by `semantic_theme.zig`, "Settings rescue text remains
+readable on every semantic surface", which measures token contrast on every
+semantic surface rather than comparing against the constants — so a future
+palette swap still has to keep it readable.
+
+---
+
+## Settings rows disclose details; they do not dump the schema
+
+**Decided 2026-09-15.** A Settings row shows title, effective value, a short
+timing subtitle, and actions. Default, applicability, timing, and the
+configured value live in one native accordion, one open at a time. Syntax
+appears only while editing; provenance and connection change-route stay
+read-only. The editor stays outside the accordion so collapsing details cannot
+hide an in-flight Preview. Search is an ordinary `input` (not `search-field`,
+whose Escape-clears fights Escape-to-Cancel) and, when the hit is only in
+concealed copy, opens that row's details. IDs 0..14, appearance records 0..10,
+request bytes, rollback/Save, and About (section 5) stay on the same wire.
+Keyboard search includes installed and default chords, revealing a default-only
+match even outside the Keyboard group. Accordion triggers keep the visual
+"Details" affordance but carry the row label as their accessible name.
 
 ---
 
@@ -529,4 +546,3 @@ Hybrid C always sets that fit; `grid.paint` callers keep the default
 
 Reopen this if a measured bind after the bump disagrees, or if 16 full
 panes become a product requirement.
-

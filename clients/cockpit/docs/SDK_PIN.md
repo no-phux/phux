@@ -31,7 +31,7 @@ would have.
 |---|---|---|
 | Build against the pin | root `.github/workflows/cockpit-ci.yml`, every relevant push and PR | Does Cockpit compile and pass against the SDK it claims to use? |
 | Build against the branch head | root `.github/workflows/cockpit-sdk-head.yml`, on source-repository dispatch, manual dispatch, and Mondays at 07:17 UTC | Has the fork moved somewhere Cockpit cannot follow? |
-| Pin documentation agrees | `scripts/check-sdk-pin.sh`, run first in CI | Does README describe the sha that is actually built? |
+| Pin documentation agrees | `scripts/check-sdk-pin.sh`, run first in CI | Do README and the shipped notices describe the exact shas that are actually built? |
 | Glyph weight holds | `scripts/host-raster-check.sh --min-solid 4000`, in CI and SDK-head | Does the pinned host and the fork's branch head still ink text as thickly as they did? |
 
 The last one is aimed squarely at SDK movement. Compiling proves the SDK's API
@@ -123,9 +123,9 @@ zig build --summary all
 zig build -Dphux-enabled=true --summary all
 ```
 
-**6. Update the documentation, and prove it.** Rewrite the pin paragraph under
-[Requirements](../README.md#requirements) to the new sha, and the
-`Pinned source:` line under "Native SDK" in `THIRD_PARTY_NOTICES.md`, then:
+**6. Update the documentation, and prove it.** Rewrite the pin paragraphs under
+[Requirements](../README.md#requirements) and both dependency-specific
+`Pinned source:` lines in `THIRD_PARTY_NOTICES.md` to their exact shas, then:
 
 ```sh
 ./scripts/check-sdk-pin.sh

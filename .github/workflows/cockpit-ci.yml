@@ -94,13 +94,11 @@ jobs:
         run: python3 scripts/ci/cockpit_artifacts.py restore
 
       # Node 24 will not strip @native-sdk/core .ts under node_modules; the
-      # navigation-loader does. just cockpit-node-test is the same command.
-      - name: Run Cockpit Node tests
+      # navigation-loader does. The helper is also the canonical local gate.
+      - name: Test Cockpit model and presentation contracts
         if: needs.changes.outputs.zig_needed == 'true'
         working-directory: clients/cockpit
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs
+        run: ./scripts/cockpit-node-test.sh
 
       # rust-cache is the dependency archive for a miss. The fat-LTO link is
       # the exact-input artifact above; sccache does not cache that link.
@@ -158,6 +156,8 @@ jobs:
           ./scripts/check-release-version.sh
           ./scripts/check-release-fallback.sh
           ./scripts/check-sdk-pin.sh
+          ./scripts/check-sdk-pin_test.sh
+          ./scripts/dev-run_test.sh
           python3 ./scripts/check-build-contracts.py
           ./scripts/lib/zon_test.sh
           ./scripts/lib/measure_test.sh

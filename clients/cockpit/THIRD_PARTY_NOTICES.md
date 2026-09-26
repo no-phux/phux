@@ -35,7 +35,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Source: https://github.com/ghostty-org/ghostty
+Pinned source: https://github.com/ghostty-org/ghostty/tree/7aa9591746ffa4d2eee458960c76554352832595
+
+Upstream: https://github.com/ghostty-org/ghostty
 
 ## Phux Client FFI and Rust Dependencies
 

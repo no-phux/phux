@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { initialModel, update, commandMsg } from '../core.ts';
+import { initialModel, update, commandMsg, windows } from '../core.ts';
 import { remoteRequest, remoteReply, remoteStatusLine } from '../remote-hosts.ts';
 
 const bytes = value => new TextEncoder().encode(value);
@@ -15,10 +15,14 @@ function reply(phase, host, reason = '') {
   const r = bytes(reason);
   return new Uint8Array([1, phase, h.length, ...h, r.length, ...r]);
 }
-function snapshotBytes(connection) {
-  const out = new Uint8Array(33);
-  out[0] = 1; out[1] = 2; out[10] = 7; out[23] = connection;
+function snapshotBytes(connection, activeWindow = 0) {
+  const out = new Uint8Array(activeWindow === 0 ? 33 : 40);
+  out[0] = 1; out[1] = 2; out[10] = 7; out[18] = activeWindow; out[23] = connection;
   out[26] = 168; out[29] = 255;
+  if (activeWindow > 0) {
+    out[32] = 1;
+    out.set([activeWindow, 0, 0, 0, 0, 168, 0], 33);
+  }
   return out;
 }
 function assertRemoteRequest(cmd, payload) {
@@ -57,10 +61,11 @@ test('opening asks for status and takes the modal slot from the switcher', () =>
 test('Connect to Host opens in whichever window invoked it, not always the main one', () => {
   // The switcher's Connect to Host button is in every window's chrome; the
   // snapshot's active-window byte says which one the user is in.
-  const secondary = snapshotBytes(2);
-  secondary[18] = 1;
+  const secondary = snapshotBytes(2, 1);
   let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body: secondary });
   assert.equal(model.activeWindow, 1);
+  assert.equal(windows(model).length, 1);
+  assert.equal(text(windows(model)[0].label), 'phux-window-1');
   [model] = step(model, { kind: 'host_open' });
   assert.equal(model.hostOpen, true);
   assert.equal(model.mainHostOpen, false);
@@ -73,9 +78,9 @@ test('Connect to Host opens in whichever window invoked it, not always the main 
   // panel is its own template: another cockpit-window argument would push the
   // tab loop past the live interpreter's 16-entry scope bound.
   const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
-  const component = read('../windows/components/cockpit-window.native');
+  const component = read('../windows/components/cockpit-host.native');
   assert.match(component, /<template name="cockpit-host" args="hostopen">/);
-  assert.doesNotMatch(component, /<template name="cockpit-window" args="[^"]*hostopen/);
+  assert.doesNotMatch(read('../windows/components/cockpit-window.native'), /<template name="cockpit-window" args="[^"]*hostopen/);
   const use = flag => new RegExp(`<use template="cockpit-host" hostopen="\\{${flag}\\}" />`);
   assert.match(read('../app.native'), use('mainHostOpen'));
   for (const n of [1, 2, 3, 4]) assert.match(read(`../windows/phux-window-${n}.native`), use(`window${n}HostOpen`));
@@ -185,7 +190,7 @@ test('Disconnect removes the host named in the panel, Disconnect All every host;
   [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(0, '') });
   assert.equal(model.hostOpen, false);
   assert.equal(cmd.name, 'cockpit.committed');
-  const panel = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
+  const panel = readFileSync(new URL('../windows/components/cockpit-host.native', import.meta.url), 'utf8');
   assert.match(panel, /on-press="host_disconnect">Disconnect<\/button>/);
   assert.match(panel, /on-press="host_disconnect_all">Disconnect All<\/button>/);
 });

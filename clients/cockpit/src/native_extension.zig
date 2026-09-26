@@ -16,7 +16,23 @@ const std = @import("std");
 const result_wire = cockpit.command_results;
 test {
     _ = @import("tests/shipping_pointer_tests.zig");
+    _ = cockpit.projection.semantic_theme;
     _ = cockpit.machines;
+}
+test "semantic chrome tokens ignore broken terminal colors" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const baseline = cockpit.projection.cockpitTokens(engine.model);
+    engine.model.config.background = .{ .r = 17, .g = 17, .b = 17 };
+    engine.model.config.foreground = .{ .r = 17, .g = 17, .b = 17 };
+
+    const chrome = cockpit.projection.cockpitTokens(engine.model);
+    try std.testing.expect(std.meta.eql(baseline, chrome));
+
+    const terminal = cockpit.projection.terminalTokens(engine.model);
+    const configured = native_sdk.canvas.Color.rgb8(17, 17, 17);
+    try std.testing.expectEqual(configured, terminal.colors.background);
+    try std.testing.expectEqual(configured, terminal.colors.text);
 }
 test "keybindings SDK registration and fallback dispatch share applied chord" {
     try @import("keybindings_sdk_tests.zig").check(native_sdk, cockpit.keybindings_runtime);
@@ -290,7 +306,7 @@ const Bridge = struct {
     const Admission = cockpit.keybindings_runtime.replay.Journal(native_sdk);
     const InteractionMode = enum { terminal, palette, settings, menu };
     /// Mirrors committed core modality, never the most recently painted view.
-    /// The core's modal is app-wide even when presented in a secondary window.
+    /// Flattened per-window overlay flags decide which native window owns it.
     interaction_mode: InteractionMode = .terminal,
     engine: ?*Engine = null,
     channels: ?HostChannelBinding = null,
@@ -785,8 +801,8 @@ const Bridge = struct {
     }
 
     fn keybindingsEnabled(self: *Bridge) bool {
-        if (self.interaction_mode != .terminal) return false;
         const engine = self.engine orelse return false;
+        if (windowOwnsOverlay(Adapter.Host.model(), engine.model.active_window)) return false;
         return !engine.textInputOwnsKeyboard();
     }
 
@@ -1488,12 +1504,12 @@ fn primaryChord(event: canvas.WidgetKeyboardEvent) ?core.Msg {
 fn onKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     const replaying = bridge.replayInteraction();
     if (bridge.interaction_mode == .menu) return headerMenuKey(event);
-    if (bridge.interaction_mode != .terminal) return overlayKey(event);
+    if (overlayOwnsOrigin()) return overlayKey(event);
     if (primaryChord(event)) |msg| return msg;
     if (replaying) return null;
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
-    engine.onKey(fx, event);
+    deliverTerminalKey(engine, fx, event);
     return null;
 }
 
@@ -1507,9 +1523,12 @@ fn headerMenuKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
 
 fn onText(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     if (bridge.replayInteraction()) return null;
-    if (bridge.interaction_mode != .terminal) return null;
+    if (overlayOwnsOrigin()) return null;
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
+    const was = engine.input_suspended;
+    engine.input_suspended = false;
+    defer engine.input_suspended = was;
     engine.onText(fx, event);
     return null;
 }
@@ -1663,11 +1682,64 @@ fn terminalInteraction(ui: *Adapter.Ui, engine: *Engine, window_index: usize) Ad
     });
 }
 
+fn overlayOpen(palette: bool, agents: bool, settings: bool, host: bool, dir: bool, rename: bool) bool {
+    return palette or agents or settings or host or dir or rename;
+}
+
+fn windowOwnsOverlay(model: *const core.Model, window_index: usize) bool {
+    return switch (window_index) {
+        0 => overlayOpen(model.mainPaletteOpen, model.mainAgentsOpen, model.mainSettingsOpen, model.mainHostOpen, model.mainDirOpen, model.mainRenameOpen),
+        1 => overlayOpen(model.window1PaletteOpen, model.window1AgentsOpen, model.window1SettingsOpen, model.window1HostOpen, model.window1DirOpen, model.window1RenameOpen),
+        2 => overlayOpen(model.window2PaletteOpen, model.window2AgentsOpen, model.window2SettingsOpen, model.window2HostOpen, model.window2DirOpen, model.window2RenameOpen),
+        3 => overlayOpen(model.window3PaletteOpen, model.window3AgentsOpen, model.window3SettingsOpen, model.window3HostOpen, model.window3DirOpen, model.window3RenameOpen),
+        4 => overlayOpen(model.window4PaletteOpen, model.window4AgentsOpen, model.window4SettingsOpen, model.window4HostOpen, model.window4DirOpen, model.window4RenameOpen),
+        else => false,
+    };
+}
+
+fn windowOwnsSettings(model: *const core.Model, window_index: usize) bool {
+    return switch (window_index) {
+        0 => model.mainSettingsOpen,
+        1 => model.window1SettingsOpen,
+        2 => model.window2SettingsOpen,
+        3 => model.window3SettingsOpen,
+        4 => model.window4SettingsOpen,
+        else => false,
+    };
+}
+
+fn routeContainsSheet(route: []const canvas.WidgetEventRouteEntry) bool {
+    for (route) |entry| {
+        if (entry.kind == .sheet) return true;
+    }
+    return false;
+}
+
+fn settingsConsumesOutsidePointer(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
+    const index = Engine.windowIndexForCanvas(routed.view_label) orelse return false;
+    if (!windowOwnsSettings(Adapter.Host.model(), index)) return false;
+    return !routeContainsSheet(routed.route);
+}
+
+fn overlayOwnsOrigin() bool {
+    if (bridge.interaction_mode == .terminal) return false;
+    const origin = bridge.fallback_origin orelse return true;
+    const index = Engine.windowIndexForCanvas(origin.view_label) orelse return true;
+    return windowOwnsOverlay(Adapter.Host.model(), index);
+}
+
+fn deliverTerminalKey(engine: *Engine, fx: EngineFx, event: canvas.WidgetKeyboardEvent) void {
+    const was = engine.input_suspended;
+    engine.input_suspended = false;
+    defer engine.input_suspended = was;
+    engine.onKey(fx, event);
+}
+
 fn composeView(ui: *Adapter.Ui, model: *const core.Model, markup: Adapter.Ui.Node, window_index: usize) Adapter.Ui.Node {
     const engine = bridge.engine orelse return markup;
     if (engine.model.wsAtConst(window_index)) |workspace|
         syncTerminalSpace(model, window_index, workspace.surface_size, cockpit.projection.cockpitTokens(engine.model));
-    if (Bridge.interactionMode(model) != .terminal) return markup;
+    if (windowOwnsOverlay(model, window_index)) return markup;
     return ui.el(.stack, .{ .grow = 1 }, .{
         terminalInteraction(ui, engine, window_index),
         markup,
@@ -1841,9 +1913,64 @@ pub fn configureOptions(options: *Adapter.Options, init: std.process.Init) void 
 const PointerHost = struct {
     const workspace_timer_id = std.hash.Wyhash.hash(0, "phux-workspace-refresh");
     const maintenance_timer_id = std.hash.Wyhash.hash(0, "phux-local-maintenance");
+    const SettingsClickthrough = struct {
+        window_id: native_sdk.platform.WindowId = 0,
+        window_index: ?usize = null,
+        command_consumed: bool = false,
+
+        fn clear(self: *SettingsClickthrough) void {
+            self.* = .{};
+        }
+
+        fn arm(self: *SettingsClickthrough, dismissed: native_sdk.runtime.CanvasWidgetDismissEvent) void {
+            const index = Engine.windowIndexForCanvas(dismissed.view_label) orelse return self.clear();
+            if (!windowOwnsSettings(Adapter.Host.model(), index)) return self.clear();
+            self.* = .{ .window_id = dismissed.window_id, .window_index = index };
+        }
+
+        fn matches(self: *const SettingsClickthrough, window_id: native_sdk.platform.WindowId, view_label: []const u8) bool {
+            const index = self.window_index orelse return false;
+            return window_id == self.window_id and Engine.windowIndexForCanvas(view_label) == index;
+        }
+
+        fn consumeCommand(self: *SettingsClickthrough, command: native_sdk.CommandEvent) bool {
+            // Only the SDK's command from this exact routed pointer belongs to
+            // the dismissal sequence. Menu, shortcut, and automation commands
+            // are later interactions even when they address the same window.
+            if (command.source != .native_view or !self.matches(command.window_id, command.view_label) or self.command_consumed) {
+                self.clear();
+                return false;
+            }
+            self.command_consumed = true;
+            return true;
+        }
+
+        fn consumePointer(self: *SettingsClickthrough, routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
+            const matches_owner = self.matches(routed.window_id, routed.view_label);
+            // The SDK always routes this pointer after dismissal (and after an
+            // optional command). AppKit may then own a window drag forever, so
+            // this routed event—not a release that may never arrive—bounds the
+            // one clickthrough suppression sequence.
+            self.clear();
+            return matches_owner;
+        }
+
+        fn clearForWidgetEvent(self: *SettingsClickthrough, window_id: native_sdk.platform.WindowId, view_label: []const u8) void {
+            if (self.matches(window_id, view_label)) self.clear();
+        }
+
+        fn release(self: *SettingsClickthrough, raw: native_sdk.platform.GpuSurfaceInputEvent) void {
+            if (raw.kind != .pointer_up and raw.kind != .pointer_cancel and raw.kind != .key_up) return;
+            self.clearForWidgetEvent(raw.window_id, raw.label);
+        }
+    };
     inner: native_sdk.App = undefined,
     selection_autoscroll_timer_active: bool = false,
     maintenance_timer_active: bool = false,
+    // SDK gpu_surface_events: dismiss, then command from the already-routed
+    // outside target, then canvas_widget_pointer. Settings must consume that
+    // command; other overlays keep light-dismiss.
+    settings_clickthrough: SettingsClickthrough = .{},
     menu_dismiss_pending: bool = false,
     menu_dismiss_pointer: ?u64 = null,
     menu_dismiss_window: u64 = 0,
@@ -1910,9 +2037,31 @@ const PointerHost = struct {
         refreshNativeState(runtime, value);
         closeNativeWindow(value);
         routeNativeInput(runtime, admitted);
-        try self.inner.event(runtime, modalInputEvent(admitted));
+        const consume_settings_outside = self.consumeSettingsOutsideGesture(admitted);
+        if (!consume_settings_outside) try self.inner.event(runtime, modalInputEvent(admitted));
         syncWindowIds(runtime);
-        if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
+        if (value == .canvas_widget_pointer and !consume_settings_outside)
+            try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
+    }
+
+    fn consumeSettingsOutsideGesture(self: *PointerHost, value: native_sdk.Event) bool {
+        switch (value) {
+            .canvas_widget_dismiss => |dismissed| {
+                self.settings_clickthrough.arm(dismissed);
+                return false;
+            },
+            .command => |command| return self.settings_clickthrough.consumeCommand(command),
+            .canvas_widget_pointer => |routed| return self.settings_clickthrough.consumePointer(routed) or settingsConsumesOutsidePointer(routed),
+            .canvas_widget_keyboard => |routed| {
+                self.settings_clickthrough.clearForWidgetEvent(routed.window_id, routed.view_label);
+                return false;
+            },
+            .gpu_surface_input => |raw| {
+                self.settings_clickthrough.release(raw);
+                return false;
+            },
+            else => return false,
+        }
     }
 
     /// SDK light-dismiss is published before the same cycle's routed pointer
@@ -2022,13 +2171,16 @@ const PointerHost = struct {
     fn modalInputEvent(value: native_sdk.Event) native_sdk.Event {
         if (value != .canvas_widget_keyboard or bridge.interaction_mode != .palette) return value;
         var routed = value.canvas_widget_keyboard;
-        const target = routed.target orelse return value;
-        if (target.kind != .input) return value;
+        const index = Engine.windowIndexForCanvas(routed.view_label) orelse return value;
+        if (!windowOwnsOverlay(Adapter.Host.model(), index)) return value;
+        if (routed.target == null) return value;
         if (!std.meta.eql(routed.keyboard.modifiers, canvas.WidgetKeyboardModifiers{})) return value;
         if (overlayKey(routed.keyboard) == null) return value;
-        // The palette owns bare Escape/Up/Down even while its query editor is
-        // focused. Route those through the adapter's public app-key fallback;
-        // text, Enter/on-submit, modified editing and buttons keep their owner.
+        // The owner window's palette owns bare Escape/Up/Down even while its
+        // query editor or inspector action holds focus. Route those through
+        // the adapter's public app-key fallback; text, Enter/on-submit,
+        // modified editing and presses keep their owner. Other windows keep
+        // their terminal input.
         routed.target = null;
         routed.route = &.{};
         routed.keyboard.edit = null;
@@ -2265,19 +2417,24 @@ fn keyboardTargetIsTab(runtime: *native_sdk.Runtime, routed: native_sdk.runtime.
 
 fn adoptCanvasWindow(engine: *Engine, window_id: native_sdk.platform.WindowId, label: []const u8) void {
     const index = Engine.windowIndexForCanvas(label) orelse return;
-    if (engine.matchesNativeWindow(index, window_id)) engine.model.active_window = index;
+    if (!engine.matchesNativeWindow(index, window_id)) return;
+    engine.model.active_window = index;
+    if (engineFx()) |fx| engine.setInputSuspended(fx, windowOwnsOverlay(Adapter.Host.model(), index));
 }
 
 fn pointerMayAdoptWindow(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
-    if (bridge.interaction_mode == .terminal) return true;
+    if (settingsConsumesOutsidePointer(routed)) return false;
+    const index = Engine.windowIndexForCanvas(routed.view_label) orelse return true;
+    if (!windowOwnsOverlay(Adapter.Host.model(), index)) return true;
     const target = routed.press_target orelse return false;
-    // A modal blocks the grids in every window. An explicit chrome control
+    // The owner window's overlay blocks its grids. An explicit chrome control
     // can still initiate a contextual departure; background pane hits cannot.
     return target.kind == .button;
 }
 
 fn routePointerInput(engine: *Engine, fx: EngineFx, raw: native_sdk.platform.GpuSurfaceInputEvent) void {
-    if (bridge.interaction_mode != .terminal) return;
+    const index = Engine.windowIndexForCanvas(raw.label) orelse return;
+    if (windowOwnsOverlay(Adapter.Host.model(), index)) return;
     switch (raw.kind) {
         .pointer_down, .pointer_up, .pointer_cancel, .pointer_move, .pointer_drag, .scroll => {},
         else => return,
@@ -2285,6 +2442,9 @@ fn routePointerInput(engine: *Engine, fx: EngineFx, raw: native_sdk.platform.Gpu
     // Window adoption for chrome (tabs, New Tab) is canvas_widget_pointer's
     // job, after tab-command receipts validate. onPointer itself adopts only
     // when the hit is inside that window's terminal workspace.
+    const was = engine.input_suspended;
+    engine.input_suspended = false;
+    defer engine.input_suspended = was;
     if (engine.onPointer(fx, raw) == .geometry_changed) bridge.announce(engine);
     engine.noteTopologyChange(fx, topologyTimer);
 }
@@ -2407,7 +2567,13 @@ test "chrome follows native appearance without changing terminal defaults" {
 /// declared window label builds its own compiled markup over the core model.
 const window_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "components/cockpit-window.native", .source = @embedFile("windows/components/cockpit-window.native") },
+    .{ .path = "components/cockpit-chrome-recipes.native", .source = @embedFile("windows/components/cockpit-chrome-recipes.native") },
     .{ .path = "components/cockpit-settings.native", .source = @embedFile("windows/components/cockpit-settings.native") },
+    .{ .path = "components/cockpit-navigator.native", .source = @embedFile("windows/components/cockpit-navigator.native") },
+    .{ .path = "components/cockpit-host.native", .source = @embedFile("windows/components/cockpit-host.native") },
+    .{ .path = "components/cockpit-directory.native", .source = @embedFile("windows/components/cockpit-directory.native") },
+    .{ .path = "components/cockpit-rename.native", .source = @embedFile("windows/components/cockpit-rename.native") },
+    .{ .path = "components/cockpit-agents.native", .source = @embedFile("windows/components/cockpit-agents.native") },
     .{ .path = "phux-window-1.native", .source = @embedFile("windows/phux-window-1.native") },
     .{ .path = "phux-window-2.native", .source = @embedFile("windows/phux-window-2.native") },
     .{ .path = "phux-window-3.native", .source = @embedFile("windows/phux-window-3.native") },
@@ -3107,6 +3273,9 @@ fn firstPaintedCatalogMessage(node: Adapter.Ui.Node) ?core.Msg {
 }
 
 fn paintedSettingsSection(node: Adapter.Ui.Node, section: i64) ?core.Msg {
+    if (node.on_toggle) |msg| {
+        if (msg == .settings_section and msg.settings_section == section) return msg;
+    }
     if (node.on_press) |msg| {
         if (msg == .settings_section and msg.settings_section == section) return msg;
     }
@@ -5057,7 +5226,8 @@ test "rejected stored bindings suspend safely and can be reset without overwriti
     const original = engine.model.config.keybindings;
     startKeybindings(&rig.harness.runtime);
     try std.testing.expectEqual(@as(usize, 2), rig.harness.null_platform.configuredShortcuts().len);
-    bridge.interaction_mode = .settings;
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
     try bridge.syncKeybindings();
     try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.configuredShortcuts().len);
     Bridge.request(&bridge, cockpit.engine.appearance.request_name, 401, &.{ 1, 0, 0 });
@@ -5323,7 +5493,7 @@ test "replayed modality routes fallback keys without live terminal effects" {
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
-test "committed app modal blocks raw pointers across native windows" {
+test "committed app modal blocks raw pointers on the owner window only" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
@@ -5331,20 +5501,21 @@ test "committed app modal blocks raw pointers across native windows" {
     try rig.settle(1, "READY");
     const engine = bridge.engine.?;
     try rig.dispatch(.settings_open);
-    const active = engine.model.active_window;
+    const owner = engine.model.active_window;
     const focus = engine.model.focusedTerminalRef().?;
-    for ([_][]const u8{ canvas_label, "phux-cockpit-canvas-1" }) |label| {
-        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
-            .window_id = 1,
-            .label = label,
-            .kind = .pointer_down,
-            .x = 400,
-            .y = 300,
-        } });
-        try std.testing.expectEqual(active, engine.model.active_window);
-        try std.testing.expect(focus.eql(engine.model.focusedTerminalRef().?));
-        try std.testing.expect(engine.input_suspended);
-    }
+    try std.testing.expectEqual(@as(usize, 1), owner);
+    try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 0));
+    try std.testing.expectEqual(@as(usize, 0), try terminalInputCount(&rig.app_state.model, 1));
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "phux-cockpit-canvas-1",
+        .kind = .pointer_down,
+        .x = 400,
+        .y = 300,
+    } });
+    try std.testing.expectEqual(owner, engine.model.active_window);
+    try std.testing.expect(focus.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expect(engine.input_suspended);
 }
 
 test "cold replay registers provider and PTY results without live startup" {
@@ -6274,6 +6445,8 @@ test "shipping agent inspector arrows and Enter navigate the exact parent" {
     try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas enter");
     try std.testing.expect(rig.app_state.model.paletteOpen);
     try std.testing.expect(local.eql(engine.model.focusedTerminalRef().?));
+    // Parent-unavailable autofocus is Refresh; Enter retries rather than jumping.
+    try rig.settleNavigation();
     try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
     try rig.settleNavigation();
     try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.paletteOffset);
@@ -6541,7 +6714,13 @@ test "shipping failed reconnect publishes the retired pending window" {
 const main_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "app.native", .source = @embedFile("app.native") },
     .{ .path = "windows/components/cockpit-window.native", .source = @embedFile("windows/components/cockpit-window.native") },
+    .{ .path = "windows/components/cockpit-chrome-recipes.native", .source = @embedFile("windows/components/cockpit-chrome-recipes.native") },
     .{ .path = "windows/components/cockpit-settings.native", .source = @embedFile("windows/components/cockpit-settings.native") },
+    .{ .path = "windows/components/cockpit-navigator.native", .source = @embedFile("windows/components/cockpit-navigator.native") },
+    .{ .path = "windows/components/cockpit-host.native", .source = @embedFile("windows/components/cockpit-host.native") },
+    .{ .path = "windows/components/cockpit-directory.native", .source = @embedFile("windows/components/cockpit-directory.native") },
+    .{ .path = "windows/components/cockpit-rename.native", .source = @embedFile("windows/components/cockpit-rename.native") },
+    .{ .path = "windows/components/cockpit-agents.native", .source = @embedFile("windows/components/cockpit-agents.native") },
 };
 const CompiledChrome = canvas.CompiledMarkupImports(core.Model, core.Msg, "app.native", &main_sources);
 const compiled_fragments = [_]canvas.MarkupFragment{
@@ -6580,7 +6759,7 @@ const parity_states = [_]ChromeState{
     .{ .label = "keyboard settings", .settings = true, .settings_section = 2 },
     .{ .label = "connection settings", .settings = true, .settings_section = 4 },
     .{ .label = "about settings", .settings = true, .settings_section = 5 },
-    .{ .label = "both overlays, full strip", .tabs = 16, .palette = true, .settings = true },
+    .{ .label = "settings displaces palette over full strip", .tabs = 16, .palette = true, .settings = true },
 };
 
 fn auditChromeAt(model: *const core.Model, size: native_sdk.geometry.SizeF, density: canvas.Density, label: []const u8) !usize {
@@ -7662,8 +7841,8 @@ test "the visible About settings tab reaches version and update content" {
     try rig.settleAppearance();
 
     // Tab captions are child text, not semantics.label. The compiled About
-    // control is the settings_section:5 press; Check for Updates is absent
-    // until that press selects the group.
+    // control is the settings_section:5 toggle; Check for Updates is absent
+    // until that toggle selects the group.
     {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
@@ -8574,7 +8753,7 @@ fn terminalInputCount(model: *const core.Model, window_index: usize) !usize {
     return count;
 }
 
-test "shipping host dialog removes terminal accessibility targets in every window" {
+test "shipping host dialog removes terminal accessibility targets in the owner window only" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
@@ -8583,17 +8762,744 @@ test "shipping host dialog removes terminal accessibility targets in every windo
     try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 0));
     try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 1));
 
-    // Blocking raw input is insufficient: a hidden terminal must also leave the
-    // accessibility/focus tree while an app-wide dialog owns interaction.
     try rig.dispatch(.host_open);
     try std.testing.expect(rig.app_state.model.hostOpen);
-    try std.testing.expectEqual(@as(usize, 0), try terminalInputCount(&rig.app_state.model, 0));
+    try std.testing.expect(rig.app_state.model.window1HostOpen);
+    try std.testing.expect(!rig.app_state.model.mainHostOpen);
+    try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 0));
     try std.testing.expectEqual(@as(usize, 0), try terminalInputCount(&rig.app_state.model, 1));
 
-    try rig.dispatch(.palette_close);
+    try rig.dispatch(.host_close);
     try std.testing.expect(!rig.app_state.model.hostOpen);
     try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 0));
     try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 1));
+}
+
+const sdk_dialog_margin: f32 = 24;
+
+fn overlayKindCount(measured: canvas.WidgetLayoutTree, kind: canvas.WidgetKind) usize {
+    var count: usize = 0;
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind == kind) count += 1;
+    }
+    return count;
+}
+
+fn firstOverlay(measured: canvas.WidgetLayoutTree) ?canvas.WidgetLayoutNode {
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind == .dialog or entry.widget.kind == .sheet) return entry;
+    }
+    return null;
+}
+
+fn autofocusLabel(measured: canvas.WidgetLayoutTree) ?[]const u8 {
+    for (measured.nodes) |entry| {
+        if (!entry.widget.autofocus) continue;
+        if (entry.widget.semantics.label.len != 0) return entry.widget.semantics.label;
+        if (entry.widget.text.len != 0) return entry.widget.text;
+    }
+    return null;
+}
+
+fn measureWindow(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF) !struct {
+    measured: canvas.WidgetLayoutTree,
+    tree: Adapter.Ui.Tree,
+    arena: std.heap.ArenaAllocator,
+} {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const tree = try ui.finalizeWithTokens(chromeViewAt(&ui, model, window), tokens);
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const measured = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, size.width, size.height), tokens, nodes);
+    return .{ .measured = measured, .tree = tree, .arena = arena };
+}
+
+fn emittedWidgetColor(widget: canvas.Widget, tokens: canvas.DesignTokens, part: u4) !canvas.Color {
+    var commands: [32]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, widget, tokens);
+    const command = builder.displayList().findCommandById(canvas.widgetPartId(widget.id, part)) orelse
+        return error.TestExpectedWidgetPaint;
+    return switch (command.command) {
+        .fill_rect => |fill| emittedFillColor(fill.fill),
+        .fill_rounded_rect => |fill| emittedFillColor(fill.fill),
+        .stroke_rect => |stroke| emittedFillColor(stroke.stroke.fill),
+        .draw_text => |text| text.color,
+        else => error.TestExpectedWidgetPaint,
+    };
+}
+
+fn emittedFillColor(fill: canvas.Fill) !canvas.Color {
+    return switch (fill) {
+        .color => |color| color,
+        else => error.TestExpectedWidgetColor,
+    };
+}
+
+fn selectedTabWidget(measured: canvas.WidgetLayoutTree) ?canvas.Widget {
+    for (measured.nodes) |entry| {
+        if (entry.widget.semantics.role != .tab or !entry.widget.state.selected) continue;
+        var widget = entry.widget;
+        widget.frame = entry.frame;
+        return widget;
+    }
+    return null;
+}
+
+fn labeledWidget(measured: canvas.WidgetLayoutTree, kind: canvas.WidgetKind, label: []const u8) ?canvas.WidgetLayoutNode {
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind == kind and std.mem.eql(u8, entry.widget.semantics.label, label)) return entry;
+    }
+    return null;
+}
+
+fn tabWidgetWithSelection(measured: canvas.WidgetLayoutTree, selected: bool) ?canvas.WidgetLayoutNode {
+    for (measured.nodes) |entry| {
+        if (entry.widget.semantics.role == .tab and entry.widget.state.selected == selected) return entry;
+    }
+    return null;
+}
+
+fn widgetWithId(measured: canvas.WidgetLayoutTree, id: canvas.ObjectId) ?canvas.WidgetLayoutNode {
+    for (measured.nodes) |entry| {
+        if (entry.widget.id == id) return entry;
+    }
+    return null;
+}
+
+test "compiled shipping tabs retain readable ink through selection and pointer focus" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_terminal);
+    try rig.settle(1, "READY");
+    try rig.resize(.init(1100, 640));
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const rest_layout = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const rest_node = tabWidgetWithSelection(rest_layout, false) orelse return error.TestExpectedUnselectedTab;
+    try std.testing.expect(!rest_node.widget.state.selected);
+    try std.testing.expectEqual(canvas.WidgetVariant.ghost, rest_node.widget.variant);
+    const stable_id = rest_node.widget.id;
+    var text_colors: [4]canvas.Color = undefined;
+    text_colors[0] = try emittedWidgetColor(rest_node.widget, tokens, 3);
+    const x = rest_node.frame.x + rest_node.frame.width * 0.5;
+    const y = rest_node.frame.y + rest_node.frame.height * 0.5;
+
+    try dispatchPointer(&rig, .pointer_move, x, y);
+    const hover_node = widgetWithId(try rig.harness.runtime.canvasWidgetLayout(1, canvas_label), stable_id) orelse
+        return error.TestExpectedHoveredTab;
+    try std.testing.expectEqual(stable_id, hover_node.widget.id);
+    try std.testing.expectEqual(stable_id, rig.harness.runtime.views[0].canvas_widget_hovered_id);
+    var hovered = hover_node.widget;
+    hovered.state.hovered = true;
+    text_colors[1] = try emittedWidgetColor(hovered, tokens, 3);
+
+    try dispatchPointer(&rig, .pointer_down, x, y);
+    const press_node = widgetWithId(try rig.harness.runtime.canvasWidgetLayout(1, canvas_label), stable_id) orelse
+        return error.TestExpectedPressedTab;
+    try std.testing.expectEqual(stable_id, press_node.widget.id);
+    try std.testing.expectEqual(stable_id, rig.harness.runtime.views[0].canvas_widget_pressed_id);
+    var pressed = press_node.widget;
+    pressed.state.pressed = true;
+    text_colors[3] = try emittedWidgetColor(pressed, tokens, 3);
+
+    const sequence = rig.app_state.model.engineSequence.lo;
+    try dispatchPointer(&rig, .pointer_up, x, y);
+    try rig.settleAtLeast(sequence + 1, "READY");
+    const selected_node = widgetWithId(try rig.harness.runtime.canvasWidgetLayout(1, canvas_label), stable_id) orelse
+        return error.TestExpectedSelectedTab;
+    try std.testing.expectEqual(stable_id, selected_node.widget.id);
+    try std.testing.expect(selected_node.widget.state.selected);
+    for (0..32) |_| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = .key_down,
+            .key = "tab",
+        } });
+        const view = &rig.harness.runtime.views[0];
+        if (view.canvas_widget_focused_id == stable_id and view.canvas_widget_focus_visible_id == stable_id) break;
+    } else return error.TestTabDidNotReachSelectedTab;
+    text_colors[2] = try emittedWidgetColor(selected_node.widget, tokens, 3);
+    try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(
+        tokens.colors.focus_ring, tokens.colors.surface,
+    ) >= 3.0);
+
+    for (text_colors) |text| {
+        try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(
+            text,
+            tokens.colors.surface_subtle,
+        ) >= 4.5);
+    }
+}
+
+fn findSelectedListItem(measured: canvas.WidgetLayoutTree, label: []const u8) ?canvas.WidgetLayoutNode {
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind != .list_item or !entry.widget.state.selected) continue;
+        if (std.mem.eql(u8, entry.widget.semantics.label, label)) return entry;
+    }
+    return null;
+}
+
+fn expectHighlightedRowMarker(model: *const core.Model, label: []const u8) !void {
+    var built = try measureWindow(model, 0, .init(1100, 640));
+    defer built.arena.deinit();
+    const row = findSelectedListItem(built.measured, label) orelse return error.TestExpectedHighlightedRow;
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    for (built.measured.nodes) |entry| {
+        const background = entry.widget.style.background orelse continue;
+        if (!std.meta.eql(background, tokens.colors.accent)) continue;
+        if (@abs(entry.frame.width - 2) > 0.01 or @abs(entry.frame.height - 24) > 0.01) continue;
+        try expectRectInside(entry.frame, row.frame);
+        try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(background, cockpit.projection.semantic_theme.palette.selected) >= 3.0);
+        return;
+    }
+    return error.TestExpectedSelectionMarker;
+}
+
+test "compiled command session machine and directory rows share the highlighted-row accent marker" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixtureWithHello(@embedFile("tests/fixtures/hello_directory.bin"));
+    try rig.settleCurrent();
+
+    try rig.dispatch(.commands_open);
+    try expectHighlightedRowMarker(&rig.app_state.model, rig.app_state.model.actionRows[0].label);
+
+    try rig.dispatch(.palette_close);
+    try rig.dispatch(.dir_open);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    const remote = bridge.engine.?.model.phux().?;
+    try @TypeOf(remote.*).test_support.stageFixture(remote.bridge, "directory_listing.bin");
+    try rig.dispatch(phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} }));
+    for (0..16) |_| {
+        if (!rig.app_state.model.dirBusy and !rig.app_state.model.dirAwaiting and rig.app_state.model.dirRows.len > 0) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    } else return error.TestDirectoryDidNotComplete;
+    const directory_label = for (rig.app_state.model.dirRows) |row| {
+        if (row.highlighted) break row.label;
+    } else return error.TestExpectedHighlightedDirectory;
+    try expectHighlightedRowMarker(&rig.app_state.model, directory_label);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "config.toml", .data = "# deterministic empty machine registry\n" });
+    const config_path = try tmp.dir.realPathFileAlloc(std.testing.io, "config.toml", std.testing.allocator);
+    defer std.testing.allocator.free(config_path);
+    const previous_config_path = bridge.machines.config_path;
+    defer bridge.machines.config_path = previous_config_path;
+    bridge.machines.config_path = config_path;
+    try rig.dispatch(.machines_open);
+    for (0..8) |_| {
+        if (!rig.app_state.model.machines.loading) break;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    } else return error.TestMachinesDidNotComplete;
+    try rig.harness.runtime.dispatchAutomationCommand(rig.decorated, "widget-key phux-cockpit-canvas arrowdown");
+    const machine_label = for (rig.app_state.model.machineRows) |row| {
+        if (row.highlighted) break row.name;
+    } else return error.TestExpectedHighlightedMachine;
+    try expectHighlightedRowMarker(&rig.app_state.model, machine_label);
+
+    try rig.dispatch(.sessions_open);
+    try rig.settleNavigation();
+    const session_label = for (rig.app_state.model.paletteRows) |row| {
+        if (row.highlighted) break row.label;
+    } else return error.TestExpectedHighlightedSession;
+    try expectHighlightedRowMarker(&rig.app_state.model, session_label);
+}
+
+fn findWidgetByText(measured: canvas.WidgetLayoutTree, kind: canvas.WidgetKind, text: []const u8) ?canvas.WidgetLayoutNode {
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind == kind and std.mem.eql(u8, entry.widget.text, text)) return entry;
+    }
+    return null;
+}
+
+test "compiled navigator destinations are one exclusive segmented control in the same owner dialog" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const cases = [_]struct { label: []const u8, msg: core.Msg, view: i64 }{
+        .{ .label = "Sessions", .msg = .sessions_open, .view = 1 },
+        .{ .label = "Machines", .msg = .machines_open, .view = 2 },
+        .{ .label = "Windows", .msg = .windows_open, .view = 3 },
+        .{ .label = "Commands", .msg = .commands_open, .view = 4 },
+    };
+    for (cases) |case| {
+        try rig.dispatch(case.msg);
+        if (case.view != 4) try rig.settleNavigation();
+        try std.testing.expect(rig.app_state.model.paletteOpen);
+        try std.testing.expect(rig.app_state.model.mainPaletteOpen);
+        try std.testing.expectEqual(case.view, rig.app_state.model.navigatorView);
+        var built = try measureWindow(&rig.app_state.model, 0, .init(1100, 640));
+        defer built.arena.deinit();
+        try std.testing.expectEqual(@as(usize, 1), overlayKindCount(built.measured, .dialog));
+        var segments: usize = 0;
+        for (built.measured.nodes) |entry| {
+            if (entry.widget.kind == .segmented_control) segments += 1;
+        }
+        // Five destination buttons plus their one owning Tabs register.
+        try std.testing.expectEqual(@as(usize, 6), segments);
+        const selected = findWidgetByText(built.measured, .segmented_control, case.label) orelse
+            return error.TestExpectedNavigatorDestination;
+        try std.testing.expect(selected.widget.state.selected);
+        try std.testing.expectEqual(case.msg, built.tree.msgForPointer(selected.widget.id, .up) orelse
+            return error.TestExpectedNavigatorDestinationMessage);
+    }
+}
+
+test "compiled top strip and side rail tabs share one control register and render shipping attention" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    var top = try measureWindow(&rig.app_state.model, 0, .init(1100, 640));
+    defer top.arena.deinit();
+    const top_tab = selectedTabWidget(top.measured) orelse return error.TestExpectedSelectedTab;
+    try std.testing.expectEqual(canvas.WidgetVariant.ghost, top_tab.variant);
+    try std.testing.expectApproxEqAbs(cockpit.projection.semantic_theme.geometry.control_sm, top_tab.frame.height, 0.01);
+
+    var side_model = rig.app_state.model;
+    side_model.tabPlacement = .side;
+    var side = try measureWindow(&side_model, 0, .init(1100, 640));
+    defer side.arena.deinit();
+    const side_tab = selectedTabWidget(side.measured) orelse return error.TestExpectedSelectedTab;
+    try std.testing.expect(top_tab.semantics.role == .tab);
+    try std.testing.expect(side_tab.semantics.role == .tab);
+    try std.testing.expectApproxEqAbs(top_tab.frame.height, side_tab.frame.height, 0.01);
+
+    var attention_tab = rig.app_state.model.visibleTabs[0].*;
+    attention_tab.attention = true;
+    attention_tab.attentionLabel = "Needs attention";
+    const attention_tabs = [_]*const core.Tab{&attention_tab};
+    var attention_model = rig.app_state.model;
+    attention_model.visibleTabs = &attention_tabs;
+    var attention = try measureWindow(&attention_model, 0, .init(1100, 640));
+    defer attention.arena.deinit();
+    const marker = labeledWidget(attention.measured, .text, attention_tab.attentionLabel) orelse
+        return error.TestExpectedAttentionMarker;
+    try std.testing.expectEqualStrings("●", marker.widget.text);
+    try std.testing.expectEqual(tokens.colors.warning, marker.widget.style.foreground orelse
+        return error.TestExpectedAttentionColor);
+    try std.testing.expect(!std.meta.eql(tokens.colors.warning, cockpit.projection.semantic_theme.palette.accent));
+}
+
+test "compiled titlebar chrome starts after the declared traffic-light reserve and keeps one toolbar register" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const labels = [_][]const u8{ "New Tab", "Workspace actions" };
+    for (parity_sizes) |size| {
+        var built = try measureWindow(&rig.app_state.model, 0, size);
+        defer built.arena.deinit();
+        var tabs_frame: ?native_sdk.geometry.RectF = null;
+        for (built.measured.nodes) |entry| {
+            if (std.mem.eql(u8, entry.widget.semantics.label, "Terminal tabs")) tabs_frame = entry.frame;
+        }
+        const tabs = tabs_frame orelse return error.TestExpectedTabStrip;
+        try std.testing.expectApproxEqAbs(
+            cockpit.projection.chrome_band_inset + cockpit.projection.titlebar_tab_leading_reserve + cockpit.projection.chrome_gap,
+            tabs.x,
+            0.01,
+        );
+        for (labels) |label| {
+            const frame = for (built.measured.nodes) |entry| {
+                if (entry.widget.kind == .button and std.mem.eql(u8, entry.widget.semantics.label, label)) break entry.frame;
+            } else return error.TestExpectedToolbarControl;
+            try std.testing.expectApproxEqAbs(cockpit.projection.semantic_theme.geometry.control_sm, frame.height, 0.01);
+            try std.testing.expectApproxEqAbs(cockpit.projection.header_height * 0.5, frame.y + frame.height * 0.5, 0.01);
+        }
+    }
+}
+
+test "shipping menus cap every group at seven and name navigator destinations consistently" {
+    const menus = @import("tests/shipping_commands.zig").menus;
+    for (menus) |menu| {
+        var group_count: usize = 0;
+        for (menu.items) |item| {
+            if (item.separator) {
+                try std.testing.expect(group_count > 0);
+                group_count = 0;
+                continue;
+            }
+            group_count += 1;
+            try std.testing.expect(group_count <= 7);
+        }
+        try std.testing.expect(group_count > 0);
+    }
+    const destinations = [_]struct { command: []const u8, label: []const u8 }{
+        .{ .command = "navigator.sessions", .label = "Sessions…" },
+        .{ .command = "navigator.machines", .label = "Machines…" },
+        .{ .command = "navigator.windows", .label = "Show All Windows…" },
+        .{ .command = "commands.open", .label = "Commands…" },
+    };
+    for (destinations) |destination| {
+        var found = false;
+        for (menus) |menu| for (menu.items) |item| {
+            if (!std.mem.eql(u8, item.command, destination.command)) continue;
+            try std.testing.expectEqualStrings(destination.label, item.label);
+            found = true;
+        };
+        try std.testing.expect(found);
+    }
+}
+
+fn expectSingleOverlay(
+    model: *const core.Model,
+    window: usize,
+    kind: canvas.WidgetKind,
+    dismiss: core.Msg,
+    focus: []const u8,
+) !void {
+    for (parity_sizes) |size| {
+        var built = try measureWindow(model, window, size);
+        defer built.arena.deinit();
+        try std.testing.expectEqual(@as(usize, 1), overlayKindCount(built.measured, kind));
+        try std.testing.expectEqual(@as(usize, 0), overlayKindCount(built.measured, if (kind == .dialog) .sheet else .dialog));
+        const overlay = firstOverlay(built.measured) orelse return error.TestExpectedOverlay;
+        try std.testing.expectEqual(kind, overlay.widget.kind);
+        try std.testing.expect(overlay.widget.scrim);
+        try std.testing.expectEqual(dismiss, built.tree.msgForDismiss(overlay.widget.id) orelse return error.TestExpectedDismiss);
+        const focused = autofocusLabel(built.measured) orelse return error.TestExpectedAutofocus;
+        try std.testing.expectEqualStrings(focus, focused);
+        try expectOverlayGeometry(overlay, size);
+        for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
+            try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(model, size, density, "overlay", window));
+        }
+    }
+}
+
+fn expectOverlayGeometry(overlay: canvas.WidgetLayoutNode, size: native_sdk.geometry.SizeF) !void {
+    const frame = overlay.frame;
+    try std.testing.expect(frame.width > 0);
+    try std.testing.expect(frame.height > 0);
+    try std.testing.expect(frame.x >= 0);
+    try std.testing.expect(frame.y >= 0);
+    try std.testing.expect(frame.x + frame.width <= size.width + 0.001);
+    try std.testing.expect(frame.y + frame.height <= size.height + 0.001);
+    if (overlay.widget.kind == .dialog) {
+        try std.testing.expect(frame.width <= size.width - sdk_dialog_margin * 2 + 0.001);
+        try std.testing.expect(frame.height <= size.height - sdk_dialog_margin * 2 + 0.001);
+        try std.testing.expectApproxEqAbs((size.width - frame.width) * 0.5, frame.x, 0.51);
+        try std.testing.expectApproxEqAbs((size.height - frame.height) * 0.5, frame.y, 0.51);
+        return;
+    }
+    try std.testing.expectApproxEqAbs(size.width - frame.width, frame.x, 0.51);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), frame.y, 0.51);
+    try std.testing.expectApproxEqAbs(size.height, frame.height, 0.51);
+}
+
+fn expectNoOverlay(model: *const core.Model, window: usize) !void {
+    var built = try measureWindow(model, window, .init(1100, 640));
+    defer built.arena.deinit();
+    try std.testing.expect(firstOverlay(built.measured) == null);
+}
+
+test "shipping overlays use SDK dialog and sheet shells with owner geometry" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try expectNoOverlay(&rig.app_state.model, 0);
+
+    try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
+    try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .palette_close, "Search navigator");
+    try rig.dispatch(.palette_close);
+
+    try rig.dispatch(.host_open);
+    try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .host_close, "Machine destination");
+    var purpose_two = rig.app_state.model;
+    purpose_two.toolPurpose = 2;
+    try expectSingleOverlay(&purpose_two, 0, .dialog, .host_close, "Choose Editor in Settings");
+    try rig.dispatch(.host_close);
+
+    try rig.dispatch(.dir_open);
+    try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .dir_close, "Filter directories");
+    try rig.dispatch(.dir_close);
+
+    try rig.dispatch(.rename_open);
+    try expectSingleOverlay(&rig.app_state.model, 0, .dialog, .rename_close, "New session name");
+    try rig.dispatch(.rename_close);
+
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try expectSingleOverlay(&rig.app_state.model, 0, .sheet, .settings_close, "Search settings");
+    try rig.dispatch(.settings_close);
+    try rig.settleAppearance();
+    try std.testing.expect(!rig.app_state.model.settingsOpen);
+
+    try rig.dispatch(.agents_open);
+    try expectSingleOverlay(&rig.app_state.model, 0, .sheet, .palette_close, "Refresh");
+    try rig.dispatch(.palette_close);
+}
+
+test "shipping empty session stays inline in terminal space without modal semantics" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    var empty = rig.app_state.model;
+    const empty_context = core.WindowChromeContext{
+        .title = empty.mainContext.title,
+        .detail = empty.mainContext.detail,
+        .emptyName = "keep-empty",
+        .emptyDetail = "This Mac",
+        .emptyPicked = true,
+        .emptyOpening = empty.mainContext.emptyOpening,
+    };
+    empty.mainContext = &empty_context;
+    empty.mainEmptyOpen = true;
+    var built = try measureWindow(&empty, 0, .init(1100, 640));
+    defer built.arena.deinit();
+    try std.testing.expect(firstOverlay(built.measured) == null);
+    var space: ?native_sdk.geometry.RectF = null;
+    var empty_copy: ?native_sdk.geometry.RectF = null;
+    var saw_empty = false;
+    for (built.measured.nodes) |entry| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, "phux-terminal-space")) space = entry.frame;
+        if (std.mem.eql(u8, entry.widget.text, "Empty session")) {
+            saw_empty = true;
+            empty_copy = entry.frame;
+        }
+    }
+    const terminal = space orelse return error.MissingTerminalSpace;
+    try std.testing.expect(saw_empty);
+    try std.testing.expect(try compiledViewHasLabel(&empty, 0, "Dismiss empty session"));
+    if (empty_copy) |frame| try expectRectInside(frame, terminal);
+    for (parity_sizes) |size| {
+        if (size.height < 640) continue;
+        for ([_]canvas.Density{ .compact, .regular, .spacious }) |density| {
+            try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(&empty, size, density, "empty session", 0));
+        }
+    }
+}
+
+test "overlay Escape is consumed once and restores terminal focus in the owner window" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
+    try rig.resize(.init(1100, 640));
+    try std.testing.expect(rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(@as(usize, 0), try terminalInputCount(&rig.app_state.model, 0));
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "Escape",
+    } });
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(@as(usize, 1), try terminalInputCount(&rig.app_state.model, 0));
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .key_down,
+        .key = "Escape",
+    } });
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+}
+
+test "overlay light-dismiss fires once and Settings rollback stays transactional" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.palette_open);
+    try rig.settleNavigation();
+    try rig.resize(.init(1100, 640));
+    // Stay below the draggable 50pt titlebar while pressing outside the sheet.
+    // The overlay must consume this before underlying terminal chrome sees it.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .x = 8,
+        .y = 80,
+    } });
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.settingsOpen);
+    try std.testing.expect(rig.app_state.model.appearance.active);
+    try rig.dispatch(.settings_close);
+    try rig.settleAppearance();
+    try std.testing.expect(!rig.app_state.model.settingsOpen);
+    try std.testing.expect(!rig.app_state.model.appearance.active);
+}
+
+fn widgetFrameByLabel(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF, label: []const u8) !native_sdk.geometry.RectF {
+    var built = try measureWindow(model, window, size);
+    defer built.arena.deinit();
+    for (built.measured.nodes) |entry| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, label)) return entry.frame;
+    }
+    return error.TestExpectedLabeledWidget;
+}
+
+fn dispatchPointer(rig: *Rig, kind: native_sdk.platform.GpuSurfaceInputKind, x: f32, y: f32) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = kind,
+        .x = x,
+        .y = y,
+        .button = 0,
+    } });
+}
+
+fn dispatchEscape(rig: *Rig, kind: native_sdk.platform.GpuSurfaceInputKind) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = kind,
+        .key = "Escape",
+    } });
+}
+
+test "Settings outside pointer down and up dismisses once without activating chrome" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try rig.resize(.init(1100, 640));
+    const x: f32 = 8;
+    // The titlebar is intentionally draggable; exercise sheet light-dismiss
+    // against the scrim below it rather than asking the platform to drag.
+    const y: f32 = 80;
+    const tabs_before = bridge.engine.?.model.ws().tab_count;
+    try dispatchPointer(&rig, .pointer_down, x, y);
+    try std.testing.expect(rig.app_state.model.appearanceClosing);
+    const rollback_key = bridge.appearance_key;
+    try std.testing.expect(bridge.appearance_pending);
+    try dispatchPointer(&rig, .pointer_up, x, y);
+    try dispatchPointer(&rig, .pointer_down, x, y);
+    try dispatchPointer(&rig, .pointer_up, x, y);
+    try std.testing.expectEqual(rollback_key, bridge.appearance_key);
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(tabs_before, bridge.engine.?.model.ws().tab_count);
+    try rig.settleAppearance();
+    try std.testing.expect(!rig.app_state.model.settingsOpen);
+}
+
+test "Settings clickthrough suppression is window scoped and ends without a release" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.window1SettingsOpen);
+
+    const owner_label = cockpit.scene.canvasLabelFor(1);
+    const owner_window = bridge.engine.?.model.wsAtConst(1).?.window_id;
+    const main_window = bridge.engine.?.model.wsAtConst(0).?.window_id;
+    const dismissed: native_sdk.Event = .{ .canvas_widget_dismiss = .{
+        .window_id = owner_window,
+        .view_label = owner_label,
+        .id = 1,
+    } };
+    const owner_command: native_sdk.Event = .{ .command = .{
+        .name = "terminal.new",
+        .source = .native_view,
+        .window_id = owner_window,
+        .view_label = owner_label,
+    } };
+    const main_command: native_sdk.Event = .{ .command = .{
+        .name = "terminal.new",
+        .source = .native_view,
+        .window_id = main_window,
+        .view_label = canvas_label,
+    } };
+    const owner_menu_command: native_sdk.Event = .{ .command = .{
+        .name = "terminal.new",
+        .source = .menu,
+        .window_id = owner_window,
+    } };
+    const owner_down: native_sdk.Event = .{ .canvas_widget_pointer = .{
+        .window_id = owner_window,
+        .view_label = owner_label,
+        .pointer = .{ .phase = .down, .point = .{ .x = 8, .y = 8 } },
+    } };
+
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(dismissed));
+    try std.testing.expect(pointer_host.consumeSettingsOutsideGesture(owner_command));
+    try std.testing.expect(pointer_host.consumeSettingsOutsideGesture(owner_down));
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(owner_command));
+
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(dismissed));
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(main_command));
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(dismissed));
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(owner_menu_command));
+}
+
+test "Settings repeated Escape emits one rollback" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try rig.resize(.init(1100, 640));
+    try dispatchEscape(&rig, .key_down);
+    try std.testing.expect(rig.app_state.model.appearanceClosing);
+    const rollback_key = bridge.appearance_key;
+    try dispatchEscape(&rig, .key_up);
+    try dispatchEscape(&rig, .key_down);
+    try dispatchEscape(&rig, .key_up);
+    try std.testing.expectEqual(rollback_key, bridge.appearance_key);
+    try std.testing.expect(rig.app_state.model.settingsOpen);
+    try rig.settleAppearance();
+    try std.testing.expect(!rig.app_state.model.settingsOpen);
+}
+
+test "Settings close controls disable while rollback is in flight" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    var closing = rig.app_state.model;
+    closing.appearanceClosing = true;
+    var built = try measureWindow(&closing, 0, .init(1100, 640));
+    defer built.arena.deinit();
+    var saw_disabled_close = false;
+    for (built.measured.nodes) |entry| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, "Cancel settings") and entry.widget.state.disabled) saw_disabled_close = true;
+    }
+    try std.testing.expect(saw_disabled_close);
+}
+
+test "configured shortcuts stay armed in a non-owner window while another window presents" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.window1SettingsOpen);
+    try bridge.syncKeybindings();
+    try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.configuredShortcuts().len);
+    engine.model.active_window = 0;
+    try bridge.syncKeybindings();
+    try std.testing.expect(rig.harness.null_platform.configuredShortcuts().len > 0);
+    const before = engine.model.wsAt(0).?.tab_count;
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "t") and !item.modifiers.shift) break item;
+    } else return error.TestExpectedNewTabShortcut;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
+        .id = shortcut.id,
+        .key = shortcut.key,
+        .modifiers = shortcut.modifiers,
+        .window_id = 1,
+    } });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(before + 1, engine.model.wsAt(0).?.tab_count);
 }
 
 test "healthy canvas gives the footer space to the terminal" {
