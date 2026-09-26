@@ -18,7 +18,7 @@
 #
 #   1. `npm pack` in JSON mode piped into a JSON parser. `npm pack` runs the `prepack`
 #      lifecycle script, whose stdout is interleaved with the JSON on the same
-#      fd. integrations/opencode's prepack is `tsup`, which prints a colourised
+#      fd. integrations/opencode's prepack prints a colourised
 #      "CLI Building entry..." banner, so the parse died on
 #      `Unexpected token '^[', "^[[34mCLI^[["...`. integrations/pi survived only
 #      because its prepack is a silent `tsc`. Never parse npm's stdout: pack to
@@ -192,7 +192,7 @@ jobs:
           if [[ "$PUBLISH_NPM" == true ]]; then
             # Pack straight into release/ and discover the artifact by glob.
             # npm's stdout is NOT parseable: `npm pack` runs `prepack`, and that
-            # script's output shares the fd (tsup's colourised banner is what
+            # script's output shares the fd (the bundler's colourised banner is what
             # broke opencode-plugin-v0.2.0). The directory is ours and empty, so
             # exactly one .tgz can land in it.
             (cd "$DIRECTORY" && npm pack --pack-destination "$GITHUB_WORKSPACE/release")
