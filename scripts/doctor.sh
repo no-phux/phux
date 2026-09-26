@@ -125,7 +125,10 @@ case "$scope" in
     core) rust_tools core ;;
     native) native_tools ;;
     desktop) desktop_tools ;;
-    integrations) node_tools ;;
+    integrations)
+        node_tools
+        need bun 'mise install; or: nix develop'
+        ;;
     web)
         rust_tools web
         node_tools

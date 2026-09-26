@@ -1043,7 +1043,7 @@ look, not what it will find.
   [`../reference/parity.md`](../reference/parity.md).
 - [`sdk.md`](./sdk.md) — `phux-client` is workspace-internal; there is
   no crates.io SDK. Native embedders use `phux-client-ffi`.
-- Host adapters: [`opencode.md`](./opencode.md), [`pi.md`](./pi.md),
+- Host adapters: [`opencode-v2.md`](./opencode-v2.md), [`pi.md`](./pi.md),
   [`claude.md`](./claude.md). They select subsets; they do not redefine
   this contract.
 - Install the reusable skill with `npx skills add no-phux/skills`.

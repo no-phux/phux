@@ -32,7 +32,7 @@
     {
       "matchManagers": ["npm", "bun"],
       "matchPackageNames": ["typescript"],
-      "matchFileNames": ["docs/site/package.json", "integrations/opencode/package.json"],
+      "matchFileNames": ["docs/site/package.json", "integrations/opencode-v2/package.json"],
       "allowedVersions": "/^6\\./"
     }
   ]
