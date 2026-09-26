@@ -815,19 +815,19 @@ fn check_logs() -> Check {
 /// documented pairing flow works end to end on a narrow certificate. Calling
 /// that a failure would turn doctor's exit code red on installs where nothing
 /// is broken.
-/// Can the credential store the remote listeners gate on actually be read?
+/// Can the credential store the remote listeners gate admission on be read?
 ///
-/// Every remote transport binds only if `ReloadingTokenStore::load` succeeds;
-/// when it fails the server logs one ERROR per transport and then serves UDS
-/// only. Nothing downstream restates that. The server keeps running, local
-/// clients keep working, `phux ls` and `phux status` stay green, and the
-/// entire remote surface is gone — which is precisely the state an operator
+/// A broken store means no device can authenticate: the server keeps running,
+/// local clients keep working, `phux ls` and `phux status` stay green, and the
+/// entire remote surface authenticates nobody. A server that predates lenient
+/// store loading goes further and disables every remote transport at boot, so
+/// the surface is gone entirely — which is precisely the state an operator
 /// runs `phux doctor` to have explained.
 ///
 /// [`check_remote_reachable`] would notice the absence, but only as "nothing
 /// is listening", which reads like "you have not paired yet" and sends the
-/// reader to `phux pair` — the one command that cannot fix an unreadable
-/// store. This check names the actual cause and carries the actual remedy.
+/// reader to `phux pair`. This check names the actual cause and carries the
+/// actual remedy.
 fn check_token_store() -> Check {
     let path = std::env::var_os("PHUX_WS_TOKENS")
         .map_or_else(phux_server::auth::default_token_store_path, PathBuf::from);
@@ -851,21 +851,23 @@ fn token_store_check(path: &std::path::Path, error: Option<phux_server::auth::Au
     // work until it is resolved.
     let remedy = if error.to_string().contains("legacy") {
         "the server refuses to guess at a pre-versioned store: convert it with \
-         `phux pair --migrate-legacy`, then restart or `phux upgrade` the server \
-         so the listeners re-read it"
+         `phux pair --migrate-legacy`; the running server re-reads it on the next \
+         connection, or restart / `phux upgrade` it if it disabled its listeners at boot"
             .to_owned()
     } else {
         format!(
-            "the remote listeners will not bind until this loads; fix the file at {} \
-             (or point PHUX_WS_TOKENS elsewhere), then restart or `phux upgrade` the server",
+            "no device can authenticate until this loads; fix the file at {} (or point \
+             PHUX_WS_TOKENS elsewhere), then restart or `phux upgrade` a server that \
+             disabled its listeners at boot",
             path.display()
         )
     };
     Check::fail(
         "token-store",
         format!(
-            "credential store at {} cannot be loaded ({error}) — every remote \
-             listener is disabled and this server is reachable over UDS only",
+            "credential store at {} cannot be loaded ({error}) — no device credential \
+             can be admitted, and a server that disabled its remote listeners at boot \
+             stays down until this loads",
             path.display()
         ),
         remedy,
@@ -1565,9 +1567,10 @@ mod tests {
         // A store that loads (or is simply absent) is not this check's problem.
         assert_eq!(token_store_check(&store, None).status, Status::Pass);
 
-        // A pre-versioned store is the case that actually stranded a server:
-        // both listeners disabled at boot, with only an ERROR in the log. A
-        // bare hex line is that format, and the store must refuse to guess.
+        // A pre-versioned store is the case that stranded a server: every
+        // remote listener disabled at boot on servers before lenient loading,
+        // and no device admitted even on servers that bind and refuse. A bare
+        // hex line is that format, and the store must refuse to guess.
         std::fs::write(&store, "deadbeef\n").expect("write legacy line");
         #[cfg(unix)]
         {
@@ -1582,7 +1585,7 @@ mod tests {
         assert_eq!(
             check.status,
             Status::Fail,
-            "a store that disables every remote listener is a failure, not a warning"
+            "a store that admits no device is a failure, not a warning"
         );
         assert!(
             check.detail.contains("remote listener"),
@@ -1591,8 +1594,12 @@ mod tests {
         );
         let hint = check.hint.expect("a failure must carry a remedy");
         assert!(
+            hint.contains("phux pair --migrate-legacy"),
+            "the remedy for a pre-versioned store must name the migration command: {hint}"
+        );
+        assert!(
             hint.contains("restart") || hint.contains("upgrade"),
-            "loading is not enough — the listeners only re-read on restart: {hint}"
+            "a server that predates lenient loading needs a restart to re-bind: {hint}"
         );
     }
 

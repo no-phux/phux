@@ -16,7 +16,11 @@ pub const REMOTE_LISTENERS_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ListenerDisabledReason {
-    /// `ReloadingTokenStore::load` failed; every secure remote transport stays down.
+    /// A server that predates lenient store loading disabled every secure
+    /// remote transport when the credential store would not load at boot.
+    /// Current servers bind and refuse every authentication instead — the
+    /// reloading store adopts the file on its next read once it loads — so
+    /// only an older server reports this.
     TokenStoreLoadFailed,
     /// TLS acceptor / QUIC endpoint build failed after the cert was on disk.
     TlsSetupFailed,
