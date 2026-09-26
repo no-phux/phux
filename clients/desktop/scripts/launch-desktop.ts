@@ -30,7 +30,9 @@ function ensureServer(): void {
     : ["server", "--ensure"];
   const run = spawnSync(phux, args, { encoding: "utf8", stdio: "inherit" });
   if (run.error) {
-    throw new Error(`Build phux from this checkout with \`just desktop-app\`: ${run.error.message}`);
+    throw new Error(
+      `Build phux from this checkout with \`just desktop-app\`: ${run.error.message}`,
+    );
   }
   if (run.status !== 0) {
     throw new Error("Could not start a phux server from this checkout");
@@ -66,7 +68,9 @@ function ensureSession(socket: string, name: string): void {
 function phuxJson(args: string[]): object | undefined {
   const run = spawnSync(phux, args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   if (run.error) {
-    throw new Error(`Build phux from this checkout with \`just desktop-app\`: ${run.error.message}`);
+    throw new Error(
+      `Build phux from this checkout with \`just desktop-app\`: ${run.error.message}`,
+    );
   }
   if (run.status !== 0 || !run.stdout) return undefined;
   const parsed: unknown = JSON.parse(run.stdout);
