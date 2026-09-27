@@ -3337,6 +3337,26 @@ where
                     &plumbing.out_tx,
                 );
             }
+            FrameKind::PathQuery {
+                request_id,
+                root,
+                query,
+                recursive,
+                host,
+            } => {
+                super::path_search::handle_path_query(
+                    &state,
+                    client_id,
+                    super::path_search::PathRequest {
+                        request_id,
+                        root,
+                        query,
+                        recursive,
+                        host,
+                    },
+                    &plumbing.out_tx,
+                );
+            }
             FrameKind::SubscribeMetadata { scope, key } => {
                 handle_subscribe_metadata(&state, client_id, scope, key, &plumbing.out_tx);
             }

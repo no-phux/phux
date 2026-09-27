@@ -291,7 +291,7 @@ fn log_prefix(path: &str) -> &str {
 }
 
 /// The serving user's home directory, from `$HOME`.
-fn home_dir() -> Option<PathBuf> {
+pub(super) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
@@ -312,7 +312,7 @@ fn list_directory(
     Ok(finish_listing(display, &dir, scan, max_entries))
 }
 
-fn resolve_request_path(
+pub(super) fn resolve_request_path(
     request: &str,
     home: Option<&Path>,
 ) -> Result<PathBuf, DirectoryListingError> {
