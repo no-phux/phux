@@ -581,8 +581,7 @@ pub(crate) fn prepare_attach(
             })
             .map(|pane| pane.id.clone())
             .collect();
-        let initial_client_id =
-            phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
+        let initial_client_id = super::wire_client(client_id);
         Ok((
             snapshot,
             initial_client_id,
@@ -1073,9 +1072,9 @@ async fn handle_attach_terminal(
                 let _ = handle
                     .control
                     .send(ControlRequest::LeaseChanged {
-                        input_holder: holder.map(wire_client_id),
+                        input_holder: holder.map(super::wire_client),
                         action: ControlAction::RoleChanged,
-                        actor: Some(wire_client_id(client_id)),
+                        actor: Some(super::wire_client(client_id)),
                     })
                     .await;
             }
@@ -1085,7 +1084,7 @@ async fn handle_attach_terminal(
                     .send(ControlRequest::LeaseChanged {
                         input_holder: None,
                         action: ControlAction::Released,
-                        actor: Some(wire_client_id(client_id)),
+                        actor: Some(super::wire_client(client_id)),
                     })
                     .await;
             }
@@ -1278,9 +1277,9 @@ pub(crate) async fn announce_role_effects_on(
         let _ = handle
             .control
             .send(ControlRequest::LeaseChanged {
-                input_holder: holder.map(wire_client_id),
+                input_holder: holder.map(super::wire_client),
                 action,
-                actor: Some(wire_client_id(client_id)),
+                actor: Some(super::wire_client(client_id)),
             })
             .await;
     }
@@ -1422,7 +1421,7 @@ impl AttachResourceSession<'_> {
                 });
         let (reply, _ack) = oneshot::channel();
         let _ = self.handle.consumer_detach.try_send(ConsumerDetachRequest {
-            client_id: wire_client_id(self.client_id),
+            client_id: super::wire_client(self.client_id),
             reply,
         });
         failure
@@ -1443,7 +1442,7 @@ impl AttachResourceSession<'_> {
         self.handle
             .consumer_attach
             .send(ConsumerAttachRequest {
-                client_id: wire_client_id(self.client_id),
+                client_id: super::wire_client(self.client_id),
                 outbound: self.out_tx.clone(),
                 wire_terminal_id,
                 stream_id: self.stream_id,
@@ -1876,7 +1875,7 @@ pub(crate) async fn handle_detach_terminal(
         let _ = handle
             .consumer_detach
             .send(ConsumerDetachRequest {
-                client_id: wire_client_id(client_id),
+                client_id: super::wire_client(client_id),
                 reply: reply_tx,
             })
             .await;
@@ -2577,9 +2576,9 @@ fn journal_satellite_role_change(
             exit_status: None,
             input_holder: s
                 .satellite_lease_holder(target.host, target.terminal)
-                .map(wire_client_id),
+                .map(super::wire_client),
             action: ControlAction::RoleChanged,
-            actor: Some(wire_client_id(target.client_id)),
+            actor: Some(super::wire_client(target.client_id)),
         };
         let _ = s.record_and_fanout(
             crate::state::EventRecord::new(Some(wire), event).with_actor(Some(target.client_id)),
@@ -2641,9 +2640,9 @@ fn notify_satellite_lease_seized(
             // are the action and the holder.
             lifecycle: ResourceLifecycle::Running,
             exit_status: None,
-            input_holder: Some(wire_client_id(new_holder)),
+            input_holder: Some(super::wire_client(new_holder)),
             action: ControlAction::Seized,
-            actor: Some(wire_client_id(new_holder)),
+            actor: Some(super::wire_client(new_holder)),
         },
         stamp: None,
     };
@@ -3647,11 +3646,6 @@ pub(crate) fn handle_route_input(
     }
 }
 
-/// The wire `ClientId` (u32, saturating) for a server connection id.
-fn wire_client_id(id: ClientId) -> phux_protocol::ids::ClientId {
-    phux_protocol::ids::ClientId::new(u32::try_from(id.0).unwrap_or(u32::MAX))
-}
-
 /// The local Terminal behind `terminal_id` as `(pane, handle)`, or the
 /// not-found / wrong-kind refusal.
 fn terminal_handle(
@@ -3722,9 +3716,9 @@ pub(crate) async fn handle_acquire_input(
         .handle
         .control
         .send(ControlRequest::LeaseChanged {
-            input_holder: Some(wire_client_id(client_id)),
+            input_holder: Some(super::wire_client(client_id)),
             action: grant.action,
-            actor: Some(wire_client_id(client_id)),
+            actor: Some(super::wire_client(client_id)),
         })
         .await;
     if let Some((ttl_ms, generation)) = grant.expiry {
@@ -3864,7 +3858,7 @@ pub(crate) async fn handle_release_input(
         .send(ControlRequest::LeaseChanged {
             input_holder: None,
             action: ControlAction::Released,
-            actor: Some(wire_client_id(client_id)),
+            actor: Some(super::wire_client(client_id)),
         })
         .await;
     CommandResult::Ok
@@ -3883,7 +3877,7 @@ pub(crate) async fn handle_signal_terminal(
     let resolved = state.with(|s| {
         let resolved = s.resolve_resource(terminal_id).into_owned();
         let holder = match &resolved {
-            ResolvedOwned::Local(local) => s.input_lease_holder(local.id).map(wire_client_id),
+            ResolvedOwned::Local(local) => s.input_lease_holder(local.id).map(super::wire_client),
             ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => None,
         };
         (resolved, holder)
@@ -3907,7 +3901,7 @@ pub(crate) async fn handle_signal_terminal(
     let request = ControlRequest::Signal {
         signal,
         input_holder,
-        by: wire_client_id(client_id),
+        by: super::wire_client(client_id),
         operation_id,
         reply: reply_tx,
     };
@@ -4482,7 +4476,7 @@ pub(crate) fn handle_frame_ack(
             return;
         }
         let dispatched = local.handle.consumer_ack.try_send(ConsumerAckRequest {
-            client_id: wire_client_id(client_id),
+            client_id: super::wire_client(client_id),
             stream_id,
             bootstrap_id,
             seq,

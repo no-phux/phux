@@ -1228,9 +1228,7 @@ fn retain_exited_pane(
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
-    let input_holder = s
-        .input_lease_holder(pane)
-        .map(|holder| phux_protocol::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX)));
+    let input_holder = s.input_lease_holder(pane).map(super::wire_client);
     let exited = AgentEvent::TerminalControl {
         lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
         exit_status: exit.status,
@@ -1666,7 +1664,7 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     let attached_session = state.with(|s| attached_session_name(s, client_id));
     state.with(|s| release_actor_consumers(s, client_id));
     // The `Released` transitions name this client as their actor.
-    state.with(|s| announce_lease_releases(s, client_id, Some(wire_client(client_id))));
+    state.with(|s| announce_lease_releases(s, client_id, Some(super::wire_client(client_id))));
     state.with(|s| release_relay_state(s, client_id));
     state.with_mut(|s| s.detach(client_id));
     fire_client_detached(state, client_id, attached_session);
@@ -1721,16 +1719,11 @@ fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<Detache
     })
 }
 
-/// The wire form of a server-local client id.
-fn wire_client(client_id: ClientId) -> phux_protocol::ids::ClientId {
-    phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX))
-}
-
 /// Free the per-consumer state-sync entries every pane this client
 /// subscribes to allocated for it. `try_send` is non-blocking and
 /// best-effort, so this is safe under the state lock.
 fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
-    let wire_client_id = wire_client(client_id);
+    let wire_client_id = super::wire_client(client_id);
     for handle in s.subscribed_resource_handles(client_id) {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if let Ok(terminal) = handle.terminal() {
@@ -3446,7 +3439,6 @@ async fn handle_stream_event(
             recv,
             window,
             frames,
-            events,
             frame_bytes,
             terminal_frame_bytes,
         } => {
@@ -3459,7 +3451,6 @@ async fn handle_stream_event(
                 recv,
                 window,
                 frames,
-                events,
                 frame_bytes,
                 terminal_frame_bytes,
                 plumbing,
@@ -3546,7 +3537,6 @@ async fn bind_terminal_stream(
     recv: quinn::RecvStream,
     window: SendWindow,
     frames: tokio::sync::mpsc::Sender<crate::transport::quic::AdmittedFrame>,
-    events: tokio::sync::mpsc::Sender<QuicStreamEvent>,
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     plumbing: &mut ClientPlumbing,
@@ -3610,7 +3600,6 @@ async fn bind_terminal_stream(
         terminal_id.clone(),
         stream_id,
         frames,
-        events,
         frame_bytes,
         terminal_frame_bytes,
         ingress_active,

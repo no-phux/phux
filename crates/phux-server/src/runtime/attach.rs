@@ -1269,8 +1269,7 @@ async fn fail_aggregate_attach_prepublication(
     while staged_pumps.join_next().await.is_some() {}
     super::client::abort_output_pumps(committed_pumps, client_id, "failed ATTACH").await;
 
-    let wire_client_id =
-        phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
+    let wire_client_id = super::wire_client(client_id);
     let producer_deadline = std::time::Duration::from_secs(1);
     for handle in staged_handles {
         // Native history cuts are a Terminal facet lease.
@@ -3382,8 +3381,7 @@ pub(crate) async fn handle_attach(
     else {
         return;
     };
-    let wire_client_id =
-        phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
+    let wire_client_id = super::wire_client(client_id);
     // For publication only: routing already followed the id.
     let session_name = state
         .with(|s| {

@@ -526,8 +526,6 @@ pub(crate) enum QuicStreamEvent {
         window: SendWindow,
         /// Merged destination used after bind admission.
         frames: tokio::sync::mpsc::Sender<AdmittedFrame>,
-        /// Lifecycle destination for the admitted receive pump.
-        events: tokio::sync::mpsc::Sender<Self>,
         /// Connection-wide queued/incomplete frame byte budget.
         frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
         /// Terminal-only share of that budget.
@@ -777,7 +775,6 @@ async fn accept_terminal_streams(
                 recv,
                 window,
                 frames,
-                events: events.clone(),
                 frame_bytes,
                 terminal_frame_bytes,
             };
@@ -798,7 +795,6 @@ pub(crate) async fn pump_terminal_stream(
     terminal_id: phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
     frames_tx: tokio::sync::mpsc::Sender<AdmittedFrame>,
-    _events_tx: tokio::sync::mpsc::Sender<QuicStreamEvent>,
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     active: Arc<AtomicBool>,
@@ -1185,7 +1181,6 @@ mod tests {
             stream_id,
             recv,
             frames,
-            events,
             frame_bytes,
             terminal_frame_bytes,
             ..
@@ -1199,7 +1194,6 @@ mod tests {
             terminal_id.clone(),
             stream_id,
             frames,
-            events,
             Arc::clone(&frame_bytes),
             Arc::clone(&terminal_frame_bytes),
             Arc::clone(&active),

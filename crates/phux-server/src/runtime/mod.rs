@@ -1623,6 +1623,11 @@ fn build_wt_listener(
     }
 }
 
+/// The wire form of a server-local client id, saturating at `u32::MAX`.
+pub(crate) fn wire_client(client_id: crate::state::ClientId) -> phux_protocol::ids::ClientId {
+    phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX))
+}
+
 /// Queue an `ERROR` frame on `out_tx`.
 pub(crate) async fn send_error(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
@@ -2282,10 +2287,6 @@ mod tests {
                 base_seq: 0,
             }),
         }
-    }
-
-    fn wire_client(client_id: ClientId) -> phux_protocol::ids::ClientId {
-        phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX))
     }
 
     /// `VIEWPORT_RESIZE` updates the registry dims and asks the actor for a
