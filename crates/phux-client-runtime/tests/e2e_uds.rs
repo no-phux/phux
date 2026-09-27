@@ -395,6 +395,9 @@ fn assert_epoch_held(client: &Client, epoch: u64, what: &str) {
 
 #[test]
 fn a_consumer_that_falls_behind_backs_up_the_socket_without_redialing() {
+    // Hosted Linux sees the server close the socket during the stall; the
+    // dump on failure names which pump fault cancelled the connection.
+    let _trace = phux_server_testkit::tracing_capture::TracingCapture::install("falls-behind");
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
