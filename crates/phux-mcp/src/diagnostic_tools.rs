@@ -1,76 +1,14 @@
-//! The three read-only diagnostic MCP tools: `phux_status`, `phux_doctor`,
-//! and `phux_whoami`.
+//! The read-only diagnostic tools `phux_status`, `phux_doctor`, and
+//! `phux_whoami`: separate tools (ADR-0071 point 7(b)), each a transport for
+//! the canonical CLI's versioned document, so there is one implementation of
+//! every check.
 //!
-//! An agent driving phux over MCP could already *act* on the server — spawn,
-//! kill, send keys, signal — and could not ask whether that server was
-//! healthy, or who it was to that server. Every health signal phux produced
-//! was human-only, so the thing best placed to notice a crash-looping
-//! supervised server was the one thing that could not see it. The
-//! alternative was shelling out to the `phux` binary, which defeats the point
-//! of having an MCP surface at all.
-//!
-//! ## Separate tools, not one
-//!
-//! `phux status`, `phux doctor`, and `phux whoami` answer different questions
-//! and are separate tools rather than one `action`-multiplexed diagnostic,
-//! for the reason [ADR-0071](../../../docs/adr/0071-what-phux-1-0-commits-to.md)
-//! point 7(b) gives for the `phux_agent_*` split: a multiplexer's frozen
-//! schema is the union of every action it will ever carry, and after 1.0
-//! nothing can leave that union. The shapes happen to coincide today
-//! (`socket` and nothing else); freezing them separately is what keeps a
-//! later argument on one of them from appearing on the others.
-//!
-//! ## Reuse, not a second opinion
-//!
-//! Every tool executes the canonical `phux` CLI with argv (never a shell)
-//! through [`crate::cli_adapter`] and returns its versioned document
-//! verbatim. None re-implements a check or a read. A diagnostic that
-//! disagrees with `phux doctor` about whether the server is healthy is worse
-//! than no diagnostic, so there is exactly one implementation of every check
-//! and this module is a transport for it. The same holds for identity:
-//! `phux whoami --json` owns the `WHOAMI` feature-bit check and prints the
-//! server's `phux.whoami/v1` record unchanged, so this adapter neither parses
-//! the record nor second-guesses the refusal.
-//!
-//! ## `phux_whoami` fails on every non-zero exit
-//!
-//! Unlike the other two, `phux whoami --json` has no answer that rides out
-//! under a non-zero exit: exit `1` is always the shared JSON error contract
-//! on stderr (`server_too_old` against a server that predates the key,
-//! `transport` for a malformed answer or an unreachable server). That line
-//! becomes the tool error as is, so the refusal names its code and remedy.
-//!
-//! ## A non-zero exit is an answer for status and doctor, not a failure
-//!
-//! Both verbs spend exit `1` on their *interesting* result and still print
-//! the whole document on stdout: `phux status --json` answers a stopped
-//! server with `{"running": false, ...}`, and `phux doctor --json` exits `1`
-//! whenever any check failed — which is precisely the call an agent made the
-//! tool call to learn about. Collapsing that into a tool error would throw
-//! the document away and report "the diagnostic broke" for the case the
-//! diagnostic exists to describe, so `1` is allowed through
-//! [`crate::cli_adapter::CliAdapter::run_allowing`] and the document is
-//! returned.
-//!
-//! Exit `1` is overloaded on both verbs — the same code also carries a
-//! genuine failure (the server hung up mid-probe; the document would not
-//! serialize), and there the CLI's contract puts one JSON error object on
-//! stderr and leaves stdout empty. The two are told apart by stdout, not by
-//! the code: an empty stdout is a real failure and reports the CLI's stderr
-//! contract line rather than a JSON parse error.
-//!
-//! ## What this family deliberately does NOT contain
-//!
-//! - **No repair tool.** `phux doctor` is read-only on purpose — a
-//!   diagnostic that repairs things is a diagnostic nobody can trust to
-//!   describe the system — and the remedies it names (`phux service
-//!   reconcile`, `phux upgrade`) restart or rewrite supervisor state on the
-//!   human's machine. They stay a `hint` string an agent relays, not a tool
-//!   it can call.
-//! - **No log-reading tool.** Both documents report the log *paths*; turning
-//!   an MCP tool into a file reader is the surface
-//!   [ADR-0077](../../../docs/adr/0077-agent-read-surface.md) point 1 already
-//!   declined for captures.
+//! `status` and `doctor` spend exit 1 on their interesting answer (a stopped
+//! server, a failed check) and still print the document, so exit 1 is
+//! allowed; an empty stdout under exit 1 is the real failure and reports the
+//! CLI's stderr error line. `whoami` has no such answer: every non-zero exit
+//! is its stderr error contract. There is deliberately no repair tool and no
+//! log reader.
 
 #![allow(
     clippy::similar_names,
@@ -83,13 +21,10 @@ use crate::cli_adapter::{CliAdapter, DEFAULT_CALL_TIMEOUT, push_socket};
 use crate::cli_tools::schema;
 use crate::tools::{ToolError, strict_object};
 
-/// The exit code both verbs spend on a *result* rather than a failure: a
-/// stopped server for `status`, a failed check for `doctor`. See the module
-/// docs for why stdout, not this code, is what separates the two meanings.
+/// The exit `status` and `doctor` spend on a result (see the module docs).
 const EXIT_ANSWERED: i32 = 1;
 
-/// Shared `socket` description. Diagnosing the wrong server is the one way
-/// these tools mislead, so the override is spelled out on both.
+/// Shared `socket` description.
 const SOCKET_DESC: &str = "Override the UDS path of the server to diagnose. \
     Defaults to PHUX_SOCKET or the daemon default.";
 
@@ -146,7 +81,7 @@ fn status_schema() -> Value {
          This describes one server at one socket. Use phux_doctor for the wider question of \
          whether the install is healthy: crash-looping, version-skewed, or supervised by a \
          legacy unit.",
-        json!({ "socket": { "type": "string", "minLength": 1, "maxLength": 4096, "description": SOCKET_DESC } }),
+        socket_properties(),
         &[],
     )
 }
@@ -177,7 +112,7 @@ fn doctor_schema() -> Value {
          rewrite units on the human's machine. \
          Only the socket and server checks follow `socket`; everything else describes the machine \
          this adapter is running on.",
-        json!({ "socket": { "type": "string", "minLength": 1, "maxLength": 4096, "description": SOCKET_DESC } }),
+        socket_properties(),
         &[],
     )
 }
@@ -198,14 +133,16 @@ fn whoami_schema() -> Value {
          server-owned key, never changes identity, and never auto-starts a server. \
          A SERVER THAT PREDATES THE KEY IS REFUSED, NOT GUESSED: without the `whoami` feature \
          the call fails with `server_too_old` rather than returning an empty identity.",
-        json!({ "socket": { "type": "string", "minLength": 1, "maxLength": 4096, "description": SOCKET_DESC } }),
+        socket_properties(),
         &[],
     )
 }
 
-/// Execute `phux whoami --json` and return the server's record. Every
-/// non-zero exit is a failure here (see the module docs), so the CLI's
-/// stderr error contract is the tool error.
+fn socket_properties() -> Value {
+    json!({ "socket": { "type": "string", "minLength": 1, "maxLength": 4096, "description": SOCKET_DESC } })
+}
+
+/// Execute `phux whoami --json`; any non-zero exit is the tool error.
 async fn run_whoami(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
     strict_object(args, &["socket"], &[])?;
     let mut argv = vec!["whoami".to_owned(), "--json".to_owned()];
@@ -226,12 +163,7 @@ async fn run_diagnostic(
         .run_allowing(argv, DEFAULT_CALL_TIMEOUT, &[EXIT_ANSWERED])
         .await?;
 
-    // Exit 1 carries two meanings on these verbs and stdout is what tells
-    // them apart: the answer document, or nothing at all beside one JSON
-    // error object on stderr. Parsing an empty stdout would report a
-    // malformed-JSON bug for what is really "the server hung up mid-probe",
-    // which is the wrong diagnosis to hand a caller who asked for a
-    // diagnosis.
+    // Exit 1 with an empty stdout is a real failure, not a document.
     if output.stdout.trim().is_empty() {
         let message = output.stderr.trim();
         return Err(ToolError::new(if message.is_empty() {
@@ -250,88 +182,37 @@ async fn run_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     use phux_protocol::wire::frame::{ServingUser, WhoamiRecord};
     use tempfile::TempDir;
 
     use super::*;
+    use crate::cli_adapter::fake;
 
-    /// A fake `phux` that logs its argv one entry per line and answers each
-    /// diagnostic verb the way the real CLI does on its interesting path:
-    /// the whole document on stdout under exit 1.
+    /// A fake `phux` answering each diagnostic verb on its interesting
+    /// path: the whole document on stdout under exit 1.
     fn fake_cli() -> (TempDir, CliAdapter, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
-        let log = temp.path().join("argv");
-        let executable = temp.path().join("phux");
-        let script = format!(
-            r#"#!/bin/sh
-: > '{log}'
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> '{log}'
-done
-case "$1" in
-  status) printf '{{"schema_version":1,"running":false,"error":{{"code":"no_server"}}}}\n'
+        fake::cli(
+            r#"case "$1" in
+  status) printf '{"schema_version":1,"running":false,"error":{"code":"no_server"}}\n'
           exit 1 ;;
-  doctor) printf '{{"schema_version":1,"ok":false,"failed":1,"checks":[{{"name":"server-health","status":"fail"}}]}}\n'
+  doctor) printf '{"schema_version":1,"ok":false,"failed":1,"checks":[{"name":"server-health","status":"fail"}]}\n'
           exit 1 ;;
 esac
 "#,
-            log = log.display(),
-        );
-        fs::write(&executable, script).unwrap();
-        let mut permissions = fs::metadata(&executable).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&executable, permissions).unwrap();
-        (temp, CliAdapter::new(executable), log)
-    }
-
-    /// A fake `phux` reproducing the OTHER exit-1: the shared JSON error
-    /// contract on stderr with stdout left empty.
-    fn failing_cli() -> (TempDir, CliAdapter) {
-        let temp = tempfile::tempdir().unwrap();
-        let executable = temp.path().join("phux");
-        fs::write(
-            &executable,
-            "#!/bin/sh\n\
-             printf '{\"schema_version\":1,\"error\":{\"code\":\"server_disconnected\"}}\\n' >&2\n\
-             exit 1\n",
         )
-        .unwrap();
-        let mut permissions = fs::metadata(&executable).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&executable, permissions).unwrap();
-        (temp, CliAdapter::new(executable))
     }
 
-    /// A fake `phux` that logs its argv, prints `stdout` and `stderr`
-    /// verbatim, and exits `code` — the one shape `phux whoami --json` has.
+    /// A fake `phux` that prints `stdout` and `stderr` verbatim and exits
+    /// `code`.
     fn scripted_cli(stdout: &str, stderr: &str, code: i32) -> (TempDir, CliAdapter, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
-        let log = temp.path().join("argv");
-        let out = temp.path().join("stdout");
-        let err = temp.path().join("stderr");
-        fs::write(&out, stdout).unwrap();
-        fs::write(&err, stderr).unwrap();
-        let executable = temp.path().join("phux");
-        let script = format!(
-            "#!/bin/sh\n\
-             : > '{log}'\n\
-             for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> '{log}'; done\n\
-             cat '{out}'\n\
-             cat '{err}' >&2\n\
-             exit {code}\n",
-            log = log.display(),
-            out = out.display(),
-            err = err.display(),
-        );
-        fs::write(&executable, script).unwrap();
-        let mut permissions = fs::metadata(&executable).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&executable, permissions).unwrap();
-        (temp, CliAdapter::new(executable), log)
+        let made = fake::cli(&format!(
+            "cat '{{dir}}/stdout'\ncat '{{dir}}/stderr' >&2\nexit {code}\n"
+        ));
+        std::fs::write(made.0.path().join("stdout"), stdout).unwrap();
+        std::fs::write(made.0.path().join("stderr"), stderr).unwrap();
+        made
     }
 
     fn bearer_record() -> WhoamiRecord {
@@ -397,46 +278,12 @@ esac
         let result = call_with_adapter(name, &args, adapter)
             .await
             .unwrap_or_else(|err| panic!("{name} failed: {err:?}"));
-        let actual = fs::read_to_string(log).unwrap();
-        assert_eq!(actual.lines().collect::<Vec<_>>(), expected, "{name}");
+        assert_eq!(fake::logged(log), expected, "{name}");
         result
     }
 
-    /// Two distinct tools with their own frozen shapes, and no `action`
-    /// discriminant anywhere — the union ADR-0071 point 7(b) refuses.
-    #[test]
-    fn the_diagnostics_are_distinct_tools_with_no_action_multiplexer() {
-        let schemas = schemas();
-        let names: Vec<&str> = schemas
-            .iter()
-            .filter_map(|schema| schema["name"].as_str())
-            .collect();
-        assert_eq!(names, vec!["phux_status", "phux_doctor", "phux_whoami"]);
-        for schema in &schemas {
-            assert_eq!(schema["inputSchema"]["type"], "object");
-            assert_eq!(schema["inputSchema"]["additionalProperties"], false);
-            assert!(
-                schema["inputSchema"]["properties"].get("action").is_none(),
-                "{} multiplexes on `action`",
-                schema["name"],
-            );
-            assert_eq!(schema["inputSchema"]["required"], json!([]));
-            let properties = schema["inputSchema"]["properties"].as_object().unwrap();
-            assert_eq!(
-                properties.keys().collect::<Vec<_>>(),
-                vec!["socket"],
-                "{} widened past `socket`",
-                schema["name"],
-            );
-            assert!(owns(schema["name"].as_str().unwrap()));
-        }
-    }
-
-    /// Both descriptions have to carry the rule that makes their result
-    /// readable: a non-zero exit is the answer, so a caller branches on the
-    /// document's own field. `phux_doctor` additionally has to say that
-    /// `server-health` repeats, or a consumer reads the first row and
-    /// reports a misleadingly clean bill of health.
+    /// The descriptions carry the rules that make results readable: a
+    /// non-zero exit is the answer, and doctor's `server-health` repeats.
     #[test]
     fn the_descriptions_state_the_answer_not_error_rule() {
         let status = status_schema();
@@ -516,11 +363,14 @@ esac
     }
 
     /// The other exit 1: no document, one JSON error object on stderr. The
-    /// caller gets that contract line, not a malformed-JSON complaint about
-    /// an empty string.
+    /// caller gets that contract line, not a malformed-JSON complaint.
     #[tokio::test]
     async fn a_document_less_failure_reports_the_cli_error_contract() {
-        let (_temp, adapter) = failing_cli();
+        let (_temp, adapter, _log) = scripted_cli(
+            "",
+            "{\"schema_version\":1,\"error\":{\"code\":\"server_disconnected\"}}\n",
+            1,
+        );
         for name in ["phux_status", "phux_doctor"] {
             let err = call_with_adapter(name, &json!({}), &adapter)
                 .await

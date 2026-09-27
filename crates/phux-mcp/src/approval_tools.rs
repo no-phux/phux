@@ -1,12 +1,6 @@
-//! The `phux_approvals` and `phux_approve` tools (ADR-0128): list the
-//! actions a `?signal` grant is holding for a decision, and decide one.
-//!
-//! In-process over `phux_client::approvals`, returning the document
-//! `phux approvals --json` prints, so the two surfaces cannot drift.
-//! Approving releases a held `SIGNAL` action, so `phux_approve` is
-//! destructive and the shared `confirm` check
-//! ([`crate::annotations::require_confirmation`]) asks for `confirm: true`
-//! before an approval; a denial releases nothing and never asks.
+//! `phux_approvals` / `phux_approve` (ADR-0128): list the actions a
+//! `?signal` grant holds for a decision, and decide one. Approving releases
+//! the held action, so it needs `confirm: true`; a denial never asks.
 
 use phux_client::approvals::{ApprovalError, Decision};
 use phux_client::attach::connection::Connection;
@@ -14,19 +8,16 @@ use phux_protocol::ids::ApprovalId;
 use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
-use crate::tools::{ToolError, str_arg, strict_object};
+use crate::tools::{ToolError, socket_or_default, str_arg, strict_object};
 
-/// The two approval tool descriptors.
 pub(crate) fn schemas() -> Vec<Value> {
     vec![approvals_schema(), approve_schema()]
 }
 
-/// Whether `name` is one of this module's tools.
 pub(crate) fn owns(name: &str) -> bool {
     matches!(name, "phux_approvals" | "phux_approve")
 }
 
-/// Dispatch one approval tool call.
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
     match name {
         "phux_approvals" => approvals(args).await,
@@ -102,8 +93,7 @@ async fn approve(args: &Value) -> Result<Value, ToolError> {
 }
 
 async fn connect(args: &Value) -> Result<Connection, ToolError> {
-    let socket = crate::socket::resolve(str_arg(args, "socket"));
-    Ok(Connection::connect(&socket).await?)
+    Ok(Connection::connect(&socket_or_default(args)).await?)
 }
 
 fn approval_error(err: ApprovalError) -> ToolError {

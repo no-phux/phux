@@ -1,11 +1,6 @@
-//! In-process MCP tools over the pane-shaping `phux-client` homes:
-//! `phux_spawn`, `phux_signal`, `phux_tag`, `phux_rename`, and the three
-//! spatial edits.
-//!
-//! Signal, tag, and rename call the same `phux-client` builders the CLI
-//! verbs call (`signal::deliver`, `tags::apply`, `session::rename_checked`).
-//! Spawn and the spatial edits already did. The goldens in `crate::goldens`
-//! pin every document.
+//! In-process pane-shaping tools (`phux_spawn`, `phux_signal`, `phux_tag`,
+//! `phux_rename`, the spatial edits) over the `phux-client` functions the CLI
+//! verbs call; `crate::goldens` pins every document.
 
 use std::path::Path;
 
@@ -26,7 +21,10 @@ use serde_json::{Value, json};
 
 use crate::cli_adapter::{bounded_string, bounded_strings, enum_string, ratio};
 use crate::cli_tools::optional_bool;
-use crate::tools::{ToolError, contract_error, socket_arg, strict_object, transport_error};
+use crate::tools::{
+    ToolError, contract_error, incomplete_view_miss, parse_selector, socket_arg, strict_object,
+    transport_error,
+};
 
 /// The split ratio the CLI defaults `--ratio` to.
 const DEFAULT_RATIO: f32 = 0.5;
@@ -40,11 +38,6 @@ fn cli_ratio(args: &Value) -> Result<f32, ToolError> {
             .parse::<f32>()
             .map_err(|err| ToolError::new(format!("`ratio` is not a float: {err}")))
     })
-}
-
-fn parse_selector(target: &str) -> Result<Selector, ToolError> {
-    selector::parse(target)
-        .map_err(|err| ToolError::new(format!("invalid target '{target}': {err}")))
 }
 
 // -----------------------------------------------------------------------------
@@ -149,8 +142,7 @@ fn retain_secs(args: &Value) -> Result<Option<u32>, ToolError> {
     })
 }
 
-/// Parse an `idempotency_key` argument; shared by `phux_spawn`,
-/// `phux_signal`, and `phux_kill`.
+/// Parse an `idempotency_key` argument (spawn, signal, kill).
 pub(crate) fn idempotency_key(raw: &str) -> Result<IdempotencyKey, ToolError> {
     phux_client::spawn::parse_idempotency_key(raw).map_err(|err| {
         contract_error(
@@ -198,9 +190,8 @@ pub(crate) async fn spawn(args: &Value) -> Result<Value, ToolError> {
     spawn_document(result)
 }
 
-/// Refuse a durable spawn the server would silently downgrade: it does not
-/// advertise the feature `retain_secs` or `idempotency_key` needs. A plain
-/// spawn costs no extra connection.
+/// Refuse a durable spawn the server would silently downgrade (it lacks the
+/// feature `retain_secs` or `idempotency_key` needs).
 async fn refuse_unsupported(
     socket: &Path,
     request: &SpawnRequest,
@@ -228,8 +219,7 @@ async fn refuse_unsupported(
 }
 
 /// The refusal for a keyed kill or signal to a server without
-/// `KEYED_SIGNAL`, worded as `phux kill` / `phux signal --idempotency-key`
-/// word it: such a server would ignore the key and run a retry again.
+/// `KEYED_SIGNAL`, which would ignore the key and run a retry again.
 pub(crate) fn unsupported_keyed_signal() -> ToolError {
     contract_error(
         "unsupported_server",
@@ -406,11 +396,7 @@ fn signal_error(target: &str, err: phux_client::signal::SignalError) -> ToolErro
         SignalError::Miss { degradation } if degradation.is_complete() => {
             ToolError::new("no such target")
         }
-        SignalError::Miss { degradation } => ToolError::new(format!(
-            "could not resolve {target}: this server's view of the fleet is \
-             incomplete ({}), so a miss here does not mean the target is gone",
-            degradation.notices().join("; ")
-        )),
+        SignalError::Miss { degradation } => incomplete_view_miss(target, degradation.notices()),
         SignalError::Agent(err) => ToolError::new(err.to_string()),
         SignalError::Keyed(KeyedError::Unsupported) => unsupported_keyed_signal(),
         SignalError::Keyed(KeyedError::Attach(err)) => err.into(),
@@ -461,11 +447,10 @@ pub(crate) async fn tag(args: &Value) -> Result<Value, ToolError> {
             return Err(ToolError::new(format!("no such target: {target}")));
         }
         Err(phux_client::tags::TagError::Miss { degradation }) => {
-            return Err(ToolError::new(format!(
-                "could not resolve '{target}': this server's view of the fleet is incomplete \
-                 ({}), so a miss here does not mean the target is gone",
-                degradation.notices().join("; ")
-            )));
+            return Err(incomplete_view_miss(
+                &format!("'{target}'"),
+                degradation.notices(),
+            ));
         }
         Err(phux_client::tags::TagError::WriteRefused { message }) => {
             return Err(ToolError::new(message));
@@ -620,8 +605,7 @@ pub(crate) async fn spatial(args: &Value, edit: Spatial) -> Result<Value, ToolEr
 mod tests {
     use super::*;
 
-    /// Validation happens before any connection: a socket that cannot exist
-    /// proves nothing was dialed.
+    /// Validation refuses before dialing (the socket cannot exist).
     #[tokio::test]
     async fn malformed_or_dangerous_calls_are_refused_before_any_connection() {
         let socket = "/nonexistent/phux-mcp-pane-tools.sock";

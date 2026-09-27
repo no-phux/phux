@@ -1,32 +1,13 @@
-//! MCP tool annotations (`readOnlyHint`, `destructiveHint`), derived from
-//! the kind catalog (ADR-0125) rather than set by hand per tool.
+//! MCP tool annotations (`readOnlyHint`, `destructiveHint`) and the shared
+//! `confirm` check, derived from each tool's [`crate::tool_table`] row and
+//! the kind catalog (ADR-0125, ADR-0128) rather than set by hand.
 //!
-//! Each tool's row in [`crate::tool_table`] declares what it touches: the
-//! catalog methods it can send (by wire name, or by metadata key for a
-//! server-interpreted key), or a local effect with no wire method at all.
-//! The hints follow from that alone:
-//!
-//! - `readOnlyHint` holds only when every method is read-only by the
-//!   catalog's own conservative rule ([`MethodSpec::mutating`]): a method a
-//!   row denies, or the `COMMAND` envelope, counts as mutating, so a denied
-//!   write can never hide behind a read-only hint.
-//! - `destructiveHint` holds when any method is `MethodSpec::dangerous` (it
-//!   can end a process, eject a client, stop the server, or release a held
-//!   action; ADR-0128) or needs `INPUT` (keystrokes in a live PTY can run
-//!   anything). `CREATE` and `BIND` add resources and rewrite bindings,
-//!   metadata, and layout: mutating, but not destructive. The rule lives in
-//!   `tool_table::dangerous`.
-//!
-//! The same catalog fact drives the one `confirm` check every tool shares
-//! ([`require_confirmation`]): a tool whose own action is a dangerous method
-//! needs `confirm: true`, unless the catalog says this call's payload is the
-//! reversible kind (`freeze`, `resume`) or releases nothing (`deny`).
-//!
-//! A tool that runs a local program is destructive; one that only reads
-//! local configuration is read-only. A tool with no row is annotated as a
-//! destructive write, and the tests make a missing row a failure.
-//!
-//! [`MethodSpec::mutating`]: phux_protocol::kinds::MethodSpec::mutating
+//! Read-only means every method the tool can send is non-mutating by the
+//! catalog's conservative rule; destructive means some method is
+//! `dangerous` or needs `INPUT`. A tool whose own act is a dangerous method
+//! needs `confirm: true`, unless this call's payload is the reversible kind
+//! (`freeze`, `resume`) or releases nothing (`deny`). A tool with no row is
+//! annotated as a destructive write.
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::kinds;

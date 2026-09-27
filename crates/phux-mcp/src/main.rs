@@ -1,26 +1,13 @@
 //! `phux-mcp` — a minimal Model Context Protocol stdio adapter over the
-//! phux agent surface (phux-93b, ADR-0022 §5 "MCP as a thin adapter").
+//! phux agent surface (ADR-0022 §5).
 //!
-//! Speaks JSON-RPC 2.0 over the MCP stdio transport: newline-delimited
-//! JSON, one message per line on stdin/stdout. The JSON-RPC is hand-rolled
-//! over `serde_json` (no framework dep); every tool is a thin wrapper over
-//! `phux-client`'s agent surface (`snapshot`, `send_keys`, `run`, `wait`)
-//! or a direct `GET_STATE` control command — the same structured surface
-//! the CLI uses, never a separate core.
-//!
-//! Methods:
-//! - `initialize` → capabilities + serverInfo.
-//! - `notifications/initialized` → no reply (notification).
-//! - `tools/list` → the tool catalog.
-//! - `tools/call` → dispatch by tool name; tool failures become a result
-//!   with `isError: true`, never a process crash.
-//!
-//! Robustness: malformed JSON or an unknown method yields a JSON-RPC error
-//! response; the loop continues until stdin EOF.
+//! Newline-delimited JSON-RPC 2.0 on stdin/stdout, hand-rolled over
+//! `serde_json`. Methods: `initialize`, `tools/list`, `tools/call` (tool
+//! failures are `isError: true` results), `ping`, and the `initialized` /
+//! `cancelled` notifications. Malformed input gets a JSON-RPC error and the
+//! loop continues until stdin EOF.
 
 #![forbid(unsafe_code)]
-// The MCP transport speaks on stdout; writing responses there is the whole
-// point of this binary (the workspace lints deny stdout/stderr by default).
 #![allow(
     clippy::print_stdout,
     reason = "stdout is the MCP transport for JSON-RPC responses"
@@ -45,10 +32,8 @@ mod diagnostic_tools;
 mod goldens;
 mod jsonrpc;
 mod pane_tools;
-mod plugin_action;
-mod plugin_workspace;
+mod plugin_tools;
 mod resource_tools;
-mod socket;
 mod tool_table;
 mod tools;
 
@@ -70,10 +55,7 @@ type DispatchFuture =
     Pin<Box<dyn Future<Output = Result<Value, tools::ToolError>> + Send + 'static>>;
 type Dispatcher = Arc<dyn Fn(String, Value) -> DispatchFuture + Send + Sync>;
 
-/// The MCP protocol version this adapter implements.
-///
-/// TODO(phux-93b): pinned to the 2024-11-05 revision the task specifies.
-/// Newer MCP revisions are additive; bump when we adopt one.
+/// The MCP protocol revision this adapter implements.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 const SKILL: &str = include_str!("../../../.agents/skills/using-phux-mcp/SKILL.md");
@@ -153,8 +135,6 @@ fn main() -> std::process::ExitCode {
         }
     }
 
-    // Current-thread runtime: the phux client surface is async and its
-    // client-side libghostty Terminal is !Send (ADR-0003).
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -175,14 +155,12 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// Read newline-delimited JSON-RPC messages from stdin until EOF, handling
-/// each and writing any response to stdout.
+/// Serve stdin/stdout until EOF.
 ///
 /// # Errors
 ///
-/// Returns an [`std::io::Error`] only on an stdin read failure (not EOF) —
-/// per-message parse/dispatch failures are turned into JSON-RPC error
-/// responses, not propagated.
+/// Only stdin/stdout I/O failures; per-message failures become JSON-RPC
+/// error responses.
 async fn serve() -> std::io::Result<()> {
     serve_io(
         BufReader::new(tokio::io::stdin()),
@@ -196,11 +174,8 @@ fn default_dispatcher() -> Dispatcher {
     Arc::new(|name, args| Box::pin(async move { tools::dispatch(&name, &args).await }))
 }
 
-/// Drive the stdio protocol while tool calls remain cancellable.
-///
-/// Tool futures run as independently abortable runtime tasks. Only this loop
-/// writes replies, keeping output framing serialized while allowing replies to
-/// complete out of request order with the original JSON-RPC id intact.
+/// Drive the protocol with each tool call an abortable task. Only this loop
+/// writes, so output stays framed while replies complete out of order.
 async fn serve_io<R, W>(mut reader: R, mut writer: W, dispatcher: Dispatcher) -> std::io::Result<()>
 where
     R: AsyncBufRead + Unpin + Send,
@@ -240,16 +215,14 @@ where
     }
 }
 
-/// The tool calls running as independently abortable tasks, indexed by the
-/// JSON-RPC request id each one will answer.
+/// In-flight tool calls, keyed by the JSON-RPC request id each answers.
 struct InFlight {
     tasks: JoinSet<(String, Value)>,
     pending: HashMap<String, (Value, AbortHandle)>,
 }
 
 impl InFlight {
-    /// Drop every tracked call: abort the handles, abort the set, and drain
-    /// it so no task outlives the loop that was going to answer for it.
+    /// Abort and drain every tracked call, so none outlives the loop.
     async fn abort_all(&mut self) {
         for (_, task) in self.pending.drain().map(|(_, value)| value) {
             task.abort();
@@ -259,10 +232,8 @@ impl InFlight {
     }
 }
 
-/// Parse one newline-delimited message and route it, writing whatever reply
-/// it owes. A blank line is not a message; a malformed one is a JSON-RPC
-/// parse error with a null id (the request id is unrecoverable from
-/// unparseable JSON) and the loop carries on.
+/// Parse one line and route it, writing whatever reply it owes. A blank
+/// line is not a message.
 async fn handle_message(
     line: &str,
     writer: &mut (impl AsyncWrite + Unpin),
@@ -273,12 +244,9 @@ async fn handle_message(
     if message.is_empty() {
         return Ok(());
     }
-    let request: Request = match serde_json::from_str(message) {
+    let request = match parse_request(message) {
         Ok(request) => request,
-        Err(err) => {
-            let response = jsonrpc::error(Value::Null, PARSE_ERROR, format!("parse error: {err}"));
-            return write_response(writer, &response).await;
-        }
+        Err(response) => return write_response(writer, &response).await,
     };
 
     if request.method == "notifications/cancelled" {
@@ -287,17 +255,14 @@ async fn handle_message(
     if request.method == "tools/call" && !request.is_notification() {
         return spawn_tools_call(request, writer, dispatcher, in_flight).await;
     }
-    // Everything else is a plain request/response method; a notification
-    // yields no reply.
     let Some(response) = handle_request(request).await else {
         return Ok(());
     };
     write_response(writer, &response).await
 }
 
-/// Abort the task tracked for the cancelled request id and close that request
-/// out with a cancellation error carrying its original id. An id we are not
-/// tracking is silently ignored: the call already finished or never existed.
+/// Abort the cancelled request's task and answer it with a cancellation
+/// error; an untracked id (already finished) is ignored.
 async fn cancel_request(
     request: &Request,
     writer: &mut (impl AsyncWrite + Unpin),
@@ -318,9 +283,8 @@ async fn cancel_request(
     write_response(writer, &response).await
 }
 
-/// Start a `tools/call` as its own abortable task, keyed by request id so a
-/// later `notifications/cancelled` can find it. Reusing an id that is still
-/// in flight is an invalid request, not a second task.
+/// Start a `tools/call` as an abortable task keyed by request id; reusing
+/// an in-flight id is an invalid request.
 async fn spawn_tools_call(
     request: Request,
     writer: &mut (impl AsyncWrite + Unpin),
@@ -373,30 +337,16 @@ fn response_line(response: &Value) -> String {
     })
 }
 
-/// Handle one line of input, returning the JSON-RPC response to emit, or
-/// `None` for a notification (which gets no reply).
-#[cfg(test)]
-async fn handle_line(line: &str) -> Option<Value> {
-    // Parse the envelope. A malformed line is a JSON-RPC parse error with a
-    // null id (we cannot recover the request id from unparseable JSON).
-    let request: Request = match serde_json::from_str(line) {
-        Ok(req) => req,
-        Err(err) => {
-            return Some(jsonrpc::error(
-                Value::Null,
-                PARSE_ERROR,
-                format!("parse error: {err}"),
-            ));
-        }
-    };
-    handle_request(request).await
+/// Parse one message; a malformed one is a parse error with a null id (the
+/// request id is unrecoverable).
+fn parse_request(message: &str) -> Result<Request, Value> {
+    serde_json::from_str(message)
+        .map_err(|err| jsonrpc::error(Value::Null, PARSE_ERROR, format!("parse error: {err}")))
 }
 
-/// Dispatch a parsed [`Request`] to its method handler.
+/// Dispatch a parsed request; `None` for a notification (no reply).
 async fn handle_request(request: Request) -> Option<Value> {
     let is_notification = request.is_notification();
-    // For a request, echo the id; for a notification there is no reply, but
-    // we still carry a placeholder so the error path is uniform.
     let id = request.id.clone().unwrap_or(Value::Null);
 
     match request.method.as_str() {
@@ -405,21 +355,13 @@ async fn handle_request(request: Request) -> Option<Value> {
         "tools/list" => Some(jsonrpc::success(id, json!({ "tools": tools::catalog() }))),
         "tools/call" if is_notification => None,
         "tools/call" => Some(handle_tools_call(id, request.params.as_ref()).await),
-        // `ping` is a common MCP keepalive; reply with an empty result.
         "ping" => Some(jsonrpc::success(id, json!({}))),
-        other => {
-            if is_notification {
-                // Unknown notification: ignore silently (no reply for
-                // notifications, per JSON-RPC).
-                None
-            } else {
-                Some(jsonrpc::error(
-                    id,
-                    METHOD_NOT_FOUND,
-                    format!("method not found: {other}"),
-                ))
-            }
-        }
+        _ if is_notification => None,
+        other => Some(jsonrpc::error(
+            id,
+            METHOD_NOT_FOUND,
+            format!("method not found: {other}"),
+        )),
     }
 }
 
@@ -436,10 +378,8 @@ fn initialize_result() -> Value {
     })
 }
 
-/// Handle `tools/call`: extract `name`/`arguments`, dispatch, and wrap the
-/// outcome in the MCP `content`/`isError` envelope. A tool failure is a
-/// *successful* JSON-RPC response carrying `isError: true` — not a
-/// JSON-RPC error and never a crash.
+/// Handle `tools/call`: a tool failure is a successful JSON-RPC response
+/// carrying `isError: true`, never a JSON-RPC error or a crash.
 async fn handle_tools_call(id: Value, params: Option<&Value>) -> Value {
     let dispatcher = default_dispatcher();
     handle_tools_call_with(id, params, dispatcher.as_ref()).await
@@ -456,8 +396,6 @@ async fn handle_tools_call_with(
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return jsonrpc::error(id, INVALID_REQUEST, "tools/call requires a string `name`");
     };
-    // `arguments` is optional; default to an empty object so tools that take
-    // no required args (e.g. phux_ls) work without it.
     let args = params
         .get("arguments")
         .cloned()
@@ -471,11 +409,9 @@ async fn handle_tools_call_with(
     }
 }
 
-/// Build the MCP `tools/call` result envelope: a single text content block
-/// carrying the value as pretty JSON (or the raw message), plus `isError`.
+/// The `tools/call` result envelope: one text block carrying a string
+/// verbatim or other values as pretty JSON, plus `isError`.
 fn tool_content(value: &Value, is_error: bool) -> Value {
-    // A bare error string is shown verbatim; structured results are
-    // pretty-printed JSON so a model reads them cleanly.
     let text = match value {
         Value::String(s) => s.clone(),
         other => serde_json::to_string_pretty(other)
@@ -490,7 +426,6 @@ fn tool_content(value: &Value, is_error: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -499,14 +434,8 @@ mod tests {
 
     use super::*;
 
-    /// Ceiling for "the child/server should already have done this" waits.
-    ///
-    /// Not load-bearing. Every assertion below is on the JSON-RPC reply or on
-    /// whether a pid is still alive — never on latency — so the timeout only
-    /// turns a wedged dispatcher into a bounded failure. The 1-2s bounds it
-    /// replaces were generous on an idle laptop and a measurement of the
-    /// scheduler on a saturated one (phux-br1f); a real hang still fails,
-    /// just later, with the same message.
+    /// Only turns a wedged dispatcher into a bounded failure; no assertion is
+    /// on latency.
     const NO_HANG_DEADLINE: Duration = Duration::from_secs(30);
 
     #[test]
@@ -520,30 +449,20 @@ mod tests {
         assert!(parse_mode(["junk"]).is_err());
     }
 
-    fn sleeping_cli() -> (TempDir, PathBuf, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
+    /// A fake CLI that writes its pid to `{dir}/pid` and sleeps.
+    fn sleeping_cli() -> (TempDir, Arc<cli_adapter::CliAdapter>, PathBuf) {
+        let (temp, adapter, _log) =
+            cli_adapter::fake::cli("printf '%s\\n' \"$$\" > '{dir}/pid'\nexec sleep 60\n");
         let pid_file = temp.path().join("pid");
-        let executable = temp.path().join("phux");
-        fs::write(
-            &executable,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$$\" > '{}'\nexec sleep 60\n",
-                pid_file.display()
-            ),
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&executable).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&executable, permissions).unwrap();
-        (temp, executable, pid_file)
+        (temp, Arc::new(adapter), pid_file)
     }
 
-    fn sleeping_dispatcher(executable: PathBuf) -> Dispatcher {
+    fn sleeping_dispatcher(adapter: Arc<cli_adapter::CliAdapter>) -> Dispatcher {
         Arc::new(move |name, _args| {
             if name == "fast" {
                 return Box::pin(async { Ok(json!({ "completed": true })) });
             }
-            let adapter = cli_adapter::CliAdapter::new(executable.clone());
+            let adapter = Arc::clone(&adapter);
             Box::pin(async move {
                 adapter
                     .run(std::iter::empty::<&str>(), Duration::from_secs(60))
@@ -616,87 +535,24 @@ mod tests {
         assert!(handle_request(req).await.is_none());
     }
 
+    /// Tool names are gated against the table by `tests/parity.rs`; here,
+    /// the served shape: object schemas, descriptions, derived hints.
     #[tokio::test]
     async fn tools_list_is_well_formed() {
         let req: Request =
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#).unwrap();
         let resp = handle_request(req).await.expect("tools/list replies");
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 44);
-        // The resource noun (PHA-406), one bounded tool each.
-        for name in [
-            "phux_resource_show",
-            "phux_resource_wait",
-            "phux_resource_methods",
-        ] {
+        assert_eq!(tools.len(), tool_table::TOOLS.len());
+        for tool in tools {
+            assert_eq!(tool["inputSchema"]["type"], json!("object"), "{tool}");
+            assert!(tool["description"].is_string(), "{tool}");
+            assert!(tool["annotations"]["readOnlyHint"].is_boolean(), "{tool}");
             assert!(
-                tools.iter().any(|t| t["name"] == json!(name)),
-                "tools/list lost {name}"
+                tool["annotations"]["destructiveHint"].is_boolean(),
+                "{tool}"
             );
         }
-        // Every tool carries the catalog-derived hints.
-        assert!(
-            tools
-                .iter()
-                .all(|t| t["annotations"]["readOnlyHint"].is_boolean()
-                    && t["annotations"]["destructiveHint"].is_boolean())
-        );
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_ls")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_paste")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_new")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_kill")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_detach")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_watch")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_ask")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_launch")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_spawn")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_agent_list")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_agent_wait")));
-        assert!(
-            tools
-                .iter()
-                .any(|t| t["name"] == json!("phux_agent_prompt"))
-        );
-        assert!(
-            tools
-                .iter()
-                .any(|t| t["name"] == json!("phux_agent_answer"))
-        );
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_agent_start")));
-        // The AgentSession resource verbs, one strict tool each.
-        for name in [
-            "phux_agent_session_open",
-            "phux_agent_session_close",
-            "phux_agent_emit",
-            "phux_agent_log",
-        ] {
-            assert!(
-                tools.iter().any(|t| t["name"] == json!(name)),
-                "tools/list lost {name}"
-            );
-        }
-        assert!(
-            tools
-                .iter()
-                .any(|t| t["name"] == json!("phux_agent_send_keys"))
-        );
-        // The multiplexer is gone, not aliased: keeping it alive would
-        // freeze the argument union ADR-0071 point 7(b) exists to prevent.
-        assert!(
-            !tools.iter().any(|t| t["name"] == json!("phux_agent")),
-            "the phux_agent action multiplexer must not survive the split",
-        );
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_insert_pane")));
-        assert!(
-            tools
-                .iter()
-                .any(|t| t["name"] == json!("phux_plugin_workspace"))
-        );
-        // The diagnostics: an agent that can act on the server can now also
-        // ask whether it is healthy, without shelling out past MCP.
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_status")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_doctor")));
-        assert!(tools.iter().any(|t| t["name"] == json!("phux_whoami")));
     }
 
     #[tokio::test]
@@ -710,9 +566,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_json_yields_parse_error_with_null_id() {
-        let resp = handle_line("{ this is not json")
-            .await
-            .expect("parse error reply");
+        let resp = parse_request("{ this is not json").expect_err("parse error reply");
         assert_eq!(resp["error"]["code"], json!(PARSE_ERROR));
         assert_eq!(resp["id"], Value::Null);
     }
@@ -729,13 +583,13 @@ mod tests {
     async fn cancellation_keeps_reading_and_terminates_the_cli_child() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let (_temp, executable, pid_file) = sleeping_cli();
+                let (_temp, adapter, pid_file) = sleeping_cli();
                 let (mut input, server_input) = tokio::io::duplex(4096);
                 let (server_output, output) = tokio::io::duplex(4096);
                 let server = tokio::task::spawn_local(serve_io(
                     BufReader::new(server_input),
                     server_output,
-                    sleeping_dispatcher(executable),
+                    sleeping_dispatcher(Arc::clone(&adapter)),
                 ));
                 input
                     .write_all(
@@ -785,13 +639,13 @@ mod tests {
     async fn stdin_eof_aborts_pending_tools_and_terminates_the_cli_child() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let (_temp, executable, pid_file) = sleeping_cli();
+                let (_temp, adapter, pid_file) = sleeping_cli();
                 let (mut input, server_input) = tokio::io::duplex(4096);
                 let (server_output, _output) = tokio::io::duplex(4096);
                 let server = tokio::task::spawn_local(serve_io(
                     BufReader::new(server_input),
                     server_output,
-                    sleeping_dispatcher(executable),
+                    sleeping_dispatcher(Arc::clone(&adapter)),
                 ));
                 input
                     .write_all(

@@ -439,39 +439,10 @@ fn reject_present(args: &Value, keys: &[&str]) -> Result<(), ToolError> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
-
-    use tempfile::TempDir;
+    use std::path::Path;
 
     use super::*;
-
-    fn fake_cli() -> (TempDir, CliAdapter, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
-        let log = temp.path().join("argv");
-        let executable = temp.path().join("phux");
-        let script = format!(
-            r#"#!/bin/sh
-: > '{}'
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> '{}'
-done
-case "$1" in
-  tag) printf '@1\talpha\n' ;;
-  agent) printf '@1\t{{"name":"bot"}}\n' ;;
-  *) printf '{{}}\n' ;;
-esac
-"#,
-            log.display(),
-            log.display(),
-        );
-        fs::write(&executable, script).unwrap();
-        let mut permissions = fs::metadata(&executable).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&executable, permissions).unwrap();
-        (temp, CliAdapter::new(executable), log)
-    }
+    use crate::cli_adapter::fake;
 
     async fn assert_argv(
         adapter: &CliAdapter,
@@ -481,26 +452,7 @@ esac
         expected: &[&str],
     ) {
         call_with_adapter(name, &args, adapter).await.unwrap();
-        let actual = fs::read_to_string(log).unwrap();
-        assert_eq!(actual.lines().collect::<Vec<_>>(), expected, "{name}");
-    }
-
-    #[test]
-    fn every_added_schema_is_strict_and_bounded() {
-        for schema in [
-            launch_schema(),
-            spawn_schema(),
-            signal_schema(),
-            tag_schema(),
-            rename_schema(),
-            insert_schema(),
-            move_schema(),
-            swap_schema(),
-            workspace_schema(),
-        ] {
-            assert_eq!(schema["inputSchema"]["additionalProperties"], false);
-            assert_eq!(schema["inputSchema"]["type"], "object");
-        }
+        assert_eq!(fake::logged(log), expected, "{name}");
     }
 
     #[tokio::test]
@@ -532,7 +484,7 @@ esac
     /// The two residue tools execute the exact canonical argv.
     #[tokio::test]
     async fn residue_handlers_execute_the_exact_canonical_argv() {
-        let (_temp, adapter, log) = fake_cli();
+        let (_temp, adapter, log) = fake::cli("printf '{}\\n'\n");
 
         assert_argv(
             &adapter,

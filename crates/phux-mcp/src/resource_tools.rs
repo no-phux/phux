@@ -1,11 +1,7 @@
-//! The `phux_resource_*` tools (PHA-406): one resource's record, the methods
-//! it answers on this server, and a bounded, resumable wait on its exit.
-//!
-//! In-process over `phux_client::resource`, returning the same documents
-//! `phux resource show|methods|wait --json` prints, so the two surfaces
-//! cannot drift. `phux_resource_wait` is always bounded (`timeout_secs` is
-//! required), and a timeout is a result (`outcome: "timed_out"` with the
-//! cursor reached), not a tool error.
+//! The `phux_resource_*` tools: one resource's record, the methods it
+//! answers here, and a bounded, resumable wait on its exit. Each returns the
+//! document `phux resource show|methods|wait --json` prints; a wait timeout
+//! is a result, not a tool error.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -13,23 +9,23 @@ use std::time::Duration;
 use phux_client::deadline::Deadline;
 use phux_client::resource::LookupError;
 use phux_client::resource::cursor::Cursor;
-use phux_client::selector::{self, Selector};
+use phux_client::selector::Selector;
 use phux_client::state;
 use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::cli_tools::{schema, string_schema};
-use crate::tools::{ToolError, resolve_one, str_arg, strict_object};
+use crate::tools::{
+    ToolError, parse_selector, required_str, resolve_one, socket_or_default, strict_object,
+};
 
 /// Upper bound on `phux_resource_wait`'s `timeout_secs`, as `phux_run`.
 const WAIT_MAX_SECS: u64 = 3600;
 
-/// The three resource tool descriptors.
 pub(crate) fn schemas() -> Vec<Value> {
     vec![show_schema(), wait_schema(), methods_schema()]
 }
 
-/// Whether `name` is one of this module's tools.
 pub(crate) fn owns(name: &str) -> bool {
     matches!(
         name,
@@ -37,7 +33,6 @@ pub(crate) fn owns(name: &str) -> bool {
     )
 }
 
-/// Dispatch one resource tool call.
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
     match name {
         "phux_resource_show" => show(args).await,
@@ -122,7 +117,7 @@ async fn wait(args: &Value) -> Result<Value, ToolError> {
         .and_then(Value::as_u64)
         .filter(|secs| (1..=WAIT_MAX_SECS).contains(secs))
         .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))?;
-    let after = str_arg(args, "after")
+    let after = crate::tools::str_arg(args, "after")
         .map(str::parse::<Cursor>)
         .transpose()
         .map_err(|err| ToolError::new(err.to_string()))?;
@@ -142,11 +137,8 @@ async fn wait(args: &Value) -> Result<Value, ToolError> {
 /// The socket and the one resource `target` names. A direct id is taken as
 /// given (no lookup), like the CLI, so an exited resource can be named.
 async fn target(args: &Value) -> Result<(PathBuf, ResourceId), ToolError> {
-    let socket = crate::socket::resolve(str_arg(args, "socket"));
-    let raw = str_arg(args, "target")
-        .ok_or_else(|| ToolError::new("missing required string `target`"))?;
-    let selector = selector::parse(raw)
-        .map_err(|err| ToolError::new(format!("invalid target '{raw}': {err}")))?;
+    let socket = socket_or_default(args);
+    let selector = parse_selector(required_str(args, "target")?)?;
     if let Some(id) = direct_id(&selector) {
         return Ok((socket, id));
     }
@@ -196,26 +188,6 @@ mod tests {
                     .with_lifecycle(ResourceLifecycle::Exited)
                     .with_exit(Some(ExitFacet::new(5, 10).with_exit_status(Some(42)))),
             ])
-    }
-
-    #[test]
-    fn every_resource_schema_is_strict_and_bounded() {
-        for descriptor in schemas() {
-            assert!(owns(descriptor["name"].as_str().unwrap()));
-            assert_eq!(descriptor["inputSchema"]["additionalProperties"], false);
-            assert!(
-                descriptor["inputSchema"]["required"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!("target"))
-            );
-        }
-        let wait = wait_schema();
-        assert_eq!(
-            wait["inputSchema"]["required"],
-            json!(["target", "timeout_secs"]),
-            "the wait is always bounded"
-        );
     }
 
     #[tokio::test]

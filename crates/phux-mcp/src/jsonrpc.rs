@@ -1,41 +1,29 @@
-//! JSON-RPC 2.0 envelope types for the MCP stdio transport.
-//!
-//! Hand-rolled over `serde_json` (no framework dep, per ADR-0022 §5). The
-//! MCP stdio transport is newline-delimited JSON: one JSON value per line
-//! on stdin/stdout. A *request* carries an `id` and expects a response; a
-//! *notification* omits `id` and gets none.
+//! JSON-RPC 2.0 envelopes for the MCP stdio transport (newline-delimited
+//! JSON). A request carries an `id` and gets a response; a notification
+//! omits it and gets none.
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Deserialize;
+use serde_json::{Map, Value, json};
 
-/// Standard JSON-RPC error code: the payload was not valid JSON.
+/// The payload was not valid JSON.
 pub(crate) const PARSE_ERROR: i64 = -32700;
-/// Standard JSON-RPC error code: the JSON was not a valid Request object.
+/// The JSON was not a valid Request object.
 pub(crate) const INVALID_REQUEST: i64 = -32600;
-/// Standard JSON-RPC error code: the method does not exist.
+/// The method does not exist.
 pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
-/// Standard JSON-RPC error code: a server-internal failure.
+/// A server-internal failure.
 pub(crate) const INTERNAL_ERROR: i64 = -32603;
-/// MCP/Language Server Protocol error code for a cancelled request.
+/// MCP/LSP: the request was cancelled.
 pub(crate) const REQUEST_CANCELLED: i64 = -32800;
 
-/// An incoming JSON-RPC message (request or notification).
-///
-/// `id` is absent for notifications. `params` is optional and method-shaped;
-/// we deserialize it per method rather than into a fixed type so unknown
-/// fields are tolerated.
-///
-/// The `jsonrpc` protocol marker is deliberately not modeled: serde ignores
-/// unknown keys by default (no `deny_unknown_fields`), and a missing/odd
-/// `jsonrpc` is treated leniently to keep the loop robust.
+/// An incoming request or notification. The `jsonrpc` marker is not
+/// modeled, and unknown keys are tolerated, to keep the loop lenient.
 #[derive(Debug, Deserialize)]
 pub(crate) struct Request {
-    /// Request id. Absent ⇒ notification (no reply is sent).
+    /// Absent for a notification.
     #[serde(default)]
     pub(crate) id: Option<Value>,
-    /// The method name (e.g. `"tools/call"`).
     pub(crate) method: String,
-    /// Method parameters, if any.
     #[serde(default)]
     pub(crate) params: Option<Value>,
 }
@@ -48,58 +36,26 @@ impl Request {
     }
 }
 
-/// A JSON-RPC success response.
-#[derive(Debug, Serialize)]
-pub(crate) struct SuccessResponse {
-    /// Always `"2.0"`.
-    pub(crate) jsonrpc: &'static str,
-    /// Echoes the request id.
-    pub(crate) id: Value,
-    /// The method's result payload.
-    pub(crate) result: Value,
-}
-
-/// A JSON-RPC error response.
-#[derive(Debug, Serialize)]
-pub(crate) struct ErrorResponse {
-    /// Always `"2.0"`.
-    pub(crate) jsonrpc: &'static str,
-    /// Echoes the request id (or `null` when the id could not be parsed).
-    pub(crate) id: Value,
-    /// The structured error.
-    pub(crate) error: ErrorObject,
-}
-
-/// The `error` member of an [`ErrorResponse`].
-#[derive(Debug, Serialize)]
-pub(crate) struct ErrorObject {
-    /// One of the `*_ERROR` / `*_FOUND` / `*_REQUEST` codes above.
-    pub(crate) code: i64,
-    /// Human-readable, single-sentence diagnostic.
-    pub(crate) message: String,
-}
-
-/// Build a success response value for `id` carrying `result`.
+/// A success response for `id` carrying `result`.
 #[must_use]
 pub(crate) fn success(id: Value, result: Value) -> Value {
-    serde_json::to_value(SuccessResponse {
-        jsonrpc: "2.0",
-        id,
-        result,
-    })
-    .unwrap_or(Value::Null)
+    envelope(id, "result", result)
 }
 
-/// Build an error response value for `id` with `code`/`message`.
+/// An error response for `id` with `code`/`message`.
 #[must_use]
 pub(crate) fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
-    serde_json::to_value(ErrorResponse {
-        jsonrpc: "2.0",
+    envelope(
         id,
-        error: ErrorObject {
-            code,
-            message: message.into(),
-        },
-    })
-    .unwrap_or(Value::Null)
+        "error",
+        json!({ "code": code, "message": message.into() }),
+    )
+}
+
+fn envelope(id: Value, key: &str, body: Value) -> Value {
+    let mut object = Map::new();
+    object.insert("jsonrpc".to_owned(), Value::from("2.0"));
+    object.insert("id".to_owned(), id);
+    object.insert(key.to_owned(), body);
+    Value::Object(object)
 }
