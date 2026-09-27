@@ -93,11 +93,8 @@ fn validate_dispatch_frame(
     client_id: ClientId,
 ) -> Result<FrameKind, ConnectionClose> {
     let frame = decode_client_frame(framed, negotiated)?;
-    if negotiated.is_some_and(|selection| {
-        selection
-            .server_features
-            .contains(ServerFeature::QuicStreams)
-    }) && origin == FrameOrigin::Control
+    if negotiated.is_some_and(|selection| selection.quic_streams())
+        && origin == FrameOrigin::Control
         && requires_terminal_stream(&frame)
     {
         return Err(ConnectionClose {
@@ -190,10 +187,7 @@ impl CommandDispatch<'_> {
                 return None;
             }
         }
-        let defer_subscription = self
-            .selection
-            .server_features
-            .contains(ServerFeature::QuicStreams);
+        let defer_subscription = self.selection.quic_streams();
         let detached_stream = defer_subscription
             .then(|| match &command {
                 Command::DetachResource { terminal_id } => Some(terminal_id.clone()),
@@ -208,41 +202,20 @@ impl CommandDispatch<'_> {
                 return None;
             }
             (Route::Bulk(retained), _) => {
-                self.submit_bulk(
-                    request_id,
-                    command,
-                    retained,
-                    command_started,
-                    defer_subscription,
-                )
-                .await;
+                self.submit_bulk(request_id, command, retained, command_started)
+                    .await;
                 return None;
             }
             _ => {}
         }
-        handle_command(
-            self.state,
-            self.client_id,
-            request_id,
-            command,
-            self.out_tx,
-            self.selection.client_caps,
-            self.selection.profile,
-            self.selection.limits,
-            self.input_lane,
-            self.token,
-            self.root_token,
-            defer_subscription,
-        )
-        .await;
-        crate::perf::CMD_HANDLE.record_elapsed(command_started);
+        run_handler(&self.context(), request_id, command, command_started).await;
         detached_stream
     }
 
-    /// Hold a command the guard held (ADR-0128). Its waiter runs it later
-    /// in this connection's context, exactly as this dispatch would have.
-    async fn hold(&mut self, request_id: u32, command: Command) {
-        let ctx = super::approvals::HeldContext {
+    /// This connection's dispatch context, owned, for work that outlives
+    /// the dispatch.
+    fn context(&self) -> super::approvals::HeldContext {
+        super::approvals::HeldContext {
             state: self.state.clone(),
             client_id: self.client_id,
             out_tx: self.out_tx.clone(),
@@ -252,12 +225,15 @@ impl CommandDispatch<'_> {
             input_lane: self.input_lane.cloned(),
             token: self.token.clone(),
             root_token: self.root_token.clone(),
-            defer_subscription: self
-                .selection
-                .server_features
-                .contains(ServerFeature::QuicStreams),
-        };
-        super::approvals::hold_command(ctx, self.held_commands, request_id, command).await;
+            defer_subscription: self.selection.quic_streams(),
+        }
+    }
+
+    /// Hold a command the guard held (ADR-0128). Its waiter runs it later
+    /// in this connection's context, exactly as this dispatch would have.
+    async fn hold(&mut self, request_id: u32, command: Command) {
+        super::approvals::hold_command(self.context(), self.held_commands, request_id, command)
+            .await;
     }
 
     async fn submit_input(&mut self, lane: &InputLaneHandle, request_id: u32, command: Command) {
@@ -300,33 +276,9 @@ impl CommandDispatch<'_> {
         command: Command,
         retained: usize,
         command_started: std::time::Instant,
-        defer_subscription: bool,
     ) {
-        let task_state = self.state.clone();
-        let task_out = self.out_tx.clone();
-        let task_input_lane = self.input_lane.cloned();
-        let task_token = self.token.clone();
-        let task_root_token = self.root_token.clone();
-        let selection = self.selection;
-        let client_id = self.client_id;
-        let task = async move {
-            handle_command(
-                &task_state,
-                client_id,
-                request_id,
-                command,
-                &task_out,
-                selection.client_caps,
-                selection.profile,
-                selection.limits,
-                task_input_lane.as_ref(),
-                &task_token,
-                &task_root_token,
-                defer_subscription,
-            )
-            .await;
-            crate::perf::CMD_HANDLE.record_elapsed(command_started);
-        };
+        let ctx = self.context();
+        let task = async move { run_handler(&ctx, request_id, command, command_started).await };
         if let Err(result) = self.command_tasks.try_submit(retained, task) {
             let _ = self
                 .out_tx
@@ -337,6 +289,31 @@ impl CommandDispatch<'_> {
                 .await;
         }
     }
+}
+
+/// Run one admitted command through the handler.
+async fn run_handler(
+    ctx: &super::approvals::HeldContext,
+    request_id: u32,
+    command: Command,
+    started: std::time::Instant,
+) {
+    handle_command(
+        &ctx.state,
+        ctx.client_id,
+        request_id,
+        command,
+        &ctx.out_tx,
+        ctx.client_caps,
+        ctx.profile,
+        ctx.limits,
+        ctx.input_lane.as_ref(),
+        &ctx.token,
+        &ctx.root_token,
+        ctx.defer_subscription,
+    )
+    .await;
+    crate::perf::CMD_HANDLE.record_elapsed(started);
 }
 
 #[cfg(test)]
@@ -519,6 +496,12 @@ struct NegotiatedConnection {
 }
 
 impl NegotiatedConnection {
+    /// QUIC multi-stream: Terminal content rides per-Terminal streams, and
+    /// subscriptions start at `STREAM_BIND`.
+    const fn quic_streams(self) -> bool {
+        self.server_features.contains(ServerFeature::QuicStreams)
+    }
+
     const fn accepts_terminal_reply(self) -> bool {
         self.server_features.contains(ServerFeature::TerminalReply)
     }
@@ -2224,30 +2207,6 @@ fn framing_violation(err: &io::Error) -> Option<FramingError> {
         .copied()
 }
 
-/// End one connection for a protocol violation in the order required by §9.
-async fn close_for_protocol_error(
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
-    writer_close: &tokio::sync::watch::Sender<bool>,
-    sibling_tasks: &mut JoinSet<()>,
-    code: ErrorCode,
-    message: String,
-) {
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code,
-            message: message.clone(),
-        }))
-        .await;
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::Detached {
-            reason: Some(DetachReason::ProtocolError),
-            message,
-        }))
-        .await;
-    close_client_writer(out_tx, writer_close, sibling_tasks).await;
-}
-
 /// SPEC §7.4: echo the nonce in PONG.
 async fn reply_pong(out_tx: &tokio::sync::mpsc::Sender<Outbound>, client_id: ClientId, nonce: u64) {
     debug!(nonce, "PING -> PONG");
@@ -2529,36 +2488,32 @@ impl ClientPlumbing {
         }
     }
 
-    /// End one connection for a protocol violation, in the order §9 requires.
+    /// End one connection for a protocol violation, in the order §9
+    /// requires: tear down what may be attached, then `ERROR`, `DETACHED`,
+    /// and close.
     async fn close(mut self, close: ConnectionClose, state: &SharedState, client_id: ClientId) {
         self.drop_all_stream_bindings().await;
         while self.retired_streams.join_next().await.is_some() {}
-        self.close_protocol_violation(state, client_id, close).await;
-    }
-
-    /// Abort pumps, release consumer state, then [`close_for_protocol_error`].
-    ///
-    /// Handshake-phase closes (`attached_reason` is `None`) skip abort/release:
-    /// nothing is attached yet. The accept-loop `release_connection_state` still
-    /// runs after return.
-    async fn close_protocol_violation(
-        mut self,
-        state: &SharedState,
-        client_id: ClientId,
-        close: ConnectionClose,
-    ) {
         if let Some(reason) = close.attached_reason {
             abort_output_pumps(&mut self.output_pumps, client_id, reason).await;
             detach_and_release_consumer_state(state, client_id);
         }
-        close_for_protocol_error(
-            self.out_tx,
-            &self.writer_close,
-            &mut self.sibling_tasks,
-            close.code,
-            close.message,
-        )
-        .await;
+        let ConnectionClose { code, message, .. } = close;
+        let goodbye = [
+            FrameKind::Error {
+                request_id: None,
+                code,
+                message: message.clone(),
+            },
+            FrameKind::Detached {
+                reason: Some(DetachReason::ProtocolError),
+                message,
+            },
+        ];
+        for frame in goodbye {
+            let _ = self.out_tx.send(Outbound::Frame(frame)).await;
+        }
+        close_client_writer(self.out_tx, &self.writer_close, &mut self.sibling_tasks).await;
     }
 
     /// End one connection because it was cancelled rather than because the
@@ -2984,20 +2939,11 @@ async fn serve_history_request(
 /// writer task, so every send shares one ordering domain.
 #[allow(
     clippy::too_many_lines,
-    reason = "read, decode, handshake gating and every stateful arm body are extracted; what is left is one dispatch arm per wire frame variant, and the catalog grows linearly. Splitting on the arm boundary fragments the wire→state seam without simplifying it."
-)]
-#[allow(
     clippy::cognitive_complexity,
-    reason = "what remains is `loop { read; decode; gate; dispatch }` — the residual score is the dispatch match sitting inside the read loop, which is the shape of a per-connection frame loop, not accidental nesting."
-)]
-#[allow(
     clippy::too_many_arguments,
-    reason = "the connection context (state, ids, tokens, lane, transport) threaded verbatim from the accept loop; the transport selects QUIC-only advertisement"
-)]
-#[allow(
     clippy::significant_drop_tightening,
     clippy::single_match_else,
-    reason = "the optional stream event receiver intentionally lives for the full connection loop and its closed-channel branch documents starvation prevention"
+    reason = "one read loop with one dispatch arm per wire frame; arm bodies are extracted, and the connection context comes verbatim from the accept loop"
 )]
 pub(crate) async fn handle_client<R, W>(
     mut reader: R,
@@ -3151,10 +3097,7 @@ where
                     plumbing.set_compression(selection.compression);
                     // The client learns the bit from HELLO_OK, so no Terminal
                     // stream can have opened before this.
-                    if selection
-                        .server_features
-                        .contains(ServerFeature::QuicStreams)
-                    {
+                    if selection.quic_streams() {
                         stream_events = reader.take_stream_events();
                     }
                 }
@@ -3203,9 +3146,7 @@ where
                 );
                 let attach_started = std::time::Instant::now();
                 // QUIC multi-stream: content streams start at STREAM_BIND.
-                let defer_subscription = selection
-                    .server_features
-                    .contains(ServerFeature::QuicStreams);
+                let defer_subscription = selection.quic_streams();
                 handle_attach(
                     &state,
                     client_id,
@@ -3470,9 +3411,7 @@ where
                     &token,
                     &mut plumbing.output_pumps,
                     // QUIC multi-stream: content starts at STREAM_BIND (L1 §4.9).
-                    selection
-                        .server_features
-                        .contains(ServerFeature::QuicStreams),
+                    selection.quic_streams(),
                 )
                 .await;
             }
@@ -3581,11 +3520,7 @@ async fn handle_stream_event(
     token: &CancellationToken,
 ) {
     // A bind before HELLO or without the negotiated shape is reset.
-    let Some(selection) = negotiated.filter(|selection| {
-        selection
-            .server_features
-            .contains(ServerFeature::QuicStreams)
-    }) else {
+    let Some(selection) = negotiated.filter(|selection| selection.quic_streams()) else {
         if let QuicStreamEvent::Bound { send, recv, .. } = event {
             refuse_terminal_stream(send, recv);
         }
