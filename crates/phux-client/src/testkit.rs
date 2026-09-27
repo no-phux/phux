@@ -577,6 +577,24 @@ impl ScriptedServer {
     }
 }
 
+/// Bind `phux.sock` in `dir` and serve `spec` to the one client that dials
+/// it. Returns the socket path and the server task, which yields every frame
+/// the client sent.
+///
+/// # Panics
+///
+/// If the bind fails.
+#[must_use]
+pub fn serve_one(
+    dir: &std::path::Path,
+    spec: ScriptSpec,
+) -> (std::path::PathBuf, tokio::task::JoinHandle<Vec<FrameKind>>) {
+    let socket = dir.join("phux.sock");
+    let listener = UnixListener::bind(&socket).expect("bind scripted server");
+    let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+    (socket, server)
+}
+
 /// Serve every connection `listener` accepts with a fresh spec from
 /// `make_spec`, until the task is dropped.
 ///
