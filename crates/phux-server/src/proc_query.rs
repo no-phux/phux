@@ -1,32 +1,10 @@
-//! Kernel-side process introspection for the agent detector (ADR-0046).
+//! Kernel process introspection for the agent detector (ADR-0046),
+//! best-effort like [`crate::cwd_query`]: any failure yields `None`.
 //!
-//! Sibling of [`crate::cwd_query`], same shape and same contract: every
-//! query is **best-effort**. A dead child, a permission error, a closed fd,
-//! or an unsupported platform all yield `None`, never an error the caller
-//! has to handle.
-//!
-//! The detector identifies WHICH agent binary is running in a pane by
-//! asking the kernel, not by parsing the title. The title is a string the
-//! program chose to print; the foreground process group is what the kernel
-//! knows. Two calls, in order:
-//!
-//! 1. [`foreground_pgid`] — which process group currently owns the pane's
-//!    tty (i.e. what the user is actually interacting with, not the shell
-//!    that happens to be its parent).
-//! 2. [`process_argv`] — that process's argv, from which
-//!    [`crate::agent_detect::identify`] resolves the agent kind.
-//!
-//! Platform split:
-//! * **`foreground_pgid`** — `tcgetpgrp(2)` through the safe `nix` wrapper.
-//!   Cross-platform; no `libc`, which this crate declares only under a
-//!   macOS `cfg` gate.
-//! * **`process_argv`** — Linux reads `/proc/<pid>/cmdline` (NUL-separated,
-//!   pure safe std I/O, no dependency at all); macOS calls
-//!   `sysctl(KERN_PROCARGS2)`, one `unsafe` FFI block isolated here exactly
-//!   as [`crate::cwd_query`] isolates `proc_pidinfo`.
-//!
-//! Nothing here reads the pane's *content*. The detector's process query
-//! sees a pgid and an argv; it never logs either at anything above `trace`.
+//! [`foreground_pgid`] (`tcgetpgrp` via `nix`) finds the process group
+//! owning the pane's tty; [`process_argv`] reads its argv (Linux
+//! `/proc/<pid>/cmdline`, macOS `sysctl(KERN_PROCARGS2)`). Pane content is
+//! never read, and pgids and argv are logged at `trace` at most.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -40,21 +18,15 @@
 
 use std::os::fd::RawFd;
 
-/// Foreground process group id of the PTY whose master is `master_fd`.
-///
-/// `None` when the fd is dead, is not a tty, has no foreground group, or
-/// the platform does not support the query.
+/// Foreground process group of the PTY `master_fd`, or `None`.
 #[must_use]
 pub(crate) fn foreground_pgid(master_fd: RawFd) -> Option<i32> {
     if master_fd < 0 {
         return None;
     }
-    // SAFETY: `master_fd` is the raw fd of the `PtyOwned::master` this actor
-    // owns for its entire lifetime, obtained the same way the graceful-upgrade
-    // handle obtains it (`terminal_actor::run_loop`'s upgrade arm). The
-    // `BorrowedFd` is used only for the duration of the `tcgetpgrp` call and
-    // is never stored, so it cannot outlive the master. A closed or invalid
-    // fd makes `tcgetpgrp` return `EBADF`, which we map to `None`.
+    // SAFETY: `master_fd` is the actor's own live master fd; the borrow is
+    // used only for this call and never stored. A bad fd yields `EBADF`,
+    // mapped to `None`.
     let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(master_fd) };
     nix::unistd::tcgetpgrp(borrowed)
         .ok()
@@ -62,10 +34,7 @@ pub(crate) fn foreground_pgid(master_fd: RawFd) -> Option<i32> {
         .filter(|pgid| *pgid > 0)
 }
 
-/// The full argv of `pid`, as the kernel reports it.
-///
-/// `None` when the pid is unknown, the process has exited, the query is
-/// denied, or the platform is unsupported.
+/// The argv of `pid`, or `None`.
 #[must_use]
 pub(crate) fn process_argv(pid: i32) -> Option<Vec<String>> {
     if pid <= 0 {
@@ -74,12 +43,8 @@ pub(crate) fn process_argv(pid: i32) -> Option<Vec<String>> {
     platform::process_argv(pid)
 }
 
-/// The display name of a process from its argv: argv0's basename with a
-/// login-shell dash stripped (`-zsh` and `/bin/zsh` both read `zsh`).
-///
-/// This is the only piece of a queried argv that may leave the server
-/// (the same boundary as `phux.pane-occupant/v1`); the argv tail can carry
-/// secrets and never does. `None` for an empty argv or an empty name.
+/// A process's display name: argv0's basename without a login dash. The
+/// only part of argv that may leave the server; `None` if empty.
 #[must_use]
 pub(crate) fn argv0_name(argv: &[String]) -> Option<String> {
     let first = argv.first()?;
@@ -88,19 +53,9 @@ pub(crate) fn argv0_name(argv: &[String]) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// The start time of `pid`'s process in a platform-specific unit that is
-/// only ever compared for equality against another reading of the same
-/// platform: clock ticks since boot on Linux, microseconds since the Unix
-/// epoch on macOS.
-///
-/// A process group id or pid is a small integer the kernel recycles; pairing
-/// it with this value is what makes a recycled number distinguishable from
-/// the process that held it before (ADR-0046 occupant identity, and the
-/// `process` facet's pid generation).
-///
-/// Best-effort like its siblings: a dead pid, a permission error or an
-/// unsupported platform all yield `None`, never an error a caller has to
-/// handle. `None` is "no answer", never "no start time".
+/// `pid`'s start time in a platform unit (Linux clock ticks since boot,
+/// macOS microseconds since the epoch), compared only for equality; pairs
+/// with a recycled pid to tell processes apart. `None` is "no answer".
 #[must_use]
 pub(crate) fn process_start_time(pid: i32) -> Option<u64> {
     if pid <= 0 {
@@ -109,14 +64,9 @@ pub(crate) fn process_start_time(pid: i32) -> Option<u64> {
     start::start_time(pid)
 }
 
-/// The start time of `pid`'s process in Unix milliseconds.
-///
-/// macOS reports the start as a wall-clock `timeval`, so this is exact to the
-/// millisecond. Linux reports clock ticks since boot; the conversion adds the
-/// boot time from `/proc/stat` (`btime`, whole seconds), read once per server
-/// process, so the value carries up to one second of absolute error but is
-/// identical for one process on every query. `None` whenever any of the
-/// inputs is unavailable.
+/// `pid`'s start time in Unix ms (Linux adds `/proc/stat` `btime`, read
+/// once, so it is stable per process to within a second of absolute
+/// error).
 #[must_use]
 pub(crate) fn process_start_ms(pid: i32) -> Option<u64> {
     if pid <= 0 {
@@ -125,26 +75,12 @@ pub(crate) fn process_start_ms(pid: i32) -> Option<u64> {
     start::start_ms(pid)
 }
 
-/// Start-time queries. Moved here from `agent_detect::identify`, whose
-/// placement note asked for exactly this, so the `PROC_PIDTBSDINFO` FFI block
-/// exists once.
-///
-/// No new dependency: macOS reads it through the `libc` this crate already
-/// declares under a `cfg(target_os = "macos")` gate for
-/// [`crate::cwd_query`]'s `proc_pidinfo`; Linux reads `/proc` with plain
-/// `std` and asks `sysconf(_SC_CLK_TCK)` through `nix`.
+/// Start-time queries: macOS `PROC_PIDTBSDINFO` via `libc`, Linux `/proc`
+/// plus `sysconf(_SC_CLK_TCK)`.
 mod start {
-    /// Extract field 22 (`starttime`) from the contents of `/proc/<pid>/stat`.
-    ///
-    /// Compiled on every platform so the parser — the only part of the Linux
-    /// path with any logic in it — is unit-tested wherever the suite runs,
-    /// rather than only on a Linux CI leg.
-    ///
-    /// Field 2 (`comm`) is the executable name in parentheses, and it may
-    /// contain BOTH spaces and parentheses (`(sh -c (weird))`), so the fields
-    /// cannot simply be whitespace-split. Anchoring on the LAST `)` is the
-    /// documented way to parse this file: everything after it is fields 3
-    /// onward, whitespace-separated, so `starttime` is the 20th of them.
+    /// Field 22 (`starttime`) of `/proc/<pid>/stat`. `comm` may contain
+    /// spaces and parentheses, so parse after the last `)`. Compiled
+    /// everywhere so it is tested everywhere.
     #[cfg_attr(
         not(target_os = "linux"),
         allow(
@@ -178,9 +114,7 @@ mod start {
             .and_then(|secs| secs.trim().parse::<u64>().ok())
     }
 
-    /// Convert a start time in clock ticks since boot into Unix ms, given the
-    /// boot time in Unix seconds and the tick rate. `None` on a zero tick
-    /// rate or overflow — never a guessed value.
+    /// Clock ticks since boot to Unix ms; `None` on a zero rate or overflow.
     #[cfg_attr(
         not(target_os = "linux"),
         allow(
@@ -200,9 +134,7 @@ mod start {
         boot_secs.checked_mul(1000)?.checked_add(since_boot_ms)
     }
 
-    /// `sysconf(_SC_CLK_TCK)`: the unit of `/proc/<pid>/stat` field 22.
-    /// Compiled on every Unix (the call exists everywhere) so the API is
-    /// type-checked off a Linux CI leg; only Linux uses it.
+    /// `sysconf(_SC_CLK_TCK)` (compiled on all Unix for type-checking).
     #[cfg_attr(
         not(target_os = "linux"),
         allow(dead_code, reason = "only Linux reports start times in clock ticks")
@@ -227,13 +159,8 @@ mod start {
         ticks_since_boot_to_unix_ms(ticks, boot_secs()?, clock_ticks_per_second()?)
     }
 
-    /// The boot time, read from `/proc/stat` once per server process.
-    ///
-    /// The kernel recomputes `btime` from the wall clock, so a clock step
-    /// moves it. Reading it once keeps one process's `start_ms` identical
-    /// on every query for the life of this server, which is what a pid
-    /// generation must be. A failed read is not cached; the next call
-    /// retries.
+    /// Boot time from `/proc/stat`, read once so a clock step cannot change
+    /// a process's start; failures are not cached.
     #[cfg(target_os = "linux")]
     fn boot_secs() -> Option<u64> {
         static BOOT_SECS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
@@ -244,29 +171,17 @@ mod start {
         Some(*BOOT_SECS.get_or_init(|| secs))
     }
 
-    /// `proc_pidinfo(PROC_PIDTBSDINFO)` fills a `proc_bsdinfo`, whose
-    /// `pbi_start_tvsec` / `pbi_start_tvusec` are the process's start time.
-    /// The struct layout comes from `libc`, never a hand-written mirror.
-    ///
-    /// The two halves are folded into one `u64` of microseconds. Seconds
-    /// alone would be too coarse for exactly the case this exists for: a
-    /// pgid recycled within the same second is precisely the narrow window
-    /// that makes reuse possible at all.
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)` start time as microseconds (seconds
+    /// alone would miss a same-second pgid reuse).
     #[cfg(target_os = "macos")]
     pub(super) fn start_time(pid: i32) -> Option<u64> {
         // SAFETY: `proc_bsdinfo` is a plain C struct of integers and char
         // arrays; all-zero is a valid value for every field.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
-        // SAFETY: `proc_pidinfo` fills at most `size` bytes into `&mut
-        // info`, which is a zeroed, correctly-aligned, owned `proc_bsdinfo`
-        // of exactly that size; `size` is that struct's own size, so the
-        // kernel cannot overrun it. `pid` is validated positive by the
-        // caller. The call only reads kernel state for `pid` and writes into
-        // our buffer. A return value short of the full struct size
-        // (including 0 on a dead pid or EPERM) means the struct was not
-        // fully populated and is treated as "no answer", exactly as
-        // `crate::cwd_query` treats its sibling call.
+        // SAFETY: `info` is an owned, zeroed, aligned `proc_bsdinfo` and
+        // `size` is its exact size, so the kernel cannot overrun it. A short
+        // write (dead pid, EPERM) is treated as no answer.
         let written = unsafe {
             libc::proc_pidinfo(
                 pid,
@@ -305,9 +220,8 @@ mod start {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    /// `/proc/<pid>/cmdline` is the argv vector, NUL-separated, with a
-    /// trailing NUL. A kernel thread has an empty cmdline; treat that as
-    /// "no answer" rather than an empty argv.
+    /// `/proc/<pid>/cmdline`: NUL-separated argv; empty (kernel thread) is
+    /// no answer.
     pub(super) fn process_argv(pid: i32) -> Option<Vec<String>> {
         let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
         let argv: Vec<String> = raw
@@ -323,15 +237,8 @@ mod platform {
 mod platform {
     use std::ptr;
 
-    /// `sysctl(KERN_PROCARGS2)` returns, for one pid:
-    ///
-    /// ```text
-    /// [ argc: i32 ][ exec_path\0 ][ \0 padding ][ argv[0]\0 ... argv[argc-1]\0 ][ env... ]
-    /// ```
-    ///
-    /// We read `argc`, skip the exec path and its alignment padding, then
-    /// take exactly `argc` NUL-terminated strings. Anything malformed
-    /// yields `None`.
+    /// `sysctl(KERN_PROCARGS2)`: `[argc: i32][exec_path\0][padding]
+    /// [argv...\0][env...]`; read exactly `argc` strings, else `None`.
     pub(super) fn process_argv(pid: i32) -> Option<Vec<String>> {
         let buf = procargs2(pid)?;
         parse_procargs2(&buf)
@@ -342,10 +249,8 @@ mod platform {
         let mut mib: [libc::c_int; 3] = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
         let mut size: libc::size_t = 0;
 
-        // SAFETY: `mib` is a 3-element array of C ints, matching the `namelen`
-        // of 3 we pass. A NULL `oldp` with a non-NULL `oldlenp` is the
-        // documented "tell me the required size" form of `sysctl(3)`; the
-        // kernel writes only into `size`. No buffer is read or written.
+        // SAFETY: `mib` has 3 ints matching `namelen`; NULL `oldp` is the
+        // size query, so the kernel writes only `size`.
         let rc = unsafe {
             libc::sysctl(
                 mib.as_mut_ptr(),
@@ -361,11 +266,8 @@ mod platform {
         }
 
         let mut buf = vec![0u8; size];
-        // SAFETY: `buf` is an owned, initialized allocation of exactly `size`
-        // bytes, and we pass `&mut size` as `oldlenp`, so the kernel writes at
-        // most `size` bytes into it and updates `size` with how many it
-        // actually wrote. `mib`/`namelen` are as above. The call reads kernel
-        // state for `pid` and writes only into our buffer.
+        // SAFETY: `buf` is an owned `size`-byte allocation and `size` is
+        // passed as `oldlenp`, so the kernel writes at most `size` bytes.
         let rc = unsafe {
             libc::sysctl(
                 mib.as_mut_ptr(),
@@ -383,9 +285,7 @@ mod platform {
         Some(buf)
     }
 
-    /// Pure parser for the `KERN_PROCARGS2` layout. Unit-tested against a
-    /// hand-built blob so the format handling is exercised without a live
-    /// process.
+    /// Pure parser for the `KERN_PROCARGS2` layout.
     fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
         const ARGC_LEN: usize = 4;
         let argc_bytes: [u8; ARGC_LEN] = buf.get(..ARGC_LEN)?.try_into().ok()?;
@@ -500,9 +400,7 @@ mod start_tests {
         );
     }
 
-    /// THE reason this is not a whitespace split. `comm` is attacker- (or
-    /// merely user-) controlled and carries both spaces and parentheses;
-    /// a naive parser reads a field from the middle of the process name.
+    /// `comm` with spaces and parentheses parses correctly.
     #[test]
     fn a_comm_containing_spaces_and_parens_does_not_shift_the_fields() {
         assert_eq!(
@@ -553,9 +451,7 @@ mod start_tests {
         }
     }
 
-    /// The live half: this test process can read its own start time, and
-    /// reads the SAME value twice. A query that varied per call would make
-    /// every identity recheck a fabricated restart.
+    /// This process reads its own start time, identically twice.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn process_start_ms_of_self_is_stable_and_nonzero() {
@@ -573,8 +469,6 @@ mod start_tests {
                 .as_millis(),
         )
         .expect("ms fits u64");
-        // 2020-01-01, and no later than now (plus Linux's one-second
-        // `btime` granularity).
         assert!(first > 1_577_836_800_000, "a Unix-ms value, got {first}");
         assert!(
             first <= now_ms + 1_000,
@@ -604,8 +498,7 @@ mod tests {
         assert_eq!(argv0_name(&argv(&["/usr/bin/"])), None);
     }
 
-    /// A regular file is not a tty, so it has no foreground process group.
-    /// The query must degrade to `None`, not error.
+    /// A non-tty fd has no foreground group: `None`, not an error.
     #[test]
     fn foreground_pgid_on_a_non_tty_is_none() {
         use std::os::fd::AsRawFd;
