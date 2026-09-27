@@ -783,7 +783,7 @@ pub(crate) async fn handle_command(
             format,
         } => handle_get_screen(state, &terminal_id, request_scrollback, cells, format).await,
         Command::RouteInput { terminal_id, event } => match input_lane {
-            Some(lane) => lane.route_command(client_id, terminal_id, event).await,
+            Some(lane) => lane.begin_route(client_id, terminal_id, event).await,
             None => handle_route_input(state, client_id, &terminal_id, event),
         },
         Command::ApplyInput {
@@ -792,7 +792,7 @@ pub(crate) async fn handle_command(
             events,
         } => match input_lane {
             Some(lane) => {
-                lane.apply_input(client_id, operation_id, terminal_id, events)
+                lane.begin_apply(client_id, operation_id, terminal_id, events)
                     .await
             }
             None => CommandResult::Error {

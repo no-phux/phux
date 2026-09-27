@@ -239,16 +239,6 @@ impl InputLaneHandle {
         )
     }
 
-    /// Route attach-free command input and wait for its owned receipt.
-    pub(crate) async fn route_command(
-        &self,
-        client_id: ClientId,
-        terminal_id: phux_protocol::ids::ResourceId,
-        event: InputEvent,
-    ) -> CommandResult {
-        self.begin_route(client_id, terminal_id, event).await
-    }
-
     /// Synchronously run dedupe/admission and enqueue an idempotent atomic
     /// batch, returning an owned PTY write/flush completion.
     pub(crate) fn begin_apply(
@@ -329,18 +319,6 @@ impl InputLaneHandle {
                 operation_id,
             },
         )
-    }
-
-    /// Route an idempotent atomic input batch and wait for PTY write/flush.
-    pub(crate) async fn apply_input(
-        &self,
-        client_id: ClientId,
-        operation_id: InputOperationId,
-        terminal_id: phux_protocol::ids::ResourceId,
-        events: Vec<InputEvent>,
-    ) -> CommandResult {
-        self.begin_apply(client_id, operation_id, terminal_id, events)
-            .await
     }
 }
 
@@ -1315,7 +1293,7 @@ mod tests {
                 ];
                 for (id, target, events, want) in cases {
                     let result = handle
-                        .apply_input(fx.client_a, operation_id(id), target, events)
+                        .begin_apply(fx.client_a, operation_id(id), target, events)
                         .await;
                     assert_eq!(code(&result), Some(want), "operation {id}");
                 }
@@ -1355,7 +1333,7 @@ mod tests {
         let lane = spawn_input_lane(state).expect("spawn lane");
         let result = lane
             .handle()
-            .apply_input(client, operation_id(6), wire, vec![ev(b"x")])
+            .begin_apply(client, operation_id(6), wire, vec![ev(b"x")])
             .await;
         assert_eq!(code(&result), Some(ErrorCode::ResourceExhausted));
     }
@@ -1393,7 +1371,7 @@ mod tests {
                     let result = tokio::time::timeout(
                         LANE_DELIVERY_DEADLINE,
                         lane.handle()
-                            .apply_input(client, operation_id(8), wire, vec![ev(b"x")]),
+                            .begin_apply(client, operation_id(8), wire, vec![ev(b"x")]),
                     )
                     .await
                     .expect("must not hang");
@@ -1617,7 +1595,7 @@ mod tests {
             "INPUT_PASTE",
         ));
         let result = handle
-            .apply_input(
+            .begin_apply(
                 ClientId(1),
                 operation_id(17),
                 terminal.clone(),

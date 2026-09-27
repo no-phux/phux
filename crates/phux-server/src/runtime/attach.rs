@@ -2107,21 +2107,10 @@ fn spawn_argv_builder(
     state: &SharedState,
     command: Option<Vec<String>>,
 ) -> portable_pty::CommandBuilder {
-    match command {
-        Some(argv) if !argv.is_empty() => {
-            let mut head = argv.into_iter();
-            let program = head.next().unwrap_or_default();
-            let mut builder = portable_pty::CommandBuilder::new(program);
-            for arg in head {
-                builder.arg(arg);
-            }
-            builder
-        }
-        _ => {
-            let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
-            crate::terminal_actor::default_shell_command(&shell, login_shell)
-        }
-    }
+    super::commands::argv_command(command).unwrap_or_else(|| {
+        let (shell, login_shell) = state.with(|s| (s.shell().to_owned(), s.login_shell()));
+        crate::terminal_actor::default_shell_command(&shell, login_shell)
+    })
 }
 
 /// Build the `CommandBuilder` a `SPAWN_RESOURCE` execs. `TERM` layers, last
