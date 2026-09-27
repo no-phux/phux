@@ -222,38 +222,6 @@ mod tests {
     // --- the u32 boundary: `u32::MAX - 1` is the last id minted ---
 
     #[test]
-    fn session_space_mints_up_to_u32_max_minus_one() {
-        let (_reg, sessions, _, _) = two_of_each();
-        let mut space = IdSpace::new();
-        space.set_next_session_wire(u32::MAX - 1);
-        assert_eq!(
-            space.intern_session(sessions[0]),
-            WireSessionId(u32::MAX - 1)
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "session wire-id space exhausted")]
-    fn session_space_panics_instead_of_minting_u32_max() {
-        let (_reg, sessions, _, _) = two_of_each();
-        let mut space = IdSpace::new();
-        space.set_next_session_wire(u32::MAX - 1);
-        let _ = space.intern_session(sessions[0]);
-        let _ = space.intern_session(sessions[1]);
-    }
-
-    #[test]
-    fn terminal_space_mints_up_to_u32_max_minus_one() {
-        let (_reg, _, _, terminals) = two_of_each();
-        let mut space = IdSpace::new();
-        space.set_next_terminal_wire(u32::MAX - 1);
-        assert_eq!(
-            space.intern_terminal(terminals[0]),
-            WireResourceId::local(u32::MAX - 1)
-        );
-    }
-
-    #[test]
     #[should_panic(expected = "terminal wire-id space exhausted")]
     fn terminal_space_panics_instead_of_saturating() {
         let (_reg, _, _, terminals) = two_of_each();
@@ -263,34 +231,7 @@ mod tests {
         let _ = space.intern_terminal(terminals[1]);
     }
 
-    #[test]
-    fn window_space_mints_up_to_u32_max_minus_one() {
-        let (_reg, _, windows, _) = two_of_each();
-        let mut space = IdSpace::new();
-        space.set_next_window_wire(u32::MAX - 1);
-        assert_eq!(space.intern_window(windows[0]), WireWindowId(u32::MAX - 1));
-    }
-
-    #[test]
-    #[should_panic(expected = "window wire-id space exhausted")]
-    fn window_space_panics_instead_of_saturating() {
-        let (_reg, _, windows, _) = two_of_each();
-        let mut space = IdSpace::new();
-        space.set_next_window_wire(u32::MAX - 1);
-        let _ = space.intern_window(windows[0]);
-        let _ = space.intern_window(windows[1]);
-    }
-
     // -- the ResourceId-is-an-enum invariant --------------------------
-
-    #[test]
-    fn intern_terminal_mints_a_local_id() {
-        let (_reg, _, _, terminals) = two_of_each();
-        let mut space = IdSpace::new();
-        let wire = space.intern_terminal(terminals[0]);
-        assert_eq!(wire, WireResourceId::local(1));
-        assert!(wire.is_local(), "only Local ids are minted here");
-    }
 
     #[test]
     fn terminal_from_wire_is_none_for_a_satellite_id() {

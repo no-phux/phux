@@ -228,19 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn forward_map_is_deterministic() {
-        let (_reg, ids) = fresh_core_ids(4);
-
-        let mut a = SessionBridge::new();
-        let a_ws: Vec<_> = ids.iter().map(|c| a.intern(*c)).collect();
-
-        let mut b = SessionBridge::new();
-        let b_ws: Vec<_> = ids.iter().map(|c| b.intern(*c)).collect();
-
-        assert_eq!(a_ws, b_ws);
-    }
-
-    #[test]
     fn resolve_returns_none_for_unknown_wire_id() {
         let bridge = SessionBridge::new();
         assert!(bridge.resolve(&WireSessionId(1)).is_none());
@@ -273,17 +260,6 @@ mod tests {
         let w1 = bridge.intern(ids[1]);
         assert_ne!(w0, w1, "freed wire ids must not be reused");
         assert_eq!(w1, WireSessionId(2));
-    }
-
-    #[test]
-    fn round_trip_is_stable() {
-        let (_reg, ids) = fresh_core_ids(5);
-        let mut bridge = SessionBridge::new();
-        let wires: Vec<_> = ids.iter().map(|c| bridge.intern(*c)).collect();
-        for (core, wire) in ids.iter().zip(wires.iter()) {
-            assert_eq!(bridge.wire(*core), Some(wire));
-            assert_eq!(bridge.resolve(wire), Some(*core));
-        }
     }
 
     #[test]

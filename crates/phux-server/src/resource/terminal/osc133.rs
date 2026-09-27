@@ -234,41 +234,37 @@ mod tests {
     }
 
     #[test]
-    fn d_mark_with_exit_code_bel_terminated() {
-        assert_eq!(
-            scan(&[b"prompt\x1b]133;D;0\x07more"]),
-            vec![OscMark::CommandEnd { exit_code: Some(0) }]
-        );
-        assert_eq!(
-            scan(&[b"\x1b]133;D;127\x07"]),
-            vec![OscMark::CommandEnd {
-                exit_code: Some(127)
-            }]
-        );
-    }
-
-    #[test]
-    fn d_mark_st_terminated() {
-        assert_eq!(
-            scan(&[b"\x1b]133;D;1\x1b\\"]),
-            vec![OscMark::CommandEnd { exit_code: Some(1) }]
-        );
-    }
-
-    #[test]
-    fn d_mark_without_code_is_none() {
-        assert_eq!(
-            scan(&[b"\x1b]133;D\x07"]),
-            vec![OscMark::CommandEnd { exit_code: None }]
-        );
-    }
-
-    #[test]
-    fn bogus_code_degrades_to_none() {
-        assert_eq!(
-            scan(&[b"\x1b]133;D;nope\x07"]),
-            vec![OscMark::CommandEnd { exit_code: None }]
-        );
+    fn marks_parse_across_terminators_splits_and_noise() {
+        let end = |code| vec![OscMark::CommandEnd { exit_code: code }];
+        let progress = |p: &str| OscMark::Progress(p.to_owned());
+        let cases: Vec<(&[&[u8]], Vec<OscMark>)> = vec![
+            (&[b"prompt\x1b]133;D;0\x07more"], end(Some(0))),
+            (&[b"\x1b]133;D;127\x07"], end(Some(127))),
+            (&[b"\x1b]133;D;1\x1b\\"], end(Some(1))),
+            (&[b"\x1b]133;D\x07"], end(None)),
+            (&[b"\x1b]133;D;nope\x07"], end(None)),
+            (&[b"\x1b]133;D;9;aid=42\x07"], end(Some(9))),
+            (&[b"abc\x1b]13", b"3;D;", b"42\x07xyz"], end(Some(42))),
+            // An OSC interrupted by a CSI yields nothing; a later mark parses.
+            (&[b"\x1b]133;D\x1b[31m\x1b]133;D;3\x07"], end(Some(3))),
+            (
+                &[b"\x1b]133;A;aid=7\x07\x1b]133;B;k=i\x1b\\"],
+                vec![OscMark::PromptStart, OscMark::InputStart],
+            ),
+            (
+                &[b"\x1b]9;4;3;\x07", b"\x1b]9;4;0;\x1b\\"],
+                vec![progress("4;3;"), progress("4;0;")],
+            ),
+            (&[b"\x1b]9;", b"4;3", b";\x07"], vec![progress("4;3;")]),
+            (&[b"\x1b]9;hello\x07\x1b]9;4;\xff\x07"], vec![]),
+            (
+                &[b"\x1b]0;title\x07\x1b[31mred\x1b[0m\x1b]1337;x\x1b\\"],
+                vec![],
+            ),
+        ];
+        for (chunks, want) in cases {
+            assert_eq!(scan(chunks), want, "{chunks:?}");
+        }
     }
 
     #[test]
@@ -291,14 +287,6 @@ mod tests {
                 .filter(|m| matches!(m, OscMark::CommandStart))
                 .count(),
             1
-        );
-    }
-
-    #[test]
-    fn a_and_b_marks_tolerate_parameters() {
-        assert_eq!(
-            scan(&[b"\x1b]133;A;aid=7\x07\x1b]133;B;k=i\x1b\\"]),
-            vec![OscMark::PromptStart, OscMark::InputStart]
         );
     }
 
@@ -342,17 +330,6 @@ mod tests {
             tracker.facet().last_exit_code,
             None,
             "a code-less D clears it"
-        );
-    }
-
-    #[test]
-    fn mark_split_across_chunks_is_recognised() {
-        // The whole point of statefulness: the OSC arrives in three reads.
-        assert_eq!(
-            scan(&[b"abc\x1b]13", b"3;D;", b"42\x07xyz"]),
-            vec![OscMark::CommandEnd {
-                exit_code: Some(42)
-            }]
         );
     }
 
@@ -403,34 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn progress_marks_preserve_payload_for_bel_st_and_split_chunks() {
-        assert_eq!(
-            scan(&[b"\x1b]9;4;3;\x07", b"\x1b]9;4;0;\x1b\\"]),
-            vec![
-                OscMark::Progress("4;3;".to_owned()),
-                OscMark::Progress("4;0;".to_owned()),
-            ]
-        );
-        assert_eq!(
-            scan(&[b"\x1b]9;", b"4;3", b";\x07"]),
-            vec![OscMark::Progress("4;3;".to_owned())]
-        );
-    }
-
-    #[test]
-    fn foreign_osc_9_and_invalid_progress_are_ignored() {
-        assert_eq!(scan(&[b"\x1b]9;hello\x07\x1b]9;4;\xff\x07"]), Vec::new());
-    }
-
-    #[test]
-    fn foreign_osc_and_other_escapes_yield_nothing() {
-        assert_eq!(
-            scan(&[b"\x1b]0;title\x07\x1b[31mred\x1b[0m\x1b]1337;x\x1b\\"]),
-            Vec::new()
-        );
-    }
-
-    #[test]
     fn overlong_osc_is_abandoned_and_bounded() {
         let mut payload = b"\x1b]133;D;".to_vec();
         payload.extend(std::iter::repeat_n(b'9', 4096));
@@ -442,23 +391,6 @@ mod tests {
         assert_eq!(
             scanner.feed(b"\x1b]133;D;7\x07"),
             vec![OscMark::CommandEnd { exit_code: Some(7) }]
-        );
-    }
-
-    #[test]
-    fn esc_inside_osc_aborts_and_reprocesses() {
-        // An OSC interrupted by a CSI yields nothing; a later mark parses.
-        assert_eq!(
-            scan(&[b"\x1b]133;D\x1b[31m\x1b]133;D;3\x07"]),
-            vec![OscMark::CommandEnd { exit_code: Some(3) }]
-        );
-    }
-
-    #[test]
-    fn d_code_with_extra_params_takes_first() {
-        assert_eq!(
-            scan(&[b"\x1b]133;D;9;aid=42\x07"]),
-            vec![OscMark::CommandEnd { exit_code: Some(9) }]
         );
     }
 }
