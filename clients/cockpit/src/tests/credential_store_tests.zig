@@ -263,23 +263,3 @@ fn stringify(value: anytype, storage: []u8) ![]const u8 {
     try std.json.Stringify.value(value, .{}, &writer);
     return writer.buffered();
 }
-
-/// Opt-in integration helper, intentionally not a default `test`: login or CI
-/// keychains may be locked or prompt interactively. A caller supplies a unique
-/// account and is responsible for invoking this only with an unlocked keychain.
-pub fn runMacOSKeychainIntegration(unique_account: []const u8) !void {
-    const macos = @import("macos_keychain");
-    var keychain = macos.MacOSKeychain{};
-    defer keychain.deinit();
-    const backend = keychain.backend();
-    const handle = try backend.put(testing.io, unique_account, "integration-secret");
-    var deleted = false;
-    defer if (!deleted) backend.delete(handle) catch {};
-
-    var output: [32]u8 = undefined;
-    defer credentials.secureZero(&output);
-    const length = try backend.resolve(handle, &output);
-    try testing.expectEqualStrings("integration-secret", output[0..length]);
-    try backend.delete(handle);
-    deleted = true;
-}

@@ -8,8 +8,6 @@ const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 const testing = std.testing;
 
-const ChromeApp = native_sdk.UiApp(app.Model, union(enum) { none });
-
 pub fn createSession(cols: u16, rows: u16) !*grid.Session {
     return grid.Session.create(std.heap.page_allocator, testing.io, cols, rows);
 }
@@ -32,53 +30,6 @@ pub fn createSessions(cols: u16, rows: u16) ![2]*grid.Session {
     return sessions;
 }
 
-/// The registry's live panes, as a slice. Valid only while no slot has been
-/// freed, which holds for fixtures that only ever ADD terminals — a closed
-/// terminal leaves a hole whose session is gone.
-/// A `ChromeContext` naming the MAIN window — what the runtime hands
-/// `web_panes` and `build_window` when it is painting the scene's own window.
-/// Secondary windows are distinguished by `is_main = false` and their own
-/// canvas label.
-pub fn mainChromeContext() ChromeApp.ChromeContext {
-    return .{
-        .canvas_label = app.canvas_label,
-        .window_id = 1,
-        .size = geometry.SizeF.init(980, 640),
-        .tokens = .{},
-        .is_main = true,
-    };
-}
-
-pub fn activeSlots(model: *app.Model) []app.Pane {
-    var end: usize = 0;
-    for (model.provider.states, 0..) |state, index| {
-        if (state == .active) end = index + 1;
-    }
-    return model.provider.slots[0..end];
-}
-
-/// Open terminals until the effects layer's pty table is full.
-///
-/// No single chord can do this any more, which is phux-cockpit-ipg in one
-/// sentence: `local.max_live_shells` (32, from the SDK's pty table) is larger
-/// than `topology.max_tabs` (16) and larger than `layout.max_panes` (16), so
-/// repeating cmd+T stops at 16 tabs and repeating cmd+D stops at 16 panes,
-/// both well short of the shell ceiling. That is the intended shape: the
-/// binding constraint is now an app-owned number a person can see, not an
-/// invisible SDK one. It does mean any test that wants the shell ceiling has
-/// to fill a tab, start another, and fill that one too.
-///
-/// Splits come first because a split's refusal at the pane ceiling is CLEAN —
-/// `splitFocusedPane` hands the minted terminal back rather than leaking it,
-/// and sets no latch — so it is safe to use as the probe for "this tab is
-/// full". The caller gets a model with no refusal latched.
-/// Require the SDK resource table to back the app-owned topology a test needs.
-/// This used to skip under the four-PTY pin, which made the tests disappear at
-/// exactly the capacity regression they were meant to expose.
-pub fn requireLiveShells(needed: usize) !void {
-    try testing.expect(local.max_live_shells >= needed);
-}
-
 pub fn remoteTerminalRef(id: u32) !app.TerminalRef {
     return .{
         .provider_id = .phux,
@@ -88,58 +39,20 @@ pub fn remoteTerminalRef(id: u32) !app.TerminalRef {
 
 // --------------------------------------------------------- cell grids
 //
-// A terminal screen paints as `cell_grid` commands: a packed cols x rows
-// lattice of 20-byte cells, each carrying its own background, cluster
-// (an offset into the grid's interned byte pool), foreground, underline
-// colour, and style bits. Every renderer expands the lattice itself.
-//
-// The painter emits ONE `cell_grid` command PER ROW, not one per screen.
-// That is deliberate: a retained command is the unit of incremental
-// change, so a screen-wide lattice made every keystroke re-encode and
-// re-upload every cell (the SDK measured 31 upserts and 8.4 KB per
-// keystroke against 1 upsert and ~400 bytes once rows became their own
-// commands). A row command therefore carries `rows == 1`, its own
-// `origin.y`, and its own interned text blob.
-//
-// What that means for a TEST:
-//   - There are no per-run `fill_rect` / `draw_text` commands for
-//     terminal CONTENT any more, so a test that wants to know what
-//     reached the glass reads CELLS.
-//   - A screen costs roughly ONE COMMAND PER PAINTED ROW plus a small
-//     fixed prologue/epilogue (surface fill, clip push, cursor, caret,
-//     scrollbar thumb, clip pop) — NOT a constant, and not a function of
-//     how dense the content is either. The only content that still
-//     prices in commands is what the lattice deliberately cannot carry:
-//     box-drawing geometry at exact cell bounds, and the selection wash.
-//   - "How much painted" is therefore painted ROWS and inked CELLS.
-//
-// Everything below is that one seam: `CellGridView` puts the SCREEN back
-// together from a pane's row commands, so every accessor keeps meaning
-// what it always meant (`rows()` is the pane's painted height, `at(x, y)`
-// addresses the whole screen with y = 0 at the top). No test decodes a
-// cell, or a row command, by hand.
+// The painter emits one `cell_grid` command per row (the unit of incremental
+// change), so tests read cells, not per-run text commands. A screen costs
+// about one command per painted row plus a small fixed overhead.
+// `CellGridView` reassembles a pane's rows into a screen: `rows()` is the
+// painted height and `at(x, y)` addresses the whole screen from the top.
 
-/// A whole terminal SCREEN, aggregated from the per-row `cell_grid`
-/// commands that share one pane's command-id namespace.
-///
-/// Deliberately SMALL (a slice plus a namespace, 24 bytes): this is
-/// returned BY VALUE from the finders below, and a debug build
-/// materialises a returned aggregate in the caller's frame for the rest
-/// of that function. An inline array of 96 `CellGrid`s here would put
-/// ~9 KB on every fixture's frame — and this repo has already been
-/// bitten once by multi-megabyte returned aggregates overrunning the
-/// main-thread stack (see `initTerminalApp`). Rows are resolved on
-/// ACCESS instead; screens in tests are at most `max_rows` tall, so the
-/// linear scans cost nothing that matters.
+/// A whole terminal screen aggregated from one pane's per-row `cell_grid`
+/// commands. Kept small (returned by value); rows resolve on access.
 pub const CellGridView = struct {
     /// The frame's commands. The pane's rows are whichever `cell_grid`s
     /// in here fall inside `namespace`.
     commands: []const canvas.CanvasCommand,
-    /// The pane's command-id namespace: `paintIdBase(paneIdBase(i))`.
-    /// Every id the painter emits for that pane lands in
-    /// `[namespace, namespace + id_namespace_stride)`, and no other
-    /// pane's does — which is exactly what makes a split's rows
-    /// separable in one shared display list.
+    /// The pane's command-id namespace; every id the painter emits for the
+    /// pane lies in `[namespace, namespace + id_namespace_stride)`.
     namespace: u64,
 
     /// Whether `command` is one of THIS pane's row commands.
@@ -151,15 +64,9 @@ pub const CellGridView = struct {
         return (command.cell_grid.id -% self.namespace) < grid.id_namespace_stride;
     }
 
-    /// The row command holding screen row `y`, and `y`'s index WITHIN
-    /// it.
-    ///
-    /// Rows are ordered by `origin.y` — geometry, not emission order.
-    /// The painter happens to emit top-to-bottom with monotonically
-    /// increasing ids, but a view that assumed either would silently
-    /// mis-address the screen the day it stops (a reflow that repaints
-    /// one row, a producer that emits the cursor row first). Ties are
-    /// broken by id and then by position so the ordering is total.
+    /// The row command holding screen row `y`, and `y`'s index within it.
+    /// Rows are ordered by geometry (`origin.y`), ties by id then position,
+    /// never by emission order.
     fn rowAt(self: CellGridView, y: usize) ?RowRef {
         for (self.commands, 0..) |command, index| {
             if (!self.owns(command)) continue;
@@ -223,12 +130,8 @@ pub const CellGridView = struct {
         return row.grid.at(x, row.local);
     }
 
-    /// The rect cell (x, y) covers, in ABSOLUTE canvas points.
-    ///
-    /// Taken from the owning row command's OWN origin rather than from
-    /// `y * cell_height`: each row carries its own origin, so this stays
-    /// right even for a pane whose rows were emitted out of order or
-    /// whose top row is not the viewport's first.
+    /// The rect cell (x, y) covers, in absolute canvas points, from the
+    /// owning row's own origin.
     pub fn cellRect(self: CellGridView, x: usize, y: usize) geometry.RectF {
         const row = self.rowAt(y) orelse return .{};
         return row.grid.cellRect(x, row.local);
@@ -263,12 +166,8 @@ pub const CellGridView = struct {
         return cell.bg;
     }
 
-    /// The cell's SGR 58 underline colour, or null when it named none
-    /// and the underline takes the cell foreground. `has_underline_color`
-    /// is what says the cell carried one at all, exactly as
-    /// `has_background` does for the background — the stored colour is
-    /// zeroed, not absent, so reading the field alone would report opaque
-    /// black for every cell that never set one.
+    /// The cell's SGR 58 underline colour, or null (the stored colour is
+    /// zeroed, so `has_underline_color` decides).
     pub fn underlineColor(self: CellGridView, x: usize, y: usize) ?canvas.CellColor {
         const cell = self.at(x, y) orelse return null;
         if (!cell.style().has_underline_color) return null;
@@ -326,25 +225,6 @@ pub const CellGridView = struct {
         const hit = std.mem.indexOf(u8, text[0..len], needle) orelse return null;
         return columns[hit];
     }
-
-    /// Cells that put ink on the glass — a cluster, an underline, a
-    /// strikethrough, or an overline. The migrated measure of "this
-    /// terminal genuinely painted content", now that a screen's command
-    /// count tracks its painted HEIGHT rather than its density.
-    pub fn inkedCells(self: CellGridView) usize {
-        var total: usize = 0;
-        const height = self.rows();
-        var y: usize = 0;
-        while (y < height) : (y += 1) {
-            const row = self.rowAt(y) orelse continue;
-            var x: usize = 0;
-            while (x < row.grid.cols) : (x += 1) {
-                const cell = row.grid.at(x, row.local) orelse continue;
-                if (cell.hasInk()) total += 1;
-            }
-        }
-        return total;
-    }
 };
 
 /// One resolved screen row: the command that holds it and the row's
@@ -384,12 +264,9 @@ pub fn expectCellGrid(display_list: anytype) !CellGridView {
     return findCellGrid(display_list) orelse error.TestExpectedCellGrid;
 }
 
-/// The screen belonging to pane `index`, by the painter's own command-id
-/// namespace. A split emits one screen per pane, so tests that care
-/// WHICH terminal they are reading go through here rather than taking
-/// the first. Null when that pane painted no row at all — which is a
-/// real outcome (a budget that rejected even the first row), and one
-/// callers must not confuse with an empty screen.
+/// The screen belonging to pane `index`, by the painter's command-id
+/// namespace. Null when the pane painted no row at all, which is distinct
+/// from an empty screen.
 pub fn findPaneCellGrid(display_list: anytype, index: usize) ?CellGridView {
     const view = CellGridView{
         .commands = display_list.commands,
@@ -397,28 +274,6 @@ pub fn findPaneCellGrid(display_list: anytype, index: usize) ?CellGridView {
     };
     if (view.rows() == 0) return null;
     return view;
-}
-
-pub fn expectPaneCellGrid(display_list: anytype, index: usize) !CellGridView {
-    return findPaneCellGrid(display_list, index) orelse error.TestExpectedCellGrid;
-}
-
-/// One view per PANE that painted into the list, in the order the panes'
-/// first rows were emitted. Not one per row command: the rows of one
-/// terminal are one screen.
-pub fn collectCellGrids(display_list: anytype, out: []CellGridView) []CellGridView {
-    var count: usize = 0;
-    outer: for (display_list.commands) |command| {
-        if (command != .cell_grid) continue;
-        const namespace = grid.idNamespaceOf(command.cell_grid.id);
-        for (out[0..count]) |seen| {
-            if (seen.namespace == namespace) continue :outer;
-        }
-        if (count == out.len) break;
-        out[count] = .{ .commands = display_list.commands, .namespace = namespace };
-        count += 1;
-    }
-    return out[0..count];
 }
 
 comptime {
@@ -429,13 +284,8 @@ comptime {
     std.debug.assert(@sizeOf(CellGridView) == 24);
 }
 
-/// Commands one paint spends OUTSIDE its rows: the surface fill, the
-/// clip push and pop, the cursor, the keyboard caret, and the scrollback
-/// thumb. The SDK painter prices exactly this as a fixed 8-command
-/// prologue plus an 8-command epilogue reserve (`terminal_grid.zig`,
-/// `fixed_overhead` / `epilogue_reserve`), neither of which it exports;
-/// every use of it is an INEQUALITY bounding "commands minus rows", so
-/// the bound is what matters and not the exact figure.
+/// Commands one paint spends outside its rows (the SDK's fixed prologue and
+/// epilogue reserve); used only as an upper bound.
 pub const paint_fixed_commands: usize = 16;
 
 pub const CursorPaintKind = enum { filled, hollow };
@@ -453,6 +303,3 @@ pub fn expectPaneCursorPaintKind(display_list: anytype, index: usize, expected: 
         else => return error.TestUnexpectedCursorCommand,
     }
 }
-
-/// Grids one frame can hold: one per pane, with slack.
-const max_cell_grids = 16;

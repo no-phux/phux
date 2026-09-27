@@ -1,17 +1,11 @@
-//! The native engine behind the TypeScript core's seam.
+//! The native engine behind the TypeScript core's seam. The core owns chrome
+//! presentation; this owns the Cockpit `Model` and answers three things:
+//! apply a fenced intent, serialize a snapshot, announce that state moved.
 //!
-//! The compiled core owns chrome presentation; this owns the durable chrome
-//! STATE it presents — a real Cockpit `Model` with a real local provider —
-//! and answers the three things the seam allows: apply a fenced intent,
-//! serialize a snapshot, announce that state moved. Nothing else crosses.
-//!
-//! Two counters carry the ordering contract. `sequence` advances on every
-//! announcement, applied or refused, so the core can detect a gap in what it
-//! heard. `revision` advances only when state actually changed; every
-//! positional intent names the revision it was computed against, and one
-//! computed against an older revision is refused rather than applied to tabs
-//! that may have moved underneath it. That refusal is itself state (bit 7 of
-//! the snapshot flags), so the core can show it instead of guessing.
+//! `sequence` advances on every announcement (applied or refused) so the core
+//! can detect gaps; `revision` advances only on change, and a positional
+//! intent computed against an older revision is refused, visibly (bit 7 of the
+//! snapshot flags).
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
@@ -86,9 +80,7 @@ const Model = model_module.Model;
 const TerminalRef = support.TerminalRef;
 const max_terminals = model_module.max_terminals;
 
-/// What the engine asks of an effects instance. Both this app's own
-/// `TerminalApp.Effects` and the TypeScript adapter's satisfy it; tests
-/// that want no processes pass `NoShells`.
+/// An effects stand-in for tests that want no processes.
 pub const NoShells = struct {
     pub fn hostSend(_: *const NoShells, _: []const u8, _: []const u8) void {}
     pub fn ptySpawn(_: *const NoShells, _: anytype) void {}
@@ -292,10 +284,7 @@ pub const Engine = struct {
     last_runs: ts_snapshot.WindowRuns = [_]ts_snapshot.TabRun{.{}} ** (1 + model_module.max_secondary_windows),
     /// The config file's state as of the last `probe_config` intent.
     config_probe: ts_snapshot.ConfigProbe = .{},
-    /// Click coalescing for raw surface input, which carries no click count
-    /// of its own: a down within the double-click window and radius of the
-    /// last one counts up, the way the routed widget path counts for the
-    /// Zig chrome.
+    /// Click coalescing for raw surface input, which carries no click count.
     last_down_ns: u64 = 0,
     last_down_point: geometry.PointF = .{},
     last_click_count: u8 = 0,
@@ -351,10 +340,8 @@ pub const Engine = struct {
     /// own namespace; topology persistence uses 200).
     pub const peer_retry_timer_key: u64 = 210;
 
-    /// The model is multi-MB and lives on the heap for the process lifetime;
-    /// `gpa` sizes the emulator sessions the provider mints, `io` is what the
-    /// provider spawns through later. The first terminal exists from birth,
-    /// exactly as the shipping app boots.
+    /// The multi-MB model lives on the heap; the first terminal exists from
+    /// birth.
     pub fn create(gpa: std.mem.Allocator, io: std.Io) !*Engine {
         const session = try grid.Session.create(gpa, io, 80, 24);
         errdefer session.destroy();
@@ -366,8 +353,8 @@ pub const Engine = struct {
         return engine;
     }
 
-    /// The process composition root: the same config, persisted topology,
-    /// cwd restoration, and optional Phux provider bootstrap as the Zig app.
+    /// The process composition root: config, persisted topology, cwd
+    /// restoration, and optional Phux provider bootstrap.
     pub fn createConfigured(gpa: std.mem.Allocator, init: std.process.Init) !*Engine {
         const initialized = try startup.initializeModel(gpa, init);
         return createFromInitialized(initialized);
@@ -924,7 +911,7 @@ pub const Engine = struct {
 
     /// The debounce fired (including a rejected timer): post one bounded
     /// snapshot through the SDK's file seam unless an earlier write owns the
-    /// key. Its completion drives the same retry accounting as the Zig graph.
+    /// key; its completion drives the retry accounting.
     pub fn persistTopology(self: *Engine, fx: anytype, on_result: anytype) void {
         const state = &self.model.state;
         if (!state.enabled() or !state.pending or state.inflight) return;
@@ -978,12 +965,9 @@ pub const Engine = struct {
         // A config probe reads process-wide disk state and names no positional
         // target. Title/output churn cannot make that read unsafe or retarget it.
         if (intent.kind != .probe_config and intent.expected_revision != self.revision) return self.refuse();
-        // A tab intent means the window whose chrome sent it. Adopting it as
-        // active first is what CockpitHost does with a routed event's window.
-        // 255 means "the platform event's already-adopted focused window".
-        // Markup intents carry an explicit 0..4 slot; native command mapping
-        // has no window field, so the extension adopts CommandEvent.window_id
-        // before the compiled core dispatches this intent.
+        // A tab intent targets the window whose chrome sent it (0..4). 255
+        // means the focused window the extension already adopted from the
+        // native command event.
         if (windowScoped(intent.kind) and intent.window != 255) {
             if (intent.window != 0 and !self.model.windowOpen(intent.window)) return self.refuse();
             self.model.active_window = intent.window;
@@ -1522,18 +1506,9 @@ pub const Engine = struct {
     }
 
     // ------------------------------------ coordinators beside the active one
-    //
-    // The model holds the active Phux provider and dynamically owned peers:
-    // this Mac's coordinator while a registered remote host is active, and
-    // registered hosts. Each runs its own worker on its own channel
-    // (support.phuxPeerChannelKey), so any one restarts or fails alone. A peer
-    // LISTS its sessions (GET_STATE, never attached, so it sizes nobody's
-    // panes and streams nothing) until one of them is picked. It then SHOWS
-    // that session: it attaches it on its own connection and its shared
-    // workspace projects into the same windows as the active coordinator's.
-    // No other coordinator redials. Terminal identity carries the coordinator
-    // (TerminalRef.provider_id), so every key, resize and selection routes to
-    // the one that minted it.
+    // Each peer has its own channel and fails alone. It only lists sessions
+    // (GET_STATE, never attached) until one is picked, then shows it beside
+    // the active coordinator. Refs carry their coordinator (see `Model.peers`).
 
     /// Open every peer's channel at launch.
     pub fn openPeerChannels(self: *Engine, fx: anytype, on_event: anytype) void {
@@ -1586,13 +1561,9 @@ pub const Engine = struct {
         self.schedulePeerRetry(fx, slot);
     }
 
-    /// Arm the slot's automatic redial: a listing peer that failed is dialed
-    /// again after 1 s, then after twice the last wait, at most 60 s. Only a
-    /// peer that stayed listed `peer_retry_stable_ms` before this failure
-    /// starts over at 1 s; one that lists and fails again keeps backing off.
-    /// A showing peer is not redialed: its tabs keep their frozen frames,
-    /// picking its row retries it, and once its tabs leave the screen it goes
-    /// back to listing (`settlePeers`).
+    /// Arm a failed listing peer's redial: 1 s, doubling to 60 s, reset only
+    /// after it stayed listed `peer_retry_stable_ms`. A showing peer is not
+    /// redialed (picking its row retries it).
     fn schedulePeerRetry(self: *Engine, fx: anytype, slot: usize) void {
         self.cancelPeerRetry(fx, slot);
         // This connection's listing, if any, ends with this failure.
@@ -1641,11 +1612,8 @@ pub const Engine = struct {
         return since.durationTo(now).toMilliseconds() >= peer_retry_stable_ms;
     }
 
-    /// A peer's retry timer fired. Only a peer still failed, still listing,
-    /// on the channel generation the timer was armed for, is dialed again,
-    /// and as a lister: its connection asks GET_STATE and never attaches, so
-    /// it holds no viewport. If it listed, was picked, went away or began
-    /// showing meanwhile, the timer is stale and does nothing.
+    /// A peer's retry timer fired: redial (as a lister) only a peer still
+    /// failed and listing on the generation the timer was armed for.
     pub fn onPeerRetryTimer(self: *Engine, fx: anytype, key: u64) bool {
         if (comptime !support.phux_enabled) return false;
         const slot = self.peerRetrySlot(key) orelse return false;
@@ -2007,52 +1975,9 @@ pub const Engine = struct {
         session_attachments.revealProjected(model, peer.context_id, hint);
     }
 
-    /// Select the tab coordinator `id` projected for shared window
-    /// `preferred` when there is one, else its first tab in the first window
-    /// holding one, and make that window active.
-    fn revealAuthority(model: *Model, id: support.ProviderId, preferred: ?[16]u8) void {
-        if (preferred) |wanted| if (revealSharedWindow(model, id, wanted)) return;
-        for (0..model_module.max_windows) |index| {
-            if (!model.windowOpen(index)) continue;
-            const workspace = model.wsAt(index) orelse continue;
-            for (0..workspace.tab_count) |tab| {
-                const tree = workspace.treeConst(tab) orelse continue;
-                if (shared_workspace.tabAuthority(tree) != id) continue;
-                workspace.selected_tab = tab;
-                workspace.web_selected = false;
-                model.active_window = index;
-                return;
-            }
-        }
-    }
-
-    /// Select coordinator `id`'s tab of shared window `wanted`; false when
-    /// no open window holds it (the window was closed or moved meanwhile).
-    fn revealSharedWindow(model: *Model, id: support.ProviderId, wanted: [16]u8) bool {
-        for (0..model_module.max_windows) |index| {
-            if (!model.windowOpen(index)) continue;
-            const workspace = model.wsAt(index) orelse continue;
-            for (0..workspace.tab_count) |tab| {
-                const tree = workspace.treeConst(tab) orelse continue;
-                if (shared_workspace.tabAuthority(tree) != id) continue;
-                const shared_id = workspace.shared_ids[tab] orelse continue;
-                if (!std.mem.eql(u8, &shared_id, &wanted)) continue;
-                workspace.selected_tab = tab;
-                workspace.web_selected = false;
-                model.active_window = index;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// Keep each showing peer on screen or let it go. A peer is shown only
-    /// while one of its tabs is the selected, painted tab of an open window.
-    /// Once none is (another session's tab was chosen, its tabs were closed,
-    /// its session has no windows) it returns to listing, so it holds no
-    /// viewport that could size its session for anyone else. Before its
-    /// first projection lands there is nothing to judge. Called after every
-    /// native mutation; true when a peer went back to listing.
+    /// A peer stays shown only while one of its tabs is the selected tab of an
+    /// open window; otherwise it returns to listing so it holds no viewport.
+    /// Called after every native mutation; true when a peer went back.
     pub fn settlePeers(self: *Engine, fx: anytype) bool {
         if (comptime !support.phux_enabled) return false;
         const Fx = navigationFxType(@TypeOf(fx));
@@ -2132,11 +2057,9 @@ pub const Engine = struct {
         state.setContext(contextHash(endpoint, server));
     }
 
-    /// Restart one peer as Reconnect restarts the active provider: a live
-    /// channel publishes its close first, and the slot's next channel opens
-    /// on that event (`peerStaleEvent`), under the next generation's key.
-    /// Waiting keeps each slot to one occupancy of the runtime's small
-    /// channel table.
+    /// Restart one peer: a live channel closes first and the next opens on
+    /// that event under the next generation's key, keeping one channel-table
+    /// slot per peer.
     pub fn restartPeerConnection(self: *Engine, fx: anytype, slot: usize, on_event: anytype) bool {
         if (comptime !support.phux_enabled) return false;
         const peer = self.model.phuxPeerAt(slot) orelse return false;
@@ -2372,11 +2295,8 @@ pub const Engine = struct {
         if (comptime @hasDecl(Fx, "restartPeer")) _ = fx.restartPeer(self, slot);
     }
 
-    /// A session of a peer coordinator: show it beside the others. Only that
-    /// peer restarts its connection, and after HELLO_OK and its read-only
-    /// rename subscription it sends ATTACH for that session; the active coordinator and every other
-    /// peer keep their connections. A peer already showing a session leaves
-    /// it for this one.
+    /// Show a peer coordinator's session beside the others: only that peer
+    /// restarts, then ATTACHes the session; every other connection stays.
     pub fn showPeerSession(self: *Engine, coordinator: support.ProviderId, session: u32, fx: anytype) bool {
         if (comptime !support.phux_enabled) return false;
         const Fx = navigationFxType(@TypeOf(fx));
@@ -2579,11 +2499,8 @@ pub const Engine = struct {
         return false;
     }
 
-    /// Mirrors `update.zig`'s `.new_terminal` transaction. The shell itself
-    /// is spawned by the next `spawnShells`, which the extension runs after
-    /// every intent and every frame; the pane exists and is selected first,
-    /// exactly as in the shipping app. Refusals stay visible through the
-    /// same model flags the shipping app uses.
+    /// New Tab: the pane exists and is selected now; the shell is spawned by
+    /// the next `spawnShells`. Refusals latch visible model flags.
     fn newTerminal(self: *Engine) bool {
         const model = self.model;
         if (model.phux() != null) return self.peerCreate(.tab) orelse self.createDurable(.tab);
@@ -2617,9 +2534,7 @@ pub const Engine = struct {
         return lifecycle.closeTab(self.model, fx, self.model.active_window, index);
     }
 
-    /// The settings surface's Save: mirrors update.zig's .settings_commit,
-    /// including the write and its refusal flag, minus the preview/restore
-    /// dance the core keeps to itself.
+    /// The settings surface's Save: apply, write, and latch any refusal.
     fn setTheme(self: *Engine, index: u8) bool {
         if (index >= theme_module.builtins.len) return false;
         const model = self.model;
@@ -2639,9 +2554,7 @@ pub const Engine = struct {
         return true;
     }
 
-    /// Asked once, when the surface opens, exactly as the shipping app asks:
-    /// a view is pure and must not touch a disk, and the answer only has to
-    /// be true at the moment the person reads the line.
+    /// Asked once when the settings surface opens (views must not touch disk).
     pub fn probeConfig(self: *Engine) bool {
         const model = self.model;
         self.config_probe = .{
@@ -2654,8 +2567,8 @@ pub const Engine = struct {
 
     // ----------------------------------------------------------- windows
 
-    /// update.zig's .new_window: a window slot, a workspace, one shell in
-    /// it, selected. Refusals put everything back and stay visible.
+    /// New Window: a slot, a workspace, one selected shell. Refusals put
+    /// everything back and stay visible.
     fn newWindow(self: *Engine) bool {
         const model = self.model;
         // With a peer's pane focused, New Window opens its tab on that peer.
@@ -2904,11 +2817,8 @@ pub const Engine = struct {
         return lifecycle.closePane(self.model, fx, ref, true);
     }
 
-    /// Go to Directory: a new durable tab whose shell starts in `cwd` on the
-    /// connected coordinator's host, placed like New Tab.
-    /// Go to Directory's Open Here. `owner` is the satellite pane a
-    /// satellite listing was made for, so the tab opens on that satellite;
-    /// null opens on the coordinator's own host.
+    /// Go to Directory's Open Here: a durable tab whose shell starts in `cwd`,
+    /// on `owner`'s satellite when given, else the coordinator's own host.
     pub fn openTabAt(self: *Engine, cwd: []const u8, owner: ?support.TerminalRef) bool {
         if (self.model.phux() == null) return false;
         self.supersedeSelection();
@@ -2933,9 +2843,7 @@ pub const Engine = struct {
         return true;
     }
 
-    /// The window index a canvas label names, by the shipping scene's own
-    /// table: the spike declares the same labels, so per-window painting,
-    /// frames and input resolve through one function.
+    /// The window index a canvas label names (see `scene.zig`).
     pub fn windowIndexForCanvas(label: []const u8) ?usize {
         return scene.windowIndexForCanvas(label);
     }
@@ -2988,9 +2896,8 @@ pub const Engine = struct {
         return workspace.window_id == window_id;
     }
 
-    /// Adopt the platform's focused window as the active one, the way
-    /// CockpitHost adopts a routed event's window; a window this engine has
-    /// not painted yet has no id to match.
+    /// Make the platform's focused window active; an unpainted window has no
+    /// id to match yet.
     pub fn adoptFocusedWindow(self: *Engine, window_id: platform.WindowId) void {
         const model = self.model;
         for (0..model_module.max_windows) |index| {
@@ -3019,18 +2926,10 @@ pub const Engine = struct {
         return true;
     }
 
-    /// Compatibility entry for hosts that only observe window adoption.
-    pub fn commitWindowAdoption(self: *Engine, before_window: usize, before_sequence: u64) bool {
-        var before = self.beginPublication();
-        before.window = before_window;
-        before.sequence = before_sequence;
-        return self.finishPublication(before);
-    }
-
     // ------------------------------------------------------------ shells
 
-    /// Spawn a shell for every registered pane that does not have one, the
-    /// way `update.initFx` does at boot. Idempotent: a slot keeps its shell
+    /// Spawn a shell for every registered pane that does not have one.
+    /// Idempotent: a slot keeps its shell
     /// until the pane is destroyed, and a reused slot carries a new pty key.
     pub fn spawnShells(self: *Engine, fx: anytype, on_event: anytype) void {
         const model = self.model;
@@ -3061,10 +2960,8 @@ pub const Engine = struct {
         return hasher.final();
     }
 
-    /// One pty event, applied the way `update.zig`'s `.shell` arm applies it.
-    /// The return is edge-triggered only for state represented in the core's
-    /// snapshot (phase/title/cwd/attention); ordinary terminal output still
-    /// wakes native painting without forcing a snapshot on every byte batch.
+    /// One pty event. Returns true only when snapshot-visible state
+    /// (phase/title/cwd/attention) changed; plain output just repaints.
     pub fn onShellEvent(self: *Engine, fx: anytype, event: native_sdk.EffectPtyEvent) bool {
         defer self.syncRemoteFocus();
         const pane = terminal_runtime.paneForKey(self.model, event.key) orelse return false;
@@ -3079,8 +2976,7 @@ pub const Engine = struct {
                     return self.commitProviderChange(true);
                 }
             },
-            // Write acknowledgements never reach a pty event constructor;
-            // the shipping app marks the arm unreachable for the same reason.
+            // Write acknowledgements never reach a pty event constructor.
             .write => {},
         }
         if (chrome_before == self.paneChromeFingerprint(pane)) return false;
@@ -3211,11 +3107,9 @@ pub const Engine = struct {
         }
     }
 
-    /// A key that no chrome widget claimed, the way update.zig's handleKey
-    /// treats the terminal block: the search field first, then the app's own
-    /// chords (find, select, copy, paste, select all), and everything else to
-    /// the focused pane's emulator encoder, which alone knows the live modes
-    /// the bytes depend on. Releases only ever reach the encoder.
+    /// A key no chrome widget claimed: the search field first, then the app's
+    /// chords (find, select, copy, paste, select all), then the focused pane's
+    /// encoder, which knows the live modes. Releases only reach the encoder.
     pub fn onKey(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
         if (!self.model.focused or self.input_suspended) return;
         if (event.phase == .key_up) return self.releaseKey(fx, event);
@@ -3308,8 +3202,8 @@ pub const Engine = struct {
         }
     }
 
-    /// update.zig's handleSearchKey: the field owns Escape, Enter and
-    /// Backspace; paste goes into the needle; copy still copies.
+    /// The search field owns Escape, Enter and Backspace; paste goes into the
+    /// needle; copy still copies.
     fn searchKey(self: *Engine, fx: anytype, pane: *model_module.Pane, event: canvas.WidgetKeyboardEvent) void {
         const primary = event.modifiers.hasCommandModifier();
         if (primary and keyIs(event.key, "v")) {
@@ -3334,9 +3228,9 @@ pub const Engine = struct {
         }
     }
 
-    /// Committed text: into an open search needle, else into the shell the
-    /// way update.zig's .text arm sends it (never over a keyboard selection,
-    /// never into an ended shell, always after scrolling to the bottom).
+    /// Committed text: into an open search needle, else into the shell
+    /// (never over a keyboard selection, never into an ended shell, always
+    /// after scrolling to the bottom).
     pub fn onText(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
         if (!self.model.focused or self.input_suspended) return;
         const ref = self.model.focusedTerminalRef() orelse return;
@@ -3379,16 +3273,13 @@ pub const Engine = struct {
         return true;
     }
 
-    /// update.zig's copySelection for a local pane. The effects wrapper the
-    /// graph hands in supplies the result constructor; the answer lands in
-    /// `onClipboardWritten`.
+    /// Copy a local pane's selection; the answer lands in `onClipboardWritten`.
     fn copySelection(self: *Engine, fx: anytype, pane: *model_module.Pane) void {
         interaction.copy(self.model, fx, pane.id);
     }
 
-    /// The clipboard write's answer (update.zig's .clipboard arm): a
-    /// successful copy keeps the range highlighted and ends keyboard
-    /// selection; a failed one says so on the pane.
+    /// The clipboard write's answer: success keeps the range highlighted and
+    /// ends keyboard selection; failure says so on the pane.
     pub fn onClipboardWritten(self: *Engine, ok: bool) void {
         interaction.copied(self.model, ok);
     }
@@ -3397,9 +3288,8 @@ pub const Engine = struct {
         interaction.requestPaste(self.model, fx, pane.id);
     }
 
-    /// The clipboard read's answer (update.zig's .paste_clipboard arm): into
-    /// the needle if that is where it was aimed, else a bracketed paste into
-    /// the pane it was requested for, never a different one.
+    /// The clipboard read's answer: into the needle if aimed there, else a
+    /// bracketed paste into the requesting pane only.
     pub fn onClipboardRead(self: *Engine, fx: anytype, ok: bool, text: []const u8) void {
         interaction.pasted(self.model, fx, ok, text);
     }
@@ -3408,12 +3298,9 @@ pub const Engine = struct {
 
     const shipping_pointer = @import("shipping_pointer.zig");
 
-    /// Route one raw surface pointer event into the pane under it, the way
-    /// CockpitHost routes the widget-routed one: a new down supersedes this
-    /// pointer's old capture, a move/up/cancel follows its capture wherever
-    /// the pointer went, a hover or wheel goes to the pane under the point.
-    /// Returns whether a terminal took it; chrome is never under a pane's
-    /// frame, and the caller keeps overlays out.
+    /// Route one raw surface pointer event: a down supersedes this pointer's
+    /// capture, move/up/cancel follow the capture, hover and wheel go to the
+    /// pane under the point. Returns whether a terminal took it.
     pub fn onPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent) PointerOutcome {
         if (!self.pointerInputEnabled()) return .ignored;
         const window_index = windowIndexForCanvas(raw.label) orelse return .ignored;
@@ -3748,8 +3635,8 @@ pub const Engine = struct {
 
     // ------------------------------------------------------------ focus
 
-    /// update.zig's .focus_changed arm: blur strands every held key and
-    /// pointer capture, and a bell that rings while unfocused notifies.
+    /// Blur strands every held key and pointer capture; a bell that rings
+    /// while unfocused notifies.
     pub fn setFocused(self: *Engine, fx: anytype, focused: bool) void {
         const model = self.model;
         if (model.focused == focused) return;
@@ -3820,8 +3707,7 @@ pub const Engine = struct {
         self.syncRemoteFocus();
     }
 
-    /// update.zig's notifyBackgroundBell: the rising edge of a bell while
-    /// the app is in the background reaches the person who is not looking.
+    /// Notify on the rising edge of a bell while the app is in the background.
     fn notifyBackgroundBell(self: *Engine, fx: anytype, pane: *const model_module.Pane, rang_before: bool) void {
         const model = self.model;
         if (model.focused) return;
@@ -3839,10 +3725,8 @@ pub const Engine = struct {
 
     // ------------------------------------------------------------- frames
 
-    /// The resize pump: converge every pane of the main window on the grid
-    /// the painter measured, and tell each child. The same derivation the
-    /// shipping app's frame pump uses (`proposedViewportsIn`), so the painter,
-    /// the hit tests and the pty never disagree about a pane's cells.
+    /// The resize pump: converge every pane on the painter-measured grid via
+    /// `proposedViewportsIn`, the shared geometry derivation.
     pub fn pumpViewports(self: *Engine, fx: anytype, frame: native_sdk.platform.GpuFrame) void {
         if (frame.size.width <= 0 or frame.size.height <= 0) return;
         const model = self.model;
@@ -3937,8 +3821,7 @@ pub const Engine = struct {
         const total = workspace.tab_count;
         if (total == 0) return .{};
         // app.native and cockpit-window.native use 4pt gaps and one 32pt
-        // overflow cue. The old Zig chrome run also reserved an inline plus
-        // button and two cues; its surrounding toolbar was different too.
+        // overflow cue.
         const gap = projection.chrome_band_inset;
         // Preserve the readable title floor when adding the direct 32pt close
         // target and its 4pt gap to each shipping tab.

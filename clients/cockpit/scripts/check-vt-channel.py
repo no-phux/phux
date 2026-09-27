@@ -13,10 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 PHUX = ROOT / "src" / "providers" / "phux"
-HANDLERS = (
-    ROOT / "src" / "cockpit" / "update.zig",
-    ROOT / "src" / "cockpit" / "native" / "ts_engine.zig",
-)
+HANDLERS = (ROOT / "src" / "cockpit" / "native" / "ts_engine.zig",)
 TRANSPORT = PHUX / "transport.zig"
 
 POST_CALL = re.compile(r"\.post\s*\(")

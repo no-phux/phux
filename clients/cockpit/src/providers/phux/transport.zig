@@ -359,10 +359,6 @@ pub const Harness = struct {
     pub fn serverFrame(harness: *Harness, frame: []const u8) bool {
         return harness.bridge.incoming.stage(frame);
     }
-
-    pub fn clientFrame(harness: *Harness) ?[]u8 {
-        return harness.bridge.outgoing.take();
-    }
 };
 
 test "explicit config and large-frame channel bypass" {

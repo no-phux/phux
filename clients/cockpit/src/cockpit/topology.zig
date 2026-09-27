@@ -65,10 +65,6 @@ pub const max_snapshot_windows: usize = 5;
 /// allowing every leaf to be remote.
 pub const max_snapshot_tabs: usize = max_terminals;
 
-/// Local restoration recreates shells, never local process state. Remote
-/// restoration retains references pending explicit provider/context evidence.
-pub const process_restoration_supported = false;
-
 /// Byte ceiling for one persisted working directory.
 ///
 /// Deliberately far below `std.fs.max_path_bytes` (1024): the snapshot is

@@ -31,7 +31,6 @@ test {
 pub const AgentSession = agent_sessions.Session;
 pub const AgentIdentity = agent_sessions.Identity;
 pub const AgentState = agent_sessions.State;
-pub const AgentRecordsKind = agent_sessions.RecordsKind;
 
 pub const enabled = true;
 pub const max_terminals: usize = workspace.max_replicas;

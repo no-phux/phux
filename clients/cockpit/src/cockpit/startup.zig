@@ -22,7 +22,7 @@ const TopologySnapshot = topology.TopologySnapshot;
 const PersistedTopologySnapshot = topology.PersistedTopologySnapshot;
 const TabPlacement = topology.TabPlacement;
 const migrateTopologySnapshot = topology.migrateTopologySnapshot;
-const initialProductionModelWithIo = model_module.initialProductionModelWithIo;
+const initialModelWithIo = model_module.initialModelWithIo;
 const attachPhuxProvider = model_module.attachPhuxProvider;
 const app_name = scene.app_name;
 
@@ -86,13 +86,8 @@ pub fn resolvePhuxConfig(parsed: Config, env: PhuxEnvironment) Config {
     return resolved;
 }
 
-/// A host chosen through Connect to Host survives relaunch. Phux-backed
-/// layout lives in the coordinator's shared workspace, so the one client-side
-/// fact a relaunch needs is WHICH coordinator to reattach to; that is the
-/// remembered line beside the state file. It never overrides an explicit
-/// choice: a `phux-remote` in the config or `PHUX_REMOTE` wins.
-///
-/// Recorded as `.default` provenance: nobody typed it into a setting.
+/// Restore the remembered Connect to Host choice (the one client-side fact
+/// a relaunch needs), unless config or `PHUX_REMOTE` names a host.
 pub fn restoreRememberedRemote(io: std.Io, state_path: ?[]const u8, config: *Config) void {
     const path = remote_memory.setPathFor(state_path) orelse return;
     if (config.phux_remote.slice().len != 0) return;
@@ -216,13 +211,9 @@ fn coordinatorHeld(model: *const model_module.Model, id: anytype) bool {
     return false;
 }
 
-/// A host selected at launch (the config, `PHUX_REMOTE`, or the remembered
-/// host) resolves in the registry the way Connect to Host does, so the
-/// entry's pinned `session` and its name apply from the first attach rather
-/// than leaving the remote server's last-attach memory to decide. A session
-/// named explicitly still wins, as a session named on `phux --remote` wins
-/// over the entry's pin. Resolution reads config.toml only; an unregistered
-/// host keeps its typed name and fails on dial with the pairing command.
+/// Resolve a launch-selected host through the registry like Connect to Host,
+/// so its pinned session applies from the first attach; an explicit session
+/// still wins.
 fn createRemotePhuxProvider(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -264,15 +255,8 @@ fn createConfiguredPhuxProvider(init: std.process.Init, config: *const Config) !
     return createPhuxProviderFromConfig(std.heap.page_allocator, init.io, config);
 }
 
-/// Where the config file lives, resolved through the SDK's `app_dirs`
-/// primitive so the platform owns the rule (macOS:
-/// `~/Library/Preferences/Phux Cockpit/config`). `PHUX_COCKPIT_CONFIG` names
-/// a file directly and wins — that is the seam a test, a second profile, or a
-/// `--config` wrapper uses, and it costs one env read.
-///
-/// Returns null when the platform has no home to resolve against, which is a
-/// silent fall back to defaults, never an error: a terminal that refuses to
-/// start because it could not find a file the user never wrote is broken.
+/// The platform config path (`app_dirs`); `PHUX_COCKPIT_CONFIG` names a file
+/// and wins. Null (no home) falls back to defaults silently.
 pub fn resolveConfigPath(env: native_sdk.app_dirs.Env, override_path: ?[]const u8, dir_storage: []u8, path_storage: []u8) ?[]const u8 {
     if (override_path) |explicit| {
         if (explicit.len == 0 or explicit.len > path_storage.len) return null;
@@ -289,16 +273,9 @@ pub fn resolveConfigPath(env: native_sdk.app_dirs.Env, override_path: ?[]const u
     return config_module.joinPath(dir, path_storage) catch null;
 }
 
-/// The dotfile location: `$XDG_CONFIG_HOME/phux-cockpit/config`, else
-/// `~/.config/phux-cockpit/config`.
-///
-/// `app_dirs` follows each platform's own convention, which on macOS means
-/// `~/Library/Preferences/Phux Cockpit/`. That is correct for a Mac app and
-/// wrong for this audience: the people most likely to write a config here are
-/// arriving from Ghostty, and they will put the file in `~/.config` without
-/// looking it up. Checking here FIRST costs one stat and removes an entire
-/// class of "my config does nothing" confusion. The platform path still works,
-/// so nothing is taken away.
+/// The dotfile location (`$XDG_CONFIG_HOME` or `~/.config`, then
+/// `phux-cockpit/config`), tried before the platform path because users
+/// arriving from Ghostty put it there.
 pub fn resolveDotfileConfigPath(env: native_sdk.app_dirs.Env, path_storage: []u8) ?[]const u8 {
     var joined: [std.fs.max_path_bytes]u8 = undefined;
     const base = if (env.xdg_config_home) |xdg| blk: {
@@ -317,18 +294,9 @@ pub fn resolveDotfileConfigPath(env: native_sdk.app_dirs.Env, path_storage: []u8
     return config_module.joinPath(dir, path_storage) catch null;
 }
 
-/// Read and parse the user's config. Every failure — no home, no file, an
-/// unreadable file, a file larger than the ceiling — lands on defaults, and a
-/// malformed LINE is already a diagnostic rather than a failure inside the
-/// parser. There is exactly one way this function does not produce a usable
-/// Config, and that is never.
-/// The loaded config plus WHERE it came from.
-///
-/// The path is now part of the answer because the settings surface writes a
-/// theme choice back into that same file, and `update` has no environment to
-/// re-resolve it from — the same reason `StatePersistence` carries the layout
-/// path. `path_len` is zero when no location could be resolved at all, which
-/// disables the write rather than failing anything.
+/// The loaded config plus where it came from, so the settings surface can
+/// write back to the same file (`path_len` zero disables writing). Every
+/// failure lands on defaults.
 pub const LoadedConfig = struct {
     config: Config,
     path_storage: [std.fs.max_path_bytes]u8 = undefined,
@@ -365,10 +333,7 @@ fn loadUserConfig(io: std.Io, init: std.process.Init) LoadedConfig {
         if (readConfig(io, explicit)) |parsed| loaded.config = parsed;
         return loaded;
     }
-    // Otherwise the dotfile location is tried first and the platform location
-    // second — first file that opens wins, so someone who has never heard of
-    // `~/Library/Preferences` and someone who expects a Mac app to live there
-    // are both right.
+    // Dotfile first, then the platform path; the first file that opens wins.
     if (resolveDotfileConfigPath(env, &dotfile_storage)) |dotfile| {
         if (readConfig(io, dotfile)) |parsed| {
             loaded.config = parsed;
@@ -388,10 +353,7 @@ fn loadUserConfig(io: std.Io, init: std.process.Init) LoadedConfig {
         loaded.setPath(path);
         return loaded;
     }
-    // NO config file exists yet, which is the ordinary first-run state. The
-    // write target is the DOTFILE location rather than the platform one for
-    // the same reason the read tries it first: it is where this audience will
-    // look for it afterwards.
+    // No file yet: target the dotfile location for later writes.
     if (resolveDotfileConfigPath(env, &dotfile_storage)) |dotfile| {
         loaded.setPath(dotfile);
         return loaded;
@@ -407,25 +369,14 @@ fn readConfig(io: std.Io, path: []const u8) ?Config {
     var bytes: [config_module.max_config_bytes]u8 = undefined;
     var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
     defer file.close(io);
-    // A config longer than the ceiling is TRUNCATED, not refused: the bytes
-    // that fit are a prefix of whole lines plus at most one partial one, and a
-    // partial line is a diagnostic. Refusing the whole file would drop every
-    // valid setting above it.
+    // An over-long config is truncated, not refused, keeping earlier lines.
     const read = file.readPositionalAll(io, &bytes, 0) catch return null;
     return config_module.loadOrDefault(bytes[0..read]);
 }
 
-/// Where the workspace LAYOUT is written: the platform STATE directory
-/// (macOS: `~/Library/Application Support/Phux Cockpit/State`), never the
-/// config file. Layout is state — nobody hand-writes it, and it changes every
-/// time a tab opens — so mixing it into the file a user edits would mean
-/// rewriting their settings on every split.
-///
-/// `PHUX_COCKPIT_STATE` names a file directly and wins, the same seam
-/// `PHUX_COCKPIT_CONFIG` gives the config: a second profile, a test, or a
-/// wrapper that wants a throwaway workspace. Null means no state directory
-/// could be resolved, which silently disables persistence rather than
-/// refusing to start.
+/// Where the workspace layout is written: the platform state directory,
+/// never the config file. `PHUX_COCKPIT_STATE` names a file and wins. Null
+/// silently disables persistence.
 pub fn resolveStatePath(
     env: native_sdk.app_dirs.Env,
     override_path: ?[]const u8,
@@ -489,10 +440,8 @@ pub const WorkspaceRestore = union(enum) {
 };
 
 /// Rebuild the saved workspace before anything else exists, so the window
-/// opens INTO the restored layout instead of being seen to assemble it.
-/// `restored` receives the migrated snapshot, which still holds the working
-/// directories the panes have to be put in once the model reaches its final
-/// storage.
+/// opens into it. `restored` receives the migrated snapshot for applying
+/// working directories once the model is in its final storage.
 pub fn restoreWorkspace(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -525,7 +474,7 @@ fn freshWorkspace(
     max_scrollback_bytes: usize,
 ) !Model {
     const session = try grid.Session.createWithScrollback(gpa, io, 80, 24, max_scrollback_bytes);
-    return initialProductionModelWithIo(gpa, io, session) catch |err| {
+    return initialModelWithIo(gpa, io, session) catch |err| {
         session.destroy();
         return err;
     };
@@ -583,15 +532,8 @@ fn initializeStatePersistence(
     model.state.fingerprint = model.topologyFingerprint();
 }
 
-/// Say out loud what the config file did not do.
-///
-/// This is the RECORD, not the notification. It carries every diagnostic in
-/// full sentences, with the offending text quoted, which is what someone
-/// debugging a config in a terminal wants — and from a bundle it lands in the
-/// unified log, where nobody is looking. The notification is the dismissible
-/// band the app itself draws (`projection.configNoticeLine`), which is what
-/// closes the gap between "the setting did nothing" and "the user found out".
-/// Both read the same diagnostics; neither is a second source of truth.
+/// Log every config diagnostic in full; the dismissible band
+/// (`projection.configNoticeLine`) is the user-facing notice.
 fn reportConfigDiagnostics(user_config: *const Config) void {
     for (user_config.diagnosticSlice()) |diagnostic| {
         switch (diagnostic.kind) {

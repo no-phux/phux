@@ -47,14 +47,6 @@ pub fn windowIndexForCanvas(label: []const u8) ?usize {
     return null;
 }
 
-pub fn windowIndexForWindow(label: []const u8) ?usize {
-    if (std.mem.eql(u8, label, main_window_label)) return 0;
-    for (secondary_window_labels, 0..) |candidate, offset| {
-        if (std.mem.eql(u8, label, candidate)) return offset + 1;
-    }
-    return null;
-}
-
 pub fn windowLabelFor(index: usize) []const u8 {
     if (index == 0 or index > max_secondary_windows) return main_window_label;
     return secondary_window_labels[index - 1];

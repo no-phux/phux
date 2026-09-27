@@ -281,8 +281,8 @@ fn Driver(comptime sdk: type, comptime module: type, comptime allocateKey: anyty
 
 fn policy(comptime module: type) module.Policy {
     // Actual support.allocatePeerHandle range: lower bound through MAX-1.
-    // Files: 200 is update.zig's topology_state_file_key (timers are another
-    // namespace, so the debounce also uses 200); 201 is the driver's key.
+    // Files: 200 is topology_state_file_key (the debounce timer reuses 200 in
+    // its own namespace); 201 is the driver's key.
     return .{ .channels = &.{ 102, 103 }, .timers = &.{200}, .files = &.{ 200, 201 }, .dynamic_first = 0x5046_0000_0000_0000, .dynamic_limit = std.math.maxInt(u64), .reserved = &.{ 50, 77, 7001, 0xfefe_0000_0000_0001 } };
 }
 
@@ -371,8 +371,7 @@ pub fn checkOwnership(comptime sdk: type, comptime module: type, comptime alloca
     try checkFileOwnership(sdk, module);
 }
 
-/// update.zig topology_state_file_key: the production shape shares the number
-/// with the debounce timer, which lives in the separate timer namespace.
+/// topology.topology_state_file_key.
 const topology_file_key: u64 = 200;
 const topology_path = "/private/tmp/opencode/native-replay-topology.json";
 

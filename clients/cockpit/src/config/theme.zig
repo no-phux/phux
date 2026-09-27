@@ -1,39 +1,10 @@
-//! Built-in colour themes, and the contrast arithmetic that says whether one
-//! is readable.
+//! Built-in colour themes and the WCAG contrast arithmetic.
 //!
-//! WHY A THEME KEY AT ALL. `foreground`, `background` and `selection-background`
-//! have existed and worked for a while, and the owner still could not change
-//! the colour of their terminal — because doing it meant knowing three key
-//! names, three hex values that go together, and where the file lives. A named
-//! theme is one word for a set of colours somebody already checked. The
-//! explicit keys are not replaced by it; they OUTRANK it (see
-//! `Config.resolvedForeground` and friends), so a theme is a starting point
-//! rather than a thing that fights you.
-//!
-//! WHAT A THEME CARRIES, AND WHAT IT DELIBERATELY DOES NOT.
-//!
-//! A theme sets exactly three colours: `background`, `foreground`, and
-//! `selection_background`. Those three, and only those three, reach the
-//! terminal through the DESIGN TOKENS — `workspace_projection.terminalTokensFrom`
-//! rebuilds them from `model.config` on every frame and `Session.snapshot`
-//! pushes them into the emulator's defaults on every frame. That is what makes
-//! a theme change repaint LIVE with no invalidation step, no per-session
-//! fix-up, and nothing to forget: there is no stored copy of a theme colour
-//! anywhere for a stale value to hide in.
-//!
-//! It deliberately does NOT carry the ANSI-16 palette, the cursor colour, or
-//! the cursor style. Those three land in the EMULATOR (see
-//! `model.applySessionConfig`) rather than in the tokens, which means they are
-//! written once per session and would need an explicit re-apply — and a
-//! re-apply has an unsolved half: switching from a theme that sets slot 1 to
-//! one that does not cannot un-set it, because the emulator's dynamic palette
-//! takes overrides and has no "revert this slot" call here. A knob that
-//! applies but cannot un-apply is exactly the trap
-//! `Diagnostic.Kind.unsupported_key` exists to avoid. The ANSI-16 slots are
-//! also libghostty's own real terminal defaults (see `terminal/palette.zig`),
-//! and a terminal red should stay a terminal red. `palette = N=#rrggbb`,
-//! `cursor-color` and `cursor-style` remain the explicit knobs for anyone who
-//! wants them.
+//! A theme sets only `background`, `foreground` and `selection_background`,
+//! which reach the terminal through the design tokens rebuilt every frame, so
+//! a theme change repaints live. Explicit keys outrank it. It deliberately
+//! does not set the ANSI-16 palette or cursor: those live in the emulator,
+//! and switching themes could not un-set a palette slot.
 
 const std = @import("std");
 
@@ -57,26 +28,9 @@ pub const Theme = struct {
     selection_background: Rgb,
 };
 
-/// The built-in set, in the order the settings surface lists them.
-///
-/// `phux-dark` is first because it is what the app already paints with when no
-/// theme is named: `cockpitTokens` sets text #f4f7fb on background #090b0f and
-/// accent #bef264, and this entry restates exactly those three so that
-/// selecting it is a no-op rather than a subtle shift.
-///
-/// EVERY entry clears WCAG AA for body text (4.5:1). That is not a taste
-/// claim, it is pinned by a test — see `settings_theme_tests.zig`, "every
-/// built-in theme clears the readout's own AA threshold". Shipping a theme the
-/// app's own legibility readout flags would make the readout advice nobody
-/// could act on.
-///
-/// Ratios, from `contrastRatio(foreground, background)`:
-///   phux-dark       18.33:1
-///   phux-light      17.98:1
-///   high-contrast   21.00:1
-///   nord             9.25:1
-///   gruvbox-dark    10.75:1
-///   solarized-dark   5.61:1
+/// The built-in set, in settings order. `phux-dark` restates the app's
+/// unthemed tokens so selecting it is a no-op. Every entry clears WCAG AA
+/// (4.5:1), pinned by a test.
 pub const builtins = [_]Theme{
     .{
         .name = "phux-dark",
@@ -122,13 +76,8 @@ pub const builtins = [_]Theme{
     },
 };
 
-/// The value of `theme` that means "follow the system", and the pair it
-/// follows into.
-///
-/// The pair is `phux-dark` / `phux-light` and nothing else: they are the same
-/// register inverted, so a machine crossing sunset changes brightness rather
-/// than identity. A `theme = auto` that landed on nord in the dark and
-/// solarized in the light would be two terminals wearing one config line.
+/// `theme = auto`: follow the system between `phux-dark` and `phux-light`
+/// (the same register inverted).
 pub const auto_name = "auto";
 pub const auto_dark = "phux-dark";
 pub const auto_light = "phux-light";
@@ -193,25 +142,14 @@ pub const wcag_aa_body_text: f32 = 4.5;
 /// The AAA minimum (SC 1.4.6), reported but never used as the pass/fail line.
 pub const wcag_aaa_body_text: f32 = 7.0;
 
-/// One sRGB channel, 0..1, linearized.
-///
-/// WCAG 2.x, "relative luminance":
-///   if c <= 0.03928 then c / 12.92 else ((c + 0.055) / 1.055) ^ 2.4
-/// The 0.03928 knee is the value the WCAG text itself publishes (the sRGB
-/// specification's own knee is 0.04045; the difference is below one 8-bit
-/// step and the accessibility threshold is defined against WCAG's number, so
-/// WCAG's number is the one used).
+/// One sRGB channel (0..1), linearized with WCAG 2.x's published 0.03928 knee.
 fn linearize(channel: f32) f32 {
     if (channel <= 0.03928) return channel / 12.92;
     return std.math.pow(f32, (channel + 0.055) / 1.055, 2.4);
 }
 
-/// Relative luminance of an sRGB colour whose channels are already 0..1.
-///
-/// WCAG 2.x: L = 0.2126 R + 0.7152 G + 0.0722 B over the linearized channels.
-/// Taking normalized channels rather than bytes is deliberate: the canvas's
-/// own `Color` is f32 0..1, so the app can measure the colour it is ACTUALLY
-/// painting with instead of a byte round-trip of the colour it meant to.
+/// WCAG 2.x relative luminance of normalized sRGB channels (the canvas's own
+/// f32 colours, so the painted colour is what gets measured).
 pub fn relativeLuminance(r: f32, g: f32, b: f32) f32 {
     return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b);
 }
@@ -224,12 +162,7 @@ pub fn relativeLuminanceRgb(color: Rgb) f32 {
     );
 }
 
-/// The contrast ratio between two relative luminances.
-///
-/// WCAG 2.x: (L_lighter + 0.05) / (L_darker + 0.05). It is SYMMETRIC — which
-/// order the two arrive in cannot matter, because "is this readable" is not a
-/// question about which one is the ink. Range is 1.0 (identical) to 21.0
-/// (black on white).
+/// WCAG 2.x contrast ratio between two luminances; symmetric, 1.0 to 21.0.
 pub fn contrastRatioLuminance(a: f32, b: f32) f32 {
     const lighter = @max(a, b);
     const darker = @min(a, b);

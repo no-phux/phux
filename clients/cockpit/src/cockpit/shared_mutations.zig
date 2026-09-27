@@ -221,13 +221,6 @@ pub const Coordinator = struct {
         try self.requestDirect(model, mutation, command_id, origin);
     }
 
-    /// Native gestures use the coordinator ticket as their command identity in
-    /// a distinct namespace. Legacy wrappers remain unretained.
-    pub fn requestNative(self: *Coordinator, model: anytype, mutation: workspace.Mutation) !void {
-        _ = try currentMutation(model);
-        return self.requestDirect(model, mutation, null, .native);
-    }
-
     fn requestDirect(self: *Coordinator, model: anytype, mutation: workspace.Mutation, command_id: ?u64, origin: results.Origin) !void {
         errdefer reportRefusal(model);
         if (self.firstPending() != null) return error.WorkspaceBusy;

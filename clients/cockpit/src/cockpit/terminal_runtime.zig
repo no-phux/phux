@@ -9,11 +9,8 @@ const model_module = @import("model.zig");
 const canvas = native_sdk.canvas;
 const Model = model_module.Model;
 pub const Pane = local.Pane;
-/// `fx` is any effects instance with the pty verbs (`ptySpawn`, `ptyWrite`,
-/// `ptyResize`, `ptyKill`), not only this app's own: the TypeScript-core
-/// graph drives the same runtime from its adapter's effects, whose Msg type
-/// is the compiled core's. `on_event` is that graph's own event constructor
-/// for the same reason.
+/// `fx` is any effects value with the pty verbs; `on_event` is its pty event
+/// constructor.
 pub fn spawnPane(pane: *Pane, fx: anytype, on_event: anytype) void {
     const model = pane;
     model.session_generation +%= 1;
@@ -48,10 +45,7 @@ pub fn spawnPane(pane: *Pane, fx: anytype, on_event: anytype) void {
     model.write_refusals = 0;
     model.write_refusals_total = 0;
     model.native_delivery_failures = 0;
-    // Hard-reset the emulator so a restarted shell starts from a clean
-    // terminal — no leftover mode (application-cursor, reverse video),
-    // scrollback, palette override, or partial escape sequence from the
-    // session that just ended. (A no-op on the first spawn.)
+    // A restarted shell starts from a clean emulator.
     model.session.reset();
     model.session.refreshScreenText();
     fx.ptySpawn(.{
@@ -115,17 +109,10 @@ pub fn maintainPane(pane: *Pane, fx: anytype) void {
     _ = pane.session.searchPump(grid.Session.search_frame_slice_steps);
 }
 
-/// Append outbound bytes (typed keys, pastes, or query replies) to the
-/// pending ring in stream order, then flush what the pty's stdin FIFO
-/// will take. A large payload is not submitted all at once: `flushOutbound`
-/// paces it as the child reads, so the tail is never dropped. Admission
-/// is ALL-OR-NOTHING — a query reply or encoded key cut mid-sequence
-/// would feed the child a malformed control sequence, which is worse
-/// than a whole loss — and the RESULT says which disposal the caller
-/// must apply: `true` means the payload is DISPOSED (queued whole, or
-/// impossible — larger than the ring itself — and counted as dropped);
-/// `false` means it merely does not fit RIGHT NOW, is untouched and
-/// uncounted, and the caller retains it to retry as the ring drains.
+/// Append outbound bytes to the pending ring in stream order and flush what
+/// the pty will take. Admission is all-or-nothing (never a torn escape
+/// sequence). True: disposed (queued, or larger than the ring and counted
+/// dropped). False: does not fit yet; the caller keeps it and retries.
 pub fn enqueueOutbound(model: *Pane, fx: anytype, bytes: []const u8) bool {
     const cap = model.outbound_buffer.len;
     if (bytes.len > cap) {
@@ -133,10 +120,7 @@ pub fn enqueueOutbound(model: *Pane, fx: anytype, bytes: []const u8) bool {
         return true;
     }
     if (bytes.len > cap - model.outbound_len) {
-        // The occupancy may be STALE — the child may have resumed
-        // reading since the ring filled — so drain what the FIFO will
-        // take before refusing: a keystroke arriving between periodic
-        // flushes must not drop when flushing would make room now.
+        // Occupancy may be stale; flush before refusing.
         flushOutbound(model, fx);
         if (bytes.len > cap - model.outbound_len) return false;
     }
@@ -148,16 +132,10 @@ pub fn enqueueOutbound(model: *Pane, fx: anytype, bytes: []const u8) bool {
     return true;
 }
 
-/// Enqueue a TRANSIENT payload (typed text, an encoded key): the event's
-/// bytes do not outlive this dispatch, so a right-now refusal cannot be
-/// retried later — it is counted as dropped instead, never silent.
-/// Hitting this at all means the child ignored the whole 64 KiB ring.
-///
-/// STDIN ORDER comes first: a query reply retained behind a full ring is
-/// OLDER than this keystroke and must reach the child before it. The
-/// retained reply gets its retry now; if it still cannot enter the ring,
-/// the keystroke must not jump the queue — it drops counted rather than
-/// arrive before an answer the child may be parsing toward.
+/// Enqueue a transient payload (typed text, an encoded key) that cannot be
+/// retried later: a refusal is counted as dropped. Retained query replies are
+/// older and go first; if they still cannot enter, the keystroke drops rather
+/// than jump the queue.
 pub fn enqueueTransient(model: *Pane, fx: anytype, bytes: []const u8) void {
     moveResponsesToOutbound(model, fx);
     if (model.session.response_len > 0) {
@@ -169,12 +147,8 @@ pub fn enqueueTransient(model: *Pane, fx: anytype, bytes: []const u8) void {
     }
 }
 
-/// Push as much pending outbound as the pty's stdin FIFO will accept, in
-/// per-write-bound chunks. `ptyWrite` reports acceptance — it alone knows
-/// the byte- and record-ring limits — so a refused chunk stays in the
-/// ring and is retried by demand-driven maintenance (or output/resize): a
-/// non-reading child pauses the stream instead of losing its tail, and a
-/// reply is never removed before it actually lands.
+/// Push pending outbound in chunks as far as `ptyWrite` accepts; a refused
+/// chunk stays queued for maintenance to retry, so nothing is lost.
 pub fn flushOutbound(model: *Pane, fx: anytype) void {
     const cap = model.outbound_buffer.len;
     while (model.outbound_len > 0) {
@@ -194,16 +168,9 @@ pub fn flushOutbound(model: *Pane, fx: anytype) void {
     }
 }
 
-/// Feed one pty output batch and return the emulator's query answers to
-/// the child. A batch can be many times the response buffer, and a
-/// pathological all-query batch (thousands of pipelined DSR/DA1 requests)
-/// could produce more replies than the buffer holds in one pass — so the
-/// batch is fed in sub-slices no larger than the response buffer, with
-/// the answers drained after each. The VT stream keeps parser state
-/// across slices, so splitting mid-escape-sequence is invisible; each
-/// query's reply is well under a slice's worth of input, so the buffer
-/// never overflows and no reply is dropped. This keeps the write-back
-/// lossless: a child that blocks on a DSR answer never hangs.
+/// Feed one pty output batch in `feed_slice_bytes` sub-slices, draining query
+/// answers after each so a pipelined burst of queries never overflows the
+/// response buffer (a child blocked on a DSR answer must never hang).
 pub fn feedOutput(model: *Pane, fx: anytype, bytes: []const u8) void {
     const slice_bytes = grid.Session.feed_slice_bytes;
     var offset: usize = 0;
@@ -219,16 +186,9 @@ pub fn feedOutput(model: *Pane, fx: anytype, bytes: []const u8) void {
     if (bytes.len == 0) moveResponsesToOutbound(model, fx);
 }
 
-/// Move the emulator's query answers (DSR, DA1, ...) into the pending
-/// outbound ring, in stream order after whatever input preceded them,
-/// then flush. Routing them through the SAME ring as typed input is what
-/// makes them lossless: a reply refused by a full FIFO stays queued and
-/// retries, never cleared before it lands (which would hang a child
-/// blocking on it). Replies are DURABLE (the emulator's buffer holds
-/// them), so a ring too full right now leaves them IN PLACE — uncleared,
-/// retried by maintenance or new output — instead of discarding
-/// an answer the child may be blocked on. Only a queued (or impossible,
-/// counted) batch clears; never a torn escape sequence either way.
+/// Move query answers into the outbound ring after preceding input, then
+/// flush. When the ring is full they stay in the emulator's buffer to retry;
+/// only a queued (or impossible, counted) batch is cleared.
 pub fn moveResponsesToOutbound(model: *Pane, fx: anytype) void {
     const pending = model.session.pendingResponses();
     if (pending.len > 0) {
@@ -236,14 +196,9 @@ pub fn moveResponsesToOutbound(model: *Pane, fx: anytype) void {
     }
     model.session.clearResponses();
 }
-/// Encode one key transition and push the bytes toward the child. macOS
-/// natural-text arrow gestures use conventional shell bindings;
-/// everything else goes through the emulator's encoder. Releases ride
-/// the same path with `.release`: the encoder emits them only under the
-/// kitty protocol's negotiated event reporting and stays silent in
-/// legacy modes. (Key REPEAT is the one event type the hosts do not
-/// distinguish from a fresh press, so a TUI that enabled event reporting
-/// sees repeats as presses.)
+/// Encode one key transition toward the child: macOS natural-text gestures
+/// use shell bindings, everything else the emulator's encoder (which emits
+/// releases only under kitty event reporting). Repeats arrive as presses.
 pub fn encodeKeyEvent(model: *Pane, fx: anytype, event: canvas.WidgetKeyboardEvent, action: vt.input.KeyAction) void {
     const session = model.session;
     const natural_key_mask = macosNaturalTextKeyMask(event.key);
@@ -259,10 +214,7 @@ pub fn encodeKeyEvent(model: *Pane, fx: anytype, event: canvas.WidgetKeyboardEve
         model.macos_natural_keys_held &= ~natural_key_mask;
     }
     if (macosNaturalTextSequence(event)) |sequence| {
-        // Natural-text bindings consume the whole gesture. In
-        // particular, a child using kitty event reporting must not
-        // receive a release for a modified arrow whose press arrived as
-        // legacy editing bytes.
+        // Natural-text bindings consume the whole gesture, releases included.
         if (action == .release) return;
         model.macos_natural_keys_held |= natural_key_mask;
         session.scrollToBottom();
@@ -280,14 +232,9 @@ pub fn encodeKeyEvent(model: *Pane, fx: anytype, event: canvas.WidgetKeyboardEve
     var buffer: [128]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
     const encode_options: vt.input.KeyEncodeOptions = .fromTerminal(&session.term);
-    // The runtime folds the platform's PRIMARY modifier into `super`.
-    // On macOS primary IS the GUI key, so the fold is harmless there —
-    // but on hosts whose primary is Ctrl, a bare Ctrl chord arrives as
-    // ctrl+super and the encoder would skip its C0 byte (Ctrl+C must
-    // deliver ETX and interrupt the child, never a CSI-u chord). Undo
-    // the alias for the encoder: super counts only when Ctrl is not the
-    // key raising it. (The one loss is the GUI+Ctrl double chord, which
-    // encodes as plain Ctrl — the convention terminals follow anyway.)
+    // The runtime folds PRIMARY into `super`; where primary is Ctrl, a bare
+    // Ctrl chord would lose its C0 byte (Ctrl+C must send ETX). Super counts
+    // only without Ctrl.
     const encoder_super = mods.super and !mods.control;
     _ = vt.input.encodeKey(&writer, .{
         .key = key.key,
@@ -338,13 +285,8 @@ fn macosNaturalTextSequence(event: canvas.WidgetKeyboardEvent) ?[]const u8 {
     return null;
 }
 
-/// Committed text reaches the child through the emulator's key encoder
-/// when it is a single scalar: byte-identical to the raw text under
-/// legacy modes (the encoder writes unmodified text through untouched)
-/// and the negotiated CSI-u form when a TUI enabled the kitty
-/// protocol's report-all mode — raw bytes there would desynchronize the
-/// application's key decoding. Multi-scalar commits (IME words, paste)
-/// stay raw text, the protocol's rule for composed input.
+/// Single-scalar committed text goes through the key encoder (raw in legacy
+/// modes, CSI-u under kitty report-all); multi-scalar commits stay raw text.
 pub fn sendCommittedText(model: *Pane, fx: anytype, text: []const u8) void {
     single: {
         const len = std.unicode.utf8ByteSequenceLength(text[0]) catch break :single;
@@ -420,11 +362,8 @@ pub fn providerKey(event: canvas.WidgetKeyboardEvent) ?@import("provider_contrac
     };
 }
 
-/// Host key names -> emulator key codes, for keys that do not commit
-/// A plain printable's codepoint-keyed event, for RELEASE encoding
-/// only: its press travels the committed-text channel, but kitty event
-/// reporting still owes the child the release of the same key. No text
-/// rides a release.
+/// A printable's codepoint-keyed event for release encoding only (its press
+/// travels as committed text).
 fn mapPrintable(key: []const u8) ?MappedKey {
     if (key.len == 0) return null;
     const len = std.unicode.utf8ByteSequenceLength(key[0]) catch return null;
@@ -470,30 +409,15 @@ fn mapKey(event: canvas.WidgetKeyboardEvent) ?MappedKey {
     for (specials) |entry| {
         if (keyIs(key, entry.name)) return .{ .key = entry.key };
     }
-    // Chorded character keys (ctrl+c, alt+f, ...): the text channel is
-    // silent for these, so the encoder builds the control sequence.
-    // Alt is a chord EXCEPT on macOS, where Option is a compose key —
-    // Option+F commits the composed `ƒ` through the text channel, so
-    // encoding an Alt-F escape here too would double the input (the
-    // child would see both). On macOS, Option composes; everywhere else
-    // Alt is Meta (ESC prefix, no composed text) — EXCEPT Ctrl+Alt
-    // together ON WINDOWS, which is how that host represents AltGr:
-    // the combination composes text there (AltGr+Q commits `@` through
-    // the text channel), so encoding it as a chord would send wrong
-    // bytes AND shadow the composed character. Linux keeps Ctrl+Alt as
-    // a genuine chord — its AltGr is a distinct modifier that never
-    // reports as ctrl+alt, so Ctrl+Alt+C must still encode.
+    // Chorded character keys have no text, so the encoder builds them. On
+    // macOS Option composes text (not a chord); on Windows Ctrl+Alt is AltGr
+    // and composes too; elsewhere Alt is Meta.
     const altgr = event.modifiers.control and event.modifiers.alt and builtin.os.tag == .windows;
     const alt_is_chord = event.modifiers.alt and builtin.os.tag != .macos;
     const chorded = (event.modifiers.control or event.modifiers.super or alt_is_chord) and !altgr;
     if (!chorded) return null;
     if (key.len == 1) {
-        // The emulator's encoder expects the pressed CHARACTER as UTF-8
-        // alongside the logical key — the shape its host normally
-        // supplies — and derives the chord bytes from it: legacy C0
-        // sequences (Ctrl+C -> 0x03, Ctrl+\ -> 0x1C) where they exist,
-        // and the fixterms CSI-u encoding for the exceptions (Ctrl+[,
-        // Ctrl+I, Ctrl+M keep their unchorded bytes unambiguous).
+        // The encoder derives chord bytes (C0 or CSI-u) from the character.
         const ch = key[0];
         const utf8 = key[0..1];
         if (ch >= 'a' and ch <= 'z') {
@@ -512,10 +436,7 @@ fn mapKey(event: canvas.WidgetKeyboardEvent) ?MappedKey {
                 .unshifted = ch,
             };
         }
-        // Chorded punctuation carries real control meaning a terminal
-        // user expects — Ctrl+[ is the ESC chord, Ctrl+\ is SIGQUIT,
-        // Ctrl+] exits telnet — and has no text-channel fallback, so an
-        // unmapped key here is silently lost input.
+        // Chorded punctuation (Ctrl+[, Ctrl+\, Ctrl+]) has no text fallback.
         const punctuation = [_]struct { ch: u8, key: vt.input.Key }{
             .{ .ch = '[', .key = .bracket_left },
             .{ .ch = ']', .key = .bracket_right },

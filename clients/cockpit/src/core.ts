@@ -62,7 +62,6 @@ import {
   DIR_KIND_PARENT,
   DIR_KIND_HERE,
   DIR_STATUS_PENDING,
-  DIR_STATUS_LISTED,
   DIR_HERE,
   DIR_UP,
   NO_DIRECTORY_REQUEST,
@@ -73,7 +72,6 @@ import {
   directoryNotice,
   directoryTitle,
   DIR_OPEN_HERE_UNAVAILABLE_NOTICE,
-  type DirectoryRow,
 } from "./directory.ts";
 import {
   ENGINE_CHANNEL_KEY,
@@ -897,19 +895,11 @@ const EMPTY_SWITCHER_ROW: SwitcherRow = {
   detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, disabled: true, renamable: false,
   resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES,
 };
-const EMPTY_TAB_AGENTS: readonly AgentRow[] = [];
 const EMPTY_AGENT_ROW: AgentRow = {
   id: 0, provider: NO_BYTES, state: NO_BYTES, attention: false,
   resource: NO_BYTES, parent: NO_BYTES, parentIndex: 65535,
 };
-const EMPTY_TAB: Tab = {
-  id: 0, index: 0, slot: 0, title: NO_BYTES, cwd: NO_BYTES, selected: false, attention: false,
-  attentionLabel: NO_BYTES, closeLabel: NO_BYTES, agents: EMPTY_TAB_AGENTS, target: NO_BYTES,
-  movePreviousDisabled: true, moveNextDisabled: true,
-};
-const EMPTY_ACTION_ROW: ActionRow = {
-  index: 0, label: NO_BYTES, shortcut: NO_BYTES, detail: NO_BYTES, highlighted: false, disabled: true,
-};
+
 
 function copySwitcher(row: SwitcherRow, highlighted: boolean): SwitcherRow {
   const id = row.id;
@@ -1096,10 +1086,6 @@ function receiveNavigation(model: Model, body: Uint8Array): Model {
   return { ...loaded, paletteRefreshing: false };
 }
 
-function currentNavigationPage(model: Model, page: NavigationPage): boolean {
-  return sameU64(page.revision, model.engineRevision) && page.offset === model.paletteOffset &&
-    sameBytes(page.query, model.paletteQuery) && page.scope === model.paletteScope && sameBytes(page.host, model.paletteHost);
-}
 
 function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
   const result: SwitcherRow[] = [];
@@ -1171,12 +1157,6 @@ function highlightNavigation(model: Model, next: number): Model {
   return revealNavigator({ ...model, paletteCursor: cursor, paletteRows: rows, paletteSelection: rows[cursor].target }, cursor * 40, 40);
 }
 
-function highlightedSwitcherRow(row: SwitcherRow, highlighted: boolean): SwitcherRow {
-  return { id: row.id, index: row.index, label: row.label, target: row.target, highlighted,
-    current: row.current, detail: row.detail, kind: row.kind, host: row.host,
-    selectable: row.selectable, disabled: row.disabled, renamable: row.renamable,
-    resource: row.resource, parent: row.parent, nativeId: row.nativeId, evidence: row.evidence };
-}
 
 function editNavigation(model: Model, edit: TextInputEvent): Model {
   if (!model.paletteOpen) return model;
@@ -1228,7 +1208,7 @@ export interface DirRow {
 }
 
 const NO_DIR_ROWS: readonly DirRow[] = [];
-const EMPTY_DIR_ROW: DirRow = { id: 0, index: 0, label: NO_BYTES, highlighted: false };
+
 
 function copyDirRow(row: DirRow, highlighted: boolean): DirRow {
   const id = row.id;

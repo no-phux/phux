@@ -526,12 +526,3 @@ test "measured panes that overflow still last-N crop the unfocused neighbour" {
     try testing.expectEqual(rowMark(rows - paint_budget.degraded_rows), neighbour.cluster(0, 0)[0]);
     try testing.expectEqual(rowMark(rows - 1), neighbour.cluster(0, neighbour.rows() - 1)[0]);
 }
-
-test "drive-shell-ceiling is macOS live PTY evidence, not a paint bind" {
-    // scripts/drive-shell-ceiling.sh opens real shells in the shipped .app
-    // until max_live_shells. This environment is Linux, so that script cannot
-    // run. The paint bind is the cell store, measured above; the shell
-    // ceiling is a different SDK table (max_effect_ptys) already recorded
-    // historically at ~2.7 MiB rss per shell.
-    try testing.expect(app.max_panes_per_tab <= 16);
-}

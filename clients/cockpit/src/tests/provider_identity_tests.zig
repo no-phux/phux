@@ -73,25 +73,6 @@ test "remote discovery updates bounded inventory without allocating tabs" {
     for (published) |terminal_ref| try testing.expect(model.locateTerminal(terminal_ref) == null);
 }
 
-test "a terminal that disappears loses its pane and the local ones stay put" {
-    const session = try createSession(80, 24);
-    var model = app.initialModel(session);
-    defer app.deinitModel(&model);
-
-    const local = app.initialTerminalRef(0);
-    const remote = try remoteTerminalRef(31);
-    try testing.expect(model.admitTab(remote));
-    try testing.expectEqual(@as(usize, 2), model.ws().tab_count);
-
-    // No provider vouches for the remote terminal, so normalization takes
-    // its pane, and with it the tab that held nothing else.
-    model.normalizeTopology();
-    try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
-    try testing.expectEqual(@as(?usize, null), model.tabOfTerminal(remote));
-    try testing.expectEqual(@as(usize, 0), model.tabOfTerminal(local).?);
-    try testing.expect(model.selectedTerminalRef().?.eql(local));
-}
-
 test "provider dispatch refuses a provider-qualified remote identity at the local backend" {
     const session = try createSession(80, 24);
     var model = app.initialModel(session);

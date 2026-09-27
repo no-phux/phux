@@ -299,16 +299,8 @@ pub const Presentation = struct {
     history_unread_rows: u64 = 0,
 };
 
-pub fn localResourceId(index: usize) LocalResourceId {
-    return if (index == 0) .terminal_1 else .terminal_2;
-}
-
 pub fn localTerminalRef(id: LocalResourceId) TerminalRef {
     return .{ .provider_id = .local, .terminal_id = .{ .local = id } };
-}
-
-pub fn localTerminalRefForIndex(index: usize) TerminalRef {
-    return localTerminalRef(localResourceId(index));
 }
 
 pub fn localGeneration(spawn_generation: u64) Generation {

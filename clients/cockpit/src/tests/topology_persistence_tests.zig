@@ -42,30 +42,6 @@ test "v5 mixed attachments round trip without allocating remote shells" {
     try testing.expectEqualDeep(snapshot, try restored.topologySnapshot());
 }
 
-test "pending restored attachments survive normalization without live readiness" {
-    const session = try createDefaultSession();
-    var model = app.initialModel(session);
-    defer app.deinitModel(&model);
-    const remote = try remoteRef(72);
-    try model.setAttachmentContext("/tmp/a.sock", "server-a", 71);
-    const tree = model.tree(0).?;
-    _ = try tree.split(tree.focus, .horizontal, remote);
-    const snapshot = try model.topologySnapshot();
-    var restored = try app.restoreModel(testing.allocator, testing.io, .{ .v5 = snapshot });
-    defer app.deinitModel(&restored);
-    restored.normalizeTopology();
-    try testing.expect(restored.tree(0).?.find(remote) != null);
-    try testing.expect(restored.attachmentPending(remote));
-    try testing.expect(!restored.containsTerminal(remote));
-    try testing.expect(restored.terminalOwner(remote) == null);
-    try testing.expect(restored.remotePresentation(remote) == null);
-    try testing.expect(restored.selectedTerminalRef() == null);
-    var refs: [32]contract.TerminalRef = undefined;
-    try testing.expectEqual(@as(usize, 1), restored.pendingRestoredRefs(&refs));
-    try testing.expect(refs[0].eql(remote));
-    try testing.expectEqualDeep(snapshot, try restored.topologySnapshot());
-}
-
 test "restored contexts fence reused IDs and never infer satellite incarnation" {
     const session = try createDefaultSession();
     var model = app.initialModel(session);
@@ -139,8 +115,6 @@ test "context changes retain original live placement evidence before resaving" {
     try model.setAttachmentContext("/tmp/a.sock", "server-b", 71);
     try testing.expect(model.attachmentPending(remote));
     try testing.expect(!model.restoredAttachmentMatches(remote));
-    model.normalizeTopology();
-    try testing.expectEqualDeep(snapshot, try model.topologySnapshot());
     model.rejectAttachmentContext();
     try testing.expectEqualDeep(snapshot, try model.topologySnapshot());
 }
@@ -224,8 +198,6 @@ test "maximal remote reference state fits its byte ceiling and restores no shell
     defer app.deinitModel(&restored);
     try testing.expectEqual(@as(usize, 0), restored.provider.liveShellCount());
     var refs: [32]contract.TerminalRef = undefined;
-    try testing.expectEqual(@as(usize, 32), restored.pendingRestoredRefs(&refs));
-    restored.normalizeTopology();
     try testing.expectEqual(@as(usize, 32), restored.pendingRestoredRefs(&refs));
     try testing.expect(!restored.canAddPane());
     try testing.expect(!restored.admitTab(app.initialTerminalRef(0)));
@@ -496,25 +468,6 @@ test "a working directory that cannot be honoured is not recorded" {
     snapshot.cwds[0].bytes[0] = 'x';
     snapshot.cwds[0].len = 1;
     try testing.expectError(error.InvalidTopology, snapshot.validate());
-}
-
-test "normalizing topology drops panes whose terminal is gone and collapses empty tabs" {
-    const session = try createDefaultSession();
-    var model = app.initialModel(session);
-    defer app.deinitModel(&model);
-
-    // A tab whose only pane names a terminal nobody has is not a tab.
-    _ = model.admitTab(try remoteRef(72));
-    try testing.expectEqual(@as(usize, 2), model.ws().tab_count);
-    model.normalizeTopology();
-    try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
-    try testing.expect(model.selectedTerminalRef().?.eql(app.initialTerminalRef(0)));
-
-    // Web stays a CHOICE: normalization must not yank the operator back to
-    // a terminal just because the web surface is up.
-    model.selectWeb();
-    model.normalizeTopology();
-    try testing.expect(model.selectedSurface().eql(.web));
 }
 
 test "a debug build does not write the installed app's layout file" {

@@ -317,15 +317,6 @@ test "a widening resize exposes blank columns, never the pre-split glyphs" {
     }
 }
 
-test "the feed slice matches the response buffer it protects" {
-    // The pty batch used to be cut into 1 KiB slices, each followed by a
-    // full response drain and outbound flush — 64 parser entries and 64
-    // drains for one routine 64 KiB read. The response buffer grows to fit
-    // (see `writePtyResponse`), so the slice no longer needs to be a
-    // fraction of it.
-    try testing.expectEqual(grid.Session.response_capacity, grid.Session.feed_slice_bytes);
-}
-
 test "reset clears the previous session's palette and dynamic color overrides" {
     const session = try createSession(80, 24);
     defer session.destroy();

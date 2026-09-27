@@ -315,11 +315,6 @@ export function sameU64(left: WireU64, right: WireU64): boolean {
   return left.hi === right.hi && left.lo === right.lo;
 }
 
-export function nextU64(value: WireU64): WireU64 {
-  if (value.lo < 4294967295) return { hi: value.hi, lo: value.lo + 1 };
-  return { hi: value.hi < 4294967295 ? value.hi + 1 : 0, lo: 0 };
-}
-
 export function invalidation(bytes: Uint8Array): Invalidation | null {
   if (bytes.length !== INVALIDATION_LENGTH) return null;
   if (bytes[0] !== PROTOCOL_VERSION || bytes[1] !== STATE_INVALIDATED) return null;
@@ -558,10 +553,6 @@ export function wireIndex(value: number): number {
   return value >= 0 && value <= 65535 ? Math.trunc(value) : 0;
 }
 
-export function wireU32(value: number): number {
-  return value >= 0 && value <= 4294967295 ? Math.trunc(value) : 0;
-}
-
 interface AgentRecords { readonly rows: readonly SnapshotAgentRow[]; readonly total: number; }
 
 function parentAgentRow(bytes: Uint8Array, at: number, end: number): SnapshotAgentRow | null {
@@ -643,14 +634,7 @@ function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly 
   return { windows: secondary, terminalStates, extensions };
 }
 
-const EMPTY_SNAPSHOT_TAB: SnapshotTab = {
-  id: 0, index: 0, title: new Uint8Array(0), cwd: new Uint8Array(0),
-  selected: false, attention: false, target: new Uint8Array(0),
-};
-const NO_SNAPSHOT_TABS: readonly SnapshotTab[] = [];
-const EMPTY_SECONDARY_WINDOW: SecondaryWindow = {
-  index: 0, selectedTab: 0, runStart: 0, runCount: 0, tabWidth: 0, tabs: NO_SNAPSHOT_TABS,
-};
+
 
 function copySnapshotTab(tab: SnapshotTab, target: Uint8Array): SnapshotTab {
   return {

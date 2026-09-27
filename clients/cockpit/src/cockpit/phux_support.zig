@@ -363,7 +363,6 @@ pub const RenameInfo = if (phux_enabled) @import("phux_provider").RenameInfo els
 pub const SyncDelta = if (phux_enabled) @import("phux_provider").SyncDelta else DisabledPhuxProvider.SyncDelta;
 /// The endpoint a Phux provider dials, in either build.
 pub const PhuxEndpoint = if (phux_enabled) @import("phux_provider").Endpoint else DisabledPhuxProvider.Endpoint;
-pub const max_remote_sessions: usize = if (phux_enabled) @import("phux_provider").max_sessions else 0;
 pub const AgentSession = PhuxProvider.AgentSession;
 pub const AgentIdentity = PhuxProvider.AgentIdentity;
 pub const AgentState = PhuxProvider.AgentState;
@@ -403,15 +402,6 @@ pub fn providerKind(terminal_ref: TerminalRef) ProviderKind {
 
 pub fn localRef(id: LocalResourceId) TerminalRef {
     return provider_contract.localTerminalRef(id);
-}
-
-pub fn refEql(a: TerminalRef, b: TerminalRef) bool {
-    return a.eql(b);
-}
-
-pub fn optRefEql(a: ?TerminalRef, b: ?TerminalRef) bool {
-    if (a == null or b == null) return a == null and b == null;
-    return a.?.eql(b.?);
 }
 
 pub fn optOwnerEql(a: ?ReplicaOwner, b: ?ReplicaOwner) bool {

@@ -10,41 +10,13 @@ pub const TerminalRef = provider_contract.TerminalRef;
 pub const ReplicaOwner = provider_contract.ReplicaOwner;
 pub const Phase = provider_contract.Phase;
 
-/// The local registry ceiling. A tab owns a tree of at most
-/// `layout.max_panes` panes and there can be many tabs, so the registry is
-/// sized for the whole window rather than for one pane pair. 32 is far past
-/// what a person keeps alive and still leaves the registry a flat, scannable
-/// array.
+/// The local registry ceiling (a flat array sized for every tab's panes).
 pub const max_terminals: usize = 32;
 
-/// How many local terminals can hold a LIVE SHELL at one time. This is a
-/// different question from `max_terminals` above, which sizes the registry
-/// array and the persistable topology.
-///
-/// The effects layer keeps ONE fixed pty table for the whole process
-/// (`Effects.pty_slots`, sized by `native_sdk.max_effect_ptys`), so the
-/// (N+1)-th `ptySpawn` is refused with a `.rejected` exit no matter how much
-/// registry room is left. A pane minted past that ceiling is born DEAD: its
-/// emulator never receives a byte, so it paints an empty grid with a cursor at
-/// the origin and nothing else, forever. That is the whole of
-/// phux-cockpit-pg1 — five tabs, a blank fifth pane, `dispatch_errors=0`,
-/// because a refused spawn is a normal exit event and not an error.
-///
-/// DERIVED, never restated as a literal: the ceiling belongs to the pinned
-/// SDK, and a second copy of it here would go stale the first time the pin
-/// moves and hand the symptom straight back.
-///
-/// phux-cockpit-ipg raised the SDK's table from 4 to 32 (see
-/// `docs/sdk-patches/`), which is what makes this an upper bound rather than
-/// THE bound: at 32 it equals `max_terminals` above, and the ceiling a person
-/// actually reaches is `topology.max_tabs` (16) or `layout.max_panes` (16) —
-/// both of them Cockpit's own, both of them nameable. Re-measure against the
-/// shipped bundle with:
-///
-///   ./scripts/drive-shell-ceiling.sh --want 8 --measure
-///
-/// which drives the real app and reports what it reached, plus the rss,
-/// thread and descriptor cost of every shell it opened.
+/// How many local terminals can hold a live shell at once: the SDK's
+/// process-wide pty table. A pane past it would be born dead (its spawn is
+/// refused), so creation refuses instead. Derived from the SDK pin, never a
+/// literal. Measure with `scripts/drive-shell-ceiling.sh`.
 pub const max_live_shells: usize = native_sdk.max_effect_ptys;
 
 pub const first_terminal_raw: u64 = @intFromEnum(LocalResourceId.terminal_1);
@@ -64,32 +36,16 @@ const default_shell_argv: []const []const u8 = if (builtin.os.tag == .windows)
 else
     &.{ default_shell, "-i" };
 
-/// Every local terminal spawns the SAME login shell. There was never a
-/// per-slot argv distinction — the old `terminal_1_argv`/`terminal_2_argv`
-/// pair held identical text — and a registry of 32 uniform slots cannot
-/// carry a per-index table anyway.
+/// Every local terminal spawns the same login shell.
 const shell_argv: []const []const u8 = if (builtin.os.tag == .macos)
     &.{ "/bin/zsh", "-l", "-c", "cd \"$HOME\" && exec /bin/zsh -i" }
 else
     default_shell_argv;
 
-/// Storage and argv for a configured `shell` / `command`.
-///
-/// The value is treated as a COMMAND LINE run by the login shell, which is
-/// what `command` means in the terminal these users arrive from: `shell =
-/// /opt/homebrew/bin/fish` and `command = tmux attach` both have to work, and
-/// single-quoting the whole value the way `paneArgvIn` quotes a DIRECTORY
-/// would turn the second into one nonexistent program named "tmux attach".
-///
-/// That asymmetry is deliberate rather than an oversight. `paneArgvIn` quotes
-/// because a working directory arrives from OSC 7 — a remote, hostile-capable
-/// source — and must never become a command. This value arrives from the
-/// user's own config file, which already names the program that is about to
-/// run as them; quoting it would buy no safety and cost the feature.
-///
-/// `exec` so the configured program REPLACES the wrapper shell rather than
-/// running underneath it, which keeps the pty's process the one the user asked
-/// for and makes exit behave.
+/// Storage and argv for a configured `shell` / `command`, run as a command
+/// line (`exec`) by the login shell so `command = tmux attach` works. Unlike
+/// an OSC 7 directory (untrusted, always quoted by `paneArgvIn`), this comes
+/// from the user's own config, so it is not quoted.
 pub const ShellCommand = struct {
     command: [max_cwd_command_bytes]u8 = undefined,
     slots: [4][]const u8 = undefined,
@@ -103,10 +59,8 @@ pub const ShellCommand = struct {
         return self.slots[0..self.len];
     }
 
-    /// Adopt `value`, or leave the built-in shell in place when it is empty,
-    /// carries a NUL (which the SDK rejects and the C boundary would truncate),
-    /// or does not fit. Every rejection degrades to the default shell rather
-    /// than to a pane that cannot open.
+    /// Adopt `value`, keeping the built-in shell when it is empty, contains a
+    /// NUL, or does not fit.
     pub fn set(self: *ShellCommand, value: []const u8) bool {
         self.len = 0;
         if (value.len == 0) return false;
@@ -145,47 +99,21 @@ pub fn paneArgv(_: usize) []const []const u8 {
     return shell_argv;
 }
 
-/// Byte ceiling for the generated `cd ... ; exec ...` command word.
-///
-/// The SDK caps a spawn's argv at `max_effect_argv_bytes` (2048) across ALL
-/// arguments and refuses the whole spawn past it, so the command must stay
-/// well inside that with the shell path and flags accounted for. 1024 leaves
-/// better than 2x headroom and still holds any real path: single-quoting only
-/// grows a path when it contains quotes, which directories essentially never
-/// do at length.
+/// Byte ceiling for the generated `cd ... ; exec ...` word, well inside the
+/// SDK's 2048-byte total argv cap.
 pub const max_cwd_command_bytes: usize = 1024;
 
-/// Storage for one generated cwd-carrying argv. The caller owns it and must
-/// keep it alive as long as the argv is: `Pane.argv` is a slice, and the SDK
-/// copies argv at `ptySpawn`, so this only has to outlive the spawn call —
-/// but a `Pane` that holds the argv holds the storage with it.
+/// Storage for one cwd-carrying argv; must outlive the `Pane.argv` slice.
 pub const CwdArgv = struct {
     command: [max_cwd_command_bytes]u8 = undefined,
     slots: [4][]const u8 = undefined,
 };
 
-/// The argv for a shell that STARTS in `cwd` — the working-directory
-/// inheritance a new terminal or split wants from the pane it was opened
-/// from.
-///
-/// This has to ride argv because there is nowhere else to put it: the SDK's
-/// `PtySpawnOptions` carries key/argv/cols/rows/term/on_event and nothing
-/// else, and its child environment is the bound host environ verbatim
-/// (`flattenPtyEnviron`) — no cwd field, no env field, no hook.
-///
-/// The path is SINGLE-quoted with embedded quotes escaped as `'\''`, which is
-/// the only POSIX quoting with no escape sequences of its own: `$`, backtick,
-/// `"`, `\`, spaces, newlines, and `;` are all literal inside it, so a
-/// hostile directory name cannot break out of the word and become a command.
-///
-/// Failure to `cd` falls back to `$HOME` rather than aborting: `&&` would
-/// leave the shell exiting immediately (no exec, no shell, a pane that dies
-/// on open) whenever the directory moved, was unmounted, or came from a
-/// remote OSC 7. A terminal in the wrong directory beats no terminal.
-///
-/// Returns the plain no-cwd argv when `cwd` is empty, not absolute, contains
-/// a NUL (which the SDK rejects and the C boundary would truncate), or does
-/// not fit — the degradation is exactly "the first terminal's behavior".
+/// The argv for a shell that starts in `cwd` (the SDK spawn has no cwd field).
+/// The path is single-quoted with `'\''` escapes, so a hostile directory name
+/// from OSC 7 cannot become a command. A failed `cd` falls back to `$HOME`
+/// rather than killing the shell. Returns the plain argv when `cwd` is empty,
+/// relative, contains a NUL, or does not fit.
 pub fn paneArgvIn(cwd: []const u8, out: *CwdArgv) []const []const u8 {
     if (builtin.os.tag == .windows) return shell_argv;
     if (cwd.len == 0 or cwd[0] != '/') return shell_argv;
@@ -208,10 +136,7 @@ pub fn paneArgvIn(cwd: []const u8, out: *CwdArgv) []const []const u8 {
     @memcpy(out.command[written..][0..suffix.len], suffix);
     written += suffix.len;
 
-    // `-l` only where the plain argv already asks for a login shell (macOS,
-    // where the user's PATH comes from the login environment). Elsewhere the
-    // default argv is a bare interactive `/bin/sh`, and `sh -l` is not
-    // portable enough to introduce here.
+    // `-l` only where the plain argv is already a login shell (macOS).
     out.slots[0] = default_shell;
     if (builtin.os.tag == .macos) {
         out.slots[1] = "-l";
@@ -255,17 +180,8 @@ pub const Pane = struct {
     outbound_head: usize = 0,
     outbound_len: usize = 0,
     outbound_dropped: u64 = 0,
-    /// Watermarks for the loss counters above: how much loss the operator has
-    /// already been shown.
-    ///
-    /// The counters themselves are CUMULATIVE and must stay that way — they
-    /// are the evidence in each surface's accessibility label, and a diagnostic
-    /// that resets is a diagnostic that lies. But attention is a different
-    /// question from evidence: "this terminal has ever dropped a byte" is true
-    /// forever after the first drop, and deriving an attention signal straight
-    /// from it latched the tab band permanently open for the life of the
-    /// session. Attention asks "has anything happened SINCE you looked", which
-    /// is what these watermarks answer.
+    /// Watermarks over the cumulative loss counters: attention means new loss
+    /// since the operator last looked, while the counters stay evidence.
     acknowledged_outbound_dropped: u64 = 0,
     acknowledged_response_dropped: u64 = 0,
     acknowledged_write_refusals: u32 = 0,
@@ -279,25 +195,12 @@ pub const Pane = struct {
             pane.native_delivery_failures > pane.acknowledged_delivery_failures;
     }
 
-    /// Mark everything counted so far as seen. The pane is a handle onto a
-    /// heap-owned session, so this takes a `*Pane` for its own fields and
-    /// reaches through for the session's — the same split `clearBell` has.
-    pub fn acknowledgeLoss(pane: *Pane) void {
-        pane.acknowledged_outbound_dropped = pane.outbound_dropped;
-        pane.acknowledged_response_dropped = pane.session.response_bytes_dropped;
-        pane.acknowledged_write_refusals = pane.write_refusals;
-        pane.acknowledged_delivery_failures = pane.native_delivery_failures;
-    }
-
     pub fn acceptsInput(pane: *const Pane) bool {
         return pane.phase == .starting or pane.phase == .live;
     }
 
-    /// The child's OSC 0/2 title, or "" when it never reported one. The slice
-    /// belongs to the pane's session and stays valid until the next title
-    /// report. EMPTY IS NOT A TITLE — it means "not reported", and the caller
-    /// owns the fallback (a slot label, the pwd's basename, whatever the
-    /// chrome wants), because only the caller knows what it is rendering.
+    /// The child's OSC 0/2 title, or "" (not reported; the caller picks a
+    /// fallback). Valid until the next title report.
     pub fn title(pane: *const Pane) []const u8 {
         return pane.session.title();
     }
@@ -316,14 +219,6 @@ pub const Pane = struct {
         return pane.session.bell_rung;
     }
 
-    /// Acknowledge the bell. Takes a `*const Pane` because the latch lives on
-    /// the heap-owned session, not in the pane's own bytes — the pane is a
-    /// handle here, and the view holding a const one is still allowed to say
-    /// "the user has seen it".
-    pub fn clearBell(pane: *const Pane) void {
-        pane.session.bell_rung = false;
-    }
-
     /// Whether the cursor sits at a shell prompt rather than mid-output.
     /// False for every shell without OSC 133 integration — the honest
     /// unknown, not a guess.
@@ -332,12 +227,8 @@ pub const Pane = struct {
     }
 };
 
-/// A slot is either free or holds a live terminal. There is no `.closing`
-/// tombstone: close destroys the session eagerly and frees the slot, because
-/// a tombstone waiting on a pty exit that may never arrive held both a
-/// registry slot and a whole emulator hostage. Identity never repeats
-/// (`next_terminal_raw` and `next_pty_key` only move forward), so a late
-/// event for a retired terminal resolves to no slot and is ignored.
+/// Close frees a slot eagerly (no tombstone). Identity never repeats, so a
+/// late event for a retired terminal resolves to no slot.
 pub const RegistryState = enum { vacant, active };
 
 pub fn replicaOwnerForPane(pane: *const Pane) ReplicaOwner {
@@ -355,16 +246,9 @@ pub const LocalProvider = struct {
     states: [max_terminals]RegistryState = @splat(.vacant),
     next_terminal_raw: u64 = first_terminal_raw,
     next_pty_key: u64 = 1,
-    /// Scrollback ceiling handed to every session minted from here. Carried on
-    /// the provider because terminals are created LAZILY, long after the
-    /// config was read — there is nowhere else for a user's `scrollback-limit`
-    /// to wait. Defaults to the session default so a provider built without
-    /// config behaves exactly as before.
+    /// Configured `scrollback-limit` for lazily minted sessions.
     max_scrollback_bytes: usize = grid.Session.max_scrollback,
-    /// A user-configured `shell` / `command`, built ONCE into provider-owned
-    /// storage. Null means the built-in login shell. One shell serves every
-    /// pane — there has never been a per-slot argv distinction — so a single
-    /// buffer on the provider outlives every `Pane.argv` slice into it.
+    /// The configured shell command shared by every pane's `argv`.
     shell_command: ShellCommand = .{},
 
     pub fn create(gpa: std.mem.Allocator, session: *grid.Session) !*LocalProvider {
@@ -378,13 +262,8 @@ pub const LocalProvider = struct {
         return shell_argv;
     }
 
-    /// Adopt a configured shell. Called once at startup, AFTER the first pane
-    /// exists (the config cannot be read before the model is built), so it
-    /// also re-points panes that are still carrying the built-in argv. Nothing
-    /// has spawned yet at that point — `Pane.argv` is read at `ptySpawn` — so
-    /// this is a fix-up, not a mutation of a running shell.
-    ///
-    /// False means the value was rejected and the built-in shell stands.
+    /// Adopt a configured shell at startup, re-pointing not-yet-spawned panes
+    /// still on the built-in argv. False keeps the built-in shell.
     pub fn setShellCommand(provider: *LocalProvider, value: []const u8) bool {
         if (!provider.shell_command.set(value)) return false;
         const configured = provider.shell_command.argv();
@@ -414,10 +293,6 @@ pub const LocalProvider = struct {
         return provider;
     }
 
-    pub fn createSingleWithIo(gpa: std.mem.Allocator, io: std.Io, session: *grid.Session) !*LocalProvider {
-        return createWithIo(gpa, io, session);
-    }
-
     pub fn destroy(provider: *LocalProvider) void {
         const gpa = provider.gpa;
         for (0..max_terminals) |index| {
@@ -442,21 +317,8 @@ pub const LocalProvider = struct {
         return count;
     }
 
-    /// Occupancy IS the active count now that closing frees eagerly. Kept as
-    /// its own name because callers ask two different questions of it.
-    pub fn occupiedCount(provider: *const LocalProvider) usize {
-        return provider.activeCount();
-    }
-
-    /// How many registry slots are holding — or are about to hold — a pty of
-    /// their own, which is what the effects layer's fixed pty table actually
-    /// counts. NOT `activeCount`: a `.failed` or `.ended` pane still owns a
-    /// registry slot but owns no pty, so counting those would wedge the app at
-    /// its ceiling with dead husks and refuse a shell there was room for.
-    ///
-    /// `acceptsInput` is exactly the right predicate and is reused rather than
-    /// re-spelled — a pane takes typed bytes precisely when a child is there
-    /// to read them.
+    /// Slots holding (or about to hold) a pty; ended or failed panes do not
+    /// count against the SDK's pty table.
     pub fn liveShellCount(provider: *const LocalProvider) usize {
         var count: usize = 0;
         for (provider.states, 0..) |state, index| {
@@ -519,12 +381,7 @@ pub const LocalProvider = struct {
     }
 
     pub fn createTerminal(provider: *LocalProvider) !*Pane {
-        // The SHELL ceiling is checked first and refuses hardest, because it
-        // is the one a person actually reaches. A pane minted past it gets a
-        // `.rejected` spawn and an empty grid nobody can type into, so the
-        // honest answer is to refuse the pane here — where every caller
-        // already handles a refusal — rather than to hand back a husk that
-        // looks like a working tab until you click it. See `max_live_shells`.
+        // Refuse past the shell ceiling rather than mint a dead pane.
         if (provider.liveShellCount() >= max_live_shells) return error.TerminalCapacityReached;
         if (provider.activeCount() >= max_terminals) return error.TerminalCapacityReached;
         if (provider.next_terminal_raw >= std.math.maxInt(u64) - 1 or provider.next_pty_key >= std.math.maxInt(u64) - 1) return error.TerminalIdentityExhausted;
@@ -554,10 +411,8 @@ pub const LocalProvider = struct {
         return &provider.slots[index];
     }
 
-    /// Retire a terminal for good: the emulator is freed immediately and the
-    /// slot returns to the pool. The caller is responsible for having already
-    /// killed the pty and ended any effect keyed to this terminal — nothing
-    /// here can be reached through the freed session afterwards.
+    /// Free a terminal's emulator and slot. The caller has already killed the
+    /// pty and ended its effects.
     pub fn destroyTerminal(provider: *LocalProvider, id: TerminalRef) bool {
         const index = provider.slotIndex(id) orelse return false;
         provider.slots[index].session.destroy();
