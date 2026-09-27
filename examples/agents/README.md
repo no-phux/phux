@@ -37,7 +37,6 @@ backgrounded work where there is no single "command done" moment.
 | [`04-read-act-wait-loop.sh`](./04-read-act-wait-loop.sh) | all of the above | The full read+act+wait loop against an interactive prompt. |
 | [`agent_loop.py`](./agent_loop.py) | all of the above | The same loop as code: subprocess calls + JSON parsing, no phux library. |
 | [`orchestrate-placed-fleet`](./orchestrate-placed-fleet) | `new`, placed `launch`/`spawn`, `move-pane`, `swap-pane`, concurrent `watch` | A small placed fleet; bounded event subprocesses; blocked-ask surfacing; human `C-a q` / `C-a Q` guidance without moving focus. |
-| [`orchestrate-placed-fleet-mcp.py`](./orchestrate-placed-fleet-mcp.py) | matching `phux_*` MCP tools | The same fleet through JSON-RPC stdio; separate adapters allow bounded watches to run concurrently. |
 
 ## Running them
 
@@ -46,40 +45,30 @@ bash examples/agents/01-ls-and-snapshot.sh
 python3 examples/agents/agent_loop.py
 PHUX_BUILDER_INTEGRATION=codex PHUX_REVIEWER_INTEGRATION=claude \
   examples/agents/orchestrate-placed-fleet
-# With phux already running and phux-mcp on PATH:
-python3 examples/agents/orchestrate-placed-fleet-mcp.py
 ```
 
-They locate a `phux` binary in this order: `$PHUX`, then a `phux` on
-`PATH`, then `target/debug/phux` (building it via `nix develop -c cargo
-build -p phux` if missing — the dev shell provides the zig toolchain
-libghostty-vt needs). The first build can be slow; subsequent runs reuse
-it.
+They use `$PHUX`, else `phux` on `PATH`, else `target/debug/phux` (built
+via `nix develop -c cargo build -p phux` if missing). The bash scripts use
+`python3` only to parse JSON. The fleet script takes two integration ids from
+`phux launch --list` via `PHUX_BUILDER_INTEGRATION` and
+`PHUX_REVIEWER_INTEGRATION`.
 
-Only the bash scripts depend on `bash` + `python3` (used purely to parse
-JSON in the output-extraction snippets). `phux` itself needs neither. The fleet
-script expects two integration ids from `phux launch --list`; override them with
-`PHUX_BUILDER_INTEGRATION` and `PHUX_REVIEWER_INTEGRATION`.
-
-The deterministic gate substitutes a fake `phux` and needs no server or agents;
-the live gate starts a real isolated server and shell panes:
+`agents-fleet-smoke` substitutes a fake `phux` and checks argv, watch bounds,
+ask rendering, and the absence of focus/input-authority commands.
+`agents-fleet-live` runs real placement, insert/move/swap, watch, and ask
+against an isolated server with shell panes:
 
 ```sh
 just agents-fleet-smoke
 just agents-fleet-live
 ```
 
-The fake gate asserts complete argv/control flow, watch bounds, ask rendering,
-and absence of focus/input-authority commands. The live gate dogfoods real
-placement, insert/move/swap, and the real watch/ask event path without
-external paid agents. To additionally try installed Claude/Codex binaries on the
-private server, opt in explicitly:
+To also spawn installed Claude/Codex binaries (may use account/API quota;
+never run by CI):
 
 ```sh
 PHUX_DOGFOOD_REAL_AGENTS=1 just agents-fleet-live
 ```
-
-That command may invoke configured account/API behavior; it is never run by CI.
 
 ## Two gotchas the scripts bake in
 

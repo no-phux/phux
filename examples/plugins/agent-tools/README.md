@@ -1,262 +1,102 @@
 # phux Agent Tools Demo Plugin
 
-This fixture is a first-class local package for trying the agentic plugin
-surface without touching your real `~/.config/phux/config.toml`.
-
-Run it from the repository root:
+A local plugin package for trying the agentic plugin surface without touching
+your real `~/.config/phux/config.toml`. From the repository root:
 
 ```sh
 export XDG_CONFIG_HOME="$PWD/examples/plugins/agent-tools/config"
 
-cargo run -q -p phux -- config plugins
-cargo run -q -p phux -- config plugins --json
+cargo run -q -p phux -- config plugins          # com.phux.demo.agent-tools 0.1.0 (enabled)
 cargo run -q -p phux -- config run com.phux.demo.agent-tools inspect
 cargo run -q -p phux -- config run com.phux.demo.agent-tools inspect --json
-cargo run -q -p phux -- config run com.phux.demo.agent-tools list-integrations
-cargo run -q -p phux -- config run com.phux.demo.agent-tools validate-integrations
-cargo run -q -p phux -- config run com.phux.demo.agent-tools status-integrations
-cargo run -q -p phux -- config run com.phux.demo.agent-tools link-integration
-cargo run -q -p phux -- config run com.phux.demo.agent-tools status-integrations
-cargo run -q -p phux -- config run com.phux.demo.agent-tools unlink-integration
-cargo run -q -p phux -- config run com.phux.demo.agent-tools detect-agents
-cargo run -q -p phux -- config run com.phux.demo.agent-tools smoke-integrations
-cargo run -q -p phux -- config run com.phux.demo.agent-tools launch-bench
-cargo run -q -p phux -- config run com.phux.demo.agent-tools list-bench
-cargo run -q -p phux -- config run com.phux.demo.agent-tools drive-bench
 ```
 
-Expected human output:
+`just plugin-demo` runs the same discover/validate/run sequence. Every action
+in `phux-plugin.toml` runs the same way: `list-integrations`,
+`validate-integrations`, `status-integrations`, `link-integration`,
+`unlink-integration`, `detect-agents`, `smoke-integrations`, `launch-bench`,
+`list-bench`, `drive-bench`, and `smoke-agent-wrap`. `--json` wraps an action's
+stdout in the stable action result schema (argv, cwd, exit code, stderr,
+duration).
 
-```text
-com.phux.demo.agent-tools 0.1.0 (enabled)
-```
+## Agent bench
 
-The action prints the boundary the plugin system is meant to keep:
-
-```text
-phux plugin demo
-core=stable terminal/session host
-plugin=agentic workflow package
-plugin_id=com.phux.demo.agent-tools
-action_id=inspect
-root=/path/to/phux/examples/plugins/agent-tools
-```
-
-`phux config run --json` wraps that stdout with the stable action result
-schema, including argv, cwd, exit code, stderr, and duration.
-
-The manifest also declares an `agent-bench` workspace profile. It composes
-inspection/list/validation actions, static agent status records, pane roles,
-and runnable bench actions across four agent roles:
-
-- `launch-bench` creates one phux session per role and writes a role/session
-  state table.
-- `list-bench` prints that state table.
-- `drive-bench` sends keys to the selected role with `phux send-keys`.
-
-The Codex, Claude Code, Gemini CLI, and Grok defaults are safe: roles launch as
-normal phux shell sessions, not real agent binaries. Set
-`PHUX_AGENT_BENCH_ROLES`, `PHUX_AGENT_BENCH_PROFILE`,
-`PHUX_AGENT_BENCH_STATE`, `PHUX_AGENT_BENCH_ROLE`, or `PHUX_AGENT_BENCH_KEYS`
-to customize the fixture.
-
-## Pane self-identification (`PHUX_TERMINAL_ID`)
-
-The phux server injects `PHUX_TERMINAL_ID` into the environment of every
-pane it spawns. Its value is the pane's own local wire id — the number in
-the `@N` client selector (`ResourceId::local(N)`). Because the server sets
-it automatically, a process running inside a pane can address itself on the
-phux wire with zero configuration:
-
-```sh
-# From inside any spawned pane, target this same pane:
-phux send-keys "@$PHUX_TERMINAL_ID" 'echo hi\n'
-```
-
-Agent tooling that records or supervises the pane it runs in (for example a
-record wrapper) reads `PHUX_TERMINAL_ID` as its `@N` self-target rather than
-requiring the id to be passed in. The same value is exposed to lifecycle
-hooks as `PHUX_TERMINAL_ID`, so the pane is named identically across both
-surfaces. Panes not spawned by phux (or addressed via a federation
-`Satellite` id, which has no server-local `@N`) do not receive the variable.
+The `agent-bench` workspace profile composes the inspection actions with
+runnable bench actions across four roles. `launch-bench` creates one phux
+session per role and writes a role/session state table, `list-bench` prints
+it, and `drive-bench` sends keys to the selected role. Roles launch as plain
+shells, not real agent binaries. Customize with `PHUX_AGENT_BENCH_ROLES`,
+`PHUX_AGENT_BENCH_PROFILE`, `PHUX_AGENT_BENCH_STATE`, `PHUX_AGENT_BENCH_ROLE`,
+and `PHUX_AGENT_BENCH_KEYS`.
 
 ## Integration templates
 
-The `integrations/*.toml` files are sample manifests for terminal-native
-agents that phux can launch, supervise, and report on through plugin actions.
-They are intentionally local, documented packages rather than hidden product
-magic. Codex, Claude Code, and Grok are first-party public packages; the Gemini
-and generic shell records keep the fixture broad enough to test templates:
+`integrations/*.toml` are sample manifests for terminal-native agents
+(`codex`, `claude-code`, `gemini-cli`, `grok`, `generic-shell-agent`). Each
+declares an id, display name, version, status, capabilities, launch command,
+link-state policy, opt-in detection command, optional `required_executables`
+(a template is listed only when all are on `PATH`), and session identity
+policy.
 
-- `codex.toml`
-- `claude-code.toml`
-- `gemini-cli.toml`
-- `grok.toml`
-- `generic-shell-agent.toml`
+- `link-integration` / `unlink-integration` write only plugin-local state under
+  `state/integrations`; they never install or run the agent. They default to
+  Codex and Claude Code; override with `PHUX_AGENT_PACKAGE` or
+  `PHUX_AGENT_PACKAGES`. `PHUX_CODEX_SESSION_ID` / `PHUX_CLAUDE_SESSION_ID`
+  record a native session identity; otherwise the phux target is recorded.
+- `status-integrations` reports `missing`, `current`, or `outdated` against the
+  checked-in template version.
+- `detect-agents` probes nothing unless `PHUX_AGENT_TOOLS_DETECT=1`;
+  `PHUX_AGENT_TOOLS_PATH` overrides the search path for tests.
+- `list-integrations` and `validate-integrations` are pure fixture checks.
+- `smoke-integrations` exercises validate, list, link, status, fake-CLI
+  detection, and unlink in a temporary state directory.
 
-Each package declares a stable id, display name, package version, public
-status, capabilities, launch command, link-state policy, opt-in detection
-command, optional executable availability requirements, and session identity
-policy. A template with `required_executables = ["grok"]` is listed only when
-every named program is executable on `PATH`; directly requesting an unavailable
-template reports the missing names. Linking writes only plugin-local state
-under `examples/plugins/agent-tools/state/integrations` by default; it does not
-install or execute the agent CLI.
+## Automatic agent identity
 
-`status-integrations` reports package state as:
-
-- `missing` when no local link state exists.
-- `current` when the linked package version matches the checked-in template.
-- `outdated` when a linked state file points at an older template version.
-
-`link-integration` and `unlink-integration` default to the first-party Codex
-and Claude Code packages. Override with `PHUX_AGENT_PACKAGE` or
-`PHUX_AGENT_PACKAGES` to target a different package id. Native session identity
-can be recorded without private credentials by setting the package-specific
-environment variable, such as `PHUX_CODEX_SESSION_ID` or
-`PHUX_CLAUDE_SESSION_ID`; otherwise the link records the phux session target.
-
-Detection never probes the user's machine by default. To run it deliberately:
-
-```sh
-PHUX_AGENT_TOOLS_DETECT=1 \
-  cargo run -q -p phux -- config run com.phux.demo.agent-tools detect-agents
-```
-
-Tests can avoid local installations by overriding the detection search path:
-
-```sh
-PHUX_AGENT_TOOLS_DETECT=1 \
-PHUX_AGENT_TOOLS_PATH=/tmp/fake-agent-bin \
-  cargo run -q -p phux -- config run com.phux.demo.agent-tools detect-agents
-```
-
-`list-integrations` and `validate-integrations` are pure fixture checks and
-do not execute or inspect any local agent binaries.
-
-`smoke-integrations` runs validation, list, link, status, fake-CLI detection,
-unlink, and missing-status checks in a temporary state directory. It needs no
-private credentials and leaves no plugin state behind.
-
-## Automatic agent identity (phux-r82.11)
-
-Plain `claude` / `codex` / `gemini` sessions never announce themselves, so the
-sidebar and fleet views used to fall back to an OSC-title substring heuristic —
-which false-positives on titles like `vim CLAUDE.md` and can never show a real
-working/blocked state. `scripts/phux-agent-wrap.sh` fixes the identity half of
-that: it wraps the real agent command so the pane writes a first-class
-`phux.agent/v1` L3 record (ADR-0040) the moment the agent launches, and clears
-it on exit.
-
-Each `integrations/*.toml` declares a `[launch]` command that runs its agent
-through the wrapper. For Claude Code:
+`scripts/phux-agent-wrap.sh` wraps an agent command so its pane carries a
+`phux.agent/v1` record (ADR-0040) from launch until exit. The sidebar and
+`phux agent list` prefer that record over the OSC-title heuristic, which
+remains as a fallback for unwrapped agents. Each template's `[launch]` runs its
+agent through the wrapper:
 
 ```toml
-[agent_identity]
-name = "claude"
-kind = "claude"
-
 [launch]
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "claude", "--kind", "claude", "--", "claude"]
 working_directory = "workspace"
 ```
 
-For the product path — where typing plain `claude` outside phux should create
-and attach a self-identifying phux session — install the first-party shell shim
-once per box:
+`phux launch <integration>` ([ADR-0042](../../../docs/adr/0042-launch-executor.md))
+resolves that command from an enabled plugin, expands `${PHUX_PLUGIN_ROOT}`,
+and spawns a pane. The server injects `PHUX_TERMINAL_ID` into every pane it
+spawns, so the wrapper self-targets with no configuration:
 
 ```sh
-phux agent install-claude
+phux launch --list
+phux launch claude-code
+phux launch codex -- --model o3   # extra args pass through
+phux launch codex --print         # print the argv without spawning
 ```
 
-The fixture wrapper below remains the integration-template path used by
-`phux launch`; the installed shim adds automatic entry plus Claude lifecycle
-hooks (`working`, `blocked`, `done`, and `phux ask` notifications).
+To start a wrapped agent in an existing pane, run the wrapper directly (or
+alias it), passing `--target` / `PHUX_AGENT_TARGET` when `PHUX_TERMINAL_ID` is
+not set. For plain `claude` outside phux, `phux agent install-claude` installs
+the product shim with lifecycle hooks instead.
 
-### Launch through `phux launch` (recommended)
-
-phux **does** ship a launch executor: `phux launch <integration>`
-(phux-ark7, [ADR-0042](../../../docs/adr/0042-launch-executor.md)) resolves a
-template's `[launch]` command from an enabled plugin, expands
-`${PHUX_PLUGIN_ROOT}` to the absolute plugin root, and spawns a pane
-running it via `SPAWN_RESOURCE`. Because the server injects
-`PHUX_TERMINAL_ID` into the spawned pane (phux-w7mj), the wrapper
-self-targets with **zero extra config**:
-
-```sh
-phux launch --list          # installed providers: codex, claude-code, grok, ...
-phux launch claude-code     # opens a pane running claude through the wrapper
-phux launch codex -- --model o3   # extra args pass through to the agent
-phux launch grok            # opens interactive Grok Build when grok is on PATH
-phux launch codex --print   # resolve + print the argv without spawning
-```
-
-So with the plugin installed and enabled, `phux launch claude-code`
-opens a **self-identifying** pane end-to-end — the wrapper writes the
-`phux.agent/v1` record at launch and clears it on exit, no alias needed.
-`working_directory = "workspace"` runs the agent in the directory you ran
-`phux launch` from (the launch executor expands the wrapper path
-absolutely, so it still resolves).
-
-You can still activate the wrapper by hand — useful when you start an agent
-in an existing pane rather than a fresh launch:
-
-- **Wrap the command directly** in the pane where you start the agent:
-
-  ```sh
-  PHUX_TERMINAL_ID=<pane> \
-    sh "$PHUX_PLUGIN_ROOT/scripts/phux-agent-wrap.sh" --name reviewer --kind claude -- claude
-  ```
-
-- **Alias it** in your shell rc so `claude` transparently runs through the
-  wrapper, passing the pane target via `PHUX_AGENT_TARGET` / `--target`.
-
-The sidebar's `agents` section and `phux agent list` already prefer the
-`phux.agent/v1` record over the title heuristic
-(`crates/phux-client/src/agent_meta.rs`), so a wrapped pane gets a first-class
-identity while un-wrapped panes still fall back to the heuristic. The heuristic
-remains as a fallback-only path for un-wrapped agents — it is not removed.
-
-### Pane targeting is required (no focused-pane guessing)
-
-The wrapper resolves the pane it is running in **exactly once, at launch**, and
-reuses that same target for the exit-time `clear`. It does this from, in order:
-`--target` / `PHUX_AGENT_TARGET`, else `PHUX_TERMINAL_ID` (used as the `@N`
-selector). It deliberately **never** falls back to `phux agent set`'s
-focused-pane default: focus moves freely and the exit-time `clear` fires much
-later, so a focused-pane guess would race — in a multi-pane / fleet run it would
-delete a *different*, still-running agent's record. If the wrapper cannot
-resolve its pane it writes **nothing** (and prints one diagnostic to stderr) but
-still launches the agent — a missing label is safer than a corrupted sibling.
-
-The wrapper is otherwise best-effort and injection-safe: every value is passed
-as its own quoted argv element to `phux` (never through `eval`/`sh -c`), and if
-`phux` is missing or no server is up the record write fails silently so the
-agent still launches. Set `PHUX_AGENT_PHUX_BIN` to point at a non-`PATH` `phux`
-binary.
-
-`smoke-agent-wrap` drives the wrapper against a stub `phux` and fake agents. It
-checks identity targeting, exact AgentSession-child targeting in the presence
-of other children, complete event payloads, successful and failed lifecycle
-records, command-not-found handling, and signal forwarding/reaping. It also
-checks that a missing pane target writes nothing. It needs no server and leaves
-nothing behind:
-
-```sh
-cargo run -q -p phux -- config run com.phux.demo.agent-tools smoke-agent-wrap
-```
+The wrapper resolves its pane once and never falls back to the focused pane,
+because the exit-time clear would race focus and could delete a sibling
+agent's record; with no target it writes nothing but still launches the agent.
+Record writes are best-effort and argv-only (no `eval`). `PHUX_AGENT_PHUX_BIN`
+points at a non-`PATH` `phux`. `smoke-agent-wrap` checks targeting, event
+payloads, failure and command-not-found records, and signal forwarding against
+a stub `phux`, with no server.
 
 ### Lifecycle state
 
-Interactive agents set only the always-honest identity (`name` + `kind`) and
-leave lifecycle to provider screen/title rules. Grok's provider wrapper adds a
-narrow exception for modes where the process itself is exactly one turn
-(`-p` / `--single`, `--prompt-file`, or `--prompt-json`). Those modes can paint
-a blank, titleless `--no-alt-screen` viewport while processing, so the wrapper
-opens an AgentSession and emits `session_start` with its provider plus `prompt`
-with the real prompt character count before execution. Exit 0 emits `stop` and
-leaves `done` visible for a one-second grace. Every outcome then emits terminal
-`session_end` and closes the exact child ID returned by `session open`; failures
-and forwarded signals carry a reason and never emit `stop`. A normal interactive
-`grok` process never opens that stream; otherwise it would be incorrectly pinned
-`working` for the entire TUI lifetime.
+Interactive agents declare only identity and leave lifecycle to provider
+screen/title rules. Grok's wrapper passes `--stream-single-turn` only for
+one-turn modes (`-p` / `--single`, `--prompt-file`, `--prompt-json`), whose
+blank viewport would otherwise hide progress: it opens an AgentSession and
+emits `session_start` and `prompt` (a character count), then `stop` on exit 0
+(with a one-second `done` grace) and `session_end` with a reason on every
+outcome, closing the exact child it opened. Interactive `grok` never opens the
+stream, which would pin it `working` for the whole session.
