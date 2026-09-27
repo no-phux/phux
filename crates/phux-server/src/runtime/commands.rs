@@ -459,47 +459,61 @@ pub(crate) fn handle_terminal_resize(
             Ok(terminal) => terminal,
             Err(error) => {
                 debug!(?client_id, ?terminal, %error, "RESIZE_TERMINAL: not a Terminal; dropping");
-                // L1 §1.1: with no reply frame, the refusal rides an
-                // uncorrelated ERROR to the sender.
-                if let Some(mailbox) = s.client_mailbox(client_id) {
-                    let _ = mailbox.try_send(Outbound::Frame(FrameKind::Error {
-                        request_id: None,
-                        code: ErrorCode::WrongResourceKind,
-                        message: error.to_string(),
-                    }));
-                }
+                // L1 §1.1: no reply frame, so an uncorrelated ERROR.
+                send_wrong_kind_error(s, client_id, &error);
                 return;
             }
         };
-        // Resync clients so mirrors reconverge after reflow; no pixel size
-        // rides this frame, so the actor keeps its last one.
-        match terminal.resize.try_send(ResizeRequest {
-            cols,
-            rows,
-            cell_px: None,
-            resync_clients: true,
-            resync_only: false,
-            resync_for: None,
-        }) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                warn!(
-                    ?client_id,
-                    ?terminal,
-                    cols,
-                    rows,
-                    "RESIZE_TERMINAL: pane resize mailbox full; dropping",
-                );
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                debug!(
-                    ?client_id,
-                    ?terminal,
-                    "RESIZE_TERMINAL: pane actor gone; dropping resize",
-                );
-            }
-        }
+        // No pixel size rides this frame, so the actor keeps its last one.
+        try_resize(terminal, (cols, rows), None, "RESIZE_TERMINAL", client_id);
     });
+}
+
+/// Refuse a reply-less frame aimed at the wrong resource kind with an
+/// uncorrelated `ERROR` to its sender.
+fn send_wrong_kind_error(
+    s: &crate::state::ServerState,
+    client_id: ClientId,
+    error: &WrongResourceKind,
+) {
+    if let Some(mailbox) = s.client_mailbox(client_id) {
+        let _ = mailbox.try_send(Outbound::Frame(FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::WrongResourceKind,
+            message: error.to_string(),
+        }));
+    }
+}
+
+/// Queue a live resize that resyncs every client's mirror. Resizes are
+/// best-effort (SPEC §10.5): a full or closed mailbox drops this one.
+fn try_resize(
+    terminal: &TerminalHandle,
+    (cols, rows): (u16, u16),
+    cell_px: Option<(u16, u16)>,
+    verb: &str,
+    client_id: ClientId,
+) {
+    let request = ResizeRequest {
+        cols,
+        rows,
+        cell_px,
+        resync_clients: true,
+        resync_only: false,
+        resync_for: None,
+    };
+    match terminal.resize.try_send(request) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            warn!(
+                ?client_id,
+                cols, rows, "{verb}: pane resize mailbox full; dropping"
+            );
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            debug!(?client_id, "{verb}: pane actor gone; dropping resize");
+        }
+    }
 }
 
 /// Perform the attach mutation in one critical section: attach, build the
@@ -4044,10 +4058,8 @@ fn reconcile_process_exit(
     }
 }
 
-/// Ask a Terminal's actor for its typed process facet (PHA-406 D5).
-///
-/// `None` when the actor's mailbox is closed or it dropped the reply; the
-/// caller reports that as `process: null` rather than failing the snapshot.
+/// Ask a Terminal's actor for its typed process facet; `None` when it cannot
+/// answer.
 async fn query_process_facet(
     terminal: &crate::terminal_actor::TerminalHandle,
 ) -> Option<phux_core::process::TerminalProcessState> {
@@ -4060,35 +4072,7 @@ async fn query_process_facet(
     reply_rx.await.ok()
 }
 
-/// Build the `Ok` reply for `ROUTE_INPUT`.
-///
-/// The write counterpart to [`handle_get_screen`]: it resolves the wire id
-/// to its pane actor with no attach / subscription gate and, crucially, no
-/// resize. Production routes through the dedicated lane's encoder; the inline
-/// path used by direct-drive tests feeds the actor's legacy event mailbox.
-/// Unlike the ATTACH-then-`INPUT_KEY` path, routing input here
-/// never transiently shrinks the pane to the caller's viewport; the live
-/// dimensions are preserved (ADR-0022, `phux-3j3`).
-///
-/// `ROUTE_INPUT` is the side-effect-free agent path (ADR-0022): it
-/// delivers input to a Terminal WITHOUT an attach or subscription, which is
-/// exactly how `phux run` / `send-keys` drive a pane headlessly. It must
-/// therefore NOT require the caller to be a subscriber. An earlier interim
-/// gate (phux-nlo) approximated "PRIMARY" by subscription and rejected any
-/// unsubscribed caller — but that is precisely the headless agent, so it
-/// broke the agent surface; it is removed. v0.1 is single-trust-domain (one
-/// server per user, ADR-0003), so there is no untrusted observer to fence
-/// off here. Genuine viewer-vs-primary authority (SPEC `input.md` §7 /
-/// `L1.md` §7.1) returns when per-connection roles are materialized, and
-/// must gate an *attached read-only viewer*, never the headless
-/// control-plane caller. `client_id` is kept for that future policy and for
-/// the observability trace below.
-///
-/// Both the lane's encoded-byte handoff and the inline fallback use
-/// non-blocking `try_send`: input is fire-and-forget per SPEC §9, so a
-/// full mailbox drops the event rather than blocking the read loop. The
-/// command still acks `Ok` (the event was accepted for delivery); an
-/// unknown Terminal or a gone actor produces an `Error`.
+/// A resolved, lease-checked local input destination.
 #[derive(Debug)]
 pub(crate) struct InputDestination {
     pub(crate) pane: phux_core::ids::ResourceId,
@@ -4106,9 +4090,7 @@ pub(crate) fn with_route_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Result<R, CommandResult> {
     state.with(|s| {
-        // Input queued on the lane before a revocation is still pending
-        // authority the revoked connection held: none of it is delivered
-        // (workload-auth §7 step 2).
+        // workload-auth §7 step 2: nothing queued before a revocation lands.
         if s.connection_revoked(client_id) {
             return Err(CommandResult::Error {
                 code: ErrorCode::PermissionDenied,
@@ -4206,10 +4188,7 @@ pub(crate) fn handle_route_input(
     }
 }
 
-/// Bridge `state::ClientId` (u64 newtype) → `phux_protocol::ClientId` (u32),
-/// the wire id that rides in `TerminalControl` events (ADR-0033). Matches the
-/// conversion the per-consumer state map and `FRAME_ACK` path already use; the
-/// wire `ClientId` space caps at `u32::MAX` (widening needs a protocol bump).
+/// The wire `ClientId` (u32, saturating) for a server connection id.
 fn wire_client_id(id: ClientId) -> phux_protocol::ids::ClientId {
     phux_protocol::ids::ClientId::new(u32::try_from(id.0).unwrap_or(u32::MAX))
 }
@@ -4218,12 +4197,9 @@ fn wire_client_id(id: ClientId) -> phux_protocol::ids::ClientId {
 enum AcquireOutcome {
     /// The wire id resolved to no pane.
     NotFound,
-    /// The resource exists but is not a Terminal (docs/spec/L1.md §1.1's
-    /// `WRONG_RESOURCE_KIND` rule): an input lease is a Terminal-facet
-    /// concept, and an `AgentSession`'s stream has no lease to hold.
+    /// The resource is not a Terminal (L1 §1.1).
     WrongKind(WrongResourceKind),
-    /// A cooperative acquire lost to an existing holder (carried for the
-    /// diagnostic).
+    /// A cooperative acquire lost to an existing holder.
     Denied(ClientId),
     /// The lease was granted; broadcast the change via the pane's actor.
     Granted {
@@ -4231,23 +4207,17 @@ enum AcquireOutcome {
         handle: Box<ResourceHandle>,
         /// `Acquired` (was free / self) or `Seized` (preempted another).
         action: ControlAction,
-        /// The internal id, for arming the TTL timer below.
+        /// The internal id, for arming the TTL timer.
         core: phux_core::ids::ResourceId,
-        /// The generation `ServerState::refresh_input_lease_expiry` just
-        /// recorded, paired with the `ttl_ms` that produced it — `None`
-        /// when the caller asked for no TTL (`0`, today's behaviour).
+        /// `(ttl_ms, expiry generation)`; `None` for no TTL.
         expiry: Option<(u32, u64)>,
     },
 }
 
-/// Handle `ACQUIRE_INPUT` (ADR-0033, "take the wheel"): assert an exclusive
-/// input lease over a pane. `Cooperative` mode fails with `InputLeaseHeld`
-/// when another client holds it; `Seize` preempts. On grant, broadcasts a
-/// `TerminalControl` event so every subscriber re-renders who has the
-/// wheel, and — this lane — arms `ttl_ms` (`0` = never, today's
-/// behaviour): a server timer that releases the lease and broadcasts
-/// `Expired` unless something else changes it first (see
-/// `spawn_input_lease_expiry`).
+/// Handle `ACQUIRE_INPUT` (ADR-0033): take the pane's exclusive input lease.
+/// `Cooperative` fails with `InputLeaseHeld` against another holder; `Seize`
+/// preempts. A grant broadcasts `TerminalControl` and arms `ttl_ms`
+/// (`0` = never). Satellite ids never reach here (`route_to_satellite`).
 pub(crate) async fn handle_acquire_input(
     state: &SharedState,
     client_id: ClientId,
@@ -4255,11 +4225,6 @@ pub(crate) async fn handle_acquire_input(
     mode: InputMode,
     ttl_ms: u32,
 ) -> CommandResult {
-    // No satellite guard here (phux-v45.11 finding 5): `route_to_satellite`
-    // intercepts every satellite-tagged ACQUIRE_INPUT in `handle_command`
-    // before local dispatch — on a hub it relays, elsewhere it resolves to
-    // the typed UnsupportedSatelliteRoute reply. A satellite id can never
-    // reach this function.
     let outcome = state.with_mut(|s| {
         let Some(core) = s.terminal_from_wire(terminal_id) else {
             return AcquireOutcome::NotFound;
@@ -4282,12 +4247,7 @@ pub(crate) async fn handle_acquire_input(
             Some(holder) if holder != client_id => ControlAction::Seized,
             _ => ControlAction::Acquired,
         };
-        // Every grant — a fresh acquire, a Seize, or the same client
-        // re-acquiring — re-arms the TTL at the newly requested `ttl_ms`,
-        // superseding whatever the pane's prior expiry tracking was
-        // (`refresh_input_lease_expiry` always invalidates it first). A
-        // Seize resetting the TTL to the new holder's value falls out of
-        // this without a separate case.
+        // Every grant re-arms the TTL, superseding the prior timer.
         let expiry = s
             .refresh_input_lease_expiry(core, ttl_ms != 0)
             .map(|generation| (ttl_ms, generation));
@@ -4328,35 +4288,16 @@ pub(crate) async fn handle_acquire_input(
 }
 
 /// Schedule the timer that expires `terminal`'s input lease after `ttl_ms`
-/// (ADR-0033's `ttl_ms`, no longer advisory in this lane).
-///
-/// Spawned with `spawn_local`: the whole server runs on one `LocalSet`
-/// (ADR-0014), and this is called from a per-client command task already
-/// running on it. The task always wakes on schedule; whether it *does*
-/// anything depends on `generation` still matching what
-/// [`crate::state::ServerState::refresh_input_lease_expiry`] last recorded
-/// for `terminal` when the sleep resolves. Any acquire, release, or
-/// disconnect teardown for that pane between now and then bumps that
-/// generation and aborts this task outright (see `state::lease_table`), so
-/// a superseded timer does not linger sleeping out a TTL nobody cares
-/// about any more (review round 2: repeated re-arms, e.g. a Cooperative
-/// re-acquire or a hub consumer relaying `ttl_ms`, used to accumulate one
-/// live task per grant). The generation check below is the belt to that
-/// abort's suspenders: it covers the brief window between this task
-/// spawning and its handle being attached (below), during which an abort
-/// cannot reach it yet — the same "trust reality over the sleep, checked
-/// under the lock" discipline `spawn_idle_exit_watchdog` uses. Together
-/// they keep a TTL racing a release/seize/disconnect to exactly one
-/// `terminal_control`: only the generation that is still current when the
-/// lock is taken ever acts, and every other copy is dead well before then.
+/// (ADR-0033). Any later acquire, release, or disconnect bumps the pane's
+/// expiry generation and aborts this task; the generation re-check under the
+/// lock covers the window before the abort handle is attached, so exactly
+/// one `terminal_control` results.
 fn spawn_input_lease_expiry(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
     generation: u64,
     ttl_ms: u32,
 ) {
-    // A clone for the spawned task; `state` itself is still needed below,
-    // after the spawn, to attach this task's abort handle.
     let task_state = state.clone();
     #[cfg(test)]
     let counter = state.with(crate::state::ServerState::input_lease_expiry_task_counter);
@@ -4368,9 +4309,7 @@ fn spawn_input_lease_expiry(
             if !s.input_lease_expiry_is_current(terminal, generation) {
                 return None;
             }
-            // Not `refresh_input_lease_expiry`: that aborts, and this is
-            // the timer aborting *itself* on its own legitimate firing —
-            // unsafe this late (see `clear_input_lease_expiry`'s doc).
+            // Not `refresh_input_lease_expiry`, which would abort this task.
             s.clear_input_lease_expiry(terminal);
             let holder = s.input_lease_holder(terminal)?;
             s.release_input_lease(terminal, holder);
@@ -4388,12 +4327,7 @@ fn spawn_input_lease_expiry(
             })
             .await;
     });
-    // Hand the ledger this task's abort handle so a later
-    // acquire/release/disconnect for this pane can kill it outright
-    // instead of leaving it to sleep out its full `ttl_ms` as dead weight.
-    // `false` means something already superseded `generation` in the gap
-    // between minting it and getting here: this task is already stale by
-    // the check above, so abort it now rather than at its own deadline.
+    // `false`: `generation` was already superseded, so abort now.
     let abort = join.abort_handle();
     let attached =
         state.with_mut(|s| s.attach_input_lease_expiry_abort(terminal, generation, abort.clone()));
@@ -4402,12 +4336,8 @@ fn spawn_input_lease_expiry(
     }
 }
 
-/// Live-timer-task counter guard for [`spawn_input_lease_expiry`]'s
-/// regression test (`lease_expiry_task_tests` below): increments on
-/// construction, decrements on drop — including a drop forced by
-/// `AbortHandle::abort()`, since that drops the task's future (and every
-/// local it is holding) at its next `Pending` poll. Exists only under
-/// `cfg(test)`; production builds never allocate or touch the counter.
+/// Counts live lease-expiry tasks for `lease_expiry_task_tests`; an abort
+/// drops it too.
 #[cfg(test)]
 struct LiveExpiryTaskGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
@@ -4430,14 +4360,8 @@ impl Drop for LiveExpiryTaskGuard {
 mod lease_expiry_task_tests {
     use super::*;
 
-    /// Review round 2's medium finding: every armed grant spawned a fresh
-    /// timer task, and a superseded one kept sleeping until its own
-    /// deadline instead of being cancelled — repeated re-arms (a
-    /// Cooperative re-acquire, or a hub consumer relaying `ttl_ms` to a
-    /// satellite) would accumulate one live task per grant, for as long as
-    /// the longest `ttl_ms` any of them asked for. `refresh_input_lease_
-    /// expiry` now aborts the entry it is about to supersede, so no more
-    /// than one timer task should ever be alive for a pane's lease.
+    /// Superseded expiry timers are aborted, not left sleeping: repeated
+    /// re-arms once leaked one live task per grant.
     #[tokio::test(flavor = "current_thread")]
     async fn rearming_a_lease_repeatedly_leaves_at_most_one_live_timer_task() {
         let local = tokio::task::LocalSet::new();
@@ -4453,10 +4377,7 @@ mod lease_expiry_task_tests {
                         .with_mut(|s| s.refresh_input_lease_expiry(core, true))
                         .expect("scheduled");
                     spawn_input_lease_expiry(&state, core, generation, 60_000);
-                    // Give the freshly spawned task a tick to run to its
-                    // first await (registering its abort handle) and any
-                    // just-aborted predecessor a tick to unwind and drop
-                    // its guard, before the next re-arm supersedes it.
+                    // Let the new task start and the aborted one unwind.
                     tokio::task::yield_now().await;
                     tokio::task::yield_now().await;
                 }
@@ -4471,17 +4392,13 @@ mod lease_expiry_task_tests {
     }
 }
 
-/// Handle `RELEASE_INPUT` (ADR-0033): drop the input lease the caller holds
-/// over a pane, returning it to `Open`. Idempotent — a no-op (still `Ok`) if
-/// the caller does not hold the lease. Broadcasts `Released` when a lease was
-/// actually given up.
+/// Handle `RELEASE_INPUT` (ADR-0033): drop the caller's input lease.
+/// Idempotent; broadcasts `Released` only when a lease was given up.
 pub(crate) async fn handle_release_input(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
-    // No satellite guard here (phux-v45.11 finding 5): same rationale as
-    // `handle_acquire_input` — `route_to_satellite` owns that dispatch.
     enum Released {
         NotFound,
         WrongKind(WrongResourceKind),
@@ -4499,10 +4416,7 @@ pub(crate) async fn handle_release_input(
         }
         let did_release = s.release_input_lease(core, client_id);
         if did_release {
-            // Cancel this pane's TTL along with the lease itself (this
-            // lane): the timer a prior ACQUIRE_INPUT armed no longer names
-            // a live lease, and a stale wake must find that out rather
-            // than expire a pane that is already `Open`.
+            // The lease's TTL goes with it.
             s.refresh_input_lease_expiry(core, false);
         }
         Released::Ok(handle, did_release)
@@ -4526,10 +4440,8 @@ pub(crate) async fn handle_release_input(
     }
 }
 
-/// Handle `SIGNAL_TERMINAL` (ADR-0033): deliver a POSIX signal to the pane's
-/// process group. Distinct from `KILL_RESOURCE` (which removes the pane) —
-/// this signals the process and leaves the pane addressable. The actor owns
-/// the PTY child pid, so the work happens there; the broadcast follows.
+/// Handle `SIGNAL_TERMINAL` (ADR-0033): signal the pane's process group via
+/// its actor, leaving the pane addressable.
 pub(crate) async fn handle_signal_terminal(
     state: &SharedState,
     client_id: ClientId,
@@ -4558,13 +4470,11 @@ pub(crate) async fn handle_signal_terminal(
             return terminal_not_found(terminal_id);
         }
     };
-    // docs/spec/L1.md §1.1: a signal targets a Terminal's PTY child, which
-    // an `AgentSession` does not have.
+    // L1 §1.1: only a Terminal has a PTY child to signal.
     if let Err(error) = handle.terminal() {
         return wrong_resource_kind(error);
     }
-    // ADR-0124: a retained pane's child is already reaped; there is nothing
-    // to signal. `KILL_RESOURCE` is how it is purged.
+    // ADR-0124: a retained pane's child is already reaped.
     if state.with(|s| {
         s.terminal_from_wire(terminal_id)
             .is_some_and(|pane| s.retained_exit(pane).is_some())
@@ -4603,10 +4513,8 @@ pub(crate) async fn handle_signal_terminal(
     result
 }
 
-/// A queued signal whose actor reported failure, or dropped its reply, was
-/// not delivered. Replace the success its key was committed with on
-/// queueing, so a retry answers that failure instead of a false `OK`
-/// (L1 §5.1.1). A delivered signal keeps the committed success.
+/// A queued signal that failed replaces the success its key was committed
+/// with, so a retry answers the failure (L1 §5.1.1).
 fn record_signal_failure(
     commit: Option<&super::operation_dedupe::OperationClaim>,
     result: &CommandResult,
@@ -4618,11 +4526,9 @@ fn record_signal_failure(
     }
 }
 
-/// Queue a signal on its pane's actor and commit its key the moment it is
-/// queued (L1 §5.1.1). The actor delivers a queued signal whether or not
-/// this handler lives to read the reply, so a connection cancelled between
-/// the send and the reply must not release the key for a second delivery.
-/// `false` when the actor is gone and nothing was queued.
+/// Queue a signal and commit its key at once (L1 §5.1.1): the actor delivers
+/// it even if this handler is cancelled before the reply. `false` when the
+/// actor is gone.
 async fn commit_signal(
     control: &tokio::sync::mpsc::Sender<ControlRequest>,
     request: ControlRequest,
@@ -4639,22 +4545,15 @@ async fn commit_signal(
     true
 }
 
-/// Feed integration-hook lifecycle evidence into a pane (ADR-0085), by the
-/// route the resource graph makes right (ADR-0103 decision 6).
-///
-/// With a live `AgentSession` child the report becomes a synthesized `state`
-/// record on that child's stream, so the arbiter keeps receiving one source's
-/// account of the pane instead of two that can disagree. Without one — every
-/// pane, until the `AgentSession` engine lands — it goes straight into the
-/// detector exactly as it always has.
+/// Feed integration-hook lifecycle evidence into a pane (ADR-0085): as a
+/// synthesized record on a live `AgentSession` child's stream, else straight
+/// into the detector (ADR-0103 decision 6).
 pub(crate) async fn handle_report_agent_state(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     reported: phux_protocol::wire::frame::ReportedAgentState,
 ) -> CommandResult {
-    // The handle and the live-child answer are read under ONE borrow of the
-    // state: taking them separately would let a `session_end` land between
-    // them and route the report at a child that is already gone.
+    // One borrow, so a `session_end` cannot land between the two reads.
     let (resolved, live_session) = state.with(|server| {
         let resolved = server.resolve_resource(terminal_id).into_owned();
         let live_session = matches!(resolved, ResolvedOwned::Local(_))
@@ -4675,13 +4574,8 @@ pub(crate) async fn handle_report_agent_state(
             return terminal_not_found(terminal_id);
         }
     };
-    // docs/spec/L1.md §1.1: REPORT_AGENT_STATE addresses a Terminal — the
-    // hook reports on the pane it instrumented, not on a child stream
-    // directly. `live_session` above is what routes the report onto an
-    // `AgentSession` child once one exists; naming the child itself is the
-    // wrong-kind case this rejects before it ever reaches its own control
-    // mailbox, which would otherwise answer with the generic "derives its
-    // state from its own stream" refusal instead of the typed one.
+    // L1 §1.1: the report addresses the instrumented Terminal, never the
+    // child stream itself.
     if let Err(error) = handle.terminal() {
         return wrong_resource_kind(error);
     }
@@ -4716,17 +4610,9 @@ pub(crate) async fn handle_report_agent_state(
     }
 }
 
-/// Handle `SUBSCRIBE_RESOURCE_EVENTS` command.
-///
-/// `SUBSCRIBE_RESOURCE_EVENTS` is `SUBSCRIBE_EVENTS { terminal: Some(id) }`
-/// with a type filter, kept in the same registry (ADR-0123): a client
-/// subscribed both ways receives each event once, every event type reaches
-/// it (`event_types` empty = all), and a repeated subscription to the same
-/// Terminal replaces its filter. The subscription persists until the client
-/// detaches or the connection closes.
-///
-/// Registration happens under the state lock before `Ok` is answered, so an
-/// event emitted after the reply is always delivered.
+/// Handle `SUBSCRIBE_RESOURCE_EVENTS`: a Terminal-scoped `SUBSCRIBE_EVENTS`
+/// with a type filter in the same registry (ADR-0123); a repeat replaces the
+/// filter. Registered before `Ok`, so no later event is missed.
 pub(crate) fn handle_subscribe_terminal_events(
     state: &SharedState,
     client_id: ClientId,
@@ -4762,9 +4648,7 @@ pub(crate) fn handle_report_asked(
 ) -> CommandResult {
     let terminal = match state.with(|s| s.resolve_resource(terminal_id).into_owned()) {
         ResolvedOwned::Local(local) => {
-            // docs/spec/L1.md §1.1: REPORT_ASKED is a Terminal-facet
-            // command — the ask ladder it feeds is rendered on a pane, and
-            // an `AgentSession` has no pane of its own to render one on.
+            // L1 §1.1: the ask ladder renders on a Terminal.
             if let Err(error) = local.handle.terminal() {
                 return wrong_resource_kind(error);
             }
@@ -4847,25 +4731,10 @@ pub(crate) const fn empty_session_snapshot() -> phux_protocol::wire::info::Sessi
     )
 }
 
-/// Handle a client's `VIEWPORT_RESIZE` (SPEC §7.1 / §10.5).
-///
-/// Look up the client's currently-focused pane and update the in-memory
-/// `dims` so future `TERMINAL_SNAPSHOT` frames reflect the new size. This is
-/// the additive surface for phux-4hp: we deliberately do NOT push a
-/// resize into the [`TerminalActor`] (or call `Terminal::set_size` /
-/// `pty.resize(...)`) because byc.5's PTY pump owns the actor-side
-/// `Terminal` / `portable-pty` resize integration. The follow-up there
-/// will consume this state change (or, if it prefers a direct channel,
-/// can add a new `TerminalHandle` channel without touching this code).
-///
-/// Per SPEC §10.5, when multiple clients are attached with different
-/// sizes the server uses the smallest common bounding box per window.
-/// That negotiation lives with byc.5 too; today the last writer wins,
-/// which matches single-attach behavior (the only path exercised).
-///
-/// Silent on every "not-found" path. A `VIEWPORT_RESIZE` from an
-/// unattached client is a benign race (the client may have sent it
-/// before its ATTACH completed); logging at `debug!` is enough.
+/// Handle a client's `VIEWPORT_RESIZE` (SPEC §7.1 / §10.5): record the
+/// client's viewport, resolve its focused Terminal's geometry across every
+/// subscriber under the window-size policy, and resize the pane. Not-found
+/// paths are benign races and only log at debug.
 pub(crate) fn handle_viewport_resize(
     state: &SharedState,
     client_id: ClientId,
@@ -4894,11 +4763,8 @@ pub(crate) fn handle_viewport_resize(
         let Some(terminal_id) = window.active else {
             return;
         };
-        // phux-nk07: record this client's viewport, then resolve the
-        // Terminal's authoritative geometry by applying the window-size policy
-        // across EVERY subscriber's viewport — not last-writer-wins, which let
-        // two differently-sized clients thrash each other's grid. `Manual` (or
-        // no usable viewport yet) yields `None`: leave the PTY size untouched.
+        // Every subscriber's viewport counts, so two clients never thrash
+        // the grid; `None` (e.g. `Manual`) leaves the PTY size untouched.
         s.set_client_viewport(client_id, *viewport);
         let Some((cols, rows)) = s.resolve_terminal_geometry(terminal_id, Some(*viewport)) else {
             debug!(
@@ -4911,53 +4777,16 @@ pub(crate) fn handle_viewport_resize(
         if let Some(pane) = s.registry_mut().terminal_mut(terminal_id) {
             pane.dims = (cols, rows);
         }
-        // Pixel geometry rides along: the most recent usable pixel report
-        // among this Terminal's subscribers — normally the viewport just
-        // recorded above — fixes the cell size the PTY winsize and
-        // XTWINOPS replies advertise.
+        // The most recent usable pixel report fixes the advertised cell size.
         let cell_px = s.resolve_terminal_cell_px(terminal_id);
-        // Fan the resize out to the TerminalActor so libghostty's
-        // `Terminal::set_size` and the PTY `winsize` ioctl get
-        // updated. byc.5 added the `resize` channel on `TerminalHandle`;
-        // this is the missing connector (4hp ↔ byc.5).
-        //
-        // We hold the state lock here so `try_send` is the right
-        // primitive: VIEWPORT_RESIZE is fire-and-forget per SPEC §10.5,
-        // and an `.await` inside `with_mut` would deadlock the
-        // single-threaded runtime. On send failure (actor terminated,
-        // mailbox full — both rare; the resize mailbox is sized at
-        // `DEFAULT_INPUT_MAILBOX` = 64), we log and continue: a
-        // dropped resize is recoverable (the next resize, or the
-        // next snapshot, re-syncs) and SPEC §10.5 explicitly classes
-        // VIEWPORT_RESIZE as best-effort.
         if let Some(Ok(terminal)) = s.resource_handle(terminal_id).map(ResourceHandle::terminal) {
-            // Live viewport resize (SIGWINCH): resync clients (phux-8v1).
-            match terminal.resize.try_send(ResizeRequest {
-                cols,
-                rows,
+            try_resize(
+                terminal,
+                (cols, rows),
                 cell_px,
-                resync_clients: true,
-                resync_only: false,
-                resync_for: None,
-            }) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    warn!(
-                        ?client_id,
-                        ?terminal_id,
-                        cols,
-                        rows,
-                        "VIEWPORT_RESIZE: pane resize mailbox full; dropping (fire-and-forget per SPEC §10.5)",
-                    );
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    debug!(
-                        ?client_id,
-                        ?terminal_id,
-                        "VIEWPORT_RESIZE: pane actor gone; dropping resize",
-                    );
-                }
-            }
+                "VIEWPORT_RESIZE",
+                client_id,
+            );
         } else {
             debug!(
                 ?client_id,
@@ -4968,37 +4797,9 @@ pub(crate) fn handle_viewport_resize(
     });
 }
 
-/// Route an `INPUT_*` frame body to the target pane's [`TerminalActor`].
-///
-/// SPEC §9: input frames are fire-and-forget — no `Outbound` reply.
-/// On the wire the pane is identified by its `WireResourceId` (`u32`); we
-/// resolve it back to a core [`phux_core::ids::ResourceId`] via
-/// [`crate::state::ServerState::terminal_from_wire`],
-/// then locate the [`TerminalHandle`] and `try_send` the encoded
-/// [`TerminalInput`] onto the actor's input mailbox.
-///
-/// Validation: we drop with `warn!` (not `debug!`, this is observable
-/// misbehavior worth surfacing) on:
-///   * Unknown wire pane id (no [`phux_core::ids::ResourceId`] mapping).
-///   * Client not subscribed to this pane — prevents one client from
-///     steering another's pane (SPEC §9 leaves multi-client subscription
-///     rules to per-pane policy; subscription is the gate). Subscription
-///     is established by the session-scoped `ATTACH` or the per-terminal
-///     `ATTACH_RESOURCE` (phux-v45.7) — a session attachment is NOT
-///     required, because the federation hub's link consumer drives
-///     satellite panes with `ATTACH_RESOURCE` alone.
-///   * Pane has no registered [`TerminalHandle`] (actor never spawned, or
-///     spawned but evicted).
-///
-/// `try_send` is used because we hold the `with_mut` lock while routing:
-/// awaiting inside a `with_mut` would deadlock the single-threaded
-/// runtime, and an unbounded queue would let a slow PTY producer push
-/// memory through the roof. `Full` is treated as a backpressure event
-/// (warn-drop); `Closed` is logged at debug and dropped (actor gone).
-/// The satellite branch of [`handle_terminal_input`] (phux-v45.4):
-/// rebuild the wire `INPUT_*` frame with the id rewritten satellite-local
-/// and forward it verbatim over the owning hub link; warn-drop when this
-/// server has no route (the non-hub contract).
+/// The satellite branch of [`handle_terminal_input`]: gate on the caller's
+/// proxy attach and the hub-side lease, then forward the frame with a
+/// satellite-local id; warn-drop without a route.
 fn relay_satellite_input(
     state: &SharedState,
     client_id: ClientId,
@@ -5016,11 +4817,7 @@ fn relay_satellite_input(
         );
         return;
     }
-    // Hub-side lease gate (phux-v45.7, L1 §9.1): the satellite cannot
-    // distinguish hub consumers (they share the link identity), so the
-    // ADR-0033 "another client holds the wheel" drop must happen here.
-    // Dropped, not errored — the fire-and-forget input invariant holds,
-    // exactly like the local gate in `handle_terminal_input`.
+    // L1 §9.1: the satellite cannot tell hub consumers apart.
     if state.with(|s| {
         s.satellite_lease_holder(&route.host, route.id)
             .is_some_and(|holder| holder != client_id)
@@ -5069,13 +4866,8 @@ fn relay_satellite_input(
 }
 
 /// Apply subscription, lease, and activity gates for attached local input,
-/// then running `action` with the generational pane and current actor handle
-/// while the authority lock remains held.
-///
-/// Local-only by contract: these are the *hub's* gates, and a satellite runs
-/// its own, so every caller settles location through
-/// [`crate::state::ServerState::resolve_resource`] and relays a
-/// [`crate::state::ResolvedOwned::Remote`] before reaching here.
+/// then run `action` while the authority lock is held. Callers relay
+/// satellite ids before reaching here.
 pub(crate) fn with_attached_input_destination<R>(
     state: &SharedState,
     client_id: ClientId,
@@ -5084,8 +4876,7 @@ pub(crate) fn with_attached_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Option<R> {
     state.with_mut(|s| {
-        // Input queued on the lane before a revocation is not delivered
-        // after it (workload-auth §7 step 2).
+        // workload-auth §7 step 2.
         if s.connection_revoked(client_id) {
             trace!(
                 ?client_id,
@@ -5133,8 +4924,6 @@ pub(crate) fn with_attached_input_destination<R>(
             );
             return None;
         }
-        // Bind the session id out of the shared borrow first: `attached()`
-        // borrows all of `s`, and `touch_session` needs `&mut s`.
         let touched_session = s.attached().get(&client_id).map(|c| c.session);
         if let Some(session) = touched_session {
             s.touch_session(session);
@@ -5143,17 +4932,8 @@ pub(crate) fn with_attached_input_destination<R>(
             Ok(terminal) => terminal.clone(),
             Err(error) => {
                 warn!(?client_id, ?wire_terminal_id, frame_label, %error, "dropping input");
-                // docs/spec/input.md §9: an input atom named a live
-                // resource of another kind. It carries no reply of its
-                // own, so the refusal rides an uncorrelated ERROR frame to
-                // the sender instead of just a server-side log line.
-                if let Some(mailbox) = s.client_mailbox(client_id) {
-                    let _ = mailbox.try_send(Outbound::Frame(FrameKind::Error {
-                        request_id: None,
-                        code: ErrorCode::WrongResourceKind,
-                        message: error.to_string(),
-                    }));
-                }
+                // input.md §9: no reply frame, so an uncorrelated ERROR.
+                send_wrong_kind_error(s, client_id, &error);
                 return None;
             }
         };
@@ -5168,14 +4948,6 @@ pub(crate) fn handle_terminal_input(
     input: TerminalInput,
     frame_label: &'static str,
 ) {
-    // Satellite-routed input (phux-v45.4): on a hub, forward the frame
-    // verbatim over the owning link with the id rewritten to the
-    // satellite's Local space — the satellite applies its own routing
-    // gates (see `relay_satellite_frame`'s scope note). Non-hub servers
-    // keep the ADR-0016 / SPEC §10.1 behavior: drop with a warn (the
-    // protocol-level response is `ERROR { UnsupportedSatelliteRoute }`;
-    // surfacing it from this fire-and-forget helper is still a follow-up
-    // tied to phux-byc.9).
     if let ResolvedOwned::Remote(route) =
         state.with(|s| s.resolve_resource(wire_terminal_id).into_owned())
     {
@@ -5189,11 +4961,7 @@ pub(crate) fn handle_terminal_input(
         );
         return;
     }
-    // docs/consumers/tui.md §9 (phux-r82.1): an INPUT_FOCUS gained event
-    // that passes every routing gate below means a client's focus landed
-    // on this pane — the `focus-changed` hook point. Computed up front
-    // because `input` moves into the closure; fired AFTER the `with_mut`
-    // scope closes (the hook helper re-takes the state lock).
+    // A routed focus-gained fires `focus-changed` (tui.md §9) after the lock.
     let is_focus_gained = matches!(
         input,
         TerminalInput::Focus(phux_protocol::input::focus::FocusEvent::Gained)
@@ -5243,17 +5011,9 @@ pub(crate) fn handle_terminal_input(
     }
 }
 
-/// Discard one client terminal-engine reply without writing it to the PTY.
-///
-/// The server's canonical terminal already answers every query the child
-/// writes (DSR, DA, DECRQM, XTWINOPS, OSC 10/11, ...) the moment it parses
-/// the output, exactly once, whether zero or many clients are attached. A
-/// client replica parses the same bytes and generates the same reply a
-/// network round trip later; writing it too would hand the child a second
-/// answer it never asked for, which a prompt library such as `gh`'s reads
-/// as typed input (`1R` in a filter box). The frame stays accepted so a
-/// client built before this change keeps working, but its bytes are
-/// dropped here (input.md §6).
+/// Discard a client terminal-engine reply (input.md §6): the canonical
+/// terminal already answered the query once, and a second answer reaches
+/// the child as typed input.
 pub(crate) fn handle_terminal_reply(
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
@@ -5267,27 +5027,9 @@ pub(crate) fn handle_terminal_reply(
     );
 }
 
-/// Route an inbound `FRAME_ACK` (SPEC §7.proto.1 / §12.2) to the
-/// owning `TerminalActor` so it can evict the per-consumer dirty cache
-/// under ADR-0018 lazy state synchronization (phux-q0e.4).
-///
-/// Validation:
-///   * Unknown wire pane id → drop (warn). The client is acking a
-///     terminal the server has no mapping for; this is observable
-///     misbehavior worth surfacing.
-///   * Client not subscribed to this pane → drop (warn). Same gate as
-///     `handle_terminal_input`: a client cannot ack a pane it does not
-///     observe. Subscription comes from `ATTACH` or `ATTACH_RESOURCE`
-///     (phux-v45.7); no session attachment is required.
-///   * No `TerminalHandle` (actor evicted) → drop (debug — race against
-///     teardown).
-///
-/// `try_send` is non-blocking by the same `with_mut` locking rationale
-/// as `handle_terminal_input`: awaiting inside `with_mut` would
-/// deadlock the single-threaded runtime, and `FRAME_ACK` is hint-shaped
-/// per ADR-0018 — dropping under backpressure is correct (the next
-/// ack the client sends will catch up the per-consumer reference,
-/// and unacked diffs stay re-emittable in the meantime).
+/// Route an inbound `FRAME_ACK` to the pane's actor for per-consumer cache
+/// eviction (ADR-0018). Acks are hints, so an unknown pane, a
+/// non-subscriber, or a full mailbox just drops it; satellite acks relay.
 pub(crate) fn handle_frame_ack(
     state: &SharedState,
     client_id: ClientId,
@@ -5296,9 +5038,6 @@ pub(crate) fn handle_frame_ack(
     bootstrap_id: phux_protocol::ids::BootstrapId,
     seq: u64,
 ) {
-    // Satellite-routed acks relay like input frames (phux-v45.4): forward
-    // verbatim on a hub, warn-drop off one. FRAME_ACK is hint-shaped
-    // (ADR-0018), so the bounded-relay drop contract is safe here too.
     state.with_mut(|s| {
         let local = match s.resolve_resource(wire_terminal_id).into_owned() {
             ResolvedOwned::Remote(route) => {
@@ -5326,15 +5065,8 @@ pub(crate) fn handle_frame_ack(
         if !frame_ack_subscribed(s, client_id, wire_terminal_id, local.id, seq) {
             return;
         }
-        let handle = &local.handle;
-        // Bridge `state::ClientId` (u64 newtype) → `phux_protocol::ClientId`
-        // (u32), matching the conversion `handle_attach` already does for
-        // the per-consumer state map keys. The wire ClientId space caps at
-        // u32::MAX; widening would require a protocol bump.
-        let wire_client_id =
-            phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
-        let dispatched = handle.consumer_ack.try_send(ConsumerAckRequest {
-            client_id: wire_client_id,
+        let dispatched = local.handle.consumer_ack.try_send(ConsumerAckRequest {
+            client_id: wire_client_id(client_id),
             stream_id,
             bootstrap_id,
             seq,
@@ -5371,10 +5103,7 @@ fn relay_frame_ack(
     }
 }
 
-/// The observation gate from [`handle_frame_ack`]'s contract: may `client_id`
-/// ack `pane`? The location and existence gates are the seam's
-/// ([`crate::state::ServerState::resolve_resource`]); this is the one gate
-/// left that the seam cannot answer.
+/// Whether `client_id` subscribes to `pane` and so may ack it.
 fn frame_ack_subscribed(
     s: &crate::state::ServerState,
     client_id: ClientId,
@@ -5382,10 +5111,6 @@ fn frame_ack_subscribed(
     pane: phux_core::ids::ResourceId,
     seq: u64,
 ) -> bool {
-    // Same gate as `handle_terminal_input` (phux-v45.7): subscription
-    // — established by ATTACH or ATTACH_RESOURCE — is the ack gate; a
-    // session attachment is not required (the federation hub's link
-    // consumer acks relayed frames without one).
     if s.subscribers_for_terminal(pane).contains(&client_id) {
         return true;
     }
