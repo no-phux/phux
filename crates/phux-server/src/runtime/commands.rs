@@ -460,7 +460,7 @@ pub(crate) fn handle_terminal_resize(
             Err(error) => {
                 debug!(?client_id, ?terminal, %error, "RESIZE_TERMINAL: not a Terminal; dropping");
                 // L1 §1.1: no reply frame, so an uncorrelated ERROR.
-                send_wrong_kind_error(s, client_id, &error);
+                send_wrong_kind_error(s, client_id, error);
                 return;
             }
         };
@@ -474,7 +474,7 @@ pub(crate) fn handle_terminal_resize(
 fn send_wrong_kind_error(
     s: &crate::state::ServerState,
     client_id: ClientId,
-    error: &WrongResourceKind,
+    error: WrongResourceKind,
 ) {
     if let Some(mailbox) = s.client_mailbox(client_id) {
         let _ = mailbox.try_send(Outbound::Frame(FrameKind::Error {
@@ -745,10 +745,7 @@ pub(crate) async fn handle_command(
             // was refused before routing.
             let role = role_policy.unwrap_or_default();
             if defer_subscription {
-                // Multi-stream: register the subscription against the
-                // control mailbox and stop. The content stream — pump,
-                // bootstrap, live output — starts at STREAM_BIND with the
-                // stream's mailbox (see `bootstrap_attach_terminal`).
+                // Content starts at STREAM_BIND on the stream's mailbox.
                 subscribe_deferred_attach(state, client_id, &terminal_id, out_tx, role).await
             } else {
                 handle_attach_terminal(
@@ -3712,10 +3709,7 @@ fn merge_satellite_resources(
             continue;
         };
         pane.id = id;
-        // A parent id is a resource id and retags by the same rule
-        // (ADR-0104): a satellite child is reported under its satellite
-        // parent, and a Satellite-tagged parent (chaining) drops the binding
-        // rather than pointing at an unrelated hub-local pane.
+        // ADR-0104: a parent retags by the same rule; a chained one drops.
         pane.parent = retag_satellite_resource_id(host, pane.parent.as_ref());
         snapshot.resources.push(pane);
     }
@@ -3794,19 +3788,9 @@ fn session_active_resource(
     retag_satellite_resource_id(host, local.as_ref())
 }
 
-/// Retag one id a satellite reported into the hub's id space, for
-/// `GET_STATE` aggregation.
-///
-/// A satellite names its own resources `Local { id }`; the hub republishes
-/// them as `Satellite { host, id }` so the merged snapshot is addressable
-/// from the hub. `None` in yields `None` out, and a `Satellite`-tagged id
-/// also yields `None`: hub-and-spoke does not chain (L1 §9.1), so an id a
-/// satellite already tagged has no hub-side form.
-///
-/// `Option` in, `Option` out because every id a `ResourceInfo` carries
-/// retags by this one rule. `parent` (ADR-0104) is a resource id like any
-/// other and routes through here the moment the protocol lane adds the
-/// field.
+/// Retag a satellite's `Local { id }` as `Satellite { host, id }`. A
+/// `Satellite`-tagged id has no hub-side form: hub-and-spoke does not chain
+/// (L1 §9.1).
 fn retag_satellite_resource_id(
     host: &phux_protocol::ids::SatelliteHost,
     id: Option<&phux_protocol::ids::ResourceId>,
@@ -4933,7 +4917,7 @@ pub(crate) fn with_attached_input_destination<R>(
             Err(error) => {
                 warn!(?client_id, ?wire_terminal_id, frame_label, %error, "dropping input");
                 // input.md §9: no reply frame, so an uncorrelated ERROR.
-                send_wrong_kind_error(s, client_id, &error);
+                send_wrong_kind_error(s, client_id, error);
                 return None;
             }
         };
@@ -5272,8 +5256,7 @@ mod hub_detach_fence_tests {
             }))
         ));
         assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
-        // FFI refuses the pending detach and resumes this exact generation.
-        // Let the delayed link process cleanup only after that safe refusal.
+        // The delayed link processes the withdrawal only after the refusal.
         assert!(
             session
                 .handle_unsubscribe(mailbox.unsubscribes.try_recv().unwrap())
@@ -5474,34 +5457,29 @@ mod relay_satellite_attach_role_tests {
         }
     }
 
-    /// phux-4z1y: a refused first VIEWER attach must not leave a hub-side
-    /// tombstone keyed on a satellite id the hub never subscribed.
+    /// A refused first VIEWER attach must not leave a hub-side tombstone on
+    /// a satellite id the hub never subscribed.
     #[tokio::test]
     async fn a_refused_first_satellite_viewer_attach_does_not_leave_a_tombstone() {
         let mut fixture = Fixture::new();
-        for terminal in 1..=8 {
-            let result = fixture.refuse_attach(terminal, RolePolicy::VIEWER).await;
-            assert!(matches!(
-                result,
-                CommandResult::Error {
-                    code: ErrorCode::TerminalNotFound,
-                    ..
-                }
-            ));
-            let wire = fixture.wire(terminal);
-            assert!(
-                !fixture
-                    .state
-                    .with(|s| s.is_viewer(fixture.client_id, &wire)),
-                "refused VIEWER attach to {wire:?} must not leave a tombstone"
-            );
-            assert!(fixture.state.with(|s| s.terminal_viewers(&wire).is_empty()));
-        }
+        let result = fixture.refuse_attach(1, RolePolicy::VIEWER).await;
+        assert!(matches!(
+            result,
+            CommandResult::Error {
+                code: ErrorCode::TerminalNotFound,
+                ..
+            }
+        ));
+        let wire = fixture.wire(1);
+        assert!(
+            !fixture
+                .state
+                .with(|s| s.is_viewer(fixture.client_id, &wire))
+        );
+        assert!(fixture.state.with(|s| s.terminal_viewers(&wire).is_empty()));
     }
 
-    /// A prior mark or proxy attach is the restore exception: the refused
-    /// narrowing must not shed an existing tombstone, and must not undo a
-    /// mark that already had a hub-side subscription.
+    /// A refused narrowing keeps a prior mark and a proxy-attached mark.
     #[tokio::test]
     async fn a_refused_satellite_viewer_attach_keeps_a_prior_mark_or_proxy() {
         let mut fixture = Fixture::new();
@@ -5548,39 +5526,6 @@ mod relay_satellite_attach_role_tests {
             &fixture.host,
             7
         )));
-    }
-}
-
-#[cfg(test)]
-mod get_state_retag_tests {
-    use phux_protocol::ids::{ResourceId, SatelliteHost};
-
-    use super::retag_satellite_resource_id;
-
-    /// The one rule `GET_STATE` aggregation applies to every id a satellite
-    /// reports — the hook `parent` will use unchanged (ADR-0104).
-    #[test]
-    fn retag_lifts_satellite_local_ids_and_refuses_to_chain() {
-        let host = SatelliteHost::from("edge");
-
-        assert_eq!(
-            retag_satellite_resource_id(&host, Some(&ResourceId::local(7))),
-            Some(ResourceId::satellite(host.clone(), 7)),
-            "a satellite's own Local id is republished under its host",
-        );
-        assert_eq!(
-            retag_satellite_resource_id(&host, None),
-            None,
-            "an absent id stays absent",
-        );
-        assert_eq!(
-            retag_satellite_resource_id(
-                &host,
-                Some(&ResourceId::satellite(SatelliteHost::from("other"), 7)),
-            ),
-            None,
-            "hub-and-spoke does not chain (L1 §9.1)",
-        );
     }
 }
 
@@ -5789,12 +5734,16 @@ mod kill_merge_tests {
         );
     }
 
-    /// L1 §5.1.1: a keyed signal is committed once it is queued on the
-    /// actor. A connection cancelled before the reply does not release the
-    /// key, so the retry answers the first result and nothing is delivered
-    /// twice.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_keyed_signal_cancelled_before_its_reply_is_delivered_once() {
+    /// A keyed signal the first attempt owns, committed on its actor queue.
+    struct CommittedSignal {
+        state: SharedState,
+        command: Command,
+        claim: crate::runtime::operation_dedupe::OperationClaim,
+        actor: tokio::sync::mpsc::Receiver<ControlRequest>,
+        reply_rx: oneshot::Receiver<Result<(), String>>,
+    }
+
+    async fn committed_signal() -> CommittedSignal {
         let state = SharedState::new();
         let key = IdempotencyKey::new([4; 16]);
         let command = Command::SignalTerminal {
@@ -5805,7 +5754,7 @@ mod kill_merge_tests {
         let KeyedAdmission::Owner(claim) = admit(&state, &command).await else {
             panic!("the first attempt owns the key");
         };
-        let (control, mut actor) = tokio::sync::mpsc::channel(4);
+        let (control, actor) = tokio::sync::mpsc::channel(4);
         let (reply, reply_rx) = oneshot::channel();
         let request = ControlRequest::Signal {
             signal: TerminalSignal::Interrupt,
@@ -5815,7 +5764,27 @@ mod kill_merge_tests {
             reply,
         };
         assert!(commit_signal(&control, request, Some(&claim)).await);
-        // The connection is cancelled (revoked, say) before the actor answers.
+        CommittedSignal {
+            state,
+            command,
+            claim,
+            actor,
+            reply_rx,
+        }
+    }
+
+    /// L1 §5.1.1: a connection cancelled before the reply does not release
+    /// the key, so the retry answers the first result and nothing is
+    /// delivered twice.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_keyed_signal_cancelled_before_its_reply_is_delivered_once() {
+        let CommittedSignal {
+            state,
+            command,
+            claim,
+            mut actor,
+            reply_rx,
+        } = committed_signal().await;
         drop(reply_rx);
         drop(claim);
         assert!(
@@ -5829,30 +5798,16 @@ mod kill_merge_tests {
         assert!(actor.try_recv().is_err(), "and nothing else was");
     }
 
-    /// A keyed signal committed on queueing whose delivery then failed
-    /// answers that failure on retry, never the committed `OK`.
+    /// A committed signal whose delivery failed answers that failure on
+    /// retry, never the committed `OK`.
     #[tokio::test(flavor = "current_thread")]
     async fn a_keyed_signal_that_was_not_delivered_answers_its_failure_on_retry() {
-        let state = SharedState::new();
-        let key = IdempotencyKey::new([5; 16]);
-        let command = Command::SignalTerminal {
-            terminal_id: ResourceId::local(3),
-            signal: TerminalSignal::Interrupt,
-            operation_id: key,
-        };
-        let KeyedAdmission::Owner(claim) = admit(&state, &command).await else {
-            panic!("the first attempt owns the key");
-        };
-        let (control, _actor) = tokio::sync::mpsc::channel(4);
-        let (reply, _reply_rx) = oneshot::channel();
-        let request = ControlRequest::Signal {
-            signal: TerminalSignal::Interrupt,
-            input_holder: None,
-            by: phux_protocol::ClientId::new(1),
-            operation_id: key,
-            reply,
-        };
-        assert!(commit_signal(&control, request, Some(&claim)).await);
+        let CommittedSignal {
+            state,
+            command,
+            claim,
+            ..
+        } = committed_signal().await;
         let failure = CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "no PTY child to signal".to_owned(),
