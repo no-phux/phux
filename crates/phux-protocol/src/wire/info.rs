@@ -907,9 +907,8 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<ResourceInfo
 /// Session-facet flag bit: the session is keep-empty (ADR-0105).
 const SESSION_FACET_KEEP_EMPTY: u8 = 0x01;
 
-/// Write the trailing resource-facet list (see [`SessionSnapshot`]), or
-/// nothing when every entry is a plain Terminal and no later trailing list
-/// (`more_follow`) needs the facet count as its positional anchor.
+/// Write the trailing resource-facet list, or nothing when it is empty and no
+/// later element (`more_follow`) needs it as a positional anchor.
 fn encode_resource_facets(resources: &[ResourceInfo], more_follow: bool, enc: &mut Encoder<'_>) {
     let rows = resources.iter().filter(|p| p.has_resource_facets()).count();
     if rows == 0 && !more_follow {
@@ -959,18 +958,9 @@ fn decode_resource_facets(
 }
 
 pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<'_>) {
-    encode_list_len(snap.sessions.len(), enc);
-    for s in &snap.sessions {
-        encode_session_info(s, enc);
-    }
-    encode_list_len(snap.windows.len(), enc);
-    for w in &snap.windows {
-        encode_window_info(w, enc);
-    }
-    encode_list_len(snap.resources.len(), enc);
-    for p in &snap.resources {
-        encode_terminal_info(p, enc);
-    }
+    encode_list(&snap.sessions, enc, encode_session_info);
+    encode_list(&snap.windows, enc, encode_window_info);
+    encode_list(&snap.resources, enc, encode_terminal_info);
     enc.write_u32_be(snap.focused_session.get());
     enc.write_u32_be(snap.focused_window.get());
     encode_terminal_id(&snap.focused_resource, enc);
@@ -989,11 +979,8 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     }
 }
 
-/// Build the snapshot extension block (see [`SessionSnapshot`]): one
-/// `RESOURCE_STATE` field per resource with non-default state, then the
-/// journal head when there is one. Empty when every resource is plainly
-/// running and unheld and no head is named, in which case nothing is
-/// written and the snapshot keeps its pre-extension bytes.
+/// Build the snapshot extension block: `RESOURCE_STATE` per non-default
+/// resource, then the journal head; empty means nothing is written.
 fn encode_snapshot_extension(resources: &[ResourceInfo], journal_head: Option<u64>) -> BytesMut {
     let mut block = BytesMut::new();
     let mut enc = Encoder::new(&mut block);
@@ -1054,10 +1041,8 @@ fn decode_exit_facet(dec: &mut Decoder<'_>) -> Result<ExitFacet, DecodeError> {
         .with_reason(reason))
 }
 
-/// Read the snapshot extension block if bytes remain, applying each
-/// `RESOURCE_STATE` to its `resources` entry by id, and return the journal
-/// head it names. Unknown field ids, in the block or inside an entry, are
-/// skipped by length.
+/// Read the extension block if bytes remain, joining each `RESOURCE_STATE`
+/// by id, and return its journal head.
 fn decode_snapshot_extension(
     dec: &mut Decoder<'_>,
     resources: &mut [ResourceInfo],
@@ -1079,10 +1064,8 @@ fn decode_snapshot_extension(
     Ok(journal_head)
 }
 
-/// Decode one `RESOURCE_STATE` value and join it onto its entry. A value
-/// naming no entry is ignored, like a facet row naming no entry; an
-/// unallocated lifecycle byte reads as `Running`, and the exit facet, when
-/// present, is the authoritative fact.
+/// Join one `RESOURCE_STATE` value onto its entry (ignored when none); an
+/// unknown lifecycle byte reads as `Running`.
 fn apply_resource_state(value: &[u8], resources: &mut [ResourceInfo]) -> Result<(), DecodeError> {
     let mut dec = Decoder::new(value);
     let id = decode_terminal_id(&mut dec)?;
@@ -1117,22 +1100,17 @@ fn boxed_hosts(hosts: Vec<HostInventory>) -> Option<Box<[HostInventory]>> {
     (!hosts.is_empty()).then(|| hosts.into_boxed_slice())
 }
 
-/// Write the trailing host-session inventory (see [`SessionSnapshot`]), or
-/// nothing when it is empty and no later trailing list (`more_follow`)
-/// needs its count as a positional anchor.
+/// Write the trailing host inventory, or nothing when it is empty and no
+/// later element needs it as an anchor.
 fn encode_host_inventory(hosts: &[HostInventory], more_follow: bool, enc: &mut Encoder<'_>) {
     if hosts.is_empty() && !more_follow {
         return;
     }
-    encode_list_len(hosts.len(), enc);
-    for row in hosts {
+    encode_list(hosts, enc, |row, enc| {
         enc.write_str(row.host.as_str());
         encode_option_str(row.unreachable.as_deref(), enc);
-        encode_list_len(row.sessions.len(), enc);
-        for session in &row.sessions {
-            encode_host_session(session, enc);
-        }
-    }
+        encode_list(&row.sessions, enc, encode_host_session);
+    });
 }
 
 fn encode_host_session(session: &HostSessionInfo, enc: &mut Encoder<'_>) {
@@ -1151,23 +1129,13 @@ fn decode_host_inventory(dec: &mut Decoder<'_>) -> Result<Vec<HostInventory>, De
     if dec.at_body_end() {
         return Ok(Vec::new());
     }
-    let rows = decode_list_len(dec)?;
-    let mut hosts = dec.bounded_capacity(rows);
-    for _ in 0..rows {
-        let host = SatelliteHost::new(dec.read_str()?);
-        let unreachable = decode_option_str(dec)?.map(str::to_owned);
-        let count = decode_list_len(dec)?;
-        let mut sessions = dec.bounded_capacity(count);
-        for _ in 0..count {
-            sessions.push(decode_host_session(dec)?);
-        }
-        hosts.push(HostInventory {
-            host,
-            unreachable,
-            sessions,
-        });
-    }
-    Ok(hosts)
+    decode_list(dec, |dec| {
+        Ok(HostInventory {
+            host: SatelliteHost::new(dec.read_str()?),
+            unreachable: decode_option_str(dec)?.map(str::to_owned),
+            sessions: decode_list(dec, decode_host_session)?,
+        })
+    })
 }
 
 fn decode_host_session(dec: &mut Decoder<'_>) -> Result<HostSessionInfo, DecodeError> {
@@ -1189,9 +1157,8 @@ fn decode_host_session(dec: &mut Decoder<'_>) -> Result<HostSessionInfo, DecodeE
     })
 }
 
-/// Write the trailing session-facet list (see [`SessionSnapshot`]), or
-/// nothing when no session carries a facet and no later trailing field
-/// (`more_follow`) needs its count as a positional anchor.
+/// Write the trailing session-facet list, or nothing when it is empty and no
+/// later element needs it as an anchor.
 fn encode_session_facets(
     sessions: &[SessionInfo],
     rows: usize,
@@ -1208,10 +1175,8 @@ fn encode_session_facets(
     }
 }
 
-/// Write the trailing remote-listeners JSON (see [`SessionSnapshot`]). An
-/// unset report writes nothing, unless the extension block follows
-/// (`more_follow`), which needs an explicit absent marker (`0`) as its
-/// positional anchor.
+/// Write the trailing listeners JSON; an unset report writes nothing, or an
+/// absent marker when the extension block follows.
 fn encode_listeners(
     report: Option<&crate::wire::listeners::RemoteListenersReport>,
     more_follow: bool,
@@ -1260,26 +1225,9 @@ fn decode_session_facets(
 pub(super) fn decode_session_snapshot(
     dec: &mut Decoder<'_>,
 ) -> Result<SessionSnapshot, DecodeError> {
-    // Clamp each list's reservation to the bytes remaining in the frame
-    // body. Every element occupies multiple bytes on the wire, so remaining
-    // bytes is a safe upper bound on element count; an over-declared length
-    // errors on EOF in the read loop rather than pre-allocating gigabytes
-    // (a decode-path DoS otherwise).
-    let sessions_len = decode_list_len(dec)?;
-    let mut sessions = dec.bounded_capacity(sessions_len);
-    for _ in 0..sessions_len {
-        sessions.push(decode_session_info(dec)?);
-    }
-    let windows_len = decode_list_len(dec)?;
-    let mut windows = dec.bounded_capacity(windows_len);
-    for _ in 0..windows_len {
-        windows.push(decode_window_info(dec)?);
-    }
-    let resources_len = decode_list_len(dec)?;
-    let mut resources = dec.bounded_capacity(resources_len);
-    for _ in 0..resources_len {
-        resources.push(decode_terminal_info(dec)?);
-    }
+    let mut sessions = decode_list(dec, decode_session_info)?;
+    let windows = decode_list(dec, decode_window_info)?;
+    let mut resources = decode_list(dec, decode_terminal_info)?;
     let focused_session = SessionId::new(dec.read_u32_be()?);
     let focused_window = WindowId::new(dec.read_u32_be()?);
     let focused_resource = decode_terminal_id(dec)?;
@@ -1350,6 +1298,28 @@ pub(super) fn encode_list_len(len: usize, enc: &mut Encoder<'_>) {
     );
     let len_u32 = u32::try_from(len).unwrap_or(u32::MAX);
     enc.write_u32_be(len_u32);
+}
+
+/// Write a `u32`-counted list, each item via `item`.
+fn encode_list<T>(items: &[T], enc: &mut Encoder<'_>, item: impl Fn(&T, &mut Encoder<'_>)) {
+    encode_list_len(items.len(), enc);
+    for value in items {
+        item(value, enc);
+    }
+}
+
+/// Read a `u32`-counted list; an over-declared count cannot pre-allocate
+/// past the remaining bytes.
+fn decode_list<'a, T>(
+    dec: &mut Decoder<'a>,
+    item: impl Fn(&mut Decoder<'a>) -> Result<T, DecodeError>,
+) -> Result<Vec<T>, DecodeError> {
+    let len = decode_list_len(dec)?;
+    let mut out = dec.bounded_capacity(len);
+    for _ in 0..len {
+        out.push(item(dec)?);
+    }
+    Ok(out)
 }
 
 pub(super) fn decode_list_len(dec: &mut Decoder<'_>) -> Result<usize, DecodeError> {

@@ -958,9 +958,8 @@ fn write_approval_id(id: &crate::ids::ApprovalId, enc: &mut Encoder<'_>) {
     }
 }
 
-/// Decode an `approval_requested` or `approval_decided` body: 16 id bytes,
-/// then, for a decision, the outcome byte. `Ok(None)` for a zero id or an
-/// unknown outcome; a truncated body is still an error.
+/// Decode an approval event body (16 id bytes, then a decision's outcome);
+/// `Ok(None)` for a zero id or unknown outcome.
 fn decode_approval_event(
     tag: u8,
     dec: &mut Decoder<'_>,

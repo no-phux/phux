@@ -32,9 +32,6 @@ use crate::caps::{
     MAX_BOOTSTRAP_CHUNK_BYTES, MAX_HISTORY_PAGE_BYTES,
 };
 use crate::ids::{BootstrapId, GroupId, ResourceId, ResourceKind, StreamId};
-use crate::input::focus::FocusEvent;
-use crate::input::key::KeyEvent;
-use crate::input::mouse::MouseEvent;
 
 /// Decode a positional sub-record from a TLV field's value with a fresh
 /// [`Decoder`], so a malformed nested value cannot read past its field.
@@ -303,10 +300,23 @@ impl<'a> Decoder<'a> {
             TYPE_RESOURCE_OUTPUT => self.decode_terminal_output(),
             TYPE_ATTACH => self.decode_attach(),
             TYPE_DETACH => self.decode_detach(),
-            TYPE_INPUT_KEY => self.decode_input_key(),
-            TYPE_INPUT_MOUSE => self.decode_input_mouse(),
-            TYPE_INPUT_FOCUS => self.decode_input_focus(),
-            TYPE_INPUT_PASTE => self.decode_input_paste(),
+            TYPE_INPUT_KEY => {
+                let (terminal_id, event) = self.decode_input_event(decode_key_event)?;
+                Ok(FrameKind::InputKey { terminal_id, event })
+            }
+            TYPE_INPUT_MOUSE => {
+                let (terminal_id, event) = self.decode_input_event(decode_mouse_event)?;
+                Ok(FrameKind::InputMouse { terminal_id, event })
+            }
+            TYPE_INPUT_FOCUS => {
+                let (terminal_id, event) =
+                    self.decode_input_event(|d| decode_focus_event(d.read_u8()?))?;
+                Ok(FrameKind::InputFocus { terminal_id, event })
+            }
+            TYPE_INPUT_PASTE => {
+                let (terminal_id, event) = self.decode_input_event(decode_paste_event)?;
+                Ok(FrameKind::InputPaste { terminal_id, event })
+            }
             TYPE_INPUT_TERMINAL_REPLY => self.decode_input_terminal_reply(),
             TYPE_FRAME_ACK => self.decode_frame_ack(),
             TYPE_VIEWPORT_RESIZE => self.decode_viewport_resize(),
@@ -361,6 +371,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_hello(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::hello as f;
         let mut client_name: Option<String> = None;
         let mut protocol_major = None;
         let mut protocol_minor = None;
@@ -371,29 +382,19 @@ impl<'a> Decoder<'a> {
         let mut quic_streams = false;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::hello::CLIENT_NAME => client_name = Some(utf8_value(value)?),
-                field::hello::PROTOCOL_MAJOR => {
-                    protocol_major = Some(sub!(value, Decoder::read_u16_be));
-                }
-                field::hello::PROTOCOL_MINOR => {
-                    protocol_minor = Some(sub!(value, Decoder::read_u16_be));
-                }
-                field::hello::PROTOCOL_PATCH => {
-                    protocol_patch = Some(sub!(value, Decoder::read_u16_be));
-                }
-                field::hello::CLIENT_CAPS => {
-                    client_caps = Some(sub!(value, decode_client_capabilities));
-                }
-                field::hello::COMPRESSION => {
+                f::CLIENT_NAME => client_name = Some(utf8_value(value)?),
+                f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
+                f::PROTOCOL_MINOR => protocol_minor = Some(sub!(value, Decoder::read_u16_be)),
+                f::PROTOCOL_PATCH => protocol_patch = Some(sub!(value, Decoder::read_u16_be)),
+                f::CLIENT_CAPS => client_caps = Some(sub!(value, decode_client_capabilities)),
+                f::COMPRESSION => {
                     compression = Some(crate::caps::CompressionSet::from_bits(sub!(
                         value,
                         Decoder::read_u8
                     )));
                 }
-                field::hello::SSH_ORIGIN => {
-                    ssh_origin = super::ssh_origin::decode_ssh_origin(value);
-                }
-                field::hello::QUIC_STREAMS => quic_streams = sub!(value, Decoder::read_u8) != 0,
+                f::SSH_ORIGIN => ssh_origin = super::ssh_origin::decode_ssh_origin(value),
+                f::QUIC_STREAMS => quic_streams = sub!(value, Decoder::read_u8) != 0,
                 _ => {}
             }
         }
@@ -417,6 +418,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_hello_ok(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::hello_ok as f;
         let mut protocol_major = None;
         let mut protocol_minor = None;
         let mut protocol_patch = None;
@@ -428,29 +430,19 @@ impl<'a> Decoder<'a> {
         let mut compression: Option<crate::caps::Compression> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::hello_ok::PROTOCOL_MAJOR => {
-                    protocol_major = Some(sub!(value, Decoder::read_u16_be));
-                }
-                field::hello_ok::PROTOCOL_MINOR => {
-                    protocol_minor = Some(sub!(value, Decoder::read_u16_be));
-                }
-                field::hello_ok::PROTOCOL_PATCH => {
-                    protocol_patch = Some(sub!(value, Decoder::read_u16_be));
-                }
-                field::hello_ok::SERVER_CAPS => {
-                    server_caps = Some(sub!(value, decode_server_capabilities));
-                }
-                field::hello_ok::SERVER_ID => server_id = Some(value.to_vec()),
-                field::hello_ok::SELECTED_PROFILE => {
+                f::PROTOCOL_MAJOR => protocol_major = Some(sub!(value, Decoder::read_u16_be)),
+                f::PROTOCOL_MINOR => protocol_minor = Some(sub!(value, Decoder::read_u16_be)),
+                f::PROTOCOL_PATCH => protocol_patch = Some(sub!(value, Decoder::read_u16_be)),
+                f::SERVER_CAPS => server_caps = Some(sub!(value, decode_server_capabilities)),
+                f::SERVER_ID => server_id = Some(value.to_vec()),
+                f::SELECTED_PROFILE => {
                     selected_profile = Some(sub!(value, decode_bootstrap_profile));
                 }
-                field::hello_ok::MAX_CHUNK_BYTES => {
-                    max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be));
-                }
-                field::hello_ok::MAX_HISTORY_PAGE_BYTES => {
+                f::MAX_CHUNK_BYTES => max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be)),
+                f::MAX_HISTORY_PAGE_BYTES => {
                     max_history_page_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
-                field::hello_ok::COMPRESSION => {
+                f::COMPRESSION => {
                     compression = Some(crate::caps::Compression::from_u8(sub!(
                         value,
                         Decoder::read_u8
@@ -550,6 +542,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_terminal_output(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::terminal_output as f;
         let mut terminal_id: Option<ResourceId> = None;
         let mut stream_id: Option<StreamId> = None;
         let mut bootstrap_id: Option<BootstrapId> = None;
@@ -557,17 +550,11 @@ impl<'a> Decoder<'a> {
         let mut bytes: Option<bytes::Bytes> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::terminal_output::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::terminal_output::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
-                field::terminal_output::BYTES => bytes = Some(bytes::Bytes::copy_from_slice(value)),
-                field::terminal_output::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id));
-                }
-                field::terminal_output::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
+                f::BYTES => bytes = Some(bytes::Bytes::copy_from_slice(value)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
                 _ => {}
             }
         }
@@ -581,6 +568,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_attach(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::attach as f;
         let mut target: Option<crate::wire::frame::AttachTarget> = None;
         let mut viewport: Option<crate::wire::frame::ViewportInfo> = None;
         let mut request_scrollback = false;
@@ -589,21 +577,19 @@ impl<'a> Decoder<'a> {
         let mut role_policy = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::attach::ROLE_POLICY => {
+                f::ROLE_POLICY => {
                     role_policy = Some(crate::wire::frame::RolePolicy::from_u8(sub!(
                         value,
                         Decoder::read_u8
                     )));
                 }
-                field::attach::TARGET => target = Some(sub!(value, decode_attach_target)),
-                field::attach::VIEWPORT => viewport = Some(sub!(value, decode_viewport_info)),
-                field::attach::REQUEST_SCROLLBACK => {
-                    request_scrollback = sub!(value, Decoder::read_u8) != 0;
-                }
-                field::attach::SCROLLBACK_LIMIT_LINES => {
+                f::TARGET => target = Some(sub!(value, decode_attach_target)),
+                f::VIEWPORT => viewport = Some(sub!(value, decode_viewport_info)),
+                f::REQUEST_SCROLLBACK => request_scrollback = sub!(value, Decoder::read_u8) != 0,
+                f::SCROLLBACK_LIMIT_LINES => {
                     scrollback_limit_lines = sub!(value, Decoder::read_u32_be);
                 }
-                field::attach::ATTACH_ID => attach_id = Some(sub!(value, Decoder::read_u32_be)),
+                f::ATTACH_ID => attach_id = Some(sub!(value, Decoder::read_u32_be)),
                 _ => {}
             }
         }
@@ -622,79 +608,24 @@ impl<'a> Decoder<'a> {
         Ok(FrameKind::Detach)
     }
 
-    fn decode_input_key(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<ResourceId> = None;
-        let mut event: Option<KeyEvent> = None;
+    /// Decode the shared `INPUT_KEY` / `_MOUSE` / `_FOCUS` / `_PASTE` body:
+    /// `TERMINAL_ID` (1) and a positional `EVENT` (2).
+    fn decode_input_event<E>(
+        &mut self,
+        decode_event: impl Fn(&mut Decoder<'_>) -> Result<E, DecodeError>,
+    ) -> Result<(ResourceId, E), DecodeError> {
+        let mut terminal_id = None;
+        let mut event = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::input_key::TERMINAL_ID => {
                     terminal_id = Some(sub!(value, decode_terminal_id));
                 }
-                field::input_key::EVENT => event = Some(sub!(value, decode_key_event)),
+                field::input_key::EVENT => event = Some(sub!(value, decode_event)),
                 _ => {}
             }
         }
-        Ok(FrameKind::InputKey {
-            terminal_id: req(terminal_id)?,
-            event: req(event)?,
-        })
-    }
-
-    fn decode_input_mouse(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<ResourceId> = None;
-        let mut event: Option<MouseEvent> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::input_mouse::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::input_mouse::EVENT => event = Some(sub!(value, decode_mouse_event)),
-                _ => {}
-            }
-        }
-        Ok(FrameKind::InputMouse {
-            terminal_id: req(terminal_id)?,
-            event: req(event)?,
-        })
-    }
-
-    fn decode_input_focus(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<ResourceId> = None;
-        let mut event: Option<FocusEvent> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::input_focus::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::input_focus::EVENT => {
-                    let tag = sub!(value, Decoder::read_u8);
-                    event = Some(decode_focus_event(tag)?);
-                }
-                _ => {}
-            }
-        }
-        Ok(FrameKind::InputFocus {
-            terminal_id: req(terminal_id)?,
-            event: req(event)?,
-        })
-    }
-
-    fn decode_input_paste(&mut self) -> Result<FrameKind, DecodeError> {
-        let mut terminal_id: Option<ResourceId> = None;
-        let mut event: Option<crate::input::paste::PasteEvent> = None;
-        while let Some((id, value)) = self.read_field()? {
-            match id {
-                field::input_paste::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::input_paste::EVENT => event = Some(sub!(value, decode_paste_event)),
-                _ => {}
-            }
-        }
-        Ok(FrameKind::InputPaste {
-            terminal_id: req(terminal_id)?,
-            event: req(event)?,
-        })
+        Ok((req(terminal_id)?, req(event)?))
     }
 
     fn decode_input_terminal_reply(&mut self) -> Result<FrameKind, DecodeError> {
@@ -721,20 +652,17 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_frame_ack(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::frame_ack as f;
         let mut terminal_id: Option<ResourceId> = None;
         let mut stream_id: Option<StreamId> = None;
         let mut bootstrap_id: Option<BootstrapId> = None;
         let mut seq: Option<u64> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::frame_ack::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::frame_ack::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
-                field::frame_ack::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
-                field::frame_ack::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
                 _ => {}
             }
         }
@@ -792,6 +720,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_bootstrap_begin(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::bootstrap_begin as f;
         let mut terminal_id = None;
         let mut stream_id = None;
         let mut bootstrap_id = None;
@@ -802,24 +731,14 @@ impl<'a> Decoder<'a> {
         let mut base_seq = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::bootstrap_begin::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::bootstrap_begin::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id));
-                }
-                field::bootstrap_begin::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
-                field::bootstrap_begin::CODEC => codec = Some(sub!(value, decode_bootstrap_codec)),
-                field::bootstrap_begin::COLS => cols = Some(sub!(value, Decoder::read_u16_be)),
-                field::bootstrap_begin::ROWS => rows = Some(sub!(value, Decoder::read_u16_be)),
-                field::bootstrap_begin::OUTPUT_MODE => {
-                    output_mode = Some(sub!(value, Decoder::read_u8));
-                }
-                field::bootstrap_begin::BASE_SEQ => {
-                    base_seq = Some(sub!(value, Decoder::read_u64_be));
-                }
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+                f::CODEC => codec = Some(sub!(value, decode_bootstrap_codec)),
+                f::COLS => cols = Some(sub!(value, Decoder::read_u16_be)),
+                f::ROWS => rows = Some(sub!(value, Decoder::read_u16_be)),
+                f::OUTPUT_MODE => output_mode = Some(sub!(value, Decoder::read_u8)),
+                f::BASE_SEQ => base_seq = Some(sub!(value, Decoder::read_u64_be)),
                 _ => {}
             }
         }
@@ -837,6 +756,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_bootstrap_chunk(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::bootstrap_chunk as f;
         let mut terminal_id = None;
         let mut stream_id = None;
         let mut bootstrap_id = None;
@@ -844,19 +764,11 @@ impl<'a> Decoder<'a> {
         let mut payload = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::bootstrap_chunk::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::bootstrap_chunk::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id));
-                }
-                field::bootstrap_chunk::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
-                field::bootstrap_chunk::CHUNK_SEQ => {
-                    chunk_seq = Some(sub!(value, Decoder::read_u32_be));
-                }
-                field::bootstrap_chunk::PAYLOAD => {
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+                f::CHUNK_SEQ => chunk_seq = Some(sub!(value, Decoder::read_u32_be)),
+                f::PAYLOAD => {
                     if value.len() > self.max_bootstrap_chunk_bytes as usize {
                         return Err(DecodeError::BootstrapLimitExceeded);
                     }
@@ -875,24 +787,17 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_bootstrap_ready(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::bootstrap_ready as f;
         let mut terminal_id = None;
         let mut stream_id = None;
         let mut bootstrap_id = None;
         let mut history_cursor = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::bootstrap_ready::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::bootstrap_ready::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id));
-                }
-                field::bootstrap_ready::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
-                field::bootstrap_ready::HISTORY_CURSOR => {
-                    history_cursor = Some(checked_history_cursor(value)?);
-                }
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+                f::HISTORY_CURSOR => history_cursor = Some(checked_history_cursor(value)?),
                 _ => {}
             }
         }
@@ -905,6 +810,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_history_request(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::history_request as f;
         let mut terminal_id = None;
         let mut stream_id = None;
         let mut bootstrap_id = None;
@@ -913,22 +819,12 @@ impl<'a> Decoder<'a> {
         let mut max_rows = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::history_request::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::history_request::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id));
-                }
-                field::history_request::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
-                field::history_request::CURSOR => cursor = Some(checked_history_cursor(value)?),
-                field::history_request::MAX_BYTES => {
-                    max_bytes = Some(sub!(value, Decoder::read_u32_be));
-                }
-                field::history_request::MAX_ROWS => {
-                    max_rows = Some(sub!(value, Decoder::read_u32_be));
-                }
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+                f::CURSOR => cursor = Some(checked_history_cursor(value)?),
+                f::MAX_BYTES => max_bytes = Some(sub!(value, Decoder::read_u32_be)),
+                f::MAX_ROWS => max_rows = Some(sub!(value, Decoder::read_u32_be)),
                 _ => {}
             }
         }
@@ -1000,6 +896,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_bootstrap_tombstone(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::bootstrap_tombstone as f;
         let mut terminal_id = None;
         let mut stream_id = None;
         let mut bootstrap_id = None;
@@ -1007,25 +904,17 @@ impl<'a> Decoder<'a> {
         let mut last_valid_seq = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::bootstrap_tombstone::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::bootstrap_tombstone::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id));
-                }
-                field::bootstrap_tombstone::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
-                field::bootstrap_tombstone::REASON => {
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+                f::REASON => {
                     let value = sub!(value, Decoder::read_u8);
                     reason = Some(
                         TombstoneReason::from_wire(value)
                             .ok_or_else(|| DecodeError::unknown_enum("TombstoneReason", value))?,
                     );
                 }
-                field::bootstrap_tombstone::LAST_VALID_SEQ => {
-                    last_valid_seq = Some(sub!(value, Decoder::read_u64_be));
-                }
+                f::LAST_VALID_SEQ => last_valid_seq = Some(sub!(value, Decoder::read_u64_be)),
                 _ => {}
             }
         }
@@ -1039,6 +928,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_history_tombstone(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::history_tombstone as f;
         let mut terminal_id = None;
         let mut stream_id = None;
         let mut bootstrap_id = None;
@@ -1046,17 +936,11 @@ impl<'a> Decoder<'a> {
         let mut reason = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::history_tombstone::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::history_tombstone::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id));
-                }
-                field::history_tombstone::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
-                field::history_tombstone::CURSOR => cursor = Some(checked_history_cursor(value)?),
-                field::history_tombstone::REASON => {
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+                f::CURSOR => cursor = Some(checked_history_cursor(value)?),
+                f::REASON => {
                     let value = sub!(value, Decoder::read_u8);
                     reason = Some(HistoryTombstoneReason::from_wire(value).ok_or_else(|| {
                         DecodeError::unknown_enum("HistoryTombstoneReason", value)
@@ -1088,6 +972,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_history_rejected(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::history_rejected as f;
         let mut terminal_id = None;
         let mut stream_id = None;
         let mut bootstrap_id = None;
@@ -1097,28 +982,18 @@ impl<'a> Decoder<'a> {
         let mut required_rows = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::history_rejected::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::history_rejected::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id));
-                }
-                field::history_rejected::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
-                }
-                field::history_rejected::CURSOR => cursor = Some(checked_history_cursor(value)?),
-                field::history_rejected::REASON => {
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
+                f::BOOTSTRAP_ID => bootstrap_id = Some(sub!(value, decode_bootstrap_id)),
+                f::CURSOR => cursor = Some(checked_history_cursor(value)?),
+                f::REASON => {
                     let value = sub!(value, Decoder::read_u8);
                     reason = Some(HistoryRejectionReason::from_wire(value).ok_or_else(|| {
                         DecodeError::unknown_enum("HistoryRejectionReason", value)
                     })?);
                 }
-                field::history_rejected::REQUIRED_BYTES => {
-                    required_bytes = Some(sub!(value, Decoder::read_u32_be));
-                }
-                field::history_rejected::REQUIRED_ROWS => {
-                    required_rows = Some(sub!(value, Decoder::read_u32_be));
-                }
+                f::REQUIRED_BYTES => required_bytes = Some(sub!(value, Decoder::read_u32_be)),
+                f::REQUIRED_ROWS => required_rows = Some(sub!(value, Decoder::read_u32_be)),
                 _ => {}
             }
         }
@@ -1327,6 +1202,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_spawn_terminal(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::spawn_terminal as f;
         let mut request_id = 0u32;
         let mut group = GroupId::new(0);
         let mut command: Option<Vec<String>> = None;
@@ -1340,24 +1216,20 @@ impl<'a> Decoder<'a> {
         let mut resource = SpawnResource::default();
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::spawn_terminal::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
-                field::spawn_terminal::GROUP => {
-                    group = GroupId::new(sub!(value, Decoder::read_u32_be));
-                }
-                field::spawn_terminal::COMMAND => command = Some(sub!(value, decode_string_list)),
-                field::spawn_terminal::CWD => cwd = Some(utf8_value(value)?),
-                field::spawn_terminal::ENV => env = Some(sub!(value, decode_env)),
-                field::spawn_terminal::TERM => term = Some(utf8_value(value)?),
-                field::spawn_terminal::SATELLITE => {
+                f::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+                f::GROUP => group = GroupId::new(sub!(value, Decoder::read_u32_be)),
+                f::COMMAND => command = Some(sub!(value, decode_string_list)),
+                f::CWD => cwd = Some(utf8_value(value)?),
+                f::ENV => env = Some(sub!(value, decode_env)),
+                f::TERM => term = Some(utf8_value(value)?),
+                f::SATELLITE => {
                     satellite = Some(crate::ids::SatelliteHost::new(
                         core::str::from_utf8(value).map_err(|_| DecodeError::InvalidUtf8)?,
                     ));
                 }
-                field::spawn_terminal::OWNER_TERMINAL => {
-                    owner_terminal = Some(sub!(value, decode_terminal_id));
-                }
-                field::spawn_terminal::AGENT_SESSION => agent_session = Some(value.to_vec()),
-                field::spawn_terminal::INITIAL_SIZE => {
+                f::OWNER_TERMINAL => owner_terminal = Some(sub!(value, decode_terminal_id)),
+                f::AGENT_SESSION => agent_session = Some(value.to_vec()),
+                f::INITIAL_SIZE => {
                     initial_size = Some(sub!(value, |d: &mut Decoder<'_>| {
                         let cols = d.read_u16_be()?;
                         let rows = d.read_u16_be()?;
@@ -1387,20 +1259,19 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_terminal_spawned(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::terminal_spawned as f;
         let mut request_id = 0u32;
         let mut result: Option<crate::wire::frame::SpawnResult> = None;
         let mut instance: Option<crate::ids::ServerInstance> = None;
         let mut replayed = false;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::terminal_spawned::REQUEST_ID => {
-                    request_id = sub!(value, Decoder::read_u32_be);
-                }
-                field::terminal_spawned::RESULT => result = Some(sub!(value, decode_spawn_result)),
-                field::terminal_spawned::INSTANCE => {
+                f::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
+                f::RESULT => result = Some(sub!(value, decode_spawn_result)),
+                f::INSTANCE => {
                     instance = Some(sub!(value, crate::wire::frame::decode_server_instance));
                 }
-                field::terminal_spawned::REPLAYED => {
+                f::REPLAYED => {
                     replayed = sub!(value, |d: &mut Decoder<'_>| decode_flag(d, "replayed"));
                 }
                 _ => {}
@@ -1451,20 +1322,17 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_terminal_closed(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::terminal_closed as f;
         let mut terminal_id: Option<ResourceId> = None;
         let mut exit_status: Option<i32> = None;
         let mut reason = CloseReason::Unknown;
         let mut signal: Option<i32> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::terminal_closed::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id));
-                }
-                field::terminal_closed::EXIT_STATUS => exit_status = Some(read_i32_value(value)?),
-                field::terminal_closed::REASON => {
-                    reason = CloseReason::from_wire(sub!(value, Decoder::read_u8));
-                }
-                field::terminal_closed::SIGNAL => signal = Some(read_i32_value(value)?),
+                f::TERMINAL_ID => terminal_id = Some(sub!(value, decode_terminal_id)),
+                f::EXIT_STATUS => exit_status = Some(read_i32_value(value)?),
+                f::REASON => reason = CloseReason::from_wire(sub!(value, Decoder::read_u8)),
+                f::SIGNAL => signal = Some(read_i32_value(value)?),
                 _ => {}
             }
         }
@@ -1530,16 +1398,13 @@ impl<'a> Decoder<'a> {
     }
 
     fn decode_subscribe_events(&mut self) -> Result<FrameKind, DecodeError> {
+        use field::subscribe_events as f;
         let mut terminal: Option<ResourceId> = None;
         let mut after_seq: Option<u64> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
-                field::subscribe_events::TERMINAL => {
-                    terminal = Some(sub!(value, decode_terminal_id));
-                }
-                field::subscribe_events::AFTER_SEQ => {
-                    after_seq = Some(sub!(value, Decoder::read_u64_be));
-                }
+                f::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
+                f::AFTER_SEQ => after_seq = Some(sub!(value, Decoder::read_u64_be)),
                 _ => {}
             }
         }
@@ -1625,26 +1490,19 @@ fn absorb_spawn_resource_field(
     id: u32,
     value: &[u8],
 ) -> Result<(), DecodeError> {
+    use field::spawn_terminal as f;
     match id {
-        field::spawn_terminal::KIND => {
-            resource.kind = ResourceKind::from_wire(sub!(value, Decoder::read_u8));
-        }
-        field::spawn_terminal::PARENT => resource.parent = Some(sub!(value, decode_terminal_id)),
-        field::spawn_terminal::PROVIDER => {
+        f::KIND => resource.kind = ResourceKind::from_wire(sub!(value, Decoder::read_u8)),
+        f::PARENT => resource.parent = Some(sub!(value, decode_terminal_id)),
+        f::PROVIDER => {
             resource.provider = Some(decode_agent_facet_str(value, MAX_RESOURCE_PROVIDER_BYTES)?);
         }
-        field::spawn_terminal::NATIVE_ID => {
+        f::NATIVE_ID => {
             resource.native_id = Some(decode_agent_facet_str(value, MAX_RESOURCE_NATIVE_ID_BYTES)?);
         }
-        field::spawn_terminal::BIND_INSTANCE => {
-            resource.bind_instance = sub!(value, decode_bind_instance);
-        }
-        field::spawn_terminal::RETAIN_SECS => {
-            resource.retain_secs = Some(sub!(value, Decoder::read_u32_be));
-        }
-        field::spawn_terminal::IDEMPOTENCY_KEY => {
-            resource.idempotency_key = Some(decode_idempotency_key(value)?);
-        }
+        f::BIND_INSTANCE => resource.bind_instance = sub!(value, decode_bind_instance),
+        f::RETAIN_SECS => resource.retain_secs = Some(sub!(value, Decoder::read_u32_be)),
+        f::IDEMPOTENCY_KEY => resource.idempotency_key = Some(decode_idempotency_key(value)?),
         _ => {}
     }
     Ok(())
