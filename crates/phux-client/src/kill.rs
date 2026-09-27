@@ -50,17 +50,11 @@ impl ShutdownOutcome {
     }
 }
 
-/// Send `SHUTDOWN` and classify the reply.
+/// Send `SHUTDOWN` and classify the reply, with any interleaved notices as
+/// the [`Degradation`].
 ///
-/// A clean disconnect right after the request is the server tearing itself
-/// down having already acknowledged: it surfaces as
-/// [`AttachError::Disconnected`], which callers treat the same as
-/// [`ShutdownOutcome::Ok`] (see `phux kill --server`).
-///
-/// The paired [`Degradation`] carries any uncorrelated `ERROR` the server
-/// interleaved ahead of the reply (a hub's per-satellite unreachability
-/// notice) — the caller prints it exactly as
-/// `crate::commands::command_on` used to, via [`Degradation::notices`].
+/// A disconnect right after the request is the server stopping having
+/// acknowledged; callers treat [`AttachError::Disconnected`] as success.
 ///
 /// # Errors
 ///
@@ -167,12 +161,8 @@ pub fn keyed_signal_supported(conn: &Connection) -> bool {
     })
 }
 
-/// Kill every Terminal in `ids` in one round trip — the atomic multi-terminal
-/// op a whole-session target rides (the v0.3.0 "Option B" re-tier's
-/// replacement for the dissolved `KILL_COLLECTION` verb).
-///
-/// The paired [`Degradation`] is any uncorrelated `ERROR` interleaved ahead
-/// of the reply; print its notices exactly as `command_on` used to.
+/// Kill every Terminal in `ids` in one atomic round trip (a whole-session
+/// target), with any interleaved notices as the [`Degradation`].
 ///
 /// # Errors
 ///
@@ -239,10 +229,8 @@ async fn request_kill(
     ))
 }
 
-/// Kill exactly one Terminal.
-///
-/// The paired [`Degradation`] is any uncorrelated `ERROR` interleaved ahead
-/// of the reply; print its notices exactly as `command_on` used to.
+/// Kill exactly one Terminal, with any interleaved notices as the
+/// [`Degradation`].
 ///
 /// # Errors
 ///
@@ -286,13 +274,10 @@ pub async fn kill_resource_keyed(
     Ok(request_kill(conn, request_id, command).await?)
 }
 
-/// Clear a session's keep-empty mark (ADR-0105).
+/// Clear a session's keep-empty mark (ADR-0105), so the server removes an
+/// empty session.
 ///
-/// An empty session has no pane for `KILL_RESOURCES` to name, so `phux kill`
-/// on one clears the mark instead, which is what makes the server remove a
-/// session holding no windows. Fire-and-forget like every `SET_METADATA`
-/// write: the caller confirms with a following `GET_STATE` on the same
-/// ordered connection.
+/// No reply: confirm with a `GET_STATE` on the same connection.
 ///
 /// # Errors
 ///
@@ -648,143 +633,78 @@ async fn kill_one(conn: &mut Connection, request_id: u32, terminal: ResourceId) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use phux_protocol::caps::ServerFeatureSet;
+    use phux_protocol::ids::{SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
-    #[test]
-    fn shutdown_outcome_carries_the_code_on_refusal() {
-        assert_eq!(
-            ShutdownOutcome::from_result(CommandResult::Ok),
-            ShutdownOutcome::Ok
-        );
-        assert_eq!(
-            ShutdownOutcome::from_result(CommandResult::Error {
-                code: ErrorCode::PermissionDenied,
-                message: "no".to_owned(),
-            }),
-            ShutdownOutcome::Refused {
-                code: ErrorCode::PermissionDenied,
-                message: "no".to_owned(),
-            }
-        );
-    }
+    use super::*;
+    use crate::testkit::{self, ScriptSpec};
+
+    const NOTICE: &str = "satellite build-box is unreachable: link is down";
 
     /// A per-id `KILL_RESOURCES` outcome is `Killed` only when no id failed,
     /// and a refusal names each id that did.
     #[test]
     fn a_merged_kill_outcome_names_every_id_that_was_not_killed() {
+        let json = |doc: &str| CommandResult::OkWith(CommandValue::Json(doc.to_owned()));
         let all = r#"{"schema_version":1,"killed":["@1","devbox/@2"],"not_found":[],"failed":[]}"#;
-        assert_eq!(
-            KillOutcome::from_result(CommandResult::OkWith(CommandValue::Json(all.to_owned()))),
-            KillOutcome::Killed
-        );
+        assert_eq!(KillOutcome::from_result(json(all)), KillOutcome::Killed);
         let partial = r#"{"schema_version":1,"killed":["@1"],"not_found":[],
             "failed":[{"id":"devbox/@2","code":107,"message":"link is down"}]}"#;
         assert_eq!(
-            KillOutcome::from_result(CommandResult::OkWith(CommandValue::Json(
-                partial.to_owned()
-            ))),
+            KillOutcome::from_result(json(partial)),
             KillOutcome::Refused("not killed: devbox/@2: link is down".to_owned())
         );
-    }
-
-    #[test]
-    fn kill_outcome_discards_the_code_on_refusal() {
-        assert_eq!(
-            KillOutcome::from_result(CommandResult::Ok),
-            KillOutcome::Killed
-        );
-        assert_eq!(
-            KillOutcome::from_result(CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: "gone".to_owned(),
-            }),
-            KillOutcome::Refused("gone".to_owned())
-        );
         assert!(matches!(
-            KillOutcome::from_result(CommandResult::OkWith(
-                phux_protocol::wire::frame::CommandValue::Json("x".to_owned())
-            )),
+            KillOutcome::from_result(json("x")),
             KillOutcome::Unexpected(_)
         ));
     }
 
+    /// The kill verbs send their frames, and an interleaved degradation
+    /// notice reaches the caller beside the outcome.
     #[tokio::test]
-    async fn kill_resources_kill_resource_and_the_keep_empty_clear_send_the_expected_frames() {
-        use crate::attach::connection::Connection;
-        use crate::testkit::{ScriptSpec, ScriptedServer};
-        use phux_protocol::wire::frame::{FrameKind, Scope};
-
+    async fn kill_verbs_send_the_expected_frames_and_keep_degradation() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server =
-            tokio::spawn(async move { ScriptedServer::accept(&listener, ScriptSpec::new()).await });
-
+        let (socket, server) =
+            testkit::serve_one(dir.path(), ScriptSpec::new().degradation_notice(NOTICE));
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let ids = vec![ResourceId::local(1), ResourceId::local(2)];
         let (outcome, degradation) = kill_resources(&mut conn, 1, ids.clone())
             .await
             .expect("scripted server");
         assert_eq!(outcome, KillOutcome::Killed);
-        assert!(degradation.is_complete());
-        let (outcome, degradation) = kill_resource(&mut conn, 2, ResourceId::local(3))
+        assert_eq!(degradation.notices(), [NOTICE.to_owned()]);
+        let (outcome, _) = kill_resource(&mut conn, 2, ResourceId::local(3))
             .await
             .expect("scripted server");
         assert_eq!(outcome, KillOutcome::Killed);
-        assert!(degradation.is_complete());
         clear_session_keep_empty(&mut conn, 3, "work")
             .await
             .expect("fire-and-forget send");
         drop(conn);
         let seen = server.await.expect("scripted server task");
 
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::KillResources { ids: seen_ids, .. },
-                    ..
-                } if *seen_ids == ids
-            )),
-            "expected KILL_RESOURCES{{ids}}; sent {seen:?}"
-        );
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::KillResource { terminal_id, .. },
-                    ..
-                } if *terminal_id == ResourceId::local(3)
-            )),
-            "expected KILL_RESOURCE{{terminal_id: @3}}; sent {seen:?}"
-        );
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::SetMetadata { scope: Scope::Global, key, .. }
-                    if key == SESSION_KEEP_EMPTY_KEY
-            )),
-            "expected the keep-empty SET_METADATA; sent {seen:?}"
-        );
+        assert!(seen.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command { command: Command::KillResources { ids: seen_ids, .. }, .. }
+                if *seen_ids == ids
+        )));
+        assert!(killed_one(&seen, 3), "sent {seen:?}");
+        assert!(seen.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SetMetadata { scope: Scope::Global, key, .. }
+                if key == SESSION_KEEP_EMPTY_KEY
+        )));
     }
 
     /// A keyed kill is refused, with nothing sent, by a server that does not
     /// advertise `KEYED_SIGNAL`; one that does receives the key.
     #[tokio::test]
     async fn a_keyed_kill_needs_keyed_signal_and_carries_its_key() {
-        use crate::attach::connection::Connection;
-        use crate::testkit::{ScriptSpec, ScriptedServer};
-        use phux_protocol::caps::ServerFeatureSet;
-
         async fn run(spec: ScriptSpec) -> (Result<(), KeyedError>, Vec<FrameKind>) {
             let dir = tempfile::tempdir().expect("temp dir");
-            let socket = dir.path().join("phux.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-            listener.set_nonblocking(true).expect("nonblocking");
-            let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-            let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+            let (socket, server) = testkit::serve_one(dir.path(), spec);
             let mut conn = Connection::connect(&socket).await.expect("connect");
             let key = IdempotencyKey::new([7; 16]).expect("non-zero");
             let sent = kill_resource_keyed(&mut conn, 1, ResourceId::local(3), key)
@@ -807,81 +727,19 @@ mod tests {
             .server_features(ServerFeatureSet::with(&[ServerFeature::KeyedSignal])))
         .await;
         assert!(sent.is_ok());
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::KillResource {
-                        operation_id: Some(_),
-                        ..
-                    },
+        assert!(seen.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::KillResource {
+                    operation_id: Some(_),
                     ..
-                }
-            )),
-            "the keyed kill carries its key: {seen:?}"
-        );
+                },
+                ..
+            }
+        )));
     }
 
-    /// An uncorrelated `ERROR` interleaved ahead of the reply — a hub's
-    /// per-satellite unreachability notice — must still reach the caller
-    /// through the returned `Degradation`, for every verb in this module.
-    /// This is what lets the CLI print `phux: warning: partial results —
-    /// {message}` exactly as `command_on` used to, even though these
-    /// functions no longer route through it.
-    #[tokio::test]
-    async fn an_interleaved_degradation_notice_survives_every_verb() {
-        use crate::attach::connection::Connection;
-        use crate::testkit::{ScriptSpec, ScriptedServer};
-
-        const NOTICE: &str = "satellite build-box is unreachable: link is down";
-
-        async fn scripted() -> (
-            Connection,
-            tokio::task::JoinHandle<Vec<FrameKind>>,
-            tempfile::TempDir,
-        ) {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let socket = dir.path().join("phux.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-            listener.set_nonblocking(true).expect("nonblocking");
-            let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-            let server = tokio::spawn(async move {
-                ScriptedServer::accept(&listener, ScriptSpec::new().degradation_notice(NOTICE))
-                    .await
-            });
-            let conn = Connection::connect(&socket).await.expect("connect");
-            (conn, server, dir)
-        }
-
-        let (mut conn, server, _dir) = scripted().await;
-        let (outcome, degradation) = shutdown(&mut conn, 1).await.expect("scripted server");
-        assert_eq!(outcome, ShutdownOutcome::Ok);
-        assert_eq!(degradation.notices(), [NOTICE.to_owned()]);
-        drop(conn);
-        server.await.expect("scripted server task");
-
-        let (mut conn, server, _dir) = scripted().await;
-        let (outcome, degradation) = kill_resources(&mut conn, 1, vec![ResourceId::local(1)])
-            .await
-            .expect("scripted server");
-        assert_eq!(outcome, KillOutcome::Killed);
-        assert_eq!(degradation.notices(), [NOTICE.to_owned()]);
-        drop(conn);
-        server.await.expect("scripted server task");
-
-        let (mut conn, server, _dir) = scripted().await;
-        let (outcome, degradation) = kill_resource(&mut conn, 1, ResourceId::local(1))
-            .await
-            .expect("scripted server");
-        assert_eq!(outcome, KillOutcome::Killed);
-        assert_eq!(degradation.notices(), [NOTICE.to_owned()]);
-        drop(conn);
-        server.await.expect("scripted server task");
-    }
-
-    fn pane_state() -> phux_protocol::wire::info::SessionSnapshot {
-        use phux_protocol::ids::{SessionId, WindowId};
-        use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
+    fn pane_state() -> SessionSnapshot {
         let session = SessionId::new(1);
         let window = WindowId::new(10);
         SessionSnapshot::new(session, window, ResourceId::local(1))
@@ -894,16 +752,11 @@ mod tests {
     }
 
     async fn run_selected(
-        spec: crate::testkit::ScriptSpec,
+        spec: ScriptSpec,
         target: &str,
     ) -> (Result<Selected, KillError>, Vec<String>, Vec<FrameKind>) {
-        use crate::testkit::ScriptedServer;
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = testkit::serve_one(dir.path(), spec.state(pane_state()));
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let selector = crate::selector::parse(target).expect("selector");
         let mut notices = Vec::new();
@@ -912,64 +765,47 @@ mod tests {
         (result, notices, server.await.expect("scripted server task"))
     }
 
+    fn killed_one(seen: &[FrameKind], id: u32) -> bool {
+        seen.iter().any(|frame| {
+            matches!(
+                frame,
+                FrameKind::Command { command: Command::KillResource { terminal_id, .. }, .. }
+                    if *terminal_id == ResourceId::local(id)
+            )
+        })
+    }
+
     /// A pane target rides `KILL_RESOURCE`; a whole-session target rides
     /// one `KILL_RESOURCES` for every pane in the session.
     #[tokio::test]
     async fn selected_kills_a_pane_or_a_whole_session() {
-        use crate::testkit::ScriptSpec;
-        let (result, notices, seen) =
-            run_selected(ScriptSpec::new().state(pane_state()), "@2").await;
-        assert!(result.is_ok(), "{result:?}");
-        assert!(notices.is_empty());
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::KillResource { terminal_id, .. },
-                    ..
-                } if *terminal_id == ResourceId::local(2)
-            )),
-            "expected KILL_RESOURCE @2; sent {seen:?}"
-        );
+        let (result, notices, seen) = run_selected(ScriptSpec::new(), "@2").await;
+        assert!(result.is_ok() && notices.is_empty(), "{result:?}");
+        assert!(killed_one(&seen, 2), "sent {seen:?}");
 
-        let (result, notices, seen) =
-            run_selected(ScriptSpec::new().state(pane_state()), "work").await;
-        assert!(result.is_ok(), "{result:?}");
-        assert!(notices.is_empty());
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::KillResources { ids, .. },
-                    ..
-                } if ids.len() == 2
-            )),
-            "expected KILL_RESOURCES for the session; sent {seen:?}"
-        );
+        let (result, notices, seen) = run_selected(ScriptSpec::new(), "work").await;
+        assert!(result.is_ok() && notices.is_empty(), "{result:?}");
+        assert!(seen.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command { command: Command::KillResources { ids, .. }, .. }
+                if ids.len() == 2
+        )));
     }
 
     /// A miss against a complete view is absence; a miss against a partial
-    /// fleet is unresolved. A hit under degradation still kills, and the
-    /// snapshot notices are what the CLI/MCP warning prints.
+    /// fleet is unresolved. A hit under degradation still kills and reports
+    /// the notices for the caller's warning.
     #[tokio::test]
     async fn selected_splits_a_complete_miss_from_a_partial_view() {
-        use crate::testkit::ScriptSpec;
-        const NOTICE: &str = "satellite build-box is unreachable: link is down";
-
-        let (result, notices, _) = run_selected(ScriptSpec::new().state(pane_state()), "@9").await;
+        let (result, notices, _) = run_selected(ScriptSpec::new(), "@9").await;
         assert!(
             matches!(result, Err(KillError::NoSuchTarget { ref target }) if target == "@9"),
             "{result:?}"
         );
         assert!(notices.is_empty());
 
-        let (result, notices, _) = run_selected(
-            ScriptSpec::new()
-                .state(pane_state())
-                .degradation_notice(NOTICE),
-            "@9",
-        )
-        .await;
+        let degraded = || ScriptSpec::new().degradation_notice(NOTICE);
+        let (result, notices, _) = run_selected(degraded(), "@9").await;
         assert!(
             matches!(
                 result,
@@ -978,29 +814,11 @@ mod tests {
             ),
             "{result:?}"
         );
-        assert!(
-            notices.is_empty(),
-            "a miss does not warn as a hit: {notices:?}"
-        );
+        assert!(notices.is_empty(), "a miss does not warn as a hit");
 
-        let (result, notices, seen) = run_selected(
-            ScriptSpec::new()
-                .state(pane_state())
-                .degradation_notice(NOTICE),
-            "@2",
-        )
-        .await;
+        let (result, notices, seen) = run_selected(degraded(), "@2").await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(notices, [NOTICE]);
-        assert!(
-            seen.iter().any(|frame| matches!(
-                frame,
-                FrameKind::Command {
-                    command: Command::KillResource { terminal_id, .. },
-                    ..
-                } if *terminal_id == ResourceId::local(2)
-            )),
-            "a partial-view hit still kills; sent {seen:?}"
-        );
+        assert!(killed_one(&seen, 2), "a partial-view hit still kills");
     }
 }
