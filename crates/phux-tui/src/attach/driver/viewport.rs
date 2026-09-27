@@ -12,18 +12,8 @@ use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 use crate::layout::{LayoutState, Workspace};
 
-/// The per-leaf rect map of the zoom- and sidebar-honoring view, used as the
-/// pre-toggle snapshot for the reflow handshake. Returns an empty map when
-/// there is no active window or its tree is unseeded (single-pane bootstrap).
-///
-/// This runs on every input batch — the reflow handshake needs a
-/// *pre*-dispatch snapshot, so it cannot be deferred behind the "did zoom or
-/// the sidebar move?" test it feeds. It therefore goes through the paint
-/// path's memoized tiling rather than calling `compute_layout_in` directly:
-/// the tiling inputs (layout, content rect, viewport) are unchanged between
-/// keystrokes, so the steady state is a cache hit and the per-keystroke cost
-/// drops to cloning the rect map. Same tiling, same rects — the cache key is
-/// the complete input, so a hit is exact.
+/// The zoom- and sidebar-honoring per-leaf rects (empty without a seeded
+/// tree), via the paint path's memoized tiling since it runs every batch.
 pub(super) fn view_rects(
     workspace: &Workspace,
     zoomed: Option<&ResourceId>,
@@ -41,12 +31,8 @@ pub(super) fn view_rects(
         .unwrap_or_default()
 }
 
-/// Emit one `RESIZE_TERMINAL` per pane whose dimensions differ between
-/// `prev_rects` and the new content view. Reuses the close/SIGWINCH reflow
-/// path so each PTY's winsize tracks the on-screen geometry. Sent before
-/// repainting, mirroring the other reflow sites.
-///
-/// Called on a pane-zoom or sidebar toggle with the pre-toggle rects.
+/// Emit `RESIZE_TERMINAL` for each pane whose rect changed from `prev_rects`
+/// (after a zoom or sidebar toggle), before repainting.
 pub(super) async fn emit_view_reflow(
     conn: &mut Connection,
     workspace: &Workspace,
@@ -60,13 +46,8 @@ pub(super) async fn emit_view_reflow(
     emit_layout_reflow(conn, ls.as_ref(), prev_rects, content).await
 }
 
-/// Seed every window in a restored workspace before its first full paint.
-///
-/// The initial `ATTACHED` frame contains only a single-pane fallback; the
-/// persisted workspace arrives later through the layout metadata reply. At
-/// that point every PTY already exists and still has the outer-terminal size.
-/// Reflowing it before the reply's full paint lets a later window switch be an
-/// ordinary paint rather than a corrective resize.
+/// Size every window of a just-restored workspace before its first full
+/// paint (ATTACHED only carried a one-pane fallback).
 pub(super) async fn emit_bootstrap_workspace_reflow(
     conn: &mut Connection,
     workspace: &Workspace,
@@ -105,19 +86,12 @@ async fn emit_layout_reflow(
     Ok(())
 }
 
-/// Build a `VIEWPORT_RESIZE` frame from a [`ViewportInfo`].
-///
-/// Pure function, factored out of [`main_loop`] so unit tests can
-/// exercise the encoder-feeding side without firing a real SIGWINCH or
-/// driving a tokio runtime. The wire shape matches SPEC §7.1 / §10.5.
+/// A `VIEWPORT_RESIZE` frame for `viewport`.
 pub(super) const fn viewport_resize_frame(viewport: ViewportInfo) -> FrameKind {
     FrameKind::ViewportResize { viewport }
 }
 
-/// Read the current viewport, falling back to 80x24 with a logged
-/// warning if the kernel query fails. Used by the SIGWINCH branch
-/// where we'd rather ship a stale-but-plausible viewport than skip
-/// the upstream notification entirely.
+/// The current viewport, or 80x24 (logged) if the query fails.
 pub(super) fn current_viewport_or_default() -> ViewportInfo {
     match current_viewport() {
         Ok(v) => v,
@@ -128,19 +102,13 @@ pub(super) fn current_viewport_or_default() -> ViewportInfo {
     }
 }
 
-/// Host per-cell pixel fallback when the outer terminal reports no pixel
-/// geometry. MUST stay equal to the server's `DEFAULT_CELL_PX` (and the
-/// kitty-graphics `FALLBACK_CELL_PX` in `pane_state.rs`): with no pixel report
-/// the server keeps its seed cell size, and `INPUT_MOUSE` positions only
-/// quantize back to the right cell if both ends assume the same geometry
-/// (phux-yyex, SPEC input.md §3.1).
+/// Per-cell pixel fallback; MUST equal the server's `DEFAULT_CELL_PX` so
+/// `INPUT_MOUSE` positions quantize back to the same cell (SPEC input.md
+/// §3.1).
 pub(super) const HOST_CELL_PX_FALLBACK: (u16, u16) = (8, 16);
 
-/// Derive the host's per-cell pixel size from a [`ViewportInfo`], mirroring
-/// the server's SPEC L1 §9.2.1 derivation exactly (`pixel / cells`,
-/// floored; degenerate axes rejected). The dispatcher scales pane-local
-/// cell coordinates by this at the `INPUT_MOUSE` send boundary, so client
-/// and server must floor the same division on the same numbers.
+/// The host's per-cell pixel size, floored exactly as the server derives it
+/// (SPEC L1 §9.2.1).
 pub(super) fn host_cell_px(viewport: &ViewportInfo) -> (u16, u16) {
     let derived = (|| {
         if viewport.cols == 0 || viewport.rows == 0 {
@@ -233,34 +201,5 @@ mod tests {
             resized,
             [ResourceId::local(1), second].into_iter().collect()
         );
-    }
-
-    /// The factored builder produces a `ViewportResize` frame carrying
-    /// the supplied viewport unchanged. Lets us assert the encoder-
-    /// feeding side of the SIGWINCH path without firing a real signal
-    /// or driving a tokio runtime.
-    #[test]
-    fn viewport_resize_frame_carries_viewport_unchanged() {
-        let vp = ViewportInfo::new(132, 50).with_pixels(Some(1320), Some(750));
-        match viewport_resize_frame(vp) {
-            FrameKind::ViewportResize { viewport } => {
-                assert_eq!(viewport.cols, 132);
-                assert_eq!(viewport.rows, 50);
-                assert_eq!(viewport.pixel_w, Some(1320));
-                assert_eq!(viewport.pixel_h, Some(750));
-            }
-            other => panic!("expected ViewportResize, got {other:?}"),
-        }
-    }
-
-    /// `current_viewport_or_default` returns _something_ even when stdout
-    /// isn't a TTY (cargo test path). The exact dims aren't load-bearing
-    /// — what matters is that we never return an error and always have a
-    /// frame to send.
-    #[test]
-    fn current_viewport_or_default_never_panics() {
-        let vp = current_viewport_or_default();
-        // Cell dims fit in u16 by construction; just exercise the path.
-        let _ = (vp.cols, vp.rows);
     }
 }

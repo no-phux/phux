@@ -132,14 +132,9 @@ struct HeadlessChrome {
     status_bar: Option<StatusBarPainter>,
 }
 
-/// Fold `[sidebar]`, `[chrome]`, `[theme]`, and `[status]` in exactly as a
-/// live attach does: the same tolerant [`TuiSettings`] load.
-///
-/// Read `[sidebar]` so `phux snapshot --rendered` shows the
-/// strip exactly as a live attach would. Disabled (the default) folds to
-/// `None`, keeping the rendered frame byte-identical to the pre-sidebar one.
-/// The same `[chrome]` thresholds a live attach folds in, so a
-/// rendered snapshot yields the sidebar at the width the user configured.
+/// Fold `[sidebar]`, `[chrome]`, `[theme]`, and `[status]` in through the same
+/// tolerant [`TuiSettings`] load a live attach uses, so a rendered snapshot
+/// matches the glass.
 fn headless_chrome(viewport_dims: (u16, u16)) -> HeadlessChrome {
     let settings = TuiSettings::load_tolerant();
     let sidebar = sidebar_reservation(
@@ -156,11 +151,8 @@ fn headless_chrome(viewport_dims: (u16, u16)) -> HeadlessChrome {
     }
 }
 
-/// The session-scoped state the headless composite ingests frames into.
-///
-/// The live attach loop keeps the same set as `main_loop` locals; the
-/// composite holds them in one place because every frame it drains goes
-/// through the same twenty-two-argument `handle_server_frame` call, twice.
+/// The session-scoped state the headless composite ingests frames into (the
+/// live loop keeps the same set on `SessionLoop`).
 struct HeadlessSession {
     /// The client-side libghostty session kernel the frames feed.
     engine_kernel: SessionKernel<GhosttyAdapter>,
@@ -201,13 +193,8 @@ struct HeadlessSession {
     /// Headless composite dispatches no kill actions, so the
     /// expected-close set stays empty; threaded for the shared signature.
     expected_closes: HashSet<ResourceId>,
-    /// `request_id` -> the Terminal a command this client sent named, for the
-    /// commands whose refusal is authoritative about that Terminal's
-    /// existence (`KILL_RESOURCE` from kill-pane / kill-window,
-    /// `ATTACH_RESOURCE` for a layout leaf discovered at attach). A
-    /// `TERMINAL_NOT_FOUND` reply folds the leaf out: no `RESOURCE_CLOSED` is
-    /// ever broadcast for a resource the server does not have, so the refusal
-    /// is the only evidence a stale leaf is stale.
+    /// `request_id` -> Terminal for commands whose `TERMINAL_NOT_FOUND`
+    /// refusal is the only evidence a stale leaf should fold out.
     pending_resource_ops: HashMap<u32, ResourceId>,
     /// ADR-0040: one-shot `phux.agent/v1` reads so the composited window
     /// labels prefer structured agent records, matching a live attach.
@@ -253,10 +240,8 @@ impl HeadlessSession {
         }
     }
 
-    /// Feed one frame through the same dispatcher the live attach loop uses.
-    ///
-    /// `defer_paint = true` throughout: the pane mirrors ingest, and stdout
-    /// stays silent until the single compose pass.
+    /// Feed one frame through the live dispatcher with `defer_paint = true`:
+    /// mirrors ingest, stdout stays silent until the single compose pass.
     fn ingest(
         &mut self,
         frame: FrameKind,
@@ -291,10 +276,8 @@ impl HeadlessSession {
         )
     }
 
-    /// ADR-0040: pipeline one `phux.agent/v1` GET per pane (no SUBSCRIBE —
-    /// this is a one-shot composite). Replies drain through the settle loop
-    /// and land in `agent_meta.records`. Request ids start high above the
-    /// layout GET's `1` so the two reply streams cannot collide.
+    /// ADR-0040: one `phux.agent/v1` GET per pane (no SUBSCRIBE), with request
+    /// ids far above the layout GET's so the replies cannot collide.
     #[allow(
         clippy::future_not_send,
         reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -356,14 +339,8 @@ impl HeadlessSession {
         };
         crate::attach::sidebar_zones::summarize_local_agents(&mut session, &local);
         sidebar_painter.set_roster(vec![session]);
-        // And the attention queue, from the same record index +
-        // title fallback a live attach renders.
-        //
-        // LOCAL rows and the current session only. A capture must be
-        // reproducible from one session's state; sweeping the server for peer
-        // layouts would make the same command emit different bytes depending on
-        // what else happened to be running at the time. The composite has no
-        // subscriptions and no event loop to keep such a sweep honest anyway.
+        // Local rows and the current session only: a capture must not depend
+        // on what else happened to be running on the server.
         sidebar_painter.set_needs_you(local);
 
         let layout_state = self
@@ -389,11 +366,8 @@ impl HeadlessSession {
     }
 }
 
-/// Pull any persisted multi-pane layout for this session so dividers +
-/// tiling match a live attach. One-shot, so we GET but do not SUBSCRIBE.
-///
-/// Returns the request id the completion barrier waits on, or `None` when
-/// there is no layout to ask for.
+/// GET (not SUBSCRIBE) this session's persisted layout; returns the request
+/// id the completion barrier waits on, or `None` with nothing to ask for.
 async fn request_layout(
     conn: &mut Connection,
     subscribe_layout: bool,
@@ -452,11 +426,8 @@ async fn request_history_page(
     .await
 }
 
-/// Drain frames until the completion barrier reports the composite whole.
-///
-/// A rendered snapshot is valid only after the server's aggregate barrier
-/// and all work it unlocked has drained. `ATTACH_READY` can be queued before
-/// the requested post-READY history pages or one-shot metadata replies.
+/// Drain frames until the completion barrier reports the composite whole:
+/// `ATTACH_READY` can precede the history pages and metadata it unlocked.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -492,24 +463,14 @@ async fn drain_until_settled(
     }
 }
 
-/// Headless one-shot: attach, ingest the session's snapshot + layout, and
-/// return the client's composited multi-pane view as dense structured cells
-/// (`phux snapshot --rendered`, phux-l5xa).
+/// Headless one-shot (`phux snapshot --rendered`): the composited view as cells.
 ///
-/// Unlike the side-effect-free `GET_SCREEN` read, this **attaches** (R2): it
-/// drives the same client render path the live attach loop uses, so the
-/// returned frame is what the human's glass would show — pane content tiled
-/// per the layout, dividers, and the status bar, composited. But it never
-/// installs raw mode or an alt screen and never paints VT: frames feed the
-/// pane mirrors with `defer_paint = true` (mirrors ingest, stdout is
-/// suppressed), then ONE `rendered::compose_full_frame_cells` pass
-/// assembles the frame. There is no TTY, so the viewport `(cols, rows)` is
-/// caller-supplied.
-///
-/// Completion policy (R3): after the ATTACHED replay and one-shot metadata
-/// requests, frames are drained until the matching `ATTACH_READY`, every
-/// requested history cursor chain, and every required metadata reply complete.
-/// The overall deadline is an error, never partial or blank success.
+/// Attaches and ingests the session and its layout through the live client
+/// render path. No raw mode, no alt screen, no
+/// VT: mirrors ingest with `defer_paint`, then one compose pass at the
+/// caller's viewport. Completion waits for `ATTACH_READY`, every requested
+/// history chain, and every metadata reply; the deadline is an error, never
+/// a partial frame.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -550,11 +511,8 @@ pub async fn run_headless_rendered(
     let mut session =
         HeadlessSession::new(engine_kernel, headless_chrome(viewport_dims), viewport_dims);
 
-    // Replay ATTACHED so the focused-pane + workspace bootstrap runs once.
-    // No session is known yet (ATTACHED is what reports it), and
-    // the headless composite never subscribes, so it never receives a layout
-    // BROADCAST to adopt or reject — only the GET answer it asked for, which
-    // takes the `MetadataValue` path.
+    // Replay ATTACHED once. The composite never subscribes, so its only
+    // layout input is the GET answer it asked for.
     let outcome = session.ingest(attached, None, None)?;
     session.vcs.apply_snapshot(outcome.pane_cwds);
     let focused_session = outcome.sessions.map(|(_, focused)| focused);

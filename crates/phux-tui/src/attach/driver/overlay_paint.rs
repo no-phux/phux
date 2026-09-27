@@ -14,13 +14,9 @@ use crate::render::chrome::status_bar::StatusBarPainter;
 use crate::render::overlay::OverlayState;
 use phux_client::agent_meta::AgentRecord;
 
-/// Paint the active overlay layer (called only when an overlay is active).
-///
-/// Copy-mode is **not** a modal overlay: it repaints the focused pane with its
-/// selection reverse-videoed — the live content is otherwise untouched, so
-/// nothing on screen swaps — plus a status line. Every other overlay is modal:
-/// clear the screen and paint its own surface. The branch is chosen by
-/// [`OverlayState::copy_selection`].
+/// Paint the active overlay layer. Copy mode repaints the focused pane with
+/// its selection inverted plus a status line; every other overlay floats over
+/// a repainted base frame. [`OverlayState::copy_selection`] picks the branch.
 #[allow(
     clippy::too_many_arguments,
     reason = "mirrors paint_full_frame's paint context plus the overlay state"
@@ -32,33 +28,20 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
     panes: &mut HashMap<ResourceId, PaneSlot>,
     engine_kernel: &AttachKernel,
     focused: Option<&ResourceId>,
-    // The driver's pane-zoom state. The base-frame repaints below
-    // render through `Workspace::render_window` so the zoomed pane fills the
-    // window; the copy-mode branch keeps using the REAL active window because
-    // copy mode operates on the focused pane regardless of zoom.
+    // Base frames honor zoom; the copy-mode branch uses the real active
+    // window because copy mode works on the focused pane regardless.
     zoomed: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&mut StatusBarPainter>,
-    // The sidebar reservation, so base-frame repaints under an
-    // overlay keep panes inset (no reflow flicker when a modal opens).
-    // `None` reservation (default) is byte-identical.
+    // Keeps panes inset under an overlay (no reflow flicker).
     sidebar: Option<SidebarReservation>,
-    // The sidebar strip painter. The base-frame repaint under a
-    // floating overlay starts with ED2 (full clear), so without the painter
-    // the reserved columns stay blank and the sidebar vanishes for as long
-    // as the palette / help / prompt / which-key overlay is open. Chrome
-    // persists under overlays: overlays float above content, not above
-    // chrome.
+    // The base repaint starts with ED2, so without the painter the sidebar
+    // vanishes while a modal is open. Chrome persists under overlays.
     sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
     session_name: &str,
     theme: &crate::render::Theme,
 ) -> StatusBarPaint {
-    // Floating modals center inside the pane content rect (the
-    // viewport minus the sidebar strip and status-bar row), NOT the raw
-    // viewport, so a centered box never lands on the sidebar columns and
-    // occludes the chrome the base-frame repaint preserves. The
-    // borrow of `status_bar` ends here (position is `Copy`), so it stays
-    // available to move into `paint_full_frame` below.
+    // Modals center in the pane content rect, never over the sidebar.
     let bar_pos = status_bar.as_deref().map(StatusBarPainter::position);
     let overlay_content = {
         let cr = content_rect(viewport_dims, bar_pos, sidebar);
@@ -68,11 +51,7 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
         let (Some(ls), Some(fid)) = (workspace.active_window(), focused) else {
             return StatusBarPaint::NotPublished;
         };
-        // Set the selection on the focused renderer for this one paint, repaint
-        // the (zoom-honoring) base frame — the renderer inverts the selected
-        // cells with their own styles — then clear it so ordinary renders are
-        // unaffected. `ls` only gated the early-return on focus; the actual
-        // paint goes through the zoomed view so the base matches the screen.
+        // Set the selection for this one zoom-honoring paint, then clear it.
         let _ = ls;
         let base = workspace.render_window(zoomed);
         if let Some(slot) = panes.get_mut(fid) {
@@ -111,13 +90,8 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
             painted
         }
     } else if let Some(clip) = overlays.active_bounds(overlay_content) {
-        // Floating modal (help / prompt / command palette / pickers): keep
-        // the live panes visible by repainting the base frame, then emit
-        // only the modal's bounded region on top. No `\x1b[2J` — the panes
-        // surround the box instead of vanishing behind a full-screen clear.
-        // The base frame includes the sidebar strip: the
-        // repaint's own ED2 cleared it, and chrome must persist under a
-        // floating overlay.
+        // Floating modal: repaint the base frame (panes and sidebar stay
+        // visible), then only the modal's bounded region; no full clear.
         let painted =
             workspace
                 .render_window(zoomed)
@@ -138,9 +112,7 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
                     )
                 });
         let _ = overlays.paint_clipped(out, viewport_dims, overlay_content, clip, theme.shadow);
-        // The box and its shadow sit over pane cells. Pane paint
-        // is suppressed while it is up and dismissal forces a full repaint,
-        // so this is insurance, not a fix — but it is free.
+        // The box sits over pane cells; forget their fronts (free insurance).
         crate::attach::pane_state::invalidate_all_fronts(panes);
         painted
     } else {
@@ -167,25 +139,17 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     }
     let span_rows = u32::from(sel.end_row - sel.start_row + 1);
     let cell_count = if sel.rectangle {
-        // Block (rectangle) selection: a columnar band on every spanned row, so
-        // the count is span_rows * band_cols. The overlay only tuple-normalizes
-        // the corners by `(row, col)`, which does NOT order the columns, so the
-        // band width takes the min/max of the two column bounds — a plain
-        // `end_col - start_col` would underflow whenever the drag runs up-left
-        // (cursor column left of the anchor's on a lower row).
+        // Block selection: span_rows * band_cols, the band taking min/max of
+        // the column bounds (tuple-normalized corners can have start_col >
+        // end_col on an up-left drag).
         let band_cols =
             u32::from(sel.start_col.max(sel.end_col) - sel.start_col.min(sel.end_col)) + 1;
         span_rows * band_cols
     } else {
-        // Linear (text-flow) selection: the historical bounding-box arithmetic.
-        // `saturating_sub` keeps the value identical for the ordered common
-        // case while refusing to underflow on a multi-row drag whose corners
-        // tuple-normalize to `start_col > end_col`.
+        // Linear: bounding-box arithmetic, saturating on reversed columns.
         span_rows * (u32::from(sel.end_col.saturating_sub(sel.start_col)) + 1)
     };
-    // Surface the active geometry from the one bit the renderer carries: block
-    // (columnar band) vs linear (text-flow, incl. whole-line Line mode). `Tab`
-    // cycles it (ADR-0045).
+    // Block vs linear, cycled by `Tab` (ADR-0045).
     let geom = if sel.rectangle { "block" } else { "linear" };
     let status = format!(" copy-mode · {geom} · {cell_count} ");
     write_cup(out, rows - 1, 0)?;
@@ -200,11 +164,8 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     out.flush()
 }
 
-/// Rebuild and repaint the session picker in place when a
-/// fresh host inventory lands while it is open, so a picker opened before
-/// the `GET_STATE` reply fills in its satellite groups instead of showing a
-/// stale fleet. A no-op unless a live session picker is on the overlay stack
-/// ([`OverlayState::refresh_items`] returns `false`).
+/// Rebuild and repaint an open live session picker when a fresh host
+/// inventory lands; a no-op otherwise.
 #[allow(
     clippy::too_many_arguments,
     reason = "the picker projection reads session/host state and the overlay repaint context — main_loop locals threaded by reference, same shape as refresh_fleet_if_open"
@@ -260,12 +221,8 @@ pub(super) fn refresh_session_picker_if_open<W: crate::attach::RenderSink>(
     }
 }
 
-/// Rebuild and repaint the agent-fleet dashboard in place when it
-/// is the active live overlay. Extracted from `main_loop`'s per-frame fleet
-/// refresh so the foreign-topology intercepts (layout + agent-record GET
-/// replies, which `continue` past the general frame handler) can trigger the
-/// same push refresh. A no-op unless a live fleet list is on the overlay
-/// stack ([`OverlayState::refresh_items`] returns `false`).
+/// Rebuild and repaint an open live agent-fleet dashboard; a no-op
+/// otherwise.
 #[allow(
     clippy::too_many_arguments,
     reason = "the fleet projection reads workspace/session/agent state and the overlay repaint context — all main_loop locals threaded by reference, same shape as the paint helpers"

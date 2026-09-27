@@ -19,16 +19,9 @@ use crate::settings::TuiSettings;
 use super::chrome::refresh_window_chrome;
 use super::overlay_paint::paint_active_overlay;
 
-/// (dis)arm the which-key popup deadline for one loop pass.
-///
-/// Arms (`Some(now + delay)`) only while ALL of: the resolver is pending
-/// exactly at the prefix, the popup is enabled in config, and no overlay
-/// is already active (a modal owns the screen; and once the popup itself
-/// is up, re-arming would re-push it forever). Re-invocations while armed
-/// keep the ORIGINAL deadline (anchored, like `esc_deadline`) so other
-/// select! arms firing cannot postpone the popup. Any pass that sees the
-/// conditions no longer met — e.g. an early continuation chord resolved
-/// the prefix — disarms, which is how a fast chord suppresses the popup.
+/// (Dis)arm the which-key deadline for one loop pass: armed only while the
+/// resolver is pending at the prefix, the popup is enabled, and no overlay is
+/// up; an armed deadline keeps its original anchor.
 pub(super) fn update_which_key_deadline(
     deadline: &mut Option<tokio::time::Instant>,
     pending_at_prefix: bool,
@@ -44,14 +37,8 @@ pub(super) fn update_which_key_deadline(
     }
 }
 
-/// Push the which-key popup when the timeout fires.
-///
-/// Re-checks the arming conditions against the CURRENT state (the select!
-/// arm may race a same-iteration resolver mutation) and pushes a
-/// [`WhichKeyOverlay`] built from the same keybindings snapshot the help
-/// overlay uses. Returns `true` iff the popup was pushed (the caller then
-/// paints the overlay layer). Never touches the resolver: the pending
-/// prefix must stay live so the next chord still completes normally.
+/// Push the which-key popup when the timeout fires, re-checking the arming
+/// conditions. Never touches the resolver, so the next chord still completes.
 pub(super) fn push_which_key_overlay(
     overlays: &mut OverlayState,
     resolver: Option<&phux_config::keybind::Resolver>,
@@ -74,20 +61,10 @@ pub(super) fn push_which_key_overlay(
     true
 }
 
-/// Perform one explicit live config reload and repaint.
-///
-/// Re-runs the layered config loader ([`TuiSettings::reload_in_place`])
-/// and, on success, swaps the reloadable settings — keybindings snapshot,
-/// resolver, theme, chrome breakpoints, status bar, plugin rows, which-key
-/// knobs — in place, rebuilds the sidebar painter under the new theme
-/// (cache-cold, so the repaint recolors everything), refreshes the window
-/// chrome, and repaints. On ANY parse/validation failure the previous
-/// config stays fully in effect and the error is surfaced as a
-/// dismissable toast. Never crashes, never half-applies.
-///
-/// Reached from both reload surfaces: the `reload-config` action
-/// (`DispatchCtx::reload_request`) and the `phux config reload` CLI
-/// doorbell (`FrameOutcome::config_reload`).
+/// Reload the config in place and repaint. On success the reloadable
+/// settings swap and the sidebar painter is rebuilt cache-cold under the new
+/// theme; on any failure the old config stays and a toast shows the error.
+/// Reached from the `reload-config` action and the CLI doorbell.
 #[allow(
     clippy::too_many_arguments,
     reason = "the settings and the repaint context are driver-loop locals threaded by reference, same shape as the paint helpers"
@@ -123,10 +100,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
             // ADR-0101: an open settings page that just edited a theme slot
             // shows the new palette rather than the one it was born with.
             overlays.set_theme(&settings.theme);
-            // A fresh sidebar painter carries the new theme and starts
-            // cache-cold so the repaint below recolors the whole chrome
-            // (the status bar's attention chip already rides the theme,
-            // phux-foz.1, set when the settings were built).
+            // A fresh painter carries the new theme and repaints everything.
             *sidebar_painter = SidebarPainter::new(settings.theme);
             refresh_window_chrome(
                 settings.status_bar.as_mut(),
@@ -160,10 +134,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
             }
         }
         Err(msg) => {
-            // Keep the old config (reload_in_place touched nothing) and
-            // make the failure visible: a dismissable toast, mirroring
-            // the plugin-action failure surface. The status bar, theme,
-            // and every binding keep working exactly as before.
+            // Keep the old config and surface the failure as a toast.
             tracing::warn!(error = %msg, "config reload failed; keeping previous config");
             overlays.push(Box::new(crate::render::overlay::ToastOverlay::new(
                 "Config reload failed - previous config kept",
@@ -196,15 +167,8 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
     painted
 }
 
-/// Set a caller-supplied attach-time notice (the reconnect
-/// loop's "re-attached after server restart") on the status-bar painter's
-/// transient slot.
-///
-/// Returns `true` when the painter accepted it. Degrades to a `tracing`
-/// line — never silently — when there is no painter, mirroring the
-/// per-frame `FrameOutcome::notices` drain; the painter itself degrades
-/// the empty-bar and persistent-error-line cases the same way inside
-/// `set_notice`.
+/// Seed the attach-time notice (e.g. "re-attached after server restart");
+/// true when the painter took it, a tracing line when there is no painter.
 pub(super) fn apply_initial_notice(
     status_bar: Option<&mut StatusBarPainter>,
     notice: Option<Notice>,

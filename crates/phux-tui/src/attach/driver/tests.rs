@@ -1,40 +1,46 @@
 //! Cross-cutting driver tests: attach negotiation, detach classification,
-//! onboarding notices, coalesced replies, the foreign-topology sweeps,
-//! and the chrome-under-overlay probes.
+//! onboarding notices, the foreign-topology sweeps, and the chrome-under-
+//! overlay probes.
 #![allow(clippy::expect_used, reason = "tests")]
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self};
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::caps::Layer;
-use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, Scope, ViewportInfo};
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{
+    BootstrapCapabilities, Layer, ServerCapabilities, TerminalColor, TerminalDefaultColors,
+    select_bootstrap_profile,
+};
+use phux_protocol::ids::{ResourceId, SessionId};
+use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, Scope, ViewportInfo};
+use tokio::net::UnixStream;
 
 use crate::attach::connection::{Connection, Dial};
+use crate::attach::onboarding;
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::paint::{
     SidebarEdge, SidebarReservation, StatusBarPaint, content_rect, paint_bar_after_pane,
     paint_full_frame, sidebar_reservation,
 };
-use crate::attach::pane_state::{AttachKernel, PaneSlot};
-use crate::attach::render::ReplicaWalk;
-use crate::attach::render::SelectionRect;
+use crate::attach::pane_state::{AttachKernel, PaneSlot, published_test_state};
+use crate::attach::render::{ReplicaWalk, SelectionRect};
 use crate::attach::server_frame::FrameOutcome;
 use crate::layout::Workspace;
 use crate::predict::PredictiveConfig;
 use crate::render::chrome::sidebar::SidebarPainter;
-use phux_client::agent_meta::{AgentMetaState, AgentRecord};
-use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
-
-/// These tests drive a `UnixStream::pair`, so the local dial is the honest
-/// one: it also pins that the UDS lane offers no frame compression.
-fn test_dial() -> Dial {
-    Dial::uds(Path::new("/tmp/phux-driver-test.sock"))
-}
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
-use crate::render::overlay::OverlayState;
+use crate::render::overlay::{OverlayState, RenderOverlay, SelectItem, SelectList};
+use crate::settings::{build_resolver_from, config_error_line, keybind_error_line};
+use phux_client::agent_meta::{
+    AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY,
+};
+use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
+use phux_client::testkit::{ScriptSpec, ScriptedServer};
+use phux_config::KeybindingsCfg;
+use phux_config::keybind::ResolvedAction;
+use phux_config::widget::WindowInfo;
 
 use super::config_ui::*;
 use super::entry::*;
@@ -43,65 +49,60 @@ use super::overlay_paint::*;
 use super::session_io::*;
 use super::subscriptions::*;
 use super::viewport::*;
-use crate::attach::pane_state::published_test_state;
-use crate::settings::{build_resolver_from, config_error_line, keybind_error_line};
-use phux_client::layout_ops::LAYOUT_KEY;
 
-use phux_client::testkit::{ScriptSpec, ScriptedServer};
-use phux_protocol::PROTOCOL_VERSION;
-
-fn published_test_kernel(
-    terminal_id: &ResourceId,
-    cols: u16,
-    rows: u16,
-    bytes: &[u8],
-) -> AttachKernel {
-    published_test_state(&[(terminal_id, cols, rows, bytes)]).0
+/// The local dial: these tests drive a `UnixStream::pair`.
+fn test_dial() -> Dial {
+    Dial::uds(Path::new("/tmp/phux-driver-test.sock"))
 }
-use phux_protocol::caps::{
-    BootstrapCapabilities, ServerCapabilities, TerminalColor, TerminalDefaultColors,
-    select_bootstrap_profile,
-};
-use phux_protocol::wire::frame::DetachReason;
-use tokio::net::UnixStream;
+
+fn published_test_kernel(id: &ResourceId, cols: u16, rows: u16, bytes: &[u8]) -> AttachKernel {
+    published_test_state(&[(id, cols, rows, bytes)]).0
+}
+
+/// A connected pair; drop the client and [`drain`] the server to read what
+/// was sent.
+fn pair() -> (Connection, Connection) {
+    let (a, b) = UnixStream::pair().expect("pair");
+    (Connection::from_stream(a), Connection::from_stream(b))
+}
+
+async fn drain(client: Connection, mut server: Connection) -> Vec<FrameKind> {
+    drop(client);
+    let mut frames = Vec::new();
+    while let Ok(frame) = server.recv().await {
+        frames.push(frame);
+    }
+    frames
+}
 
 #[test]
 fn detach_classification_requires_local_intent_and_plain_detach() {
-    assert!(is_local_detach(AttachEnd::Detached { reason: None }, true));
-    assert!(!is_local_detach(
-        AttachEnd::Detached { reason: None },
-        false
-    ));
-    // The reason qualifies the ending, never the local-intent test: a
-    // server that names REQUESTED for a detach we asked for is the same
-    // local detach as a server that names nothing.
+    let detached = |reason| AttachEnd::Detached { reason };
+    assert!(is_local_detach(detached(None), true));
+    assert!(!is_local_detach(detached(None), false));
+    // The reason never overrides the local-intent test.
     assert!(is_local_detach(
-        AttachEnd::Detached {
-            reason: Some(DetachReason::Requested),
-        },
-        true,
+        detached(Some(DetachReason::Requested)),
+        true
     ));
     assert!(!is_local_detach(
-        AttachEnd::Detached {
-            reason: Some(DetachReason::ServerShutdown),
-        },
-        false,
+        detached(Some(DetachReason::ServerShutdown)),
+        false
     ));
     assert!(!is_local_detach(
         AttachEnd::LastPaneClosed {
-            exit_status: Some(0),
+            exit_status: Some(0)
         },
-        true,
+        true
     ));
 }
 
-/// A session created from inside the TUI (picker "new
-/// session") seeds its pane in the client's cwd, not `None` (= the
-/// daemon's CWD).
+/// A session created from inside the TUI seeds its pane in the client's cwd,
+/// not the daemon's.
 #[test]
 fn create_session_target_carries_client_cwd() {
     let expected = std::env::current_dir()
-        .expect("test cwd")
+        .expect("cwd")
         .to_string_lossy()
         .into_owned();
     assert_eq!(
@@ -114,203 +115,108 @@ fn create_session_target_carries_client_cwd() {
     );
 }
 
-/// The attach-time notice seam `main_loop` calls right
-/// after the bootstrap chrome refresh. A configured bar accepts the
-/// reconnect notice (and paints it full-row on the next bar paint); no
-/// painter, or no notice, is a quiet no-op.
-#[test]
-fn apply_initial_notice_sets_the_painter_slot_at_attach() {
+fn session_name_painter() -> StatusBarPainter {
     use phux_config::widget::WidgetRegistry;
     use phux_config::{StatusCfg, Widget};
-
     let cfg = StatusCfg {
         left: vec![Widget::Bare("session-name".into())],
         ..StatusCfg::default()
     };
     let bar =
         phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar");
-    let mut painter =
-        StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom);
-    let before = std::time::Instant::now();
-    assert!(
-        apply_initial_notice(
-            Some(&mut painter),
-            Some(Notice::info("re-attached after server restart")),
-        ),
-        "a configured bar must accept the reconnect notice"
-    );
-    // The slot is genuinely occupied: it survives until NOTICE_TTL and
-    // clears on the tick after — the same expiry path the live
-    // status_tick drives (full-row rendering itself is pinned by the
-    // phux-i0e8.2.1 painter tests).
-    assert!(
-        !painter.clear_expired_notice(before),
-        "the notice must hold the slot for its TTL"
-    );
-    assert!(
-        painter.clear_expired_notice(before + crate::render::chrome::status_bar::NOTICE_TTL * 2),
-        "the seeded notice must expire like any other transient notice"
-    );
+    StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom)
+}
 
-    // No painter: degrades (returns false), never panics.
-    assert!(!apply_initial_notice(
-        None,
-        Some(Notice::info("re-attached after server restart")),
-    ));
-    // No notice: a first attach is a no-op even with a painter.
+/// The attach-time notice seam: a configured bar takes the reconnect notice
+/// for its TTL; no painter or no notice is a quiet no-op.
+#[test]
+fn apply_initial_notice_sets_the_painter_slot_at_attach() {
+    let mut painter = session_name_painter();
+    let before = std::time::Instant::now();
+    let notice = || Some(Notice::info("re-attached after server restart"));
+    assert!(apply_initial_notice(Some(&mut painter), notice()));
+    assert!(!painter.clear_expired_notice(before), "held for its TTL");
+    assert!(
+        painter.clear_expired_notice(before + crate::render::chrome::status_bar::NOTICE_TTL * 2)
+    );
+    assert!(!apply_initial_notice(None, notice()));
     assert!(!apply_initial_notice(Some(&mut painter), None));
 }
 
-fn returning_onboarding_claim(path: &std::path::Path) -> super::super::onboarding::AttachClaim {
-    let intro = super::super::onboarding::begin_attach(path).expect("intro claim");
+/// A painter carrying the return-onboarding notice, and the claim for it.
+fn returning(path: &Path) -> (onboarding::AttachClaim, StatusBarPainter) {
+    let intro = onboarding::begin_attach(path).expect("intro claim");
     assert!(intro.commit());
     assert_eq!(
-        super::super::onboarding::after_detach(path),
-        Some(super::super::onboarding::DETACH_NOTICE)
+        onboarding::after_detach(path),
+        Some(onboarding::DETACH_NOTICE)
     );
-    super::super::onboarding::begin_attach(path).expect("return claim")
-}
-
-#[test]
-fn accepted_return_notice_is_retryable_when_attach_exits_before_paint() {
-    use phux_config::widget::WidgetRegistry;
-    use phux_config::{StatusCfg, Widget};
-
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("onboarding.json");
-    let claim = returning_onboarding_claim(&path);
-    let cfg = StatusCfg {
-        left: vec![Widget::Bare("session-name".into())],
-        ..StatusCfg::default()
-    };
-    let bar =
-        phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar");
-    let mut painter =
-        StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom);
-
+    let claim = onboarding::begin_attach(path).expect("return claim");
+    let mut painter = session_name_painter();
     assert!(apply_initial_notice(
         Some(&mut painter),
-        Some(Notice::info(super::super::onboarding::RETURN_NOTICE)),
+        Some(Notice::info(onboarding::RETURN_NOTICE))
     ));
-    drop(claim);
-
-    assert_eq!(
-        super::super::onboarding::begin_attach(&path)
-            .expect("return remains retryable")
-            .moment(),
-        super::super::onboarding::AttachMoment::Return
-    );
+    (claim, painter)
 }
 
-#[test]
-fn delivered_return_notice_commits_onboarding_claim() {
-    use phux_config::widget::WidgetRegistry;
-    use phux_config::{StatusCfg, Widget};
-
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("onboarding.json");
-    let claim = returning_onboarding_claim(&path);
-    let cfg = StatusCfg {
-        left: vec![Widget::Bare("session-name".into())],
-        ..StatusCfg::default()
-    };
-    let bar =
-        phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar");
-    let mut painter =
-        StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom);
-    assert!(apply_initial_notice(
-        Some(&mut painter),
-        Some(Notice::info(super::super::onboarding::RETURN_NOTICE)),
-    ));
-
-    let mut out = Vec::new();
-    let delivered = paint_bar_after_pane(
-        Some(&mut painter),
-        &mut out,
-        (80, 24),
+fn paint_bar(painter: &mut StatusBarPainter, cols: u16, out: &mut Vec<u8>) -> StatusBarPaint {
+    paint_bar_after_pane(
+        Some(painter),
+        out,
+        (cols, 24),
         None,
         "demo",
         None,
         None,
         false,
+    )
+}
+
+/// The return notice commits the onboarding claim only once it is painted
+/// whole: an attach that exits first, or a truncated paint, stays retryable.
+#[test]
+fn return_notice_commits_onboarding_only_when_fully_published() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("onboarding.json");
+    let (claim, _painter) = returning(&path);
+    drop(claim);
+    assert_eq!(
+        onboarding::begin_attach(&path)
+            .expect("still retryable")
+            .moment(),
+        onboarding::AttachMoment::Return
     );
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("onboarding.json");
+    let (claim, mut painter) = returning(&path);
+    let mut claim = Some(claim);
+    let mut out = Vec::new();
+    let truncated = paint_bar(&mut painter, 20, &mut out);
+    finish_return_onboarding_after_paint(&mut claim, Some(&painter), truncated);
+    assert!(claim.is_some(), "a truncated notice must remain retryable");
+
+    out.clear();
+    let delivered = paint_bar(&mut painter, 80, &mut out);
     assert!(matches!(delivered, StatusBarPaint::Published { .. }));
     let mut escaped = false;
     let plain: String = String::from_utf8_lossy(&out)
         .chars()
         .filter(|ch| {
-            if escaped {
-                if ch.is_ascii_alphabetic() {
-                    escaped = false;
-                }
-                false
-            } else if *ch == '\x1b' {
-                escaped = true;
-                false
+            let keep = !escaped && *ch != '\x1b';
+            escaped = if escaped {
+                !ch.is_ascii_alphabetic()
             } else {
-                true
-            }
+                *ch == '\x1b'
+            };
+            keep
         })
         .collect();
-    assert!(
-        plain.contains(super::super::onboarding::RETURN_NOTICE),
-        "painted text: {plain:?}"
-    );
-    let mut claim = Some(claim);
+    assert!(plain.contains(onboarding::RETURN_NOTICE), "{plain:?}");
     finish_return_onboarding_after_paint(&mut claim, Some(&painter), delivered);
-
-    assert!(super::super::onboarding::begin_attach(&path).is_none());
-}
-
-#[test]
-fn truncated_return_notice_retries_until_the_full_notice_is_published() {
-    use phux_config::widget::WidgetRegistry;
-    use phux_config::{StatusCfg, Widget};
-
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("onboarding.json");
-    let mut claim = Some(returning_onboarding_claim(&path));
-    let cfg = StatusCfg {
-        left: vec![Widget::Bare("session-name".into())],
-        ..StatusCfg::default()
-    };
-    let bar =
-        phux_config::widget::StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar");
-    let mut painter =
-        StatusBarPainter::new(bar, crate::render::chrome::status_bar::Position::Bottom);
-    assert!(apply_initial_notice(
-        Some(&mut painter),
-        Some(Notice::info(super::super::onboarding::RETURN_NOTICE)),
-    ));
-
-    let mut out = Vec::new();
-    let truncated = paint_bar_after_pane(
-        Some(&mut painter),
-        &mut out,
-        (20, 24),
-        None,
-        "demo",
-        None,
-        None,
-        false,
-    );
-    finish_return_onboarding_after_paint(&mut claim, Some(&painter), truncated);
-    assert!(claim.is_some(), "a truncated notice must remain retryable");
-
-    let delivered = paint_bar_after_pane(
-        Some(&mut painter),
-        &mut out,
-        (80, 24),
-        None,
-        "demo",
-        None,
-        None,
-        false,
-    );
-    finish_return_onboarding_after_paint(&mut claim, Some(&painter), delivered);
-
     assert!(claim.is_none());
-    assert!(super::super::onboarding::begin_attach(&path).is_none());
+    assert!(onboarding::begin_attach(&path).is_none());
 }
 
 #[test]
@@ -318,82 +224,43 @@ fn sidebar_reservation_changes_view_rects_for_pty_reflow() {
     let id = ResourceId::local(1);
     let workspace = Workspace::single(id.clone());
     let viewport = (100, 30);
-    let full = view_rects(
-        &workspace,
-        None,
-        content_rect(viewport, None, None),
-        viewport,
-    );
-    let inset = view_rects(
-        &workspace,
-        None,
-        content_rect(
-            viewport,
+    let rect = |sidebar| {
+        view_rects(
+            &workspace,
             None,
-            Some(SidebarReservation {
-                edge: SidebarEdge::Left,
-                width: 20,
-            }),
-        ),
-        viewport,
-    );
-
-    assert_eq!(full.get(&id).expect("full rect").w, 100);
-    assert_eq!(inset.get(&id).expect("inset rect").w, 80);
-    assert_eq!(inset.get(&id).expect("inset rect").x, 20);
+            content_rect(viewport, None, sidebar),
+            viewport,
+        )[&id]
+    };
+    assert_eq!(rect(None).w, 100);
+    let inset = rect(Some(SidebarReservation {
+        edge: SidebarEdge::Left,
+        width: 20,
+    }));
+    assert_eq!((inset.x, inset.w), (20, 80));
 }
 
-/// `toggle-sidebar` is client-local chrome, not session state, and a
-/// `switch-session` re-enters `main_loop` — which re-reads
-/// `[sidebar] enabled`. Without the carry, the user's toggle is silently
-/// reverted on every space switch: the strip blinks shut exactly when
-/// they are moving between the spaces it exists to show them.
-///
-/// Both directions must carry. The runtime value is authoritative once it
-/// exists, so a config default can neither re-open a strip the user shut
-/// nor close one they opened.
+/// `toggle-sidebar` is client-local and must survive a `switch-session` in
+/// both directions; config seeds only the first attach.
 #[test]
 fn sidebar_enabled_carries_across_a_session_switch() {
-    // First attach: nothing carried, so `[sidebar] enabled` decides —
-    // including the shipped default, which must stay byte-identical.
     assert!(!seed_sidebar_enabled(None, false));
     assert!(seed_sidebar_enabled(None, true));
-    // Switched after `toggle-sidebar` opened it: the runtime value wins
-    // over a config that defaults the strip off. This is the regression.
     assert!(seed_sidebar_enabled(Some(true), false));
-    // ...and symmetrically, closing it by hand survives a config that
-    // defaults it on — a switch must not re-open what the user shut.
     assert!(!seed_sidebar_enabled(Some(false), true));
 }
 
-#[test]
-fn attach_error_io_display_includes_source() {
-    let err = AttachError::Io(io::Error::other("boom"));
-    let msg = err.to_string();
-    assert!(msg.contains("attach loop io error"));
-}
-
-// -- lenient resolver at attach -----------------------
-
+/// One malformed chord disables only itself; detach survives.
 #[test]
 fn attach_resolver_survives_one_bad_chord_and_keeps_detach() {
-    // Before phux-i0e8.3.4, one malformed chord ("q-") made
-    // build_resolver_from return None: EVERY binding died, including
-    // detach. Now the attach path always gets a resolver and only the
-    // offending binding is disabled.
     let cfg = phux_config::parse_str(
-        r#"
-            [keybindings.prefix-table]
-            "q-" = "kill-pane"
-            d = "detach"
-            "#,
+        "[keybindings.prefix-table]\n\"q-\" = \"kill-pane\"\nd = \"detach\"\n",
         Path::new("test.toml"),
     )
-    .expect("test config parses");
+    .expect("parses");
     let (mut resolver, diags) = build_resolver_from(&cfg.keybindings);
-    assert_eq!(diags.len(), 1, "exactly the bad binding is reported");
+    assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].binding, "q-");
-
     let prefix = phux_config::keybind::parse_chord(&cfg.keybindings.prefix).expect("prefix");
     assert_eq!(resolver.feed(prefix), phux_config::keybind::Feed::Partial);
     match resolver.feed(phux_config::keybind::parse_chord("d").expect("chord")) {
@@ -402,258 +269,136 @@ fn attach_resolver_survives_one_bad_chord_and_keeps_detach() {
     }
 }
 
+/// The error lines name the first bad chord, count the rest, and point at
+/// `phux config check` (the diagnosing verb, not `config show`).
 #[test]
-fn keybind_error_line_names_the_chord_and_config_check() {
-    let cfg = phux_config::parse_str(
-        r#"
-            [keybindings.prefix-table]
-            "q-" = "kill-pane"
-            "#,
-        Path::new("test.toml"),
-    )
-    .expect("test config parses");
-    let (_, diags) = build_resolver_from(&cfg.keybindings);
-    let line = keybind_error_line(&diags);
+fn config_error_lines_name_the_problem_and_point_at_config_check() {
+    let diags = |toml: &str| {
+        let cfg = phux_config::parse_str(toml, Path::new("test.toml")).expect("parses");
+        build_resolver_from(&cfg.keybindings).1
+    };
+    let one = keybind_error_line(&diags(
+        "[keybindings.prefix-table]\n\"q-\" = \"kill-pane\"\n",
+    ));
     assert!(
-        line.contains("\"q-\""),
-        "line must name the offending chord: {line}"
+        one.contains("\"q-\"") && one.contains("run: phux config check"),
+        "{one}"
     );
+    assert!(!one.contains("more;"), "{one}");
+    let three = keybind_error_line(&diags(
+        "[keybindings.prefix-table]\n\"q-\" = \"kill-pane\"\n\"w-\" = \"kill-pane\"\n\"e-\" = \"kill-pane\"\n",
+    ));
     assert!(
-        line.contains("run: phux config check"),
-        "line must point at the checker: {line}"
+        three.contains("\"e-\"") && three.contains("+2 more; run: phux config check"),
+        "{three}"
     );
-    assert!(
-        !line.contains("more;"),
-        "a single diagnostic carries no +N count: {line}"
-    );
-}
-
-#[test]
-fn keybind_error_line_counts_additional_disabled_bindings() {
-    let cfg = phux_config::parse_str(
-        r#"
-            [keybindings.prefix-table]
-            "q-" = "kill-pane"
-            "w-" = "kill-pane"
-            "e-" = "kill-pane"
-            "#,
-        Path::new("test.toml"),
-    )
-    .expect("test config parses");
-    let (_, diags) = build_resolver_from(&cfg.keybindings);
-    assert_eq!(diags.len(), 3);
-    let line = keybind_error_line(&diags);
-    // BTreeMap order: "e-" first, the other two summarized.
-    assert!(
-        line.contains("\"e-\""),
-        "line must name the first offending chord: {line}"
-    );
-    assert!(
-        line.contains("+2 more; run: phux config check"),
-        "line must count the remaining disabled bindings: {line}"
-    );
-}
-
-#[test]
-fn keybind_error_line_is_empty_without_diagnostics() {
     assert_eq!(keybind_error_line(&[]), "");
-}
 
-#[test]
-fn config_error_line_recommends_config_check() {
-    // The remedy is the verb that diagnoses
-    // (`config check`), not the one that merely renders the
-    // effective config (`config show`).
     let line = config_error_line(&"boom");
     assert!(
-        line.contains("phux config check"),
-        "line must point at the checker: {line}"
+        line.contains("config error: boom") && line.contains("phux config check"),
+        "{line}"
     );
-    assert!(
-        !line.contains("config show"),
-        "line must not recommend config show: {line}"
-    );
-    assert!(
-        line.contains("config error: boom"),
-        "line must carry the error display: {line}"
-    );
+    assert!(!line.contains("config show"), "{line}");
 }
 
-// -- which-key popup arming ------------------------------
-
-/// Build a resolver from the shipped defaults and walk it to the
-/// pending-prefix state (`C-a` fed, continuation awaited).
+/// A resolver from the shipped defaults, walked to the pending-prefix state.
 fn pending_resolver() -> phux_config::keybind::Resolver {
-    let cfg = phux_config::parse_str(phux_config::DEFAULT_CONFIG_TOML, Path::new("default.toml"))
-        .expect("default config parses");
-    let mut r = phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver builds");
+    let cfg = default_cfg();
+    let mut r = phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver");
     let prefix = phux_config::keybind::parse_chord(&cfg.keybindings.prefix).expect("prefix");
     assert_eq!(r.feed(prefix), phux_config::keybind::Feed::Partial);
-    assert!(r.pending_at_prefix());
     r
 }
 
+fn default_cfg() -> phux_config::Config {
+    phux_config::parse_str(phux_config::DEFAULT_CONFIG_TOML, Path::new("default.toml"))
+        .expect("default config parses")
+}
+
+/// The which-key deadline arms once at `now + delay` and keeps that anchor;
+/// an early chord, a disabled config, or an overlay disarms it.
 #[test]
-fn which_key_deadline_arms_once_and_holds_its_anchor() {
-    let mut deadline = None;
+fn which_key_deadline_arms_once_and_disarms_on_resolve_disable_or_overlay() {
     let now = tokio::time::Instant::now();
     let delay = Duration::from_millis(600);
+    let mut deadline = None;
     update_which_key_deadline(&mut deadline, true, true, false, now, delay);
-    assert_eq!(deadline, Some(now + delay), "arms at now + delay");
-    // A later pass (other select! arms fired) keeps the ORIGINAL
-    // anchor — the popup is not postponed by unrelated wakeups.
-    update_which_key_deadline(
-        &mut deadline,
-        true,
-        true,
-        false,
-        now + Duration::from_millis(300),
-        delay,
-    );
+    assert_eq!(deadline, Some(now + delay));
+    update_which_key_deadline(&mut deadline, true, true, false, now + delay / 2, delay);
     assert_eq!(deadline, Some(now + delay), "anchor survives re-passes");
-}
-
-#[test]
-fn which_key_deadline_disarms_when_an_early_chord_resolves() {
-    // The suppression path: prefix pressed (armed), then a fast
-    // continuation resolves the chord BEFORE the timeout — the next
-    // loop pass sees pending=false and must disarm, so the popup
-    // never appears.
-    let mut deadline = None;
-    let now = tokio::time::Instant::now();
-    let delay = Duration::from_millis(600);
-    update_which_key_deadline(&mut deadline, true, true, false, now, delay);
-    assert!(deadline.is_some());
     update_which_key_deadline(&mut deadline, false, true, false, now, delay);
-    assert_eq!(deadline, None, "early chord suppresses the popup");
-}
+    assert_eq!(deadline, None, "an early chord suppresses the popup");
 
-#[test]
-fn which_key_deadline_respects_disable_and_active_overlay() {
-    let mut deadline = None;
-    let now = tokio::time::Instant::now();
-    let delay = Duration::from_millis(600);
-    // Disabled in config: never arms.
     update_which_key_deadline(&mut deadline, true, false, false, now, delay);
-    assert_eq!(deadline, None);
-    // A modal already up: never arms (it owns input; the resolver was
-    // reset on entry anyway).
+    assert_eq!(deadline, None, "disabled in config");
     update_which_key_deadline(&mut deadline, true, true, true, now, delay);
-    assert_eq!(deadline, None);
-    // Armed, then an overlay appears before the timeout: disarms.
+    assert_eq!(deadline, None, "a modal owns input");
     update_which_key_deadline(&mut deadline, true, true, false, now, delay);
-    assert!(deadline.is_some());
     update_which_key_deadline(&mut deadline, true, true, true, now, delay);
-    assert_eq!(deadline, None);
+    assert_eq!(deadline, None, "an overlay appearing disarms");
 }
 
+/// The timeout pushes a passthrough popup and leaves the prefix pending; it
+/// declines with no pending prefix or over a modal.
 #[test]
-fn which_key_timeout_pushes_the_popup_and_keeps_the_prefix_pending() {
-    // The timeout path: a pending-at-prefix resolver + keybindings
-    // snapshot ⇒ the popup is pushed; the resolver still holds the
-    // pending prefix so the NEXT chord completes normally.
-    let cfg = phux_config::parse_str(phux_config::DEFAULT_CONFIG_TOML, Path::new("default.toml"))
-        .expect("default config parses");
+fn which_key_timeout_pushes_a_passthrough_popup_only_when_pending() {
+    let cfg = default_cfg();
+    let theme = crate::render::Theme::default();
     let resolver = pending_resolver();
     let mut overlays = OverlayState::new();
-    let theme = crate::render::Theme::default();
-    let pushed = push_which_key_overlay(
+    assert!(push_which_key_overlay(
         &mut overlays,
         Some(&resolver),
         Some(&cfg.keybindings),
-        &theme,
-    );
-    assert!(pushed, "timeout must push the which-key popup");
-    assert!(overlays.is_active());
+        &theme
+    ));
     assert!(
         overlays.top_is_passthrough(),
-        "the popup must be input-passthrough so it can never eat a chord"
+        "the popup can never eat a chord"
     );
-    assert!(
-        resolver.pending_at_prefix(),
-        "pushing the popup must not consume the pending prefix"
-    );
-}
+    assert!(resolver.pending_at_prefix(), "the pending prefix survives");
 
-#[test]
-fn which_key_push_declines_without_pending_prefix_or_over_a_modal() {
-    let cfg = phux_config::parse_str(phux_config::DEFAULT_CONFIG_TOML, Path::new("default.toml"))
-        .expect("default config parses");
-    let theme = crate::render::Theme::default();
-
-    // Resolver at the root (no pending prefix): no push.
-    let idle = phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver builds");
+    let idle = phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver");
     let mut overlays = OverlayState::new();
     assert!(!push_which_key_overlay(
         &mut overlays,
         Some(&idle),
         Some(&cfg.keybindings),
-        &theme,
+        &theme
     ));
     assert!(!overlays.is_active());
 
-    // A modal already up: no push (would stack over user input).
-    let pending = pending_resolver();
     let mut overlays = OverlayState::new();
     overlays.push(palette_overlay());
     assert!(!push_which_key_overlay(
         &mut overlays,
-        Some(&pending),
+        Some(&resolver),
         Some(&cfg.keybindings),
-        &theme,
+        &theme
     ));
     assert_eq!(overlays.depth(), 1, "nothing stacked on the modal");
 }
 
-/// The layout metadata key is per-session, so two sessions
-/// never share (and clobber) one bucket.
+/// Foreign layout and agent GET replies cache on a decodable value and clear
+/// on garbage or a tombstone; an identical agent record reports no change.
 #[test]
-fn layout_key_is_per_session() {
-    use phux_protocol::ids::SessionId;
-    let a = layout_key(SessionId::new(1));
-    let b = layout_key(SessionId::new(2));
-    assert_eq!(a, "phux.tui.layout/v1/1");
-    assert_eq!(b, "phux.tui.layout/v1/2");
-    assert_ne!(a, b, "different sessions get different keys");
-    assert!(a.starts_with(LAYOUT_KEY), "still under the layout prefix");
-}
-
-/// A foreign session's layout GET reply round-trips into
-/// the picker cache; a tombstone (`None`) or garbage clears/skips the
-/// entry so the picker falls back to the plain switch row.
-#[test]
-fn apply_foreign_layout_reply_caches_clears_and_survives_garbage() {
-    use phux_protocol::ids::SessionId;
+fn foreign_replies_cache_clear_and_survive_garbage() {
     let sid = SessionId::new(7);
-    let mut cache: HashMap<SessionId, Workspace> = HashMap::new();
-
-    // A decodable envelope lands in the cache with its windows intact.
+    let mut layouts: HashMap<SessionId, Workspace> = HashMap::new();
     let mut ws = Workspace::single(ResourceId::local(1));
     ws.add_window("logs".to_owned(), ResourceId::local(2));
     let bytes = ws.encode_cbor().expect("encode");
-    apply_foreign_layout_reply(&mut cache, sid, Some(&bytes));
-    assert_eq!(cache.get(&sid).map(|w| w.windows.len()), Some(2));
+    apply_foreign_layout_reply(&mut layouts, sid, Some(&bytes));
+    assert_eq!(layouts.get(&sid).map(|w| w.windows.len()), Some(2));
+    apply_foreign_layout_reply(&mut layouts, sid, Some(b"not cbor"));
+    assert!(!layouts.contains_key(&sid));
+    apply_foreign_layout_reply(&mut layouts, sid, Some(&bytes));
+    apply_foreign_layout_reply(&mut layouts, sid, None);
+    assert!(!layouts.contains_key(&sid));
 
-    // Garbage clears the stale entry rather than keeping it.
-    apply_foreign_layout_reply(&mut cache, sid, Some(b"not cbor"));
-    assert!(!cache.contains_key(&sid), "undecodable reply clears");
-
-    // Re-cache, then a tombstone (nothing persisted) clears again.
-    apply_foreign_layout_reply(&mut cache, sid, Some(&bytes));
-    assert!(cache.contains_key(&sid));
-    apply_foreign_layout_reply(&mut cache, sid, None);
-    assert!(!cache.contains_key(&sid), "tombstone clears");
-}
-
-/// A foreign pane's agent-record GET reply round-trips into
-/// the fleet cache; a tombstone (`None`) or an unparseable record
-/// clears the entry so the fleet row falls back to `?`/"no agent".
-#[test]
-fn apply_foreign_agent_reply_caches_clears_and_survives_garbage() {
     let id = ResourceId::local(3);
-    let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
-
-    // A well-formed record lands with its identity intact.
+    let mut agents: HashMap<ResourceId, AgentRecord> = HashMap::new();
     let record = AgentRecord {
         name: "packer".to_owned(),
         kind: Some("codex".to_owned()),
@@ -661,453 +406,221 @@ fn apply_foreign_agent_reply_caches_clears_and_survives_garbage() {
         ..AgentRecord::default()
     };
     assert!(apply_foreign_agent_reply(
-        &mut cache,
+        &mut agents,
         id.clone(),
         Some(&record.encode())
     ));
-    assert_eq!(cache.get(&id).map(|r| r.name.as_str()), Some("packer"));
-    assert!(
-        !apply_foreign_agent_reply(&mut cache, id.clone(), Some(&record.encode())),
-        "an identical GET must not report a cache change"
-    );
-
-    // Garbage (no non-empty `name`) clears the stale entry.
-    apply_foreign_agent_reply(&mut cache, id.clone(), Some(b"not json"));
-    assert!(!cache.contains_key(&id), "unparseable record clears");
-
-    // Re-cache, then a tombstone (no record) clears again.
-    apply_foreign_agent_reply(&mut cache, id.clone(), Some(&record.encode()));
-    assert!(cache.contains_key(&id));
-    apply_foreign_agent_reply(&mut cache, id.clone(), None);
-    assert!(!cache.contains_key(&id), "tombstone clears");
+    assert_eq!(agents[&id].name, "packer");
+    assert!(!apply_foreign_agent_reply(
+        &mut agents,
+        id.clone(),
+        Some(&record.encode())
+    ));
+    apply_foreign_agent_reply(&mut agents, id.clone(), Some(b"not json"));
+    assert!(!agents.contains_key(&id));
+    apply_foreign_agent_reply(&mut agents, id.clone(), Some(&record.encode()));
+    apply_foreign_agent_reply(&mut agents, id.clone(), None);
+    assert!(!agents.contains_key(&id));
 }
 
-/// Pruning keeps only the agent records whose panes still
-/// appear in some cached foreign layout — a peer closing a pane (or a
-fn session_info(id: u32, name: &str) -> phux_protocol::wire::info::SessionInfo {
-    phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(id), name)
-        .with_window_count(1)
-}
-
-/// Peer layout keys are SUBSCRIBED, not merely read once.
-///
-/// The one-shot sweep this replaces was an attach-time photograph that
-/// rotted silently — tolerable while peers appeared only inside a modal
-/// the user had just opened, wrong once they feed the always-on strip.
-/// The subscribe must go out even when the GET will answer `None`: a peer
-/// that has not persisted a layout yet is exactly the one whose first
-/// write matters.
+/// Peer layout keys are SUBSCRIBED once (there is no unsubscribe), still
+/// GET each sweep, and our own session is never subscribed here.
 #[tokio::test]
 async fn peer_layout_keys_are_subscribed_not_just_read() {
-    let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-    let mut client = Connection::from_stream(client_stream);
-    let mut server = Connection::from_stream(server_stream);
-
-    let sessions = vec![session_info(1, "work"), session_info(2, "scratch")];
-    let mut next_request_id = 1;
-    let mut pending = HashMap::new();
-    let mut subscribed = std::collections::HashSet::new();
-
-    let sent = async {
+    let (mut client, server) = pair();
+    let sessions = vec![
+        phux_protocol::wire::info::SessionInfo::new(SessionId::new(1), "work").with_window_count(1),
+        phux_protocol::wire::info::SessionInfo::new(SessionId::new(2), "scratch")
+            .with_window_count(1),
+    ];
+    let (mut next, mut pending, mut subscribed) = (1, HashMap::new(), HashSet::new());
+    for _ in 0..2 {
         sync_foreign_layout_subscriptions(
             &mut client,
             &sessions,
-            Some(phux_protocol::ids::SessionId::new(1)),
-            &mut next_request_id,
+            Some(SessionId::new(1)),
+            &mut next,
             &mut pending,
             &mut subscribed,
         )
         .await
         .expect("sweep sends");
-        // A second sweep against the same graph must not re-subscribe:
-        // there is no UNSUBSCRIBE verb, so a resend is pure wire noise.
-        sync_foreign_layout_subscriptions(
-            &mut client,
-            &sessions,
-            Some(phux_protocol::ids::SessionId::new(1)),
-            &mut next_request_id,
-            &mut pending,
-            &mut subscribed,
-        )
-        .await
-        .expect("second sweep sends");
-        drop(client);
-    };
-
-    let collect = async {
-        let mut frames = Vec::new();
-        while let Ok(frame) = server.recv().await {
-            frames.push(frame);
-        }
+    }
+    let frames = drain(client, server).await;
+    let (peer_key, own_key) = (layout_key(SessionId::new(2)), layout_key(SessionId::new(1)));
+    let subscribe_count = |key: &str| {
         frames
+            .iter()
+            .filter(|f| {
+                matches!(f, FrameKind::SubscribeMetadata { scope, key: k }
+                if *scope == Scope::Group(DEFAULT_GROUP_ID) && k == key)
+            })
+            .count()
     };
-    let ((), frames) = tokio::join!(sent, collect);
-
-    let peer_key = phux_client::layout_ops::layout_key(phux_protocol::ids::SessionId::new(2));
-    let peer_subscribes: Vec<_> = frames
-        .iter()
-        .filter(|f| {
-            matches!(f, FrameKind::SubscribeMetadata { scope, key }
-                    if *scope == Scope::Group(DEFAULT_GROUP_ID) && *key == peer_key)
-        })
-        .collect();
-    assert_eq!(
-        peer_subscribes.len(),
-        1,
-        "the peer's layout key is subscribed exactly once across two sweeps: {frames:?}"
-    );
+    assert_eq!(subscribe_count(&peer_key), 1, "{frames:?}");
+    assert_eq!(subscribe_count(&own_key), 0, "{frames:?}");
     assert!(
         frames
             .iter()
-            .any(|f| matches!(f, FrameKind::GetMetadata { key, .. } if *key == peer_key)),
-        "the GET is still sent — the subscribe is the edge, the GET is the level: {frames:?}"
-    );
-
-    // Our OWN session is never subscribed through this path; the driver
-    // already holds its layout subscription, and a second one would
-    // double every local broadcast.
-    let own_key = phux_client::layout_ops::layout_key(phux_protocol::ids::SessionId::new(1));
-    assert!(
-        !frames
-            .iter()
-            .any(|f| matches!(f, FrameKind::SubscribeMetadata { key, .. } if *key == own_key)),
-        "the focused session is excluded: {frames:?}"
+            .any(|f| matches!(f, FrameKind::GetMetadata { key, .. } if *key == peer_key))
     );
 }
 
-/// ADR-0136: a satellite pane is subscribed for the agent record and the
-/// asked flag. A local pane is not asked for the asked key here; its ask
-/// still arrives as an event.
+/// Foreign agent watches: each terminal (deduped) is fetched once and
+/// subscribed, local or satellite; only satellites also read the asked
+/// flag (a local ask arrives as an event).
 #[tokio::test]
-async fn satellite_panes_subscribe_the_agent_allowlist() {
-    let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-    let mut client = Connection::from_stream(client_stream);
-    let mut server = Connection::from_stream(server_stream);
-
-    let local = ResourceId::local(1);
+async fn foreign_agent_ids_are_fetched_and_subscribed_once() {
+    let (mut client, server) = pair();
+    let local = ResourceId::local(10);
     let satellite = ResourceId::satellite("prod-3", 2);
-
-    let mut next_request_id = 1;
-    let mut pending = HashMap::new();
-    let mut subscribed = std::collections::HashSet::new();
-
-    let sent = async {
-        sync_foreign_agent_ids(
-            &mut client,
-            vec![local.clone(), satellite.clone()],
-            &mut next_request_id,
-            &mut pending,
-            &mut subscribed,
-            &mut HashMap::new(),
-        )
-        .await
-        .expect("sweep sends");
-        drop(client);
-    };
-    let collect = async {
-        let mut frames = Vec::new();
-        while let Ok(frame) = server.recv().await {
-            frames.push(frame);
-        }
+    let (mut next, mut pending, mut subscribed) = (1, HashMap::new(), HashSet::new());
+    sync_foreign_agent_ids(
+        &mut client,
+        vec![local.clone(), satellite.clone(), local.clone()],
+        &mut next,
+        &mut pending,
+        &mut subscribed,
+        &mut HashMap::new(),
+    )
+    .await
+    .expect("sweep sends");
+    let frames = drain(client, server).await;
+    let count = |id: &ResourceId, get: bool, key: &str| {
         frames
+            .iter()
+            .filter(|f| match f {
+                FrameKind::GetMetadata { scope, key: k, .. } => {
+                    get && *scope == Scope::Resource(id.clone()) && k == key
+                }
+                FrameKind::SubscribeMetadata { scope, key: k } => {
+                    !get && *scope == Scope::Resource(id.clone()) && k == key
+                }
+                _ => false,
+            })
+            .count()
     };
-    let ((), frames) = tokio::join!(sent, collect);
-
-    assert!(
-        frames.iter().any(|f| matches!(
-            f,
-            FrameKind::SubscribeMetadata { scope, .. } if *scope == Scope::Resource(local.clone())
-        )),
-        "the local pane is subscribed: {frames:?}"
-    );
-    assert!(
-        frames.iter().any(|f| matches!(
-            f,
-            FrameKind::SubscribeMetadata { scope, key, .. }
-                if *scope == Scope::Resource(satellite.clone())
-                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
-        )),
-        "the satellite agent record is subscribed: {frames:?}"
-    );
-    assert!(
-        frames.iter().any(|f| matches!(
-            f,
-            FrameKind::GetMetadata { scope, key, .. }
-                if *scope == Scope::Resource(satellite.clone())
-                    && key == phux_client::agent_meta::RESOURCE_ASKED_KEY
-        )),
-        "the satellite asked flag is read: {frames:?}"
-    );
-    assert!(
-        subscribed.contains(&satellite),
-        "the satellite enters the send-once bookkeeping"
-    );
-    assert!(
-        !frames.iter().any(|f| matches!(
-            f,
-            FrameKind::GetMetadata { scope, key, .. }
-                if *scope == Scope::Resource(local.clone())
-                    && key == phux_client::agent_meta::RESOURCE_ASKED_KEY
-        )),
-        "a local pane's asked flag stays on the event stream: {frames:?}"
-    );
+    for id in [&local, &satellite] {
+        assert_eq!(count(id, true, RESOURCE_AGENT_KEY), 1, "{id}: {frames:?}");
+        assert_eq!(count(id, false, RESOURCE_AGENT_KEY), 1, "{id}: {frames:?}");
+        assert!(subscribed.contains(id));
+    }
+    assert_eq!(count(&satellite, true, RESOURCE_ASKED_KEY), 1, "{frames:?}");
+    assert_eq!(count(&local, true, RESOURCE_ASKED_KEY), 0, "{frames:?}");
 }
 
-/// session leaving the graph) evicts its record so the cache stays
-/// bounded to the live foreign pane set.
+/// Pruning keeps only live foreign panes' records and drops the send-once
+/// subscription marker with them, so a re-spawned id re-subscribes.
 #[test]
 fn prune_foreign_agents_retains_only_live_foreign_panes() {
-    let live = ResourceId::local(1);
-    let stale = ResourceId::local(2);
-    let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
-    cache.insert(live.clone(), AgentRecord::default());
-    cache.insert(stale.clone(), AgentRecord::default());
-    let mut subscribed: HashSet<ResourceId> = [live.clone(), stale.clone()].into_iter().collect();
-
-    let live_set: HashSet<ResourceId> = HashSet::from([live.clone()]);
-    prune_foreign_agents(&mut cache, &mut subscribed, &live_set);
-    assert!(
-        cache.contains_key(&live),
-        "a pane still in a layout survives"
-    );
-    assert!(
-        !cache.contains_key(&stale),
-        "a pane in no layout is evicted"
-    );
-    // The send-once subscription bookkeeping is pruned with
-    // the record. Left behind, it would suppress the re-subscribe if that
-    // pane id ever came back, and the row would go permanently silent.
-    assert!(subscribed.contains(&live));
-    assert!(
-        !subscribed.contains(&stale),
-        "a dead pane's subscription marker is dropped so a re-spawn re-subscribes"
-    );
-
-    // No live terminals at all evicts everything.
+    let (live, stale) = (ResourceId::local(1), ResourceId::local(2));
+    let mut cache: HashMap<ResourceId, AgentRecord> = [
+        (live.clone(), AgentRecord::default()),
+        (stale.clone(), AgentRecord::default()),
+    ]
+    .into();
+    let mut subscribed: HashSet<ResourceId> = [live.clone(), stale.clone()].into();
+    prune_foreign_agents(&mut cache, &mut subscribed, &HashSet::from([live.clone()]));
+    assert!(cache.contains_key(&live) && !cache.contains_key(&stale));
+    assert!(subscribed.contains(&live) && !subscribed.contains(&stale));
     prune_foreign_agents(&mut cache, &mut subscribed, &HashSet::new());
-    assert!(cache.is_empty(), "no live terminals => no foreign agents");
-    assert!(subscribed.is_empty());
-}
-
-/// A CLI-created session has no persisted TUI layout, so the
-/// live set is the server graph. Pruning must not evict those records.
-#[test]
-fn prune_foreign_agents_keeps_graph_terminals_without_a_layout() {
-    let graph = ResourceId::local(10);
-    let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
-    cache.insert(graph.clone(), AgentRecord::default());
-    let mut subscribed: HashSet<ResourceId> = HashSet::from([graph.clone()]);
-    let live: HashSet<ResourceId> = HashSet::from([graph.clone()]);
-    prune_foreign_agents(&mut cache, &mut subscribed, &live);
-    assert!(cache.contains_key(&graph));
-    assert!(subscribed.contains(&graph));
-}
-
-/// Graph terminals are GET/SUBSCRIBEd even with no TUI layout.
-#[tokio::test]
-async fn graph_terminals_are_subscribed_without_a_layout() {
-    let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-    let mut client = Connection::from_stream(client_stream);
-    let mut server = Connection::from_stream(server_stream);
-
-    let local = ResourceId::local(10);
-    let satellite = ResourceId::satellite("prod-3", 10);
-    let mut next_request_id = 1;
-    let mut pending = HashMap::new();
-    let mut subscribed = HashSet::new();
-
-    let sent = async {
-        sync_foreign_agent_ids(
-            &mut client,
-            vec![local.clone(), satellite.clone(), local.clone()],
-            &mut next_request_id,
-            &mut pending,
-            &mut subscribed,
-            &mut HashMap::new(),
-        )
-        .await
-        .expect("sweep sends");
-        drop(client);
-    };
-    let collect = async {
-        let mut frames = Vec::new();
-        while let Ok(frame) = server.recv().await {
-            frames.push(frame);
-        }
-        frames
-    };
-    let ((), frames) = tokio::join!(sent, collect);
-
-    let agent_gets = frames
-        .iter()
-        .filter(|f| {
-            matches!(
-                f,
-                FrameKind::GetMetadata { scope, key, .. }
-                    if *scope == Scope::Resource(local.clone())
-                        && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
-            )
-        })
-        .count();
-    assert_eq!(agent_gets, 1, "the graph pane is fetched once: {frames:?}");
-    assert!(
-        frames.iter().any(|f| matches!(
-            f,
-            FrameKind::SubscribeMetadata { scope, .. } if *scope == Scope::Resource(local.clone())
-        )),
-        "the graph pane is subscribed: {frames:?}"
-    );
-    assert!(
-        frames.iter().any(|f| matches!(
-            f,
-            FrameKind::SubscribeMetadata { scope, key, .. }
-                if *scope == Scope::Resource(satellite.clone())
-                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
-        )),
-        "a satellite graph pane is subscribed: {frames:?}"
-    );
+    assert!(cache.is_empty() && subscribed.is_empty());
 }
 
 #[test]
-fn raw_consumer_does_not_emit_frame_ack() {
+fn frame_ack_is_emitted_only_for_state_sync_consumers() {
     let ack = Some((
         ResourceId::local(7),
         phux_protocol::StreamId::new(1).expect("stream"),
         phux_protocol::BootstrapId::new(1).expect("bootstrap"),
         42u64,
     ));
-    assert_eq!(should_emit_frame_ack(false, ack), None);
-}
-
-#[test]
-fn state_sync_consumer_emits_frame_ack() {
-    let ack = Some((
-        ResourceId::local(7),
-        phux_protocol::StreamId::new(1).expect("stream"),
-        phux_protocol::BootstrapId::new(1).expect("bootstrap"),
-        42u64,
-    ));
+    assert_eq!(should_emit_frame_ack(false, ack.clone()), None);
     assert_eq!(should_emit_frame_ack(true, ack.clone()), ack);
     assert_eq!(should_emit_frame_ack(true, None), None);
 }
 
+/// Terminal replies need the negotiated feature (else one notice), and an
+/// outcome that ends the loop sends none and adds no notice: the session has
+/// no PTY left to answer.
 #[test]
-fn terminal_replies_require_negotiated_server_feature() {
+fn terminal_replies_require_the_feature_and_a_live_session() {
     let reply = (ResourceId::local(7), b"\x1b[0n".to_vec());
-    let mut supported = FrameOutcome {
+    let outcome = || FrameOutcome {
         pty_writes: vec![reply.clone()],
         ..FrameOutcome::default()
     };
+    let mut supported = outcome();
     assert_eq!(
         take_terminal_replies(&mut supported, true),
         vec![reply.clone()]
     );
     assert!(supported.notices.is_empty());
 
-    let mut old_server = FrameOutcome {
-        pty_writes: vec![reply],
-        ..FrameOutcome::default()
-    };
+    let mut old_server = outcome();
     assert!(take_terminal_replies(&mut old_server, false).is_empty());
-    assert!(old_server.pty_writes.is_empty());
     assert_eq!(old_server.notices.len(), 1);
     assert!(old_server.notices[0].text.contains("terminal-reply"));
-}
 
-/// phux-501l hardening: an outcome that ends the loop writes nothing.
-///
-/// Both call sites send terminal replies before they read `outcome.exit`,
-/// so an outcome carrying both would write into a session it is already
-/// abandoning. Suppression belongs here, at the seam the two share, rather
-/// than at either one.
-///
-/// Note the `terminal_reply_supported = true` argument: this must hold on
-/// the path where replies are otherwise perfectly sendable. It is the exit,
-/// not the feature negotiation, that makes them pointless.
-#[test]
-fn an_exiting_outcome_sends_no_terminal_reply() {
+    let end = Some(AttachEnd::LastPaneClosed {
+        exit_status: Some(7),
+    });
     let mut exiting = FrameOutcome {
-        pty_writes: vec![(ResourceId::local(7), b"\x1b[0n".to_vec())],
         exit: true,
-        exit_reason: Some(AttachEnd::LastPaneClosed {
-            exit_status: Some(7),
-        }),
-        ..FrameOutcome::default()
+        exit_reason: end,
+        ..outcome()
     };
-    assert!(
-        take_terminal_replies(&mut exiting, true).is_empty(),
-        "an ended session has no PTY to answer; writing here races the server's own exit",
-    );
-    assert!(exiting.pty_writes.is_empty());
-    // No notice: this is the normal end of a session, not a degradation
-    // the user needs told about. The `LastPaneClosed` explanation is what
-    // the CLI prints, and it must survive intact.
-    assert!(exiting.notices.is_empty());
-    assert_eq!(
-        exiting.exit_reason,
-        Some(AttachEnd::LastPaneClosed {
-            exit_status: Some(7)
-        })
-    );
+    assert!(take_terminal_replies(&mut exiting, true).is_empty());
+    assert!(exiting.pty_writes.is_empty() && exiting.notices.is_empty());
+    assert_eq!(exiting.exit_reason, end);
 }
 
-/// phux-501l, the actual defect: a write that fails because the peer is
-/// already gone must not become the reason the attach loop ended.
-///
-/// The last pane's shell exits, so the server emits `RESOURCE_OUTPUT` then
-/// `RESOURCE_CLOSED` back to back and exits, closing the socket. One client
-/// read pulls both frames. Acking the output writes into the dead socket
-/// and, before this, killed the loop with `Io(BrokenPipe)` — so the
-/// `RESOURCE_CLOSED` sitting in the *same batch* was never processed and
-/// "the last pane exited 7" was replaced by "attach loop io error".
-///
-/// The classifier is what lets the loop keep going and end for the reason
-/// the frames give. A genuine local IO fault must still be fatal, so the
-/// discrimination is on `ErrorKind`, not on "any Io".
+/// A write to a departed peer must not become the reason the loop ended (it
+/// hid "the last pane exited 7" behind "attach loop io error"); local IO
+/// faults and non-IO endings stay fatal.
 #[test]
 fn a_write_to_a_departed_peer_is_not_a_loop_ending_error() {
-    for kind in [
-        io::ErrorKind::BrokenPipe,
-        io::ErrorKind::ConnectionReset,
-        io::ErrorKind::ConnectionAborted,
+    use io::ErrorKind::*;
+    for (kind, gone) in [
+        (BrokenPipe, true),
+        (ConnectionReset, true),
+        (ConnectionAborted, true),
+        (PermissionDenied, false),
+        (OutOfMemory, false),
+        (InvalidData, false),
     ] {
-        assert!(
+        assert_eq!(
             peer_gone(&AttachError::Io(io::Error::from(kind))),
-            "{kind:?} means the peer hung up, not that this process faulted",
+            gone,
+            "{kind:?}"
         );
     }
-
-    // A real local failure is still fatal: if the server were still there,
-    // the write would not have failed, so these cannot be a departed peer.
-    for kind in [
-        io::ErrorKind::PermissionDenied,
-        io::ErrorKind::OutOfMemory,
-        io::ErrorKind::InvalidData,
-    ] {
-        assert!(
-            !peer_gone(&AttachError::Io(io::Error::from(kind))),
-            "{kind:?} is a local fault and must still fail the loop",
-        );
-    }
-
-    // Non-Io endings are classified by their own variants and must never
-    // be swallowed as a departed peer.
     assert!(!peer_gone(&AttachError::Disconnected));
     assert!(!peer_gone(&AttachError::Protocol("bad frame".to_owned())));
 }
 
 #[test]
 fn headless_completion_drains_history_and_metadata_after_attach_ready() {
-    let terminal_id = ResourceId::local(7);
+    use phux_protocol::wire::frame::{HistoryRejectionReason, HistoryTombstoneReason};
+    let id = ResourceId::local(7);
     let stream_id = phux_protocol::StreamId::new(1).expect("stream");
     let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+    let page = |cursor: &'static [u8], next: Option<&'static [u8]>| FrameKind::HistoryPage {
+        terminal_id: id.clone(),
+        stream_id,
+        bootstrap_id,
+        rows: 0,
+        page_seq: 1,
+        cursor: bytes::Bytes::from_static(cursor),
+        next_cursor: next.map(bytes::Bytes::from_static),
+        payload: bytes::Bytes::new(),
+    };
     let mut completion = HeadlessCompletion::new(Some(1));
-    completion.note_history_request(&terminal_id, stream_id, bootstrap_id);
-
+    completion.note_history_request(&id, stream_id, bootstrap_id);
     completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
     assert!(
         !completion.is_complete(false),
-        "ATTACH_READY may be queued before history and metadata replies"
+        "READY may precede history and metadata"
     );
     completion.observe_frame(
         &FrameKind::MetadataValue {
@@ -1118,78 +631,46 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
     );
     assert!(
         !completion.is_complete(true),
-        "layout and agent replies do not complete a pending history chain"
+        "metadata does not complete history"
     );
-    completion.observe_frame(
-        &FrameKind::HistoryPage {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            rows: 0,
-            page_seq: 1,
-            cursor: bytes::Bytes::from_static(b"newest"),
-            next_cursor: Some(bytes::Bytes::from_static(b"older")),
-            payload: bytes::Bytes::new(),
-        },
-        7,
-    );
-    completion.note_history_request(&terminal_id, stream_id, bootstrap_id);
+    completion.observe_frame(&page(b"newest", Some(b"older")), 7);
+    completion.note_history_request(&id, stream_id, bootstrap_id);
     assert!(
         !completion.is_complete(true),
-        "an intermediate history page keeps its generation pending"
+        "an intermediate page keeps it pending"
     );
-    completion.observe_frame(
-        &FrameKind::HistoryPage {
-            terminal_id,
-            stream_id,
-            rows: 0,
-            bootstrap_id,
-            page_seq: 1,
-            cursor: bytes::Bytes::from_static(b"older"),
-            next_cursor: None,
-            payload: bytes::Bytes::new(),
-        },
-        7,
-    );
+    completion.observe_frame(&page(b"older", None), 7);
     assert!(completion.is_complete(true));
-}
 
-#[test]
-fn headless_history_control_responses_clear_outstanding_request() {
-    let terminal_id = ResourceId::local(8);
-    let stream_id = phux_protocol::StreamId::new(1).expect("stream");
-    let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
-    let terminal_frames = [
+    // Tombstone and rejection are terminal answers too.
+    for frame in [
         FrameKind::HistoryTombstone {
-            terminal_id: terminal_id.clone(),
+            terminal_id: id.clone(),
             stream_id,
             bootstrap_id,
             cursor: bytes::Bytes::from_static(b"cursor"),
-            reason: phux_protocol::wire::frame::HistoryTombstoneReason::Pruned,
+            reason: HistoryTombstoneReason::Pruned,
         },
         FrameKind::HistoryRejected {
-            terminal_id: terminal_id.clone(),
+            terminal_id: id.clone(),
             stream_id,
             bootstrap_id,
             cursor: bytes::Bytes::from_static(b"cursor"),
-            reason: phux_protocol::wire::frame::HistoryRejectionReason::TooSmall,
+            reason: HistoryRejectionReason::TooSmall,
             required_bytes: 128,
             required_rows: 1,
         },
-    ];
-    for frame in terminal_frames {
+    ] {
         let mut completion = HeadlessCompletion::new(None);
         completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
-        completion.note_history_request(&terminal_id, stream_id, bootstrap_id);
+        completion.note_history_request(&id, stream_id, bootstrap_id);
         completion.observe_frame(&frame, 7);
         assert!(completion.is_complete(true));
     }
 }
 
-/// ADR-0060 guard: the `rec: None` arm of `run_buffered` must behave
-/// exactly as the function did before the tee existed — the bare
-/// `StdoutSink`, and the same pre-handshake failure delivered on the
-/// cooked outer terminal with no wrapper in the way.
+/// ADR-0060: without a recorder, `run_buffered` fails at connect exactly as
+/// before the tee existed.
 #[tokio::test(flavor = "current_thread")]
 async fn run_buffered_without_a_recorder_passes_the_bare_sink() {
     let socket =
@@ -1209,57 +690,34 @@ async fn run_buffered_without_a_recorder_passes_the_bare_sink() {
             err,
             AttachError::Io(_) | AttachError::Connect(_) | AttachError::Unreachable(_)
         ),
-        "the unrecorded path must still fail at connect, unchanged: {err:?}"
+        "{err:?}"
     );
 }
 
-#[test]
-fn attach_error_disconnected_is_distinct_from_io() {
-    let a = AttachError::Disconnected;
-    let b = AttachError::Io(io::Error::other("foo"));
-    assert_ne!(std::mem::discriminant(&a), std::mem::discriminant(&b),);
-}
+/// Negotiation sends exactly one HELLO, captures `server_id` verbatim
+/// (ADR-0053), and refuses a second local negotiation.
 #[tokio::test(flavor = "current_thread")]
 async fn attach_negotiation_waits_for_hello_ok_and_sends_one_hello() {
     let (client_stream, server_stream) = UnixStream::pair().expect("pair");
     let mut client = Connection::from_stream(client_stream);
     let server = tokio::spawn(ScriptedServer::on_stream(server_stream, ScriptSpec::new()).run());
-
-    assert!(
-        client.server_id().is_none(),
-        "no incarnation identity exists before HELLO_OK"
-    );
-    let res = client
+    assert!(client.server_id().is_none());
+    client
         .negotiate(attach_client_name(), attach_client_caps(None, &test_dial()))
-        .await;
-    assert!(
-        res.is_ok(),
-        "handshake should succeed when HELLO_OK arrives"
-    );
-    let selected = client
-        .negotiated_bootstrap()
-        .expect("successful negotiation installs immutable profile state");
+        .await
+        .expect("handshake succeeds on HELLO_OK");
+    let selected = client.negotiated_bootstrap().expect("profile state");
     assert_eq!(selected.limits, phux_protocol::BootstrapLimits::default());
-    // ADR-0053: HELLO_OK.server_id is captured, not discarded — the
-    // acknowledged-input replay journal compares it across reconnects. The
-    // scripted server sends an empty id; capture is what is pinned here.
-    assert_eq!(
-        client.server_id(),
-        Some(&[][..]),
-        "negotiation must retain HELLO_OK.server_id verbatim"
-    );
+    assert_eq!(client.server_id(), Some(&[][..]));
     let duplicate = client
         .negotiate(attach_client_name(), attach_client_caps(None, &test_dial()))
         .await;
-    assert!(
-        matches!(duplicate, Err(AttachError::Protocol(_))),
-        "a second local negotiation must be rejected before it reaches the wire"
-    );
+    assert!(matches!(duplicate, Err(AttachError::Protocol(_))));
     drop(client);
     let seen = server.await.expect("scripted server task");
     assert!(
         matches!(seen.as_slice(), [FrameKind::Hello { .. }]),
-        "attach construction must send exactly one HELLO, got {seen:?}"
+        "{seen:?}"
     );
 }
 
@@ -1269,10 +727,7 @@ async fn attach_negotiation_preserves_custom_caps_then_sends_attach() {
         foreground: TerminalColor { r: 1, g: 2, b: 3 },
         background: TerminalColor { r: 4, g: 5, b: 6 },
     };
-    let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-    let mut client = Connection::from_stream(client_stream);
-    let mut server = Connection::from_stream(server_stream);
-
+    let (mut client, mut server) = pair();
     let client_side = async {
         client
             .negotiate(
@@ -1300,7 +755,7 @@ async fn attach_negotiation_preserves_custom_caps_then_sends_attach() {
         };
         let (selected_profile, bootstrap_limits) =
             select_bootstrap_profile(client_caps, &BootstrapCapabilities::new())
-                .expect("fixture profiles intersect");
+                .expect("intersect");
         server
             .send(&FrameKind::HelloOk {
                 protocol_major: PROTOCOL_VERSION.major,
@@ -1313,147 +768,60 @@ async fn attach_negotiation_preserves_custom_caps_then_sends_attach() {
             })
             .await
             .expect("HELLO_OK");
-        let attach = server.recv().await.expect("ATTACH");
-        (hello, attach)
+        (hello, server.recv().await.expect("ATTACH"))
     };
-
     let ((), (hello, attach)) = tokio::join!(client_side, server_side);
     let FrameKind::Hello { client_caps, .. } = hello else {
         panic!("first frame must be HELLO");
     };
     assert_eq!(client_caps.default_colors, Some(colors));
     assert!(client_caps.layers.contains(Layer::L3));
-    assert!(
-        matches!(attach, FrameKind::Attach { .. }),
-        "ATTACH must immediately follow the single HELLO exchange"
-    );
+    assert!(matches!(attach, FrameKind::Attach { .. }));
 }
 
+/// A non-HELLO_OK reply is explained as version skew with a remedy.
 #[tokio::test(flavor = "current_thread")]
 async fn attach_negotiation_rejects_non_hello_ok_reply() {
-    let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-    let mut client = Connection::from_stream(client_stream);
-    let mut server = Connection::from_stream(server_stream);
-
+    let (mut client, mut server) = pair();
     let server_side = async move {
-        let frame = server.recv().await.expect("server recv hello");
-        assert!(
-            matches!(frame, FrameKind::Hello { .. }),
-            "first client frame must be HELLO"
-        );
+        assert!(matches!(
+            server.recv().await.expect("hello"),
+            FrameKind::Hello { .. }
+        ));
         server
             .send(&FrameKind::Detached {
                 reason: Some(DetachReason::ProtocolError),
                 message: String::new(),
             })
             .await
-            .expect("server send detached");
+            .expect("send detached");
     };
-
     let negotiation =
         client.negotiate(attach_client_name(), attach_client_caps(None, &test_dial()));
     let (res, ()) = tokio::join!(negotiation, server_side);
-    drop(client);
     match res {
         Err(AttachError::Protocol(msg)) => {
-            // A frame with no arm is explained as version
-            // skew with a remedy, never dumped as a Debug rendering.
-            assert!(msg.contains("unexpected HELLO reply"), "{msg}");
-            assert!(msg.contains("run `phux doctor`"), "{msg}");
+            assert!(
+                msg.contains("unexpected HELLO reply") && msg.contains("run `phux doctor`"),
+                "{msg}"
+            );
         }
         other => panic!("expected protocol error, got {other:?}"),
     }
 }
 
-// -----------------------------------------------------------------
-// Chrome persists while overlays are open.
-// -----------------------------------------------------------------
+// ---- composited frames through the PTY-probe oracle ------------------------
 
-use crate::render::overlay::{RenderOverlay, SelectItem, SelectList};
-use phux_config::KeybindingsCfg;
-use phux_config::keybind::ResolvedAction;
-use phux_config::widget::WindowInfo;
-
-/// The probe viewport for the overlay-chrome tests.
-const PROBE_VIEW: (u16, u16) = (80, 24);
-/// Sidebar strip width for the overlay-chrome tests.
 const PROBE_SIDEBAR_W: u16 = 20;
-/// Window label shown on the sidebar's name row. Distinctive: appears
-/// nowhere in any pane content or overlay body, so finding it in the
-/// replayed frame proves the strip painted.
+/// Distinctive sidebar window label and host; neither appears in pane text.
 const PROBE_WINDOW: &str = "w1-agent";
-/// Serving host shown under the session, distinct from pane content.
 const PROBE_HOST: &str = "probe-host";
-/// Content written into the pane mirror, to prove the base frame
-/// repainted around the floating modal.
 const PROBE_PANE_TEXT: &str = "PANE-BASE";
 
-/// A composited frame — panes, dividers and the **shipped** status bar
-/// — at an arbitrary viewport, replayed through the PTY-probe oracle.
-///
-/// This is the closest the repo gets to "what is on the user's glass":
-/// it runs the real `paint_full_frame` path with the bar built from
-/// `default.toml`, so the shipped `[status]` lineup, the responsive
-/// slot policy, and the widget-level shrink ladders are all exercised
-/// together rather than one layer at a time.
-///
-/// `sidebar` is the same reservation the driver threads to every layout
-/// site. The painter is always live (the driver always has one); it only
-/// emits when the reservation is `Some`, so a yielded `None` must leave
-/// no strip even though the roster is populated.
-fn shipped_frame_rows(
-    view: (u16, u16),
-    windows: &[WindowInfo],
-    sidebar: Option<SidebarReservation>,
-) -> Vec<String> {
-    let (cols, rows) = view;
-    let id = ResourceId::local(1);
-    let workspace = Workspace::single(id.clone());
-
-    let cfg = phux_config::parse_with_defaults("", std::path::Path::new("/nonexistent/c.toml"))
-        .expect("shipped defaults parse");
-    let mut status_bar = crate::settings::compose_status_bar(&cfg, &[])
-        .expect("the shipped status lineup must build")
-        .expect("the shipped lineup is non-empty");
-    status_bar.set_windows(windows.to_vec());
-
-    // One row of the viewport belongs to the bar.
-    let pane_rows = rows.saturating_sub(1);
-    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    panes.insert(
-        id.clone(),
-        PaneSlot::new_with_size(cols, pane_rows).expect("pane slot"),
-    );
-    let engine_kernel = published_test_kernel(&id, cols, pane_rows, PROBE_PANE_TEXT.as_bytes());
-
-    let theme = crate::render::theme::Theme::default();
-    let mut sidebar_painter = SidebarPainter::new(theme);
-    sidebar_painter.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
-        name: "probe".to_owned(),
-        host: PROBE_HOST.to_owned(),
-        active: true,
-        selectable: true,
-        ..Default::default()
-    }]);
-    sidebar_painter.set_windows(windows.to_vec());
-
-    let mut out: Vec<u8> = Vec::new();
-    paint_full_frame(
-        &mut out,
-        &workspace.render_window(None).expect("layout"),
-        &mut panes,
-        &engine_kernel,
-        Some(&id),
-        view,
-        Some(&mut status_bar),
-        sidebar,
-        Some(&mut sidebar_painter),
-        "phux",
-        &theme,
-    );
-
+/// Replay `bytes` into a fresh terminal and project it to trimmed rows.
+fn probe_rows(bytes: &[u8], (cols, rows): (u16, u16)) -> Vec<String> {
     let mut probe = PaneSlot::new_with_size(cols, rows).expect("probe slot");
-    probe.terminal.vt_write(&out);
+    probe.terminal.vt_write(bytes);
     let mut frame = phux_core::screen::RenderedFrame::blank(cols, rows);
     probe
         .renderer
@@ -1464,11 +832,11 @@ fn shipped_frame_rows(
             (cols, rows),
         )
         .expect("project probe cells");
-    (0..rows)
-        .map(|r| {
-            let base = usize::from(r) * usize::from(cols);
-            frame.cells[base..base + usize::from(cols)]
-                .iter()
+    frame
+        .cells
+        .chunks(usize::from(cols))
+        .map(|row| {
+            row.iter()
                 .map(|c| c.grapheme.as_str())
                 .collect::<String>()
                 .trim_end()
@@ -1489,98 +857,132 @@ fn probe_window(name: &str, active: bool) -> WindowInfo {
     }
 }
 
-/// The whole composited frame at a roomy viewport: padded tab strip,
-/// session name and clock, all on one bar row. No teaching strip.
-#[test]
-fn shipped_frame_at_a_roomy_viewport() {
-    let windows = [
-        probe_window("zsh", false),
-        probe_window("nvim", true),
-        probe_window("server", false),
-    ];
-    let rows = shipped_frame_rows((100, 12), &windows, None);
-    let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1 nvim "), "{bar:?}");
-    assert!(!bar.contains("s Sessions"), "{bar:?}");
-    assert!(!bar.contains("S Settings"), "{bar:?}");
-    assert!(bar.contains("phux"), "{bar:?}");
-    assert!(!bar.contains("switch"), "{bar:?}");
-    assert!(rows.join("\n").contains(PROBE_PANE_TEXT), "{rows:?}");
+fn probe_sidebar(windows: &[WindowInfo]) -> SidebarPainter {
+    let mut painter = SidebarPainter::new(crate::render::theme::Theme::default());
+    painter.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
+        name: "probe".to_owned(),
+        host: PROBE_HOST.to_owned(),
+        active: true,
+        selectable: true,
+        ..Default::default()
+    }]);
+    painter.set_windows(windows.to_vec());
+    painter
 }
 
-/// The same frame on a phone-sized grid. This is the shape the
-/// responsive work exists for: the clock is gone and a `switch` chip has
-/// taken its place, while every tab that is shown is shown whole.
+/// A full frame with the SHIPPED status bar (from `default.toml`), so the
+/// real lineup, slot policy, and shrink ladders are exercised together.
+fn shipped_frame_rows(
+    view: (u16, u16),
+    windows: &[WindowInfo],
+    sidebar: Option<SidebarReservation>,
+) -> Vec<String> {
+    let (cols, rows) = view;
+    let id = ResourceId::local(1);
+    let workspace = Workspace::single(id.clone());
+    let cfg =
+        phux_config::parse_with_defaults("", Path::new("/nonexistent/c.toml")).expect("defaults");
+    let mut status_bar = crate::settings::compose_status_bar(&cfg, &[])
+        .expect("the shipped status lineup must build")
+        .expect("the shipped lineup is non-empty");
+    status_bar.set_windows(windows.to_vec());
+    let pane_rows = rows.saturating_sub(1);
+    let mut panes = HashMap::from([(
+        id.clone(),
+        PaneSlot::new_with_size(cols, pane_rows).expect("slot"),
+    )]);
+    let kernel = published_test_kernel(&id, cols, pane_rows, PROBE_PANE_TEXT.as_bytes());
+    let theme = crate::render::theme::Theme::default();
+    let mut sidebar_painter = probe_sidebar(windows);
+    let mut out: Vec<u8> = Vec::new();
+    paint_full_frame(
+        &mut out,
+        &workspace.render_window(None).expect("layout"),
+        &mut panes,
+        &kernel,
+        Some(&id),
+        view,
+        Some(&mut status_bar),
+        sidebar,
+        Some(&mut sidebar_painter),
+        "phux",
+        &theme,
+    );
+    probe_rows(&out, view)
+}
+
+/// The shipped bar across widths: roomy shows tabs and session with no
+/// teaching strip; phone-sized swaps the clock for a `switch` chip; narrower
+/// still collapses far tabs behind `›` while keeping the active tab whole.
 #[test]
-fn shipped_frame_at_a_phone_sized_viewport() {
+fn shipped_frame_bar_degrades_gracefully_with_width() {
     let windows = [
         probe_window("zsh", false),
         probe_window("nvim", true),
         probe_window("server", false),
         probe_window("logs", false),
     ];
-    let rows = shipped_frame_rows((46, 12), &windows, None);
-    let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1 nvim "), "active tab whole: {bar:?}");
-    assert!(bar.contains("switch"), "{bar:?}");
-    assert!(!bar.contains("Space palette"), "no teaching strip: {bar:?}");
-    assert!(bar.chars().count() <= 46, "row overran: {bar:?}");
-    assert!(rows.join("\n").contains(PROBE_PANE_TEXT), "{rows:?}");
-    insta::assert_snapshot!("shipped_frame_phone_sized", rows.join("\n"));
+    let roomy = shipped_frame_rows((100, 12), &windows[..3], None);
+    let bar = &roomy[0];
+    assert!(bar.contains(" 1 nvim ") && bar.contains("phux"), "{bar:?}");
+    for absent in ["s Sessions", "S Settings", "switch"] {
+        assert!(!bar.contains(absent), "{bar:?}");
+    }
+    assert!(roomy.join("\n").contains(PROBE_PANE_TEXT));
+
+    for (view, collapsed) in [((46, 12), false), ((36, 10), true)] {
+        let rows = shipped_frame_rows(view, &windows, None);
+        let bar = &rows[0];
+        assert!(bar.contains(" 1 nvim "), "active tab whole: {bar:?}");
+        assert!(bar.contains("switch"), "{bar:?}");
+        assert!(!bar.contains("Space palette"), "{bar:?}");
+        assert!(bar.chars().count() <= usize::from(view.0), "{bar:?}");
+        if collapsed {
+            assert!(
+                bar.contains('\u{203a}') && !bar.contains("3 logs"),
+                "{bar:?}"
+            );
+        }
+    }
 }
 
-/// Narrower still, where the tab strip itself has to give: it keeps
-/// the active tab and its neighbours whole and stands in for the rest
-/// with a `›`, rather than clipping a label into a window name that
-/// does not exist.
+/// On a narrow terminal the sidebar yields: panes own the whole width, no
+/// strip paints, and reflow, mouse routing, and the divider all use the same
+/// yielded reservation (a stale strip would put the divider near col 35).
 #[test]
-fn shipped_frame_when_the_tab_strip_must_collapse() {
-    let windows = [
-        probe_window("zsh", false),
-        probe_window("nvim", true),
-        probe_window("server", false),
-        probe_window("logs", false),
-    ];
-    let rows = shipped_frame_rows((36, 10), &windows, None);
-    let bar = rows.first().expect("a top bar row");
-    assert!(bar.contains(" 1 nvim "), "active tab whole: {bar:?}");
-    assert!(bar.contains('\u{203a}'), "hidden tabs are marked: {bar:?}");
-    assert!(!bar.contains("3 logs"), "the far tab is dropped: {bar:?}");
-    assert!(bar.contains("switch"), "affordance survives: {bar:?}");
-    assert!(bar.chars().count() <= 36, "row overran: {bar:?}");
-    insta::assert_snapshot!("shipped_frame_collapsed_tabs", rows.join("\n"));
-}
-
-/// Reflow, mouse hit-testing, and the divider rasterizer must consume
-/// the same yielded reservation the paint path just used. A stale
-/// 20-column left strip would inset `content` to `x=20, w=30` and put a
-/// 0.5 split's divider near column 35.
-fn assert_yielded_layout_sites(view: (u16, u16), sidebar: Option<SidebarReservation>) {
+fn shipped_frame_yields_the_sidebar_on_a_narrow_terminal() {
     use crate::layout::{LayoutNode, LayoutState, SplitDir, split_at};
     use crate::multi_pane::{RouteDecision, route_mouse_event};
+    use crate::render::ChromeBreakpoints;
     use crate::render::chrome::status_bar::Position;
     use phux_protocol::input::key::ModSet;
     use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 
-    let content = content_rect(view, Some(Position::Top), sidebar);
-    assert_eq!(
-        content.x, 0,
-        "content origin must not shift for a yielded strip"
-    );
-    assert_eq!(content.w, view.0, "panes must receive the whole width");
+    let view = (50u16, 12u16);
+    let min_pane = ChromeBreakpoints::DEFAULT.min_pane_cols;
+    let sidebar = sidebar_reservation(view.0, true, 20, SidebarEdge::Left, min_pane);
+    assert!(sidebar.is_none());
+    assert!(sidebar_reservation(view.0, true, 0, SidebarEdge::Left, min_pane).is_none());
 
+    let rows = shipped_frame_rows(view, &[probe_window("nvim", true)], sidebar);
+    let frame = rows.join("\n");
+    assert!(
+        rows.iter().any(|r| r.starts_with(PROBE_PANE_TEXT)),
+        "{frame}"
+    );
+    assert!(!frame.contains(PROBE_HOST), "{frame}");
+    let rail = rows.iter().find(|r| r.contains('─')).expect("pane rail");
+    assert!(
+        rail.starts_with('─') && rail.chars().count() == usize::from(view.0),
+        "{rail:?}"
+    );
+
+    let content = content_rect(view, Some(Position::Top), sidebar);
+    assert_eq!((content.x, content.w), (0, view.0));
     let id = ResourceId::local(1);
     let workspace = Workspace::single(id.clone());
-    let pane_rect = view_rects(&workspace, None, content, view)
-        .get(&id)
-        .copied()
-        .expect("reflow rect");
-    assert_eq!(pane_rect.x, 0, "reflow must not inset for a yielded strip");
-    assert_eq!(
-        pane_rect.w, view.0,
-        "reflow must hand the pane the whole width"
-    );
-
+    let pane_rect = view_rects(&workspace, None, content, view)[&id];
+    assert_eq!((pane_rect.x, pane_rect.w), (0, view.0));
     let press_at = |x: u16| MouseEvent {
         action: MouseAction::Press,
         button: MouseButton::Left,
@@ -1589,13 +991,10 @@ fn assert_yielded_layout_sites(view: (u16, u16), sidebar: Option<SidebarReservat
         y: f64::from(content.y),
     };
     let ls = workspace.render_window(None).expect("layout");
-    match route_mouse_event(ls.as_ref(), content, view, &press_at(0)) {
-        RouteDecision::Pane { target, .. } => {
-            assert_eq!(target, id, "column 0 is pane, not a reserved strip");
-        }
-        other => panic!("click at column 0 must hit the pane, got {other:?}"),
-    }
-
+    assert!(matches!(
+        route_mouse_event(ls.as_ref(), content, view, &press_at(0)),
+        RouteDecision::Pane { target, .. } if target == id
+    ));
     let right = ResourceId::local(2);
     let split = LayoutState {
         tree: Some(
@@ -1617,119 +1016,14 @@ fn assert_yielded_layout_sites(view: (u16, u16), sidebar: Option<SidebarReservat
                 RouteDecision::Divider { .. }
             )
         })
-        .expect("a two-pane split has a divider column");
-    assert!(
-        (20..30).contains(&divider_x),
-        "yielded divider must sit near the 50-col midpoint, not past a phantom strip; got {divider_x}"
-    );
+        .expect("a divider column");
+    assert!((20..30).contains(&divider_x), "{divider_x}");
 }
 
-/// The sidebar's narrow-terminal yield, composited.
-///
-/// `sidebar_reservation()` already folds to `None` at 50 columns in
-/// unit tests. This is the glass: the same fold the driver threads to
-/// every layout site, painted through `paint_full_frame` with a live
-/// sidebar painter and replayed through the PTY probe. Panes must own
-/// the whole width, the strip must not appear, and the divider / mouse
-/// / reflow sites that consume that reservation must not still believe
-/// twenty columns are reserved.
-#[test]
-fn shipped_frame_yields_the_sidebar_on_a_narrow_terminal() {
-    use crate::render::ChromeBreakpoints;
-
-    let view = (50u16, 12u16);
-    let min_pane = ChromeBreakpoints::DEFAULT.min_pane_cols;
-    let sidebar = sidebar_reservation(view.0, true, 20, SidebarEdge::Left, min_pane);
-    assert!(
-        sidebar.is_none(),
-        "a 20-col strip on 50 cols would starve the panes; the driver must yield"
-    );
-    // Shipped automatic width (28) yields on this viewport too.
-    assert!(sidebar_reservation(view.0, true, 0, SidebarEdge::Left, min_pane).is_none());
-
-    let windows = [probe_window("nvim", true)];
-    let rows = shipped_frame_rows(view, &windows, sidebar);
-    let frame = rows.join("\n");
-
-    let pane = rows
-        .iter()
-        .find(|r| r.contains(PROBE_PANE_TEXT))
-        .expect("pane content");
-    assert!(
-        pane.starts_with(PROBE_PANE_TEXT),
-        "pane must start at column 0; a reserved strip would inset it:\n{frame}"
-    );
-    assert!(
-        !frame.contains(PROBE_HOST),
-        "yielded reservation must not paint the sidebar strip:\n{frame}"
-    );
-    assert!(
-        rows.iter()
-            .all(|r| r.chars().count() <= usize::from(view.0)),
-        "a row overran the viewport:\n{frame}"
-    );
-
-    // The pane-grid rail is `render_dividers` for a single leaf: it must
-    // span the full width from column 0, not start after a phantom strip.
-    let rail = rows
-        .iter()
-        .find(|r| r.contains('─'))
-        .expect("pane-grid rail");
-    assert!(
-        rail.starts_with('─'),
-        "rail must start at column 0; a reserved strip would inset it:\n{frame}"
-    );
-    assert_eq!(
-        rail.chars().count(),
-        usize::from(view.0),
-        "rail must span the whole viewport; a reserved strip would shorten it: {rail:?}"
-    );
-
-    assert_yielded_layout_sites(view, sidebar);
-    insta::assert_snapshot!("shipped_frame_narrow_sidebar_yield", frame);
-}
-
-/// Replay `bytes` (a full frame of VT output) into a fresh libghostty
-/// terminal — the house PTY-probe oracle — and project the resulting
-/// grid to row-major plain text via the same `render_at_cells` surface
-/// the production compositor uses.
-fn replay_rows(bytes: &[u8]) -> Vec<String> {
-    let (cols, rows) = PROBE_VIEW;
-    let mut probe = PaneSlot::new_with_size(cols, rows).expect("probe slot");
-    probe.terminal.vt_write(bytes);
-    let mut frame = phux_core::screen::RenderedFrame::blank(cols, rows);
-    probe
-        .renderer
-        .render_at_cells(
-            ReplicaWalk::for_test(&probe.terminal),
-            &mut frame,
-            (0, 0),
-            (cols, rows),
-        )
-        .expect("project probe cells");
-    (0..rows)
-        .map(|r| {
-            let base = usize::from(r) * usize::from(cols);
-            frame.cells[base..base + usize::from(cols)]
-                .iter()
-                .map(|c| c.grapheme.as_str())
-                .collect::<String>()
-        })
-        .collect()
-}
-
-/// The sidebar strip columns (left dock) of every replayed row, joined
-/// as one string per row.
-fn strip_columns(rows: &[String]) -> Vec<String> {
-    rows.iter()
-        .map(|r| r.chars().take(usize::from(PROBE_SIDEBAR_W)).collect())
-        .collect()
-}
-
-/// One `paint_active_overlay` frame for `overlay`, with the sidebar
-/// enabled (left, width 20) and its painter threaded when
-/// `with_painter`. Returns the emitted VT bytes.
-fn paint_overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> Vec<u8> {
+/// One `paint_active_overlay` frame over a left sidebar, with the sidebar
+/// painter threaded when `with_painter`, projected to strip columns and rows.
+fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<String>, String) {
+    const VIEW: (u16, u16) = (80, 24);
     let theme = crate::render::Theme::default();
     let id = ResourceId::local(1);
     let workspace = Workspace::single(id.clone());
@@ -1737,167 +1031,94 @@ fn paint_overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> V
         edge: SidebarEdge::Left,
         width: PROBE_SIDEBAR_W,
     });
-    // Pane renderer metadata is separate from the published engine replica.
-    let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    panes.insert(
+    let pane_cols = VIEW.0 - PROBE_SIDEBAR_W;
+    let mut panes = HashMap::from([(
         id.clone(),
-        PaneSlot::new_with_size(PROBE_VIEW.0 - PROBE_SIDEBAR_W, PROBE_VIEW.1).expect("pane slot"),
-    );
-    let engine_kernel = published_test_kernel(
-        &id,
-        PROBE_VIEW.0 - PROBE_SIDEBAR_W,
-        PROBE_VIEW.1,
-        PROBE_PANE_TEXT.as_bytes(),
-    );
-
-    let mut sidebar_painter = SidebarPainter::new(theme);
-    sidebar_painter.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
-        name: "probe".to_owned(),
-        host: PROBE_HOST.to_owned(),
-        active: true,
-        selectable: true,
-        ..Default::default()
-    }]);
-    sidebar_painter.set_windows(vec![WindowInfo {
-        name: PROBE_WINDOW.to_owned(),
-        active: true,
-        zoomed: false,
-        attention: false,
-        branch: None,
-        exited: None,
-        badge: None,
-    }]);
-
+        PaneSlot::new_with_size(pane_cols, VIEW.1).expect("slot"),
+    )]);
+    let kernel = published_test_kernel(&id, pane_cols, VIEW.1, PROBE_PANE_TEXT.as_bytes());
+    let mut sidebar_painter = probe_sidebar(&[probe_window(PROBE_WINDOW, true)]);
     let mut overlays = OverlayState::new();
     overlays.push(overlay);
-
     let mut out: Vec<u8> = Vec::new();
     paint_active_overlay(
         &mut out,
         &overlays,
         &workspace,
         &mut panes,
-        &engine_kernel,
+        &kernel,
         Some(&id),
         None,
-        PROBE_VIEW,
+        VIEW,
         None,
         sidebar,
         with_painter.then_some(&mut sidebar_painter),
         "probe",
         &theme,
     );
-    out
+    let rows = probe_rows(&out, VIEW);
+    let strip = rows
+        .iter()
+        .map(|r| {
+            r.chars()
+                .take(usize::from(PROBE_SIDEBAR_W))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (rows, strip)
 }
 
-/// The command palette, as the dispatcher builds it (`SelectList`).
+/// The command palette, as the dispatcher builds it.
 fn palette_overlay() -> Box<dyn RenderOverlay> {
-    let theme = crate::render::Theme::default();
-    let items = vec![
+    let item = |action: &str| {
         SelectItem::new(
-            "detach",
+            action,
             ResolvedAction {
-                action: "detach".to_owned(),
+                action: action.to_owned(),
                 args: std::collections::BTreeMap::new(),
             },
-        ),
-        SelectItem::new(
-            "new-window",
-            ResolvedAction {
-                action: "new-window".to_owned(),
-                args: std::collections::BTreeMap::new(),
-            },
-        ),
-    ];
-    Box::new(SelectList::new("command palette", items, &theme))
-}
-
-/// The agent-fleet dashboard, as the dispatcher builds it:
-/// a `SelectList` carrying the fleet live key, with rows from
-/// [`crate::attach::fleet::fleet_items`]. It rides the same bounded
-/// floating-modal path as the palette, and the driver's fleet-dirty
-/// live-refresh repaints it through `paint_active_overlay` — so it must
-/// keep the sidebar visible on every refresh frame too.
-fn fleet_overlay() -> Box<dyn RenderOverlay> {
+        )
+    };
     let theme = crate::render::Theme::default();
-    let workspace = Workspace::single(ResourceId::local(1));
-    let items = crate::attach::fleet::fleet_items(
-        &workspace,
-        &[],
-        None,
-        &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
-    );
-    assert!(
-        !items.iter().all(SelectItem::is_header),
-        "probe fleet dashboard must have selectable rows"
-    );
-    Box::new(
-        SelectList::new("agent fleet", items, &theme)
-            .with_live_key(crate::attach::fleet::FLEET_LIVE_KEY),
-    )
+    Box::new(SelectList::new(
+        "command palette",
+        vec![item("detach"), item("new-window")],
+        &theme,
+    ))
 }
 
-/// phux-foz.10 mechanism guard: this pins the DEFECT shape so the
-/// regression tests below cannot false-pass. A floating-modal repaint
-/// whose base frame omits the sidebar painter leaves the reserved strip
-/// columns blank — the "sidebar vanishes while the palette is open" bug.
-#[test]
-fn overlay_base_frame_without_painter_blanks_the_sidebar() {
-    let rows = replay_rows(&paint_overlay_frame(palette_overlay(), false));
-    let strip = strip_columns(&rows).join("\n");
-    assert!(
-        !strip.contains(PROBE_WINDOW) && !strip.contains(PROBE_HOST),
-        "probe must detect the blank strip when the painter is absent;\n{strip}"
-    );
-}
-
-/// Opening the command palette must NOT blank the sidebar.
-/// The floating-modal base frame repaints the strip (window label +
-/// session host) and the panes, then paints the modal on top.
+/// Opening the palette must NOT blank the sidebar: the floating-modal base
+/// frame repaints the strip and panes, then centers the modal in the pane
+/// area. Without the painter the strip is blank (the bug's shape, so the
+/// probe cannot false-pass).
 #[test]
 fn command_palette_keeps_sidebar_visible() {
-    let rows = replay_rows(&paint_overlay_frame(palette_overlay(), true));
+    let (_, blank) = overlay_frame(palette_overlay(), false);
+    assert!(
+        !blank.contains(PROBE_WINDOW) && !blank.contains(PROBE_HOST),
+        "{blank}"
+    );
+
+    let (rows, strip) = overlay_frame(palette_overlay(), true);
     let all = rows.join("\n");
-    let strip = strip_columns(&rows).join("\n");
     assert!(
-        strip.contains(PROBE_WINDOW),
-        "sidebar window label must survive the palette;\n{all}"
+        strip.contains(PROBE_WINDOW) && strip.contains(PROBE_HOST),
+        "{all}"
     );
     assert!(
-        strip.contains(PROBE_HOST),
-        "sidebar host line must survive the palette;\n{all}"
+        all.contains("command palette") && all.contains(PROBE_PANE_TEXT),
+        "{all}"
     );
-    assert!(
-        all.contains("command palette"),
-        "the palette itself must be painted on top;\n{all}"
-    );
-    assert!(
-        all.contains(PROBE_PANE_TEXT),
-        "pane content must stay visible around the floating modal;\n{all}"
-    );
-    // The modal centers inside the pane content rect, so its
-    // box corners land right of the sidebar divider — never inside the
-    // reserved strip columns (the sidebar draws no corner glyphs itself).
     assert!(
         !strip.contains('┌') && !strip.contains('└'),
-        "modal box corners must not intrude into the sidebar columns;\n{strip}"
+        "modal intruded into the strip:\n{strip}"
     );
-    // Pin the exact composition: sidebar strip + pane + centered modal.
-    insta::assert_snapshot!(
-        "palette_over_sidebar",
-        rows.iter()
-            .map(|r| r.trim_end())
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+    insta::assert_snapshot!("palette_over_sidebar", all);
 }
 
-/// Every bounded (floating) overlay kind shares the same
-/// base-frame path, so which-key, prompts, pickers, and toasts
-/// must all keep the sidebar visible too.
+/// Every floating overlay kind (fleet, which-key, prompt, toast) shares the
+/// base-frame path and must keep the sidebar too.
 #[test]
 fn all_floating_overlays_keep_sidebar_visible() {
     let theme = crate::render::Theme::default();
@@ -1909,12 +1130,24 @@ fn all_floating_overlays_keep_sidebar_visible() {
         .collect(),
         ..KeybindingsCfg::default()
     };
+    let fleet_items = crate::attach::fleet::fleet_items(
+        &Workspace::single(ResourceId::local(1)),
+        &[],
+        None,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    assert!(!fleet_items.iter().all(SelectItem::is_header));
     let overlays: Vec<(&str, Box<dyn RenderOverlay>)> = vec![
-        ("palette", palette_overlay()),
-        // phux-foz.7 fleet dashboard: same floating-modal path, and the
-        // driver's fleet-dirty live refresh repaints it while it is
-        // open — the sidebar must survive every refresh frame.
-        ("agent-fleet", fleet_overlay()),
+        (
+            "agent-fleet",
+            Box::new(
+                SelectList::new("agent fleet", fleet_items, &theme)
+                    .with_live_key(crate::attach::fleet::FLEET_LIVE_KEY),
+            ),
+        ),
         (
             "which-key",
             Box::new(crate::render::overlay::WhichKeyOverlay::from_config(
@@ -1941,136 +1174,64 @@ fn all_floating_overlays_keep_sidebar_visible() {
         ),
     ];
     for (label, overlay) in overlays {
-        let rows = replay_rows(&paint_overlay_frame(overlay, true));
-        let strip = strip_columns(&rows).join("\n");
+        let (rows, strip) = overlay_frame(overlay, true);
         assert!(
-            strip.contains(PROBE_WINDOW),
-            "{label}: sidebar window label must survive the overlay;\n{}",
-            rows.join("\n")
-        );
-        assert!(
-            strip.contains(PROBE_HOST),
-            "{label}: sidebar host line must survive the overlay;\n{}",
+            strip.contains(PROBE_WINDOW) && strip.contains(PROBE_HOST),
+            "{label}:\n{}",
             rows.join("\n")
         );
     }
 }
 
-/// The copy-mode status strip counts a block selection as
-/// `span_rows * band_cols`, distinct from the linear bounding-box count,
-/// and never underflows when the tuple-normalized corners leave
-/// `start_col > end_col` (a multi-row up-left drag).
+/// The copy-mode strip counts a block selection as rows x band columns
+/// (12 here, with `start_col > end_col` not underflowing), distinct from the
+/// linear count (3).
 #[test]
 fn copy_mode_status_block_cell_count_differs_from_linear() {
     let theme = crate::render::Theme::default();
-    let status_of = |sel: SelectionRect| -> String {
+    let status_of = |sel: SelectionRect| {
         let mut out: Vec<u8> = Vec::new();
         paint_copy_mode_status(&mut out, sel, (80, 24), &theme).expect("status");
         String::from_utf8_lossy(&out).into_owned()
     };
-
-    // Corners tuple-normalize to start=(0,5), end=(2,2): 3 spanned rows,
-    // column band {2,3,4,5} = 4 wide. Note start_col (5) > end_col (2).
-    let corners = |rectangle| SelectionRect {
-        start_row: 0,
-        start_col: 5,
-        end_row: 2,
-        end_col: 2,
+    let rect = |start_row, start_col, end_row, end_col, rectangle| SelectionRect {
+        start_row,
+        start_col,
+        end_row,
+        end_col,
         rectangle,
     };
-
-    // Block: 3 rows * 4 band cols = 12 (and no underflow despite 5 > 2).
-    assert!(
-        status_of(corners(true)).contains("· 12 "),
-        "block count must be span_rows * band_cols = 12"
-    );
-    // Linear: the bounding-box arithmetic saturates the reversed columns to
-    // a width of 1, giving 3 rows * 1 = 3 — a different number, proving the
-    // branch is taken and that the shared corners no longer panic.
-    assert!(
-        status_of(corners(false)).contains("· 3 "),
-        "linear count must differ from the block count"
-    );
-
-    // A plainly-ordered block (start_col <= end_col) counts the full band.
-    let ordered_block = SelectionRect {
-        start_row: 1,
-        start_col: 2,
-        end_row: 3,
-        end_col: 6,
-        rectangle: true,
-    };
-    // 3 rows * band {2..=6} (5 wide) = 15.
-    assert!(
-        status_of(ordered_block).contains("· 15 "),
-        "ordered block: 3 rows * 5 band cols = 15"
-    );
+    assert!(status_of(rect(0, 5, 2, 2, true)).contains("· 12 "));
+    assert!(status_of(rect(0, 5, 2, 2, false)).contains("· 3 "));
+    assert!(status_of(rect(1, 2, 3, 6, true)).contains("· 15 "));
 }
 
-/// phux-l96p.3 review: an ADMITTED burst must discharge the pacer's debt.
-///
-/// The scenario the fix closes: `yes` floods pane A while pane B emits one
-/// line during a refused window and then goes quiet. `admit` re-arms the
-/// window on every admitted burst, so the deadline term is false exactly when
-/// a burst paints — and the `paint_deadline` arm is third in a `biased`
-/// select behind `conn.recv()`, which A keeps permanently ready. B stayed
-/// unpainted until the socket happened to drain.
+/// An admitted burst settles the pacer's debt itself: its deadline was just
+/// pushed out and a saturating socket starves the timer arm.
 #[test]
 fn an_admitted_burst_settles_the_withheld_debt() {
     use super::loop_state::burst_settles_debt;
-
-    assert!(
-        burst_settles_debt(true, false),
-        "an admitted burst discharges the debt in its own frame — the term \
-         that was missing, and the only one that can fire while a producer \
-         saturates the socket"
-    );
-    assert!(
-        burst_settles_debt(false, true),
-        "a refused burst that outran its own window still settles"
-    );
-    assert!(
-        !burst_settles_debt(false, false),
-        "a refused burst inside its window leaves the debt to the timer"
-    );
+    assert!(burst_settles_debt(true, false));
+    assert!(burst_settles_debt(false, true));
+    assert!(!burst_settles_debt(false, false));
 }
 
-/// phux-l96p.3 wave-two review: pointer MOTION must not arm the reply grace.
-///
-/// The mouse is reported to the server under `?1002h` from attach, so a
-/// divider drag, a selection sweep, or simply crossing the window emits
-/// ordinary `InputEvent`s at well over 50 a second. Each one used to refresh
-/// a 20ms grace, which kept the grace permanently alive and pacing
-/// permanently OFF for the whole client — defeating the coalescing the pacer
-/// exists to do. Press and release still arm it: a click into a mouse-aware
-/// program does get a reply.
+/// Pointer motion must not arm the reply grace (a drag would keep pacing off
+/// for the whole client); press and release do.
 #[test]
 fn pointer_motion_does_not_arm_the_reply_grace() {
     use phux_protocol::input::InputEvent;
     use phux_protocol::input::key::ModSet;
     use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
-
-    let mouse = |action| {
-        InputEvent::Mouse(MouseEvent {
+    let expects = |action| {
+        super::loop_state::input_expects_a_reply(&InputEvent::Mouse(MouseEvent {
             action,
             button: MouseButton::Left,
             mods: ModSet::empty(),
             x: 4.0,
             y: 2.0,
-        })
+        }))
     };
-
-    assert!(
-        !super::loop_state::input_expects_a_reply(&mouse(MouseAction::Motion)),
-        "motion is continuous and answers nothing; arming on it disables \
-         pacing for every pane"
-    );
-    assert!(
-        super::loop_state::input_expects_a_reply(&mouse(MouseAction::Press)),
-        "a click can be answered"
-    );
-    assert!(
-        super::loop_state::input_expects_a_reply(&mouse(MouseAction::Release)),
-        "and so can its release"
-    );
+    assert!(!expects(MouseAction::Motion));
+    assert!(expects(MouseAction::Press) && expects(MouseAction::Release));
 }

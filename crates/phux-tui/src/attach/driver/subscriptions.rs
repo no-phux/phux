@@ -15,14 +15,8 @@ use phux_client::agent_meta::{
 };
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
-/// Fetch each peer session's persisted layout — one
-/// `GET_METADATA` on the per-session layout key per session other than
-/// `focused` — so the window picker can render one-step cross-session
-/// window rows. Correlation is via `pending` (request id -> session id);
-/// replies drain through the driver's recv arm into the foreign-layout
-/// cache. Best-effort: a peer with nothing persisted replies `value: None`
-/// (dropped by [`apply_foreign_layout_reply`]) and keeps its fallback
-/// "switch to this session" row.
+/// GET and SUBSCRIBE each peer session's layout key (every session but
+/// `focused`), correlated through `pending`, for the picker's one-step rows.
 pub(super) async fn sync_foreign_layout_subscriptions(
     conn: &mut Connection,
     sessions: &[phux_protocol::wire::info::SessionInfo],
@@ -42,14 +36,8 @@ pub(super) async fn sync_foreign_layout_subscriptions(
             key: key.clone(),
         })
         .await?;
-        // The GET is the level; this is the edge. Sent even when
-        // the GET will answer `None` — a peer that has not persisted a layout
-        // yet is precisely the one whose FIRST write matters, and without the
-        // subscription that write is invisible until the next attach.
-        //
-        // Send-once bookkeeping rather than teardown: L3 has no
-        // UNSUBSCRIBE_METADATA verb (docs/spec/L3.md), so a subscription ends
-        // with the connection.
+        // Subscribe even if the GET answers `None`: a peer's first write is
+        // the one that matters. Send-once, since L3 has no unsubscribe.
         if subscribed.insert(s.id) {
             conn.send(&FrameKind::SubscribeMetadata {
                 scope: Scope::Group(DEFAULT_GROUP_ID),
@@ -61,10 +49,7 @@ pub(super) async fn sync_foreign_layout_subscriptions(
     Ok(())
 }
 
-/// Fold one foreign-session layout GET reply into the picker's
-/// cache. `value: None` (nothing persisted) or an undecodable envelope
-/// clears the entry, so the picker falls back to the plain
-/// "switch to this session" row rather than showing stale windows.
+/// Fold a peer layout GET reply; `None` or garbage clears the entry.
 pub(super) fn apply_foreign_layout_reply(
     cache: &mut HashMap<phux_protocol::ids::SessionId, Workspace>,
     session: phux_protocol::ids::SessionId,
@@ -90,12 +75,9 @@ pub(super) fn apply_foreign_layout_reply(
     }
 }
 
-/// GET/SUBSCRIBE `phux.agent/v1` for each terminal in `targets`.
-///
-/// Used both after a peer layout lands and from the server graph when no
-/// TUI layout has been persisted yet. A satellite terminal also
-/// gets the asked-flag key (ADR-0136); that GET is correlated through
-/// `asked_pending`, not `pending`, because its value is not an agent record.
+/// GET/SUBSCRIBE `phux.agent/v1` for each terminal in `targets`. Satellite
+/// terminals also GET the asked flag (ADR-0136), correlated through
+/// `asked_pending` since its value is not a record.
 pub(super) async fn sync_foreign_agent_ids(
     conn: &mut Connection,
     targets: Vec<ResourceId>,
@@ -149,12 +131,8 @@ pub(super) async fn sync_foreign_agent_ids(
     Ok(())
 }
 
-/// Fold one foreign-pane agent-record GET reply into the fleet's
-/// cache. `value: None` (no record) or an unparseable record clears the
-/// entry, so the fleet row falls back to `?` / "no agent" rather than
-/// showing stale identity — the same clear-on-empty policy as
-/// [`apply_foreign_layout_reply`]. Returns whether the cache actually moved,
-/// so an identical GET does not dirty chrome.
+/// Fold a peer agent-record GET reply (`None` or garbage clears); returns
+/// whether the cache moved.
 pub(super) fn apply_foreign_agent_reply(
     cache: &mut HashMap<ResourceId, AgentRecord>,
     id: ResourceId,
@@ -166,15 +144,8 @@ pub(super) fn apply_foreign_agent_reply(
     }
 }
 
-/// Drop foreign agent records for panes no longer in the live foreign
-/// terminal set (a peer closed a pane, a session left the graph, or a
-/// graph-only inventory no longer names them). Called before re-requesting
-/// the surviving panes.
-///
-/// The send-once subscription bookkeeping is pruned with it. A
-/// pane that leaves and later returns under the same id must be re-subscribed
-/// — leaving it in the `subscribed` set would suppress the re-subscribe and
-/// the row would go permanently silent.
+/// Drop peer agent records (and their send-once subscription markers, so a
+/// returning id re-subscribes) for panes no longer in `live`.
 pub(super) fn prune_foreign_agents(
     cache: &mut HashMap<ResourceId, AgentRecord>,
     subscribed: &mut std::collections::HashSet<ResourceId>,
@@ -184,25 +155,11 @@ pub(super) fn prune_foreign_agents(
     subscribed.retain(|id| live.contains(id));
 }
 
-/// ADR-0040: reconcile the agent-metadata index with the live
-/// pane set.
-///
-/// For every pane that has no live `phux.agent/v1` watch yet, send a
-/// one-shot `GET_METADATA` (the read-back for a record set before we
-/// attached; the reply is correlated through `AgentMetaIndex::pending`) plus
-/// a `SUBSCRIBE_METADATA` (the push path for later `SET`/`DELETE`
-/// broadcasts). Panes that closed are pruned from every side table — the
-/// server already dropped their per-Terminal store and our subscription
-/// with the Terminal, so pruning is purely local hygiene. Idempotent: a
-/// pane already in `subscribed` is skipped, so callers can re-run the sweep
-/// on every pane-set change (bootstrap, split, new window, layout
-/// broadcast) without duplicate wire traffic.
+/// ADR-0040: GET + SUBSCRIBE `phux.agent/v1` for every pane not yet
+/// watched, and prune closed panes from the side tables. Idempotent.
 pub(super) async fn sync_agent_meta_subscriptions(
     conn: &mut Connection,
-    // Owned id list (not `&HashMap<_, PaneSlot>`): `PaneSlot` holds a
-    // libghostty mirror that is not `Send`, and holding a reference to it
-    // across the sends would make this future `!Send` (clippy
-    // `future_not_send`). Callers pass `panes.keys().cloned().collect()`.
+    // Owned ids: a `PaneSlot` reference across sends would make this `!Send`.
     pane_ids: Vec<ResourceId>,
     agent_meta: &mut AgentMetaIndex,
     next_request_id: &mut u32,

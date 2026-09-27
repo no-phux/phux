@@ -137,69 +137,53 @@ fn a_kill_reply_is_consumed_once_whatever_it_says() {
             Some(reply),
             "a second reply is not ours"
         );
+        let unrelated = FrameKind::CommandResult {
+            request_id: 8,
+            result: CommandResult::Ok,
+        };
+        assert_eq!(kills.observe(unrelated.clone()), Some(unrelated));
     }
-}
-
-#[test]
-fn other_frames_pass_through() {
-    let mut kills = OrphanKills::default();
-    let mut next = 7;
-    kills.kill_frames(vec![edge(9)], &mut next);
-    let unrelated = FrameKind::CommandResult {
-        request_id: 8,
-        result: CommandResult::Ok,
-    };
-    assert_eq!(kills.observe(unrelated.clone()), Some(unrelated));
     let uncorrelated = FrameKind::Error {
         request_id: None,
         code: ErrorCode::SatelliteUnreachable,
         message: "satellite edge is unreachable".to_owned(),
     };
-    assert_eq!(kills.observe(uncorrelated.clone()), Some(uncorrelated));
+    assert_eq!(
+        OrphanKills::default().observe(uncorrelated.clone()),
+        Some(uncorrelated)
+    );
 }
 
-/// A stray is handed back once its satellite answers, and
-/// only its satellite: another one answering says nothing about it.
+/// A stray is handed back once, and only when its own satellite answers
+/// after the stray was recorded.
 #[test]
 fn a_stray_is_due_once_its_host_answers() {
-    let recorded = Instant::now();
+    let asked = Instant::now();
+    let recorded = asked + Duration::from_secs(1);
     let mut kills = with_strays(vec![edge(9)], recorded);
     assert!(
         kills
             .take_answered(&hosts(&["other"]), recorded, recorded)
             .is_empty()
     );
-    assert_eq!(
-        panes_of(kills.take_answered(&hosts(&["edge"]), recorded, recorded)),
-        vec![edge(9)]
+    assert!(
+        kills
+            .take_answered(&hosts(&["edge"]), asked, recorded)
+            .is_empty(),
+        "older answer"
     );
+    let due = kills.take_answered(&hosts(&["edge"]), recorded, recorded);
+    assert_eq!(panes_of(due), vec![edge(9)]);
     assert!(
         kills
             .take_answered(&hosts(&["edge"]), recorded, recorded)
             .is_empty(),
-        "handed back once"
+        "once"
     );
 }
 
-/// An answer from before the stray was recorded is not news about it.
-#[test]
-fn an_answer_older_than_the_stray_does_not_retry_it() {
-    let asked = Instant::now();
-    let recorded = asked + Duration::from_secs(1);
-    let mut kills = with_strays(vec![edge(9)], recorded);
-    assert!(
-        kills
-            .take_answered(&hosts(&["edge"]), asked, recorded)
-            .is_empty()
-    );
-    assert_eq!(
-        panes_of(kills.take_answered(&hosts(&["edge"]), recorded, recorded)),
-        vec![edge(9)]
-    );
-}
-
-/// The record keeps at most [`STRAY_CAP`] panes, dropping the oldest,
-/// and never holds one pane twice.
+/// The record keeps at most [`STRAY_CAP`] panes across both kinds,
+/// dropping the oldest, and never holds one pane twice.
 #[test]
 fn the_record_is_capped_oldest_first_and_deduplicated() {
     let now = Instant::now();
@@ -212,13 +196,7 @@ fn the_record_is_capped_oldest_first_and_deduplicated() {
     );
     let due = panes_of(kills.take_answered(&hosts(&["edge"]), now, now));
     assert_eq!(due, (3..=cap + 2).map(edge).collect::<Vec<_>>());
-}
 
-/// The cap holds across both kinds: unreachable strays share the record.
-#[test]
-fn unreachable_strays_share_the_cap() {
-    let now = Instant::now();
-    let cap = u32::try_from(STRAY_CAP).unwrap();
     let mut kills = with_spawned(Vec::new(), true, now);
     kills.record_unreachable(
         (1..=cap + 1)
@@ -230,46 +208,37 @@ fn unreachable_strays_share_the_cap() {
     assert_eq!(due, (2..=cap + 1).map(edge).collect::<Vec<_>>());
 }
 
-/// An unconditional stray is still killed when its satellite answers
-/// within [`STRAY_TTL`], and forgotten when the answer comes any later.
+/// An unconditional stray is due within [`STRAY_TTL`]; a conditional one
+/// within [`BOUND_STRAY_TTL`]; past its TTL either is forgotten.
 #[test]
 fn a_stray_is_due_within_its_ttl_and_forgotten_after() {
     let recorded = Instant::now();
-    let within = recorded + STRAY_TTL;
-    let mut kills = with_strays(vec![edge(9)], recorded);
-    assert_eq!(
-        panes_of(kills.take_answered(&hosts(&["edge"]), within, within)),
-        vec![edge(9)]
-    );
-
-    let past = within + Duration::from_secs(1);
-    let mut kills = with_strays(vec![edge(9)], recorded);
-    assert!(
-        kills
-            .take_answered(&hosts(&["edge"]), past, past)
-            .is_empty()
-    );
-}
-
-/// A conditional stray outlives [`STRAY_TTL`] and is
-/// forgotten only past [`BOUND_STRAY_TTL`].
-#[test]
-fn a_conditional_stray_waits_for_the_longer_ttl() {
-    let recorded = Instant::now();
-    let past_short = recorded + STRAY_TTL + Duration::from_secs(1);
-    let mut kills = with_spawned(vec![bound(edge(9))], true, recorded);
-    assert_eq!(
-        panes_of(kills.take_answered(&hosts(&["edge"]), past_short, past_short)),
-        vec![edge(9)]
-    );
-
-    let past_long = recorded + BOUND_STRAY_TTL + Duration::from_secs(1);
-    let mut kills = with_spawned(vec![bound(edge(9))], true, recorded);
-    assert!(
-        kills
-            .take_answered(&hosts(&["edge"]), past_long, past_long)
-            .is_empty()
-    );
+    let second = Duration::from_secs(1);
+    for (pane, conditional, at, due) in [
+        (
+            SpawnedPane::unbound(edge(9)),
+            false,
+            recorded + STRAY_TTL,
+            true,
+        ),
+        (
+            SpawnedPane::unbound(edge(9)),
+            false,
+            recorded + STRAY_TTL + second,
+            false,
+        ),
+        (bound(edge(9)), true, recorded + STRAY_TTL + second, true),
+        (
+            bound(edge(9)),
+            true,
+            recorded + BOUND_STRAY_TTL + second,
+            false,
+        ),
+    ] {
+        let mut kills = with_spawned(vec![pane], conditional, recorded);
+        let got = panes_of(kills.take_answered(&hosts(&["edge"]), at, at));
+        assert_eq!(!got.is_empty(), due, "conditional={conditional}");
+    }
 }
 
 /// A kill is one attempt: a failed one is never recorded, so a stray

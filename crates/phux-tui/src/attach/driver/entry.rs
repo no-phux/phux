@@ -31,14 +31,9 @@ enum AttachStart<'a> {
     Connection(Box<Connection>, &'a Dial),
 }
 
-/// Production attach: wrap stdout in the off-loop [`StdoutSink`](crate::attach::stdout_writer)
-/// so a slow terminal never blocks the select loop, then run the
-/// session. Tests use the synchronous [`run_with_stdout`] seam directly.
-///
-/// `rec` is the `phux --rec` session recorder (ADR-0060). When present the
-/// render sink is wrapped in a [`TeeSink`] *above* the `StdoutSink`, so the
-/// recording sees every composited byte even in the moments the backlog cap
-/// makes the glass drop frames.
+/// Production attach: render through the off-loop `StdoutSink` so a slow
+/// terminal never blocks the loop. `rec` (ADR-0060) tees the composited
+/// bytes above that sink, so a recording keeps frames the glass drops.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -51,17 +46,14 @@ async fn run_from_start(
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    // Kick the best-effort release check before the loop. It runs
-    // off-thread and leaves an answer in the state cache that the driver's
-    // bar tick reads; nothing here blocks on the network.
+    // Best-effort release check, off-thread; the bar tick reads its answer.
     crate::attach::update_notice::spawn_background_refresh();
     let (mut sink, writer) = crate::attach::stdout_writer::spawn_stdout_writer();
     // Cloned BEFORE any wrap: the resync flag belongs to the StdoutSink, not
     // to whatever is layered on top of it.
     let resync = Arc::clone(&sink.needs_resync);
-    // A reconnect already probed once. Querying OSC 10/11 again on the cooked
-    // screen is what prints `^[]10;rgb:...` beside the reconnect banner.
-    // Palette-less HELLO leaves the server's defaults unchanged.
+    // A reconnect already probed colors; a second OSC 10/11 query on the
+    // cooked screen prints `^[]10;rgb:...` beside the reconnect banner.
     let probe_colors = initial_notice.is_none();
     if let Some(rec) = rec {
         let mut tee = TeeSink {
@@ -124,39 +116,16 @@ pub(super) async fn run_buffered(
     .await
 }
 
-/// Dial-aware production attach (UDS *or* QUIC) with predictive echo config.
+/// Dial-aware production attach (UDS or QUIC) with predictive echo config.
+/// Blocks until the session ends.
 ///
-/// The CLI builds a [`Dial`] from its flags (a UDS path or a remote
-/// `--quic` target) and the same off-loop-stdout production path runs
-/// regardless of byte plumbing. Blocks until the server sends `DETACHED`
-/// or the user detaches.
+/// The future is `!Send` (libghostty's `Terminal` lives across awaits), so
+/// drive it on a current-thread runtime (ADR-0003).
 ///
-/// The function is `async` because it relies on tokio; embedders must
-/// drive it on a tokio runtime. Per ADR-0003 the canonical runtime is
-/// `tokio::runtime::Builder::new_current_thread` — the returned future
-/// is intentionally `!Send` because libghostty's `Terminal` is `!Send`
-/// and lives on the attach task's stack across `await` points. The
-/// single-threaded runtime never moves the future between threads.
-///
-/// `predict.enabled = false` bypasses prediction entirely;
-/// `predict.enabled = true` engages the Mosh-class prediction layer
-/// documented in [`crate::predict`] (`phux-9gw.1`).
-///
-/// # Ordering (`phux-roz`)
-///
-/// The expensive pre-handshake work — connect, `HELLO`, `ATTACH`,
-/// and the `ATTACHED` wait — runs on the *cooked* outer terminal.
-/// Failures there propagate as `Err(_)` without ever entering raw mode
-/// or the alt screen, so a missing server / bad session name / Ctrl-C
-/// during connect prints a one-line error on the normal screen and
-/// exits cleanly. Only after the server's `ATTACHED` frame arrives do
-/// we flip the terminal into raw + alt screen via `RawModeGuard`.
-///
-/// `initial_notice` is a transient status-bar message shown
-/// once the session is attached and painting — the CLI's reconnect loop
-/// passes `re-attached after server restart` so the recovery is visible
-/// *inside* the TUI (a cooked-terminal eprintln is alt-screened over within
-/// milliseconds). `None` on a first attach.
+/// Connect, `HELLO`, `ATTACH`, and the `ATTACHED` wait run on the cooked
+/// terminal: a failure there returns `Err` without ever entering raw mode or
+/// the alt screen. `initial_notice` is shown once attached (the reconnect
+/// loop's "re-attached after server restart").
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -179,12 +148,9 @@ pub async fn run_with_predict_dial(
     .await
 }
 
-/// Attach with an already connected and HELLO-negotiated transport.
-///
-/// This transfers `connection` into the production driver, avoiding a second
-/// dial after a successful reconnect probe. The driver still sends ATTACH and
-/// waits for ATTACHED before entering raw mode.
-/// `dial` is its original route, retained for auxiliary control operations.
+/// Attach over an already connected and HELLO-negotiated transport, avoiding
+/// a second dial after a reconnect probe. `dial` is kept for auxiliary
+/// control operations.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -208,13 +174,8 @@ pub async fn run_with_predict_connection(
     .await
 }
 
-/// As [`run_with_predict_dial`], but tees the composited output stream into
-/// `rec` — the `phux --rec` session recording (ADR-0060).
-///
-/// The recorder is passed in (rather than opened here) because the CLI must
-/// keep the SAME recording across a graceful-upgrade reconnect: the attach
-/// loop can return and be re-entered, and a recorder created per attempt
-/// would truncate the cast at every reconnect.
+/// As [`run_with_predict_dial`], teeing the composited output into `rec`
+/// (ADR-0060). The recorder is passed in so one cast survives reconnects.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -238,11 +199,8 @@ pub async fn run_recorded_dial(
     .await
 }
 
-/// Recorded attach with an already connected and HELLO-negotiated transport.
-///
-/// The owned connection comes from a successful probe and is consumed by the
-/// same production driver as [`run_recorded_dial`].
-/// `dial` is its original route, retained for auxiliary control operations.
+/// Recorded attach over an already negotiated transport; see
+/// [`run_with_predict_connection`] and [`run_recorded_dial`].
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -267,25 +225,11 @@ pub async fn run_recorded_connection(
     .await
 }
 
-/// UDS attach that writes the entire composited output stream to a
-/// caller-supplied [`RenderSink`](crate::attach::RenderSink) (any `Write`).
+/// UDS attach that writes the whole composited output stream to a sink.
 ///
-/// The stream covers alt-screen enter, cursor hide, every pane's per-row
-/// CUP/SGR, the status bar, overlays, and cleanup.
-///
-/// The renderer and all chrome painters are generic over `Write`, and the
-/// driver threads this one sink through `main_loop` into
-/// `handle_server_frame`, `paint_full_frame`, and `dispatch_input_events`.
-/// So the whole attach render path is injectable: production passes real
-/// stdout via [`run_with_predict_dial`]; tests and the headless agent
-/// surface pass a `Vec<u8>` (or any other `Write`) and read back the
-/// captured VT.
-///
-/// Exposed so tests can capture the byte stream and assert on it — in
-/// particular, the regression guard for `phux-roz` asserts that the
-/// pre-handshake failure path NEVER emits `\x1b[?1049h`. The stdin /
-/// signal / termios cleanup paths run on real stdout regardless of the
-/// injected sink (Drop / signal handlers can't reach it).
+/// Covers alt screen, panes, chrome, overlays, and cleanup. Tests and
+/// the headless surface capture the VT through it; signal and termios
+/// cleanup still target real stdout.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -298,9 +242,7 @@ pub async fn run_with_stdout<W: crate::attach::RenderSink>(
     run_with_stdout_predict(socket, target, out, PredictiveConfig::disabled()).await
 }
 
-/// As [`run_with_stdout`], but with an explicit predictive-echo config.
-/// Production callers should reach for [`run_with_predict_dial`]; this is
-/// the test-injectable variant.
+/// As [`run_with_stdout`], with an explicit predictive-echo config.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -328,13 +270,8 @@ pub(super) async fn run_with_stdout_predict<W: crate::attach::RenderSink>(
     .await
 }
 
-/// STAGE 1 — the pre-handshake, on the cooked outer terminal: HELLO ->
-/// ATTACH -> ATTACHED.
-///
-/// We deliberately do NOT install `RawModeGuard` around this. If anything
-/// here fails (no server, refused, signal during connect) the user's terminal
-/// stays in its original state and `Err(_)` carries the actionable cause up
-/// to the CLI.
+/// Stage 1, on the cooked terminal: HELLO -> ATTACH -> ATTACHED. No raw mode
+/// yet, so any failure leaves the user's terminal untouched.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -361,14 +298,12 @@ async fn handshake(
     Ok((conn, attached, output_mode))
 }
 
-/// Establish the exact production TUI HELLO contract without attaching yet.
+/// Establish the production TUI HELLO contract without attaching.
 ///
-/// Reconnect probes use this entry point so transferring their successful
-/// connection into [`run_with_predict_connection`] cannot silently downgrade
-/// native/L3/compression or QUIC-stream capabilities. Colors are not probed
-/// again: a second OSC 10/11 query on the cooked terminal prints
-/// `^[]10;rgb:...` when the reply misses the echo-off window, and a
-/// palette-less HELLO leaves the server's defaults unchanged.
+/// A reconnect probe's connection can be handed to
+/// [`run_with_predict_connection`] without downgrading capabilities. Colors
+/// are not re-probed (a second OSC 10/11 query can print on the cooked
+/// terminal).
 pub async fn connect_for_attach(dial: &Dial) -> Result<Connection, AttachError> {
     connect_attach_dial(dial, false).await
 }
@@ -402,32 +337,21 @@ fn negotiated_output_mode(conn: &Connection) -> Result<OutputMode, AttachError> 
     )
 }
 
-/// ADR-0048: read the `mouse` config (default on) to decide whether the
-/// [`RawModeGuard`] also enables the client's own outer-terminal mouse
-/// tracking, so divider drag-to-resize works by default. A load failure or an
-/// explicit `mouse = false` falls back to pass-through-only — no DECSET, host
-/// native selection untouched.
+/// ADR-0048: whether the raw-mode guard also enables outer mouse tracking
+/// (`mouse` config, default on; a load failure falls back to off).
 fn mouse_capture_enabled() -> bool {
     phux_config::loader::load().map_or(true, |config| config.defaults.mouse)
 }
 
-/// Drain queued output and stop the off-loop stdout writer, if this attach
-/// has one, so nothing is lost and later terminal-reset writes aren't
-/// garbled by an in-flight frame.
+/// Drain and stop the off-loop stdout writer, if any, before reset writes.
 fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) {
     if let Some(writer) = writer.take() {
         writer.shutdown_and_join();
     }
 }
 
-/// Re-handshake against `target` on the SAME connection and clear the glass
-/// for the session it lands on.
-///
-/// Returns the new `ATTACHED` frame for the next `main_loop` entry, which
-/// rebuilds ALL session-scoped state fresh (pane mirrors, workspace, predict,
-/// overlays, pending-spawn maps, layout subscription) from it, then repaints.
-/// A full repaint of the new session's grid happens via the replayed
-/// negotiated bootstrap frames inside the loop.
+/// Re-handshake against `target` on the SAME connection, clear the glass,
+/// and return the new `ATTACHED` frame for the next `main_loop` entry.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -465,16 +389,10 @@ async fn switch_session<W: crate::attach::RenderSink>(
     Ok(attached)
 }
 
-/// The attach session body shared by the production
-/// ([`run_with_predict_dial`]) and test-injectable
-/// ([`run_with_stdout_predict`]) entry points.
-///
-/// `resync` is the [`StdoutSink`](crate::attach::stdout_writer) backpressure flag
-/// (`None` for the synchronous test sink); `main_loop` polls it to repaint
-/// the latest state after the writer dropped a stale backlog. `writer` is the
-/// off-loop stdout writer's handle (`None` for the test sink); it is drained
-/// and joined before the terminal-reset writes on every exit path so output
-/// isn't lost and the reset isn't garbled.
+/// The attach session body shared by the production and test entry points.
+/// `resync` is the stdout writer's backpressure flag and `writer` its handle
+/// (both `None` for the synchronous test sink); the writer is drained before
+/// every terminal reset.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -491,20 +409,13 @@ async fn attach_session<W: crate::attach::RenderSink>(
     resync: Option<&AtomicBool>,
     mut writer: Option<crate::attach::stdout_writer::WriterHandle>,
     probe_default_colors: bool,
-    // Transient status-bar notice for the FIRST `main_loop`
-    // entry only (an in-invocation session switch must not re-show it) —
-    // the reconnect loop's "re-attached after server restart".
+    // Shown on the first `main_loop` entry only, never on a session switch.
     initial_notice: Option<Notice>,
     recorder: Option<Rc<RefCell<SessionRecorder>>>,
-    // ADR-0053: the acknowledged-input replay journal, shared with the CLI's
-    // reconnect loop the same way the recorder is — it must outlive any one
-    // attach attempt so an unresolved operation survives to be replayed by
-    // the next one. `None` on UDS dials.
+    // ADR-0053 replay journal; outlives any one attach attempt.
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    // Attach-handshake timing (info): HELLO -> ATTACH -> ATTACHED. The
-    // span's CLOSE duration is the end-to-end attach latency a trace reader
-    // wants for "why was the first paint slow." Lifecycle-rate, so info.
+    // Attach-handshake timing: the span's close is end-to-end attach latency.
     phux_client::perf::mark_started();
     let handshake_span = tracing::info_span!("attach_handshake", ?target);
     // Auxiliary control operations (such as pane moves) retain the original
@@ -515,93 +426,47 @@ async fn attach_session<W: crate::attach::RenderSink>(
     let (mut conn, attached, output_mode) = handshake(start, target, probe_default_colors)
         .instrument(handshake_span)
         .await?;
-    // The output mode is a per-connection HELLO property; construction
-    // negotiates exactly once and the re-attach loop below reuses the same
-    // `conn`, so this bool is stable across an in-connection session switch.
-    // `FRAME_ACK`s feed the server's per-seq RTT/backpressure accounting;
-    // a raw consumer's acks are dropped server-side, so the loop skips them.
+    // Output mode is per-connection, so this holds across session switches;
+    // raw consumers skip `FRAME_ACK` (the server drops their acks).
     let wants_state_sync = output_mode == OutputMode::StateSync;
 
-    // STAGE 2 — server accepted the attach. Now and only now do we flip
-    // the outer terminal into raw + alt screen. The guard's Drop runs
-    // on unwinding; the signal-handler path inside `main_loop` runs
-    // `write_terminal_reset` explicitly to cover SIGINT/SIGTERM/SIGHUP.
+    // Stage 2: attached. Only now enter raw mode + alt screen; the guard's
+    // Drop and the signal arms both restore the terminal.
     let mouse_capture = mouse_capture_enabled();
-    // Register the fatal-signal handler BEFORE raw mode is entered. The
-    // handler snapshots termios at install time, so installing it after
-    // `RawModeGuard` would capture the *raw* flags and "restore" the user
-    // into raw mode on crash — the exact wedge it exists to prevent.
-    //
-    // This arms the termios-only variant; the escape-code resets are added
-    // by `RawModeGuard` once the alt screen is actually up, so a crash
-    // before that point does not emit stray DECSETs to a normal screen.
+    // Arm the fatal-signal handler BEFORE raw mode: it snapshots termios at
+    // install, so installing it later would "restore" into raw mode.
     phux_crash::install_terminal_restore_only();
 
     let _guard = RawModeGuard::install_with_stdout(out, mouse_capture)?;
 
-    // Install a panic hook so an unexpected panic inside `main_loop`
-    // (renderer bug, libghostty FFI surprise, etc.) still restores the
-    // terminal before the default hook prints its backtrace. The hook
-    // is global, so we only register it once per process.
-    //
-    // The hook covers panics only — those unwind, so `Drop` and the hook
-    // both run. A *fatal* signal (SIGSEGV/SIGBUS/SIGABRT) does neither,
-    // which is why `phux_crash` is armed separately above. Our own code is
-    // `#![forbid(unsafe_code)]`, so that path is reachable essentially only
-    // through the native libghostty-vt FFI boundary — the "FFI surprise"
-    // this comment already anticipated, in the one form the hook can't see.
+    // Panics unwind, so the hook (once per process) and Drop restore the
+    // terminal; fatal signals are `phux_crash`'s job above.
     install_panic_hook_once();
 
-    // Outer re-attach loop. `main_loop` is single-session by
-    // construction (it builds ~15 session-scoped locals and replays the
-    // ATTACHED frame once on entry). When the user picks another session
-    // via `<leader> a` the loop returns `LoopExit::SwitchTo(name)`; here
-    // we detach from the current session, re-run the ATTACH handshake
-    // against `ByName(name)` on the SAME transport connection (a session
-    // switch is within one server, so the UDS connection — bound to the
-    // server, not to any single session — is reused, not reconnected),
-    // and re-enter `main_loop` with the new ATTACHED frame. The
-    // `RawModeGuard` stays installed across the switch (it lives in this
-    // outer scope) so the alt screen never flickers and the terminal is
-    // never left in a bad state. On `Detached` the loop exits via
-    // `exit_after_detach` (which never returns — see its doc comment).
+    // Outer re-attach loop. `main_loop` is single-session; a `SwitchTo`
+    // detaches and re-handshakes on the same connection (it is bound to the
+    // server, not a session) while the raw-mode guard stays installed, so the
+    // alt screen never flickers.
     let mut attached = attached;
-    // First-use guidance is profile-scoped, versioned, and best-effort. The
-    // moment is decided once per process attach and consumed by the first loop
-    // entry, so in-process session switches never repeat it.
+    // First-use guidance, decided once per process attach and consumed by the
+    // first loop entry.
     let onboarding_path = crate::attach::onboarding::state_path();
     let mut onboarding_claim = crate::attach::onboarding::begin_attach(&onboarding_path);
-    // Window index to select after a one-step cross-session
-    // window pick (`switch-session { name, window }`) re-attaches. `None`
-    // on the first attach and after plain switches; set per-iteration by
-    // the SwitchTo arm below, consumed by `main_loop` once the target's
-    // persisted layout loads. phux-jpqd: `pending_pane` is the pane half
-    // of a one-step cross-session pane pick (`switch-session { .., pane }`).
-    // `pending_resource` is the authoritative graph identity
-    // (`switch-session { .., resource }`) used when no TUI layout exists yet.
+    // A one-step cross-session pick's window, pane, or resource, consumed by
+    // the next `main_loop` entry.
     let mut pending_window: Option<usize> = None;
     let mut pending_pane: Option<usize> = None;
     let mut pending_resource: Option<ResourceId> = None;
-    // The window sidebar's runtime state (on/off and width), handed back by
-    // each `LoopExit::SwitchTo` and fed into the next `main_loop` entry.
-    // `None` on the first attach so `[sidebar]` decides. Unlike
-    // `pending_window` / `pending_pane` this is deliberately NOT `take`n — it
-    // persists for the life of the attach, across any number of switches.
+    // Sidebar runtime state carried across switches (never `take`n).
     let mut carried_sidebar: Option<CarriedSidebar> = None;
-    // Hand the reconnect notice to the first `main_loop`
-    // entry only (same `take` pattern as the onboarding hint above): a
-    // session switch re-enters `main_loop` but is not a reconnect.
+    // First entry only: a session switch is not a reconnect.
     let mut initial_notice = initial_notice;
-    // The stray satellite panes this client still owes a kill,
-    // handed out by each `LoopExit::SwitchTo` and into the next entry, so the
-    // record lives as long as this connection, not one session's loop.
+    // Stray satellite panes still owed a kill; connection-lifetime.
     let mut orphan_kills = super::orphans::OrphanKills::default();
     let mut review = crate::attach::review::ReviewIndex::new();
     loop {
         let claim = onboarding_claim.take();
-        // Boxed: the session loop's state machine is large, and inlining it
-        // here pushed every caller's attach future past clippy's
-        // `large_futures` limit. One allocation per attach or switch.
+        // Boxed to keep callers' futures under clippy's `large_futures`.
         let exit = match Box::pin(main_loop(
             &mut conn,
             dial,
@@ -640,16 +505,9 @@ async fn attach_session<W: crate::attach::RenderSink>(
                 // The session's own numbers, one line, always: what a user
                 // pastes into a report about a laggy session.
                 tracing::info!("{}", phux_client::perf::summary_line());
-                // The session ended (user detach, server `DETACHED`, or a
-                // detach-intended disconnect). Restore the terminal and
-                // exit now rather than returning up the stack: a returning
-                // `Ok(())` would let the tokio runtime drop block forever
-                // on the uncancellable stdin read thread (see
-                // `exit_after_detach`'s doc comment).
-                //
-                // Drain queued output + stop the writer FIRST so nothing is
-                // lost and the reset writes in `exit_after_detach` aren't
-                // garbled by an in-flight frame.
+                // Exit the process rather than return: a returning attach
+                // would block the runtime drop on the uncancellable stdin
+                // thread. Drain the writer first so nothing is lost.
                 stop_writer(&mut writer);
                 exit_after_detach(end, locally_requested, &onboarding_path, recorder.as_ref());
             }
@@ -659,9 +517,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
                 orphan_kills: carried_orphans,
                 review: carried_review,
             } => {
-                // The sidebar is the human's chrome, not the session's. Carry
-                // the toggle and a dragged width into the next entry so the
-                // strip neither blinks shut nor snaps back on a space switch.
+                // The sidebar is the human's chrome; carry it into the next entry.
                 carried_sidebar = Some(sidebar);
                 orphan_kills = carried_orphans;
                 review = carried_review;
@@ -682,24 +538,9 @@ async fn attach_session<W: crate::attach::RenderSink>(
 }
 
 /// Detach the current session and re-handshake against `target` on the SAME
-/// connection, returning the new `ATTACHED` frame.
-///
-/// Tears down the current session on the server first so it frees our
-/// per-consumer reference grid and reaps the detached consumer rather than
-/// leaking it. `DETACH` does not close the connection server-side (the
-/// server's DETACH arm emits `DETACHED` and keeps its read loop alive), so
-/// the same `conn` is reusable — no reconnect, because one server owns all
-/// the sessions and the transport is bound to the server, not to any single
-/// session.
-///
-/// An existing session re-attaches by name; a new-session request creates it
-/// (or attaches, if the name is already taken) via `CreateIfMissing`.
-/// A one-step window pick carries a target window, stashed in
-/// `pending_window` for the next `main_loop` entry, which resolves it once the
-/// new session's layout loads. phux-jpqd: a foreign fleet row also carries a
-/// target pane, resolved after the window select. phux-ah84: a graph-discovered
-/// agent row carries a `ResourceId`, resolved from the ATTACHED inventory
-/// even when no TUI layout has been persisted.
+/// connection (DETACH keeps the server's read loop alive), returning the new
+/// `ATTACHED` frame. A new-session request uses `CreateIfMissing`; a
+/// one-step pick's window, pane, or resource is stashed for the next entry.
 async fn reattach_on_same_connection(
     conn: &mut Connection,
     target: ReattachTarget,
@@ -731,16 +572,9 @@ async fn reattach_on_same_connection(
     Ok(attached)
 }
 
-/// Build the `CreateIfMissing` target for an in-TUI session create (the
-/// session picker's "new session" row, phux-0db).
-///
-/// Carries the client process's current working directory instead of
-/// `cwd: None`: `None` on the wire seeds the pane in the *daemon's* CWD
-/// (typically `$HOME` for a long-lived server), which breaks tools whose
-/// persistence is keyed by directory (e.g. `claude --resume`). The server
-/// validates the path and falls back to its default spawn directory when
-/// it is not an enterable directory on the server host, so a stale or
-/// remote-client path can never fail the create.
+/// The `CreateIfMissing` target for an in-TUI session create, carrying the
+/// client's cwd (`None` would seed the daemon's cwd; the server falls back
+/// when the path is not enterable there).
 pub(super) fn create_session_target(name: String) -> AttachTarget {
     AttachTarget::CreateIfMissing {
         name,
@@ -751,27 +585,9 @@ pub(super) fn create_session_target(name: String) -> AttachTarget {
     }
 }
 
-/// Send `DETACH` and drain frames until `DETACHED` arrives, so
-/// the server-side per-consumer state (reference grid, subscriber lists)
-/// is released before the next `ATTACH` on the same connection.
-///
-/// Frames that arrive between our `DETACH` and the server's `DETACHED`
-/// (a `RESOURCE_OUTPUT` already in flight, a late `METADATA_CHANGED`) are
-/// discarded — we are tearing the session down and rebuilding all
-/// session-scoped state on the next attach, so nothing in this window is
-/// worth applying. A server-initiated disconnect during the drain is a
-/// genuine error (the switch can't complete), surfaced as
-/// `AttachError::Disconnected`.
-///
-/// The one exception is `orphan_kills`, which outlives the
-/// session. It sees each drained frame, so the reply to an orphan kill still
-/// settles and a satellite pane answering a spawn the old loop parked is
-/// remembered as a stray to kill later.
-///
-/// The review index is the other exception. Agent metadata (and
-/// unparsed `AgentSession` output) that lands in this window must still
-/// fold, or an identical GET after re-attach cannot recover a missed
-/// done-working-done cycle.
+/// Send `DETACH` and discard frames until `DETACHED`, so the server releases
+/// per-consumer state before the next `ATTACH`. `orphan_kills` and the
+/// review index still see drained frames: they outlive the session.
 async fn detach_and_drain(
     conn: &mut Connection,
     orphan_kills: &mut super::orphans::OrphanKills,
@@ -780,9 +596,6 @@ async fn detach_and_drain(
     conn.send(&FrameKind::Detach).await?;
     loop {
         match conn.recv().await? {
-            // Any reason ends the drain: we asked for this detach, and the
-            // next ATTACH rebuilds every session-scoped thing the reason
-            // could have qualified.
             FrameKind::Detached { .. } => {
                 orphan_kills.finish_switch_drain();
                 conn.unbind_all_terminals();
@@ -797,42 +610,23 @@ async fn detach_and_drain(
     }
 }
 
-/// Clear the alt screen between sessions so the previous
-/// session's grid doesn't briefly show under the new session's first
-/// paint. The new bootstrap repaint lands immediately after, so this is a
-/// one-frame clear, not a flicker.
+/// Clear the alt screen between sessions so the old grid never shows under
+/// the new session's first paint.
 fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
     out.write_all(b"\x1b[2J\x1b[H")?;
     out.flush()
 }
 
-/// How the `main_loop` `select!` loop terminated.
-///
-/// `main_loop` is single-session by construction — it builds all the
-/// session-scoped locals up front and replays one ATTACHED frame. Rather
-/// than tear down and rebuild that state in place, the loop signals its
-/// caller ([`run_with_stdout_predict`]'s outer loop) which way it exited:
-///
-/// * `Detached(end)` — the user detached, the server sent `DETACHED`, or
-///   the last pane closed (phux-i0e8.2.2 — `end` carries which, plus the
-///   dead pane's exit status). The outer loop runs `exit_after_detach(end)`
-///   on this path, which prints the last-pane explanation on the cooked
-///   terminal and exits the process.
-/// * `SwitchTo(target)` — the user committed `switch-session { name }`
-///   (via the `<leader> a` picker / palette) or `new-session`. The outer
-///   loop detaches from the current session and re-runs the handshake
-///   against the target (`ByName` for an existing session, `CreateIfMissing`
-///   for a new one), then re-enters `main_loop` with the new ATTACHED frame
-///   and freshly-rebuilt session state.
+/// How a `main_loop` entry ended: `Detached` (the process then exits via
+/// `exit_after_detach`) or `SwitchTo` (the outer loop re-handshakes and
+/// re-enters with fresh session state).
 #[derive(Debug)]
 #[allow(
     clippy::large_enum_variant,
     reason = "SwitchTo carries the full re-attach request including resource identity"
 )]
 pub(super) enum LoopExit {
-    /// The session ended (detach / server DETACHED / last pane closed).
-    /// Carries WHY so the teardown path can explain a
-    /// last-pane death on the cooked terminal. The process exits.
+    /// The session ended; `end` says why, for the cooked-terminal message.
     Detached {
         end: AttachEnd,
         locally_requested: bool,
@@ -842,20 +636,10 @@ pub(super) enum LoopExit {
     SwitchTo {
         /// Where to re-attach.
         target: ReattachTarget,
-        /// The window sidebar's RUNTIME on/off state at the moment of the
-        /// switch.
-        ///
-        /// `main_loop` rebuilds every session-scoped local on re-entry, which
-        /// is right for session state and wrong for this: the sidebar is the
-        /// human's chrome, not the session's, and switching spaces does not
-        /// change which window they are looking at. Without carrying it out,
-        /// the next entry re-seeds the strip from `[sidebar] enabled` and
-        /// silently reverts a `toggle-sidebar` the user made. The width rides
-        /// along for the same reason: a dragged edge must not snap back.
+        /// The sidebar's runtime state, so a switch neither reverts a
+        /// `toggle-sidebar` nor snaps back a dragged width.
         sidebar: CarriedSidebar,
-        /// The stray satellite panes this client still owes a
-        /// kill, including the ones the switch itself strands. Connection
-        /// state, not session state, so it rides into the next entry.
+        /// Stray satellite panes still owed a kill (connection state).
         orphan_kills: super::orphans::OrphanKills,
         /// Per-identity review status for this connection. Session
         /// loops rebuild pane slots; this does not.
@@ -877,9 +661,8 @@ pub(super) const fn detached_loop_exit(end: AttachEnd, local_intent: bool) -> Lo
     }
 }
 
-/// The sidebar state one `main_loop` entry hands the next across an
-/// in-process session switch. Runtime-only: neither field is ever written
-/// to `config.toml` (ADR-0101 decision 2).
+/// Sidebar state carried across an in-process session switch; runtime-only
+/// (ADR-0101).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CarriedSidebar {
     /// `toggle-sidebar`'s current state.
@@ -889,22 +672,8 @@ pub(super) struct CarriedSidebar {
     pub width: Option<u16>,
 }
 
-/// The window sidebar's enabled flag at `main_loop` entry.
-///
-/// A first attach carries nothing, so `[sidebar] enabled` decides. An
-/// in-process session switch carries the RUNTIME value — `toggle-sidebar` may
-/// have flipped it since attach — and that wins over the config default in
-/// BOTH directions: a strip opened by hand stays open across
-/// `switch-session`, and one closed by hand stays closed even under a config
-/// that defaults it on.
-///
-/// This is the client-local half of the driver's reset convention.
-/// Session-scoped locals (`zoomed`, the pane map, `attention_navigation`) are
-/// rebuilt on every entry because they name things that belong to the session
-/// being left. The sidebar names something that belongs to the human's
-/// window, and it was the only chrome toggle on the wrong side of that line.
-///
-/// Deliberately not `Option::unwrap_or`, which is not `const`.
+/// The sidebar's enabled flag at `main_loop` entry: config decides the first
+/// attach; after that the carried runtime value wins in both directions.
 pub(super) const fn seed_sidebar_enabled(carried: Option<bool>, configured: bool) -> bool {
     match carried {
         Some(enabled) => enabled,
