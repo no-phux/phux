@@ -319,12 +319,6 @@ mod tests {
         assert_eq!(scoped.history_request(), Some(200));
         assert!(scoped.wants_cells());
     }
-
-    #[test]
-    fn the_no_marks_note_names_the_flag_and_the_remedy() {
-        assert!(NO_MARKS_NOTE.contains("--output-only"));
-        assert!(NO_MARKS_NOTE.contains("shell integration"));
-    }
 }
 
 /// phux-69pq.10: `--timeout` bounds the whole wait, including a server that

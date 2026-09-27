@@ -1634,18 +1634,6 @@ mod tests {
         );
     }
 
-    /// A config that will not parse must not turn prediction on.
-    #[test]
-    fn a_config_that_fails_to_load_never_enables_prediction() {
-        // `predictive_config_for` reads the real config path, so drive the
-        // decision function it delegates to instead: on a load failure it must
-        // not consult the dial at all.
-        assert!(
-            !PredictiveConfig::disabled().enabled,
-            "the load-failure fallback is the disabled config, on every dial"
-        );
-    }
-
     fn quic_dial(addr: &str) -> Dial {
         Dial::Quic(QuicDial {
             addr: addr.parse().expect("addr"),

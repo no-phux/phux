@@ -138,28 +138,18 @@ mod tests {
         assert_eq!(parse_geometry("120X40").expect("uppercase X parses"), geom);
     }
 
+    /// Each malformed spelling fails with a diagnostic naming its fix; a zero
+    /// axis never reaches libghostty, which would silently clamp it.
     #[test]
-    fn rejects_a_missing_separator() {
-        let err = parse_geometry("12040").expect_err("no separator must fail");
-        assert!(err.contains("COLSxROWS"), "unhelpful diagnostic: {err}");
-    }
-
-    #[test]
-    fn rejects_zero_on_either_axis() {
-        // The whole reason `Geometry` holds NonZeroU16: a zero here would
-        // otherwise travel all the way to libghostty, which clamps it, and
-        // the caller would be told it got a size no pane has.
-        for spec in ["0x40", "120x0"] {
-            let Err(err) = parse_geometry(spec) else {
-                panic!("{spec} must be rejected");
-            };
-            assert!(err.contains("at least 1"), "unhelpful diagnostic: {err}");
+    fn rejects_malformed_geometry() {
+        for (spec, hint) in [
+            ("12040", "COLSxROWS"),
+            ("0x40", "at least 1"),
+            ("120x0", "at least 1"),
+            ("wide x tall", "whole number"),
+        ] {
+            let err = parse_geometry(spec).expect_err(spec);
+            assert!(err.contains(hint), "{spec}: unhelpful diagnostic: {err}");
         }
-    }
-
-    #[test]
-    fn rejects_non_numeric_axes() {
-        let err = parse_geometry("wide x tall").expect_err("words must fail");
-        assert!(err.contains("whole number"), "unhelpful diagnostic: {err}");
     }
 }

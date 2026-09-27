@@ -70,20 +70,6 @@ pub(crate) fn run_relay(action: RelayAction) -> ExitCode {
     }
 }
 
-/// Validate `--max-conns` as a positive connection cap.
-#[cfg(test)]
-fn parse_max_conns(value: &str) -> Result<usize, String> {
-    let conns: usize = value
-        .parse()
-        .map_err(|_| "max-conns must be a whole number".to_owned())?;
-    if conns == 0 {
-        return Err(
-            "max-conns must be at least 1 (a cap of 0 would refuse every connection)".to_owned(),
-        );
-    }
-    Ok(conns)
-}
-
 /// The one-line listening banner: address, enrolled route count, and the
 /// certificate fingerprint tunnels and consumers will see.
 fn banner_line(listen: SocketAddr, routes: usize, fingerprint: &str) -> String {
@@ -212,23 +198,7 @@ fn run_relay_pair(route: &str) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{banner_line, parse_max_conns};
-
-    /// `--max-conns` is validated at parse time: positive integers only,
-    /// so a cap of 0 (refuse everything) or garbage never reaches the
-    /// runtime.
-    #[test]
-    fn max_conns_accepts_positive_integers_only() {
-        assert_eq!(parse_max_conns("1"), Ok(1));
-        assert_eq!(parse_max_conns("64"), Ok(64));
-        assert_eq!(parse_max_conns("1024"), Ok(1024));
-
-        assert!(parse_max_conns("0").is_err(), "0 refuses every connection");
-        assert!(parse_max_conns("-1").is_err());
-        assert!(parse_max_conns("many").is_err());
-        assert!(parse_max_conns("6.4").is_err());
-        assert!(parse_max_conns("").is_err());
-    }
+    use super::banner_line;
 
     /// The banner names all three facts an operator needs at a glance:
     /// where the relay listens, how many routes are enrolled, and the

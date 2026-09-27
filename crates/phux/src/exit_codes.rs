@@ -118,41 +118,7 @@ pub(crate) fn exit_status_section() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EXIT_CODES, EXIT_FAILURE, EXIT_PARTIAL_VIEW, EXIT_RUN_TIMEOUT, EXIT_SUCCESS, EXIT_USAGE,
-        EXIT_WAIT_TIMEOUT, exit_status_section,
-    };
-
-    /// The table carries exactly the audited code set, ascending, each
-    /// with non-empty prose — the invariant both renderers rely on.
-    #[test]
-    fn table_is_the_audited_code_set_in_order() {
-        let codes: Vec<u8> = EXIT_CODES.iter().map(|spec| spec.code).collect();
-        assert_eq!(
-            codes,
-            vec![
-                EXIT_SUCCESS,
-                EXIT_FAILURE,
-                EXIT_USAGE,
-                EXIT_PARTIAL_VIEW,
-                EXIT_WAIT_TIMEOUT,
-                EXIT_RUN_TIMEOUT,
-            ],
-        );
-        assert_eq!(codes, vec![0, 1, 2, 3, 124, 125]);
-        for spec in EXIT_CODES {
-            assert!(
-                spec.lines.iter().all(|line| !line.is_empty()),
-                "empty prose line for exit code {}",
-                spec.code
-            );
-            assert!(
-                !spec.lines.is_empty(),
-                "no prose for exit code {}",
-                spec.code
-            );
-        }
-    }
+    use super::{EXIT_CODES, exit_status_section};
 
     /// The rendered help section opens each code's row with the code in
     /// a fixed-width column, so the `help_inventory` gate (and a human

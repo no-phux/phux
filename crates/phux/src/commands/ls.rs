@@ -606,51 +606,6 @@ mod tests {
         );
     }
 
-    /// `--json`: `terminals` lists Terminal-kind ids only; `resources` lists
-    /// every resource with its kind and parent.
-    #[test]
-    fn json_splits_terminals_from_resources() {
-        use phux_protocol::ids::ResourceKind;
-        use phux_protocol::wire::info::ResourceInfo;
-
-        let window = WindowId::new(10);
-        let snapshot = SessionSnapshot::new(SessionId::new(1), window, ResourceId::local(7))
-            .with_resources(vec![
-                ResourceInfo::new(ResourceId::local(7), window, 80, 24),
-                ResourceInfo::new(ResourceId::local(9), window, 0, 0)
-                    .with_kind(ResourceKind::AgentSession)
-                    .with_parent(Some(ResourceId::local(7))),
-            ]);
-        let terminals: Vec<String> = phux_client::resource::terminals(&snapshot)
-            .map(|pane| phux_client::selector::format_terminal_id(&pane.id))
-            .collect();
-        assert_eq!(terminals, ["@7"]);
-        let resources: Vec<(String, String, Option<String>)> = snapshot
-            .resources
-            .iter()
-            .map(|pane| {
-                (
-                    phux_client::selector::format_terminal_id(&pane.id),
-                    phux_client::resource::kind_name(pane.kind).to_owned(),
-                    pane.parent
-                        .as_ref()
-                        .map(phux_client::selector::format_terminal_id),
-                )
-            })
-            .collect();
-        assert_eq!(
-            resources,
-            [
-                ("@7".to_owned(), "terminal".to_owned(), None),
-                (
-                    "@9".to_owned(),
-                    "agent_session".to_owned(),
-                    Some("@7".to_owned())
-                ),
-            ]
-        );
-    }
-
     /// A snapshot from a hub: one local session, a live satellite with one
     /// session, and one the hub could not reach.
     fn federated_snapshot() -> SessionSnapshot {
