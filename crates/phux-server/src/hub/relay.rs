@@ -31,13 +31,14 @@ use std::sync::{Arc, Mutex};
 
 use bytes::BytesMut;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerFeature, ServerFeatureSet,
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerFeature, ServerFeatureExt,
+    ServerFeatureExtSet, ServerFeatureSet,
 };
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, StreamId};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, ControlAction, DirectoryErrorCode, DirectoryListingError,
-    DirectoryListingResult, ErrorCode, FrameKind, HistoryTombstoneReason, Scope, SpawnError,
-    SpawnResult, TombstoneReason,
+    DirectoryListingResult, ErrorCode, FrameKind, HistoryTombstoneReason, PathErrorCode,
+    PathQueryError, PathQueryResult, Scope, SpawnError, SpawnResult, TombstoneReason,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -77,6 +78,15 @@ pub(crate) fn listing_refusal(path: &str, message: impl Into<String>) -> Directo
     DirectoryListingError {
         path: path.to_owned(),
         code: DirectoryErrorCode::Other,
+        message: message.into(),
+    }
+}
+
+/// Relay failures preserve the attempted root and name the satellite.
+pub(crate) fn path_refusal(root: &str, message: impl Into<String>) -> PathQueryError {
+    PathQueryError {
+        root: root.to_owned(),
+        code: PathErrorCode::Other,
         message: message.into(),
     }
 }
@@ -240,6 +250,18 @@ pub(crate) enum RelayRequest {
         path: String,
         /// Resolved with the listing or a typed refusal.
         reply: oneshot::Sender<DirectoryListingResult>,
+    },
+    /// A satellite-local path query; the session strips the hub host field
+    /// and correlates `PATH_RESULTS` through a link-side request id.
+    #[allow(
+        dead_code,
+        reason = "consumer dispatch is implemented on the sibling branch"
+    )]
+    PathQuery {
+        root: String,
+        query: String,
+        recursive: bool,
+        reply: oneshot::Sender<PathQueryResult>,
     },
     /// Relay a keyed `COMMAND` (`APPLY_INPUT`, or a kill/signal with an
     /// `operation_id`) from consumer `actor` (L1 §9.1): forwarded only to a
@@ -517,6 +539,54 @@ impl RelayHandle {
         }
     }
 
+    /// Query paths on this satellite, with a bounded typed refusal on failure.
+    #[allow(
+        dead_code,
+        reason = "consumer dispatch is implemented on the sibling branch"
+    )]
+    pub(crate) async fn path_query(
+        &self,
+        root: String,
+        query: String,
+        recursive: bool,
+    ) -> PathQueryResult {
+        let attempted = root.clone();
+        let (reply, rx) = oneshot::channel();
+        if let Err(err) = self.tx.try_send(RelayRequest::PathQuery {
+            root,
+            query,
+            recursive,
+            reply,
+        }) {
+            let why = match err {
+                mpsc::error::TrySendError::Full(_) => "link is saturated; retry",
+                mpsc::error::TrySendError::Closed(_) => "link is down",
+            };
+            return Err(path_refusal(
+                &attempted,
+                format!("satellite {} {why}", self.host),
+            ));
+        }
+        match tokio::time::timeout(RELAY_LIST_DEADLINE, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(path_refusal(
+                &attempted,
+                format!(
+                    "satellite {} link dropped before the path results",
+                    self.host
+                ),
+            )),
+            Err(_) => Err(path_refusal(
+                &attempted,
+                format!(
+                    "satellite {} did not answer the path query within {}s",
+                    self.host,
+                    RELAY_LIST_DEADLINE.as_secs()
+                ),
+            )),
+        }
+    }
+
     /// Relay `command` without awaiting (`KILL_RESOURCES` tolerates a skip).
     pub(crate) fn command_detached(&self, command: Command) {
         let (reply, _rx) = oneshot::channel();
@@ -714,6 +784,12 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
         RelayRequest::ListDirectory { path, reply } => {
             let _ = reply.send(Err(listing_refusal(
                 &path,
+                format!("satellite {host} is unreachable: {why}"),
+            )));
+        }
+        RelayRequest::PathQuery { root, reply, .. } => {
+            let _ = reply.send(Err(path_refusal(
+                &root,
                 format!("satellite {host} is unreachable: {why}"),
             )));
         }
@@ -946,6 +1022,12 @@ struct PendingListing {
 }
 
 #[derive(Debug)]
+struct PendingPathQuery {
+    root: String,
+    reply: oneshot::Sender<PathQueryResult>,
+}
+
+#[derive(Debug)]
 struct PendingDetach {
     terminal: u32,
     deadline: tokio::time::Instant,
@@ -968,8 +1050,10 @@ pub(crate) struct RelaySession {
     pending_spawns: HashMap<u32, oneshot::Sender<SpawnResult>>,
     /// Relayed listings awaiting `DIRECTORY_LISTING`, in the same id space.
     pending_listings: HashMap<u32, PendingListing>,
+    pending_paths: HashMap<u32, PendingPathQuery>,
     /// The satellite's `HELLO_OK` features; listings need `LIST_DIRECTORY`.
     satellite_features: ServerFeatureSet,
+    satellite_features_ext: ServerFeatureExtSet,
     /// Upstream detach barriers: old frames may arrive until the reply.
     pending_detaches: HashMap<u32, PendingDetach>,
     /// Terminals whose metadata allowlist is already mirrored (ADR-0136).
@@ -1030,7 +1114,9 @@ impl RelaySession {
             pending: HashMap::new(),
             pending_spawns: HashMap::new(),
             pending_listings: HashMap::new(),
+            pending_paths: HashMap::new(),
             satellite_features,
+            satellite_features_ext: ServerFeatureExtSet::new(),
             pending_detaches: HashMap::new(),
             mirrored: HashSet::new(),
             pending_mirror_gets: HashMap::new(),
@@ -1070,6 +1156,10 @@ impl RelaySession {
         operations: super::operation_fence::OperationFence,
     ) {
         self.operations = operations;
+    }
+
+    pub(crate) const fn set_satellite_features_ext(&mut self, features: ServerFeatureExtSet) {
+        self.satellite_features_ext = features;
     }
 
     /// Before a first explicit attach, fence any automatic SPAWN generation
@@ -1207,6 +1297,12 @@ impl RelaySession {
                 forward,
             } => self.subscribe_forward(subscription, &forward),
             RelayRequest::ListDirectory { path, reply } => self.enqueue_listing(path, reply),
+            RelayRequest::PathQuery {
+                root,
+                query,
+                recursive,
+                reply,
+            } => self.enqueue_path_query(root, query, recursive, reply),
             // Frames were produced by [`Self::prepare_request`].
             RelayRequest::MirrorTerminal { .. } => None,
         }
@@ -1377,6 +1473,36 @@ impl RelaySession {
         };
         self.pending_listings
             .insert(request_id, PendingListing { path, reply });
+        Some(self.encode(&frame))
+    }
+
+    fn enqueue_path_query(
+        &mut self,
+        root: String,
+        query: String,
+        recursive: bool,
+        reply: oneshot::Sender<PathQueryResult>,
+    ) -> Option<Vec<u8>> {
+        if !self
+            .satellite_features_ext
+            .contains(ServerFeatureExt::PathQuery)
+        {
+            let _ = reply.send(Err(path_refusal(
+                &root,
+                format!("satellite {} does not answer PATH_QUERY", self.host),
+            )));
+            return None;
+        }
+        let request_id = self.allocate_request_id();
+        let frame = FrameKind::PathQuery {
+            request_id,
+            root: root.clone(),
+            query,
+            recursive,
+            host: None,
+        };
+        self.pending_paths
+            .insert(request_id, PendingPathQuery { root, reply });
         Some(self.encode(&frame))
     }
 
@@ -1615,6 +1741,9 @@ impl RelaySession {
             FrameKind::DirectoryListing { request_id, result } => {
                 self.resolve_pending_listing(request_id, result);
             }
+            FrameKind::PathResults { request_id, result } => {
+                self.resolve_pending_path(request_id, result);
+            }
             FrameKind::Error {
                 request_id: Some(request_id),
                 code,
@@ -1719,6 +1848,16 @@ impl RelaySession {
             let _ = pending.reply.send(Err(refusal));
             return;
         }
+        if let Some(pending) = self.pending_paths.remove(&request_id) {
+            let _ = pending.reply.send(Err(path_refusal(
+                &pending.root,
+                format!(
+                    "satellite {} refused the path query: {code:?}: {message}",
+                    self.host
+                ),
+            )));
+            return;
+        }
         self.resolve_pending(request_id, CommandResult::Error { code, message });
     }
 
@@ -1734,6 +1873,14 @@ impl RelaySession {
         };
         // A dropped receiver (consumer timed out / disconnected) is fine.
         let _ = pending.reply.send(result);
+    }
+
+    fn resolve_pending_path(&mut self, request_id: u32, result: PathQueryResult) {
+        if let Some(pending) = self.pending_paths.remove(&request_id) {
+            let _ = pending.reply.send(result);
+        } else {
+            debug!(satellite = %self.host, request_id, "satellite path results with no pending request; dropping");
+        }
     }
 
     /// Forward one terminal-scoped return-leg frame: check its flow gate,
@@ -2005,6 +2152,12 @@ impl RelaySession {
                 format!("satellite {} is unreachable: {why}", self.host),
             )));
         }
+        for (_, pending) in self.pending_paths.drain() {
+            let _ = pending.reply.send(Err(path_refusal(
+                &pending.root,
+                format!("satellite {} is unreachable: {why}", self.host),
+            )));
+        }
         // One typed ERROR per consumer, naming the host.
         let mut notified: Vec<ClientId> = Vec::new();
         let error = unreachable_error(&self.host, why);
@@ -2062,6 +2215,8 @@ impl RelaySession {
         self.pending_spawns.retain(|_, reply| !reply.is_closed());
         self.pending_listings
             .retain(|_, pending| !pending.reply.is_closed());
+        self.pending_paths
+            .retain(|_, pending| !pending.reply.is_closed());
         let remaining = self.pending_request_count();
         let pruned = before - remaining;
         if pruned > 0 {
@@ -2077,7 +2232,10 @@ impl RelaySession {
 
     /// Correlated requests still waiting on the satellite, of every kind.
     fn pending_request_count(&self) -> usize {
-        self.pending.len() + self.pending_spawns.len() + self.pending_listings.len()
+        self.pending.len()
+            + self.pending_spawns.len()
+            + self.pending_listings.len()
+            + self.pending_paths.len()
     }
 
     /// A peer that never acknowledges a detach leaves generation ownership
@@ -3148,6 +3306,7 @@ impl RelaySession {
         self.pending.contains_key(&id)
             || self.pending_spawns.contains_key(&id)
             || self.pending_listings.contains_key(&id)
+            || self.pending_paths.contains_key(&id)
             || self.pending_detaches.contains_key(&id)
             || self.pending_mirror_gets.contains_key(&id)
     }
@@ -7184,5 +7343,202 @@ mod tests {
         assert_eq!(session.prune_abandoned(), 0);
         drop(rx);
         assert_eq!(session.prune_abandoned(), 1);
+    }
+
+    // --- relayed PATH_QUERY (L3 §5) ----------------------------------------
+
+    fn path_request(root: &str) -> (RelayRequest, oneshot::Receiver<PathQueryResult>) {
+        let (reply, rx) = oneshot::channel();
+        (
+            RelayRequest::PathQuery {
+                root: root.to_owned(),
+                query: "src".to_owned(),
+                recursive: true,
+                reply,
+            },
+            rx,
+        )
+    }
+
+    fn path_session() -> RelaySession {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        session
+            .set_satellite_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]));
+        session
+    }
+
+    fn path_error(result: PathQueryResult, root: &str) -> String {
+        let refusal = result.expect_err("expected path refusal");
+        assert_eq!(refusal.code, PathErrorCode::Other);
+        assert_eq!(refusal.root, root);
+        assert!(refusal.message.contains("devbox"));
+        refusal.message
+    }
+
+    #[test]
+    fn path_query_uses_shared_id_and_returns_satellite_results_without_retagging() {
+        let mut session = path_session();
+        let _ = session.handle_request(RelayRequest::Command {
+            command: Command::Upgrade,
+            reply: oneshot::channel().0,
+            subscribe: None,
+        });
+        let (request, mut rx) = path_request("~/work");
+        let FrameKind::PathQuery {
+            request_id,
+            root,
+            query,
+            recursive,
+            host: forwarded_host,
+        } = decode(&session.handle_request(request))
+        else {
+            panic!("expected PATH_QUERY");
+        };
+        assert_eq!(request_id, 2);
+        assert_eq!(root, "~/work");
+        assert_eq!(query, "src");
+        assert!(recursive);
+        assert_eq!(forwarded_host, None, "never chain a satellite route");
+        let results = phux_protocol::wire::frame::PathResults {
+            root: "/home/user/work".to_owned(),
+            parent: Some("/home/user".to_owned()),
+            rows: vec![],
+            status: phux_protocol::wire::frame::PathStatus::Complete,
+        };
+        session
+            .handle_inbound(&encode(&FrameKind::PathResults {
+                request_id,
+                result: Ok(results.clone()),
+            }))
+            .unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Ok(results));
+        assert_eq!(
+            session.pending_request_count(),
+            1,
+            "other command remains pending"
+        );
+    }
+
+    #[test]
+    fn older_satellite_refuses_path_query_before_forwarding() {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (request, mut rx) = path_request("~/work");
+        assert!(session.handle_request_checked(request).is_none());
+        assert!(path_error(rx.try_recv().unwrap(), "~/work").contains("PATH_QUERY"));
+        assert_eq!(session.pending_request_count(), 0);
+    }
+
+    #[test]
+    fn path_query_correlated_error_and_disconnect_are_typed_refusals() {
+        let mut session = path_session();
+        let (request, mut rx) = path_request("/first");
+        let FrameKind::PathQuery { request_id, .. } = decode(&session.handle_request(request))
+        else {
+            panic!("expected PATH_QUERY");
+        };
+        session
+            .handle_inbound(&encode(&FrameKind::Error {
+                request_id: Some(request_id),
+                code: ErrorCode::InvalidCommand,
+                message: "denied".to_owned(),
+            }))
+            .unwrap();
+        assert!(path_error(rx.try_recv().unwrap(), "/first").contains("denied"));
+
+        let (request, mut rx) = path_request("/second");
+        let _ = session.handle_request(request);
+        session.teardown("link lost");
+        assert!(path_error(rx.try_recv().unwrap(), "/second").contains("link lost"));
+    }
+
+    #[test]
+    fn satellite_path_refusal_preserves_its_specific_error_code() {
+        let mut session = path_session();
+        let (request, mut rx) = path_request("/private");
+        let FrameKind::PathQuery { request_id, .. } = decode(&session.handle_request(request))
+        else {
+            panic!("expected PATH_QUERY");
+        };
+        let refusal = PathQueryError {
+            root: "/private".to_owned(),
+            code: PathErrorCode::PermissionDenied,
+            message: "access denied".to_owned(),
+        };
+        session
+            .handle_inbound(&encode(&FrameKind::PathResults {
+                request_id,
+                result: Err(refusal.clone()),
+            }))
+            .unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Err(refusal));
+    }
+
+    #[test]
+    fn abandoned_path_query_is_pruned_and_late_results_are_dropped() {
+        let mut session = path_session();
+        let (request, rx) = path_request("/tmp");
+        let FrameKind::PathQuery { request_id, .. } = decode(&session.handle_request(request))
+        else {
+            panic!("expected PATH_QUERY");
+        };
+        assert_eq!(session.prune_abandoned(), 0);
+        drop(rx);
+        assert_eq!(session.prune_abandoned(), 1);
+        session
+            .handle_inbound(&encode(&FrameKind::PathResults {
+                request_id,
+                result: Err(path_refusal("/tmp", "late")),
+            }))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn disconnected_path_query_fails_fast_with_host_and_root() {
+        let (request, rx) = path_request("/tmp");
+        fail_fast(request, &host(), "backoff");
+        assert!(path_error(rx.await.unwrap(), "/tmp").contains("backoff"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silent_path_query_times_out() {
+        let (handle, _mailbox) = RelayHandle::new(host());
+        assert!(
+            path_error(
+                handle
+                    .path_query("~/work".to_owned(), "src".to_owned(), true)
+                    .await,
+                "~/work"
+            )
+            .contains("within 10s")
+        );
+    }
+
+    #[tokio::test]
+    async fn saturated_and_closed_path_query_mailboxes_refuse() {
+        let (handle, mut mailbox) = RelayHandle::new(host());
+        for _ in 0..RELAY_MAILBOX {
+            handle.forward(FrameKind::Ping { nonce: 1 });
+        }
+        assert!(
+            path_error(
+                handle
+                    .path_query("/tmp".to_owned(), String::new(), false)
+                    .await,
+                "/tmp"
+            )
+            .contains("saturated")
+        );
+        mailbox.requests.close();
+        while mailbox.requests.try_recv().is_ok() {}
+        drop(mailbox);
+        assert!(
+            path_error(
+                handle
+                    .path_query("/tmp".to_owned(), String::new(), false)
+                    .await,
+                "/tmp"
+            )
+            .contains("down")
+        );
     }
 }
