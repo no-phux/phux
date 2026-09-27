@@ -370,6 +370,29 @@ fn feed_queued(client: &Client) {
     }
 }
 
+/// Stall-epoch asserts must surface Dropped reason: hosted CI only shows
+/// left=2 right=1. Overflow vs send-failed vs peer-closed vs probe-timeout
+/// splits the Soft residual from a server-scope HARD HOLD.
+fn assert_epoch_held(client: &Client, epoch: u64, what: &str) {
+    let after = client.connection_epoch();
+    if after == epoch {
+        return;
+    }
+    let status = client.status();
+    let last_error = client.last_error();
+    let lost: Vec<_> = client
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::ConnectionLost { message } => Some(message),
+            _ => None,
+        })
+        .collect();
+    panic!(
+        "{what}: epoch {epoch} -> {after}; status={status:?}; last_error={last_error:?}; ConnectionLost={lost:?}"
+    );
+}
+
 #[test]
 fn a_consumer_that_falls_behind_backs_up_the_socket_without_redialing() {
     run_local(async {
@@ -397,7 +420,7 @@ fn a_consumer_that_falls_behind_backs_up_the_socket_without_redialing() {
         // Stall like a busy UI thread while the terminal floods output:
         // far more frames than the queue holds, and more than one read.
         tokio::time::sleep(Duration::from_millis(1500)).await;
-        assert_eq!(client.connection_epoch(), epoch, "a full queue redialed");
+        assert_epoch_held(&client, epoch, "a full queue redialed");
 
         wait_until("the flood to finish arriving", || {
             feed_queued(&client);
@@ -407,7 +430,7 @@ fn a_consumer_that_falls_behind_backs_up_the_socket_without_redialing() {
                 .any(|event| matches!(event, Event::Exited { .. }))
         })
         .await;
-        assert_eq!(client.connection_epoch(), epoch, "draining redialed");
+        assert_epoch_held(&client, epoch, "draining redialed");
         assert_eq!(client.status(), Status::Attached);
 
         client.close();
