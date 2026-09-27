@@ -1,19 +1,9 @@
 //! Reusable themed overlay primitives (phux-ahv.5).
 //!
-//! Overlays ([`prompt`], the action finder, and pickers) share two visual
-//! building blocks:
-//!
-//! - [`Modal`] — a centered bordered box with a title, body, and optional
-//!   footer, styled through [`Theme`] slots (`border`, `accent`, `dim`).
-//!   Built on ratatui [`Block`] + [`Paragraph`].
-//! - [`KeyChordTable`] — chord/description columns used by which-key,
-//!   grouped into titled sections and column-aligned across
-//!   section boundaries. Styled through the `chord`, `action`, and
-//!   `section_header` slots.
-//!
-//! Both render into a ratatui [`Buffer`] so they compose with the overlay
-//! paint path. They own (copy) their [`Theme`] so the overlay that holds
-//! them stays `'static`.
+//! [`Modal`] is the centered bordered box every overlay ([`prompt`], the
+//! action finder, pickers) paints through, plus the shared geometry and
+//! scrollbar helpers. It renders into a ratatui [`Buffer`] and owns (copies)
+//! its [`Theme`] so the overlay that holds it stays `'static`.
 //!
 //! [`prompt`]: super::prompt
 //! [`Block`]: ratatui::widgets::Block
@@ -21,7 +11,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
@@ -38,12 +28,12 @@ pub const fn modal_inner_width(area_width: u16) -> u16 {
     area_width.saturating_sub(2 + MODAL_PAD * 2)
 }
 
-/// A centered, bordered modal box: themed border + left title, a body
-/// of pre-built [`Line`]s, and an optional dimmed footer line.
+/// A centered, bordered modal box: themed border + left title and a body
+/// of pre-built [`Line`]s.
 ///
 /// The caller supplies the body content (already styled) and the
 /// [`Modal`] owns the chrome — border color from [`Theme::border`], title
-/// from [`Theme::accent`], footer from [`Theme::dim`]. Render with
+/// from [`Theme::accent`]. Render with
 /// [`Modal::render_into`], passing the modal rect (use [`centered`] to
 /// compute one).
 #[derive(Debug, Clone)]
@@ -51,18 +41,11 @@ pub struct Modal<'a> {
     theme: Theme,
     title: String,
     body: Vec<Line<'a>>,
-    footer: Vec<String>,
     wrap: bool,
-    scroll: u16,
 }
 
-/// Separator between two footer hints. Wide on purpose: the footer is a
-/// row of unrelated affordances, and the extra air is what stops them
-/// reading as one sentence.
-const FOOTER_SEP: &str = "  ·  ";
-
 impl<'a> Modal<'a> {
-    /// A modal titled `title` with `body` lines. No footer; body wrapping
+    /// A modal titled `title` with `body` lines. Body wrapping
     /// off by default (use [`Self::wrap`] to enable). Title is rendered
     /// left-aligned as ` title ` in the border.
     #[must_use]
@@ -71,47 +54,8 @@ impl<'a> Modal<'a> {
             theme: *theme,
             title: title.into(),
             body,
-            footer: Vec::new(),
             wrap: false,
-            scroll: 0,
         }
-    }
-
-    /// Attach a dimmed, italic footer line painted as the last body row.
-    ///
-    /// One hint, taken whole. Prefer [`Self::footer_hints`] whenever the
-    /// footer is a *list* of affordances — a single pre-joined string
-    /// cannot be shortened without cutting a word in half.
-    #[must_use]
-    pub fn footer(mut self, footer: impl Into<String>) -> Self {
-        self.footer = vec![footer.into()];
-        self
-    }
-
-    /// Attach a footer built from independent hints, most important
-    /// first.
-    ///
-    /// The hints are joined for display, but they are *kept* separate so
-    /// a narrow modal can drop whole ones. A footer that reads
-    /// `Enter select  ·  Esc cancel  ·  type to fi` has stopped being a
-    /// list of affordances and become a rendering artifact; dropping the
-    /// last hint costs strictly less.
-    #[must_use]
-    pub fn footer_hints<S: Into<String>, I: IntoIterator<Item = S>>(mut self, hints: I) -> Self {
-        self.footer = hints.into_iter().map(Into::into).collect();
-        self
-    }
-
-    /// The footer text that fits in `width` interior columns, or `None`
-    /// when not even the first hint does.
-    fn footer_line(&self, width: usize) -> Option<String> {
-        for take in (1..=self.footer.len()).rev() {
-            let line = self.footer[..take].join(FOOTER_SEP);
-            if crate::render::display_width(&line) <= width {
-                return Some(line);
-            }
-        }
-        None
     }
 
     /// Enable word wrapping of the body (preserving leading whitespace).
@@ -119,65 +63,6 @@ impl<'a> Modal<'a> {
     pub const fn wrap(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
         self
-    }
-
-    /// Scroll the body down by `rows` display rows.
-    ///
-    /// With wrapping on ([`Self::wrap`]) the unit is *wrapped* rows —
-    /// ratatui's `Paragraph` composes the wrapped lines and skips the
-    /// first `rows` of them — so it stays in step with
-    /// [`Self::wrapped_row_count`]. The border, title, and footer chrome
-    /// scroll with the body (the footer is a body row); the box itself
-    /// stays put.
-    #[must_use]
-    pub const fn scroll(mut self, rows: u16) -> Self {
-        self.scroll = rows;
-        self
-    }
-
-    /// The full painted line set: body plus the footer spacer + footer
-    /// row when a footer is set. One source of truth for
-    /// [`Self::render_into`] and [`Self::wrapped_row_count`], so the
-    /// scroll math counts exactly what the paint path draws.
-    /// `width` is the *interior* width (the modal rect less its two
-    /// border columns) — the footer needs it to decide how many hints it
-    /// can afford.
-    fn lines(&self, width: u16) -> Vec<Line<'a>> {
-        let mut lines = self.body.clone();
-        if let Some(footer) = self.footer_line(width as usize) {
-            // Blank spacer + dimmed italic footer, matching the help
-            // overlay's prior layout.
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                footer,
-                Style::default()
-                    .fg(self.theme.dim)
-                    .add_modifier(Modifier::ITALIC),
-            )));
-        }
-        lines
-    }
-
-    /// Rows the body (footer included) occupies at `width` — counted in
-    /// *wrapped* display rows when wrapping is on, logical lines otherwise.
-    ///
-    /// This is the denominator scrolling needs: a long chord row that
-    /// folds onto a second display row consumes two rows of the window,
-    /// so counting logical lines would undercount the extent (phux-9adu).
-    /// Both this count and [`Self::scroll`] ride ratatui's own word
-    /// wrapper (`Paragraph::line_count`), so they can never disagree
-    /// with what [`Self::render_into`] paints. `width` is the *interior*
-    /// width (the modal rect minus the two border columns).
-    #[must_use]
-    pub fn wrapped_row_count(&self, width: u16) -> usize {
-        let mut para = Paragraph::new(self.lines(width));
-        if self.wrap {
-            para = para.wrap(Wrap { trim: false });
-        }
-        // No block attached: `line_count` would add a block's vertical
-        // space, but the caller already subtracted the borders from
-        // `width`/height, so we count bare text rows.
-        para.line_count(width)
     }
 
     /// Paint the modal into `buf`, filling `area` (the modal rect — the
@@ -203,12 +88,9 @@ impl<'a> Modal<'a> {
             .title_alignment(Alignment::Left)
             .padding(Padding::horizontal(MODAL_PAD));
 
-        let mut para = Paragraph::new(self.lines(modal_inner_width(area.width))).block(block);
+        let mut para = Paragraph::new(self.body.clone()).block(block);
         if self.wrap {
             para = para.wrap(Wrap { trim: false });
-        }
-        if self.scroll > 0 {
-            para = para.scroll((self.scroll, 0));
         }
         para.render(area, buf);
     }
@@ -346,150 +228,6 @@ pub fn paint_scrollbar(buf: &mut Buffer, track: Rect, theme: &Theme, total: usiz
     }
 }
 
-/// One row in a [`KeyChordTable`] section: a chord (left column) and its
-/// description (right column).
-#[derive(Debug, Clone)]
-pub struct ChordRow {
-    /// The chord as the user types it, e.g. `"C-a v"`.
-    pub chord: String,
-    /// What it does, e.g. `"split-pane(direction=vertical)"`.
-    pub description: String,
-}
-
-impl ChordRow {
-    /// A row pairing `chord` with `description`.
-    #[must_use]
-    pub fn new(chord: impl Into<String>, description: impl Into<String>) -> Self {
-        Self {
-            chord: chord.into(),
-            description: description.into(),
-        }
-    }
-}
-
-/// A titled group of [`ChordRow`]s.
-#[derive(Debug, Clone)]
-pub struct ChordSection {
-    /// Section heading, e.g. `"Global bindings"`.
-    pub title: String,
-    /// Rows under this heading.
-    pub rows: Vec<ChordRow>,
-}
-
-impl ChordSection {
-    /// A section titled `title` with `rows`.
-    #[must_use]
-    pub fn new(title: impl Into<String>, rows: Vec<ChordRow>) -> Self {
-        Self {
-            title: title.into(),
-            rows,
-        }
-    }
-}
-
-/// A grouped chord/description table used by key-discovery overlays.
-///
-/// Renders sections top-to-bottom (blank spacer between them), each with a
-/// bold [`Theme::section_header`] heading, then its rows with the chord
-/// column ([`Theme::chord`], bold) padded to align with every other
-/// section's chords and the description column ([`Theme::action`]).
-///
-/// Build with [`KeyChordTable::new`] then turn into renderable body lines
-/// with [`KeyChordTable::body_lines`] (so a caller can fold them into a
-/// [`Modal`]'s body).
-#[derive(Debug, Clone)]
-pub struct KeyChordTable {
-    theme: Theme,
-    sections: Vec<ChordSection>,
-    /// Shown when every section is empty (e.g. "No keybindings
-    /// configured."), dimmed.
-    empty_notice: Option<String>,
-}
-
-impl KeyChordTable {
-    /// A table over `sections`, styled with `theme`.
-    #[must_use]
-    pub const fn new(theme: &Theme, sections: Vec<ChordSection>) -> Self {
-        Self {
-            theme: *theme,
-            sections,
-            empty_notice: None,
-        }
-    }
-
-    /// Set the dimmed line shown when no section has any rows.
-    #[must_use]
-    pub fn empty_notice(mut self, notice: impl Into<String>) -> Self {
-        self.empty_notice = Some(notice.into());
-        self
-    }
-
-    /// Build the body lines: each non-empty section's bold header
-    /// followed by its aligned rows, blank-separated. Returns the empty
-    /// notice (if set) when no section has rows.
-    #[must_use]
-    pub fn body_lines(&self) -> Vec<Line<'static>> {
-        // Chord column width = longest chord across ALL sections, so the
-        // description column lines up through section boundaries. Default
-        // of 8 matches the prior help-overlay behavior for the
-        // no-bindings case.
-        let chord_width = self
-            .sections
-            .iter()
-            .flat_map(|s| s.rows.iter())
-            .map(|r| crate::render::display_width(&r.chord))
-            .max()
-            .unwrap_or(8);
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for section in &self.sections {
-            if section.rows.is_empty() {
-                continue;
-            }
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-            }
-            if !section.title.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    section.title.clone(),
-                    Style::default()
-                        .fg(self.theme.section_header)
-                        .add_modifier(Modifier::BOLD),
-                )));
-            }
-            for row in &section.rows {
-                lines.push(self.row_line(row, chord_width));
-            }
-        }
-
-        if lines.is_empty()
-            && let Some(notice) = &self.empty_notice
-        {
-            lines.push(Line::from(Span::styled(
-                notice.clone(),
-                Style::default().fg(self.theme.dim),
-            )));
-        }
-        lines
-    }
-
-    /// One table row: chord padded to `width`, two-space gutter, then
-    /// the description.
-    fn row_line(&self, row: &ChordRow, width: usize) -> Line<'static> {
-        let pad = width.saturating_sub(crate::render::display_width(&row.chord));
-        let padding = " ".repeat(pad);
-        Line::from(vec![
-            Span::styled(row.chord.clone(), Style::default().fg(self.theme.chord)),
-            Span::raw(padding),
-            Span::raw("  "),
-            Span::styled(
-                row.description.clone(),
-                Style::default().fg(self.theme.text),
-            ),
-        ])
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
@@ -519,19 +257,17 @@ mod tests {
     }
 
     #[test]
-    fn modal_renders_title_body_and_footer() {
+    fn modal_renders_title_and_body() {
         let theme = Theme::default();
         let modal = Modal::new(
             &theme,
             "demo",
             vec![Line::from("hello"), Line::from("world")],
-        )
-        .footer("Press Esc to close");
+        );
         let text = render_modal(&modal, 40, 10);
         assert!(text.contains("demo"), "title:\n{text}");
         assert!(text.contains("hello"), "body line 1:\n{text}");
         assert!(text.contains("world"), "body line 2:\n{text}");
-        assert!(text.contains("Press Esc to close"), "footer:\n{text}");
     }
 
     #[test]
@@ -541,143 +277,6 @@ mod tests {
         let area = Rect::new(0, 0, 16, 5);
         let mut buf = Buffer::empty(area);
         modal.render_into(area, &mut buf);
-        insta::assert_snapshot!(buf_to_string(&buf));
-    }
-
-    // ---------- phux-9adu: wrapped-row counting + body scroll ----------
-
-    #[test]
-    fn wrapped_row_count_counts_display_rows_not_logical_lines() {
-        let theme = Theme::default();
-        // One logical line, long enough to fold at a narrow width.
-        let body = vec![Line::from("alpha bravo charlie delta")];
-        let wrapping = Modal::new(&theme, "t", body.clone()).wrap(true);
-        // Wide enough: one display row, same as the logical count.
-        assert_eq!(wrapping.wrapped_row_count(40), 1);
-        // Narrow: the single logical line folds into several display
-        // rows, each of which consumes a row of the scroll window.
-        assert!(
-            wrapping.wrapped_row_count(8) >= 3,
-            "a 25-char line at width 8 must wrap to multiple rows, got {}",
-            wrapping.wrapped_row_count(8),
-        );
-        // Without wrapping the count is the logical line count, however
-        // narrow the box (the paragraph truncates instead of folding).
-        let clipping = Modal::new(&theme, "t", body);
-        assert_eq!(clipping.wrapped_row_count(8), 1);
-    }
-
-    #[test]
-    fn wrapped_row_count_includes_the_footer_rows() {
-        let theme = Theme::default();
-        let plain = Modal::new(&theme, "t", vec![Line::from("body")]).wrap(true);
-        let footed = plain.clone().footer("hint");
-        // Footer adds its spacer + text row to the scroll extent, since
-        // both are painted as body rows.
-        assert_eq!(
-            footed.wrapped_row_count(20),
-            plain.wrapped_row_count(20) + 2,
-        );
-    }
-
-    #[test]
-    fn modal_scroll_hides_leading_body_rows() {
-        let theme = Theme::default();
-        let body = vec![Line::from("first"), Line::from("second")];
-        let modal = Modal::new(&theme, "t", body).wrap(true).scroll(1);
-        // 3-row box: borders + a single interior row, which after a
-        // one-row scroll shows the second line, not the first.
-        let text = render_modal(&modal, 12, 3);
-        assert!(!text.contains("first"), "scrolled-off row painted:\n{text}");
-        assert!(text.contains("second"), "row under scroll missing:\n{text}");
-    }
-
-    #[test]
-    fn modal_scroll_skips_wrapped_rows_not_logical_lines() {
-        let theme = Theme::default();
-        // One logical line that wraps to two display rows at the interior
-        // width. If scroll skipped logical lines, scroll(1) would jump
-        // clean past both halves to "tail"; skipping *display* rows shows
-        // the second half of the wrapped line.
-        let body = vec![Line::from("alpha bravo"), Line::from("tail")];
-        let modal = Modal::new(&theme, "t", body).wrap(true).scroll(1);
-        let text = render_modal(&modal, 9, 3);
-        assert!(
-            text.contains("bravo"),
-            "scroll must move one wrapped row, exposing the fold:\n{text}"
-        );
-        assert!(
-            !text.contains("alpha"),
-            "first wrapped row painted:\n{text}"
-        );
-    }
-
-    #[test]
-    fn chord_table_aligns_columns_across_sections() {
-        let theme = Theme::default();
-        let table = KeyChordTable::new(
-            &theme,
-            vec![
-                ChordSection::new(
-                    "Prefix bindings (C-a)",
-                    vec![ChordRow::new("C-a d", "detach")],
-                ),
-                ChordSection::new("Global bindings", vec![ChordRow::new("F1", "show-help")]),
-            ],
-        );
-        let modal = Modal::new(&theme, "phux help", table.body_lines());
-        let text = render_modal(&modal, 60, 16);
-        assert!(text.contains("Prefix bindings (C-a)"), "{text}");
-        assert!(text.contains("Global bindings"), "{text}");
-        assert!(text.contains("C-a d"), "{text}");
-        assert!(text.contains("detach"), "{text}");
-        assert!(text.contains("show-help"), "{text}");
-    }
-
-    #[test]
-    fn chord_table_empty_shows_notice() {
-        let theme = Theme::default();
-        let table = KeyChordTable::new(&theme, vec![ChordSection::new("Empty", Vec::new())])
-            .empty_notice("No keybindings configured.");
-        let lines = table.body_lines();
-        assert_eq!(lines.len(), 1);
-    }
-
-    #[test]
-    fn chord_table_skips_empty_sections() {
-        let theme = Theme::default();
-        let table = KeyChordTable::new(
-            &theme,
-            vec![
-                ChordSection::new("Has rows", vec![ChordRow::new("a", "act")]),
-                ChordSection::new("Empty", Vec::new()),
-            ],
-        );
-        let lines = table.body_lines();
-        // Header + one row only; the empty section contributes nothing
-        // and no trailing spacer is appended.
-        assert_eq!(lines.len(), 2);
-    }
-
-    #[test]
-    fn chord_table_byte_output_is_stable() {
-        let theme = Theme::default();
-        let table = KeyChordTable::new(
-            &theme,
-            vec![ChordSection::new(
-                "Section",
-                vec![
-                    ChordRow::new("C-a d", "detach"),
-                    ChordRow::new("C-a x", "kill-pane"),
-                ],
-            )],
-        );
-        let area = Rect::new(0, 0, 32, 6);
-        let mut buf = Buffer::empty(area);
-        // Render the lines bare (no modal chrome) so the snapshot pins the
-        // table's own alignment.
-        let para = Paragraph::new(table.body_lines());
-        para.render(area, &mut buf);
         insta::assert_snapshot!(buf_to_string(&buf));
     }
 
@@ -833,23 +432,6 @@ mod tests {
         assert_eq!(centered_panel(outer, 6, 30, 10, roomy), outer);
     }
 
-    /// The mirror case: a user on a small terminal who would rather keep
-    /// floating modals lowers the thresholds and gets them back.
-    #[test]
-    fn a_lowered_breakpoint_keeps_a_small_viewport_floating() {
-        let outer = Rect::new(0, 0, 50, 14);
-        let tight = ChromeBreakpoints {
-            compact_cols: 30,
-            compact_rows: 8,
-            ..ChromeBreakpoints::DEFAULT
-        };
-        assert!(!is_compact(outer, tight));
-        assert_eq!(
-            centered_panel(outer, 6, 30, 10, tight),
-            centered(outer, 6, 30, 10)
-        );
-    }
-
     /// The axes are decided independently: a short, wide viewport wants
     /// full height and a centered width, not a stretched row of two-word
     /// entries.
@@ -879,37 +461,6 @@ mod tests {
         let r = centered_panel(content, 6, 30, 10, ChromeBreakpoints::DEFAULT);
         assert_eq!(r, content);
         assert_eq!(r.x, 20, "must not paint over the sidebar strip");
-    }
-
-    /// A footer is a list of affordances, so a narrow modal drops whole
-    /// ones rather than cutting the last in half.
-    #[test]
-    fn a_narrow_modal_drops_whole_footer_hints() {
-        let theme = Theme::default();
-        let modal = Modal::new(&theme, "t", vec![]).footer_hints([
-            "Enter select",
-            "Esc cancel",
-            "type to filter",
-        ]);
-        assert_eq!(
-            modal.footer_line(46).as_deref(),
-            Some("Enter select  ·  Esc cancel  ·  type to filter")
-        );
-        assert_eq!(
-            modal.footer_line(45).as_deref(),
-            Some("Enter select  ·  Esc cancel")
-        );
-        assert_eq!(modal.footer_line(26).as_deref(), Some("Enter select"));
-        // Below the first hint the footer yields entirely; it never
-        // renders a fragment.
-        assert_eq!(modal.footer_line(11), None);
-        for width in 0..50 {
-            let line = modal.footer_line(width).unwrap_or_default();
-            assert!(
-                line.chars().count() <= width,
-                "overran at {width}: {line:?}"
-            );
-        }
     }
 
     #[test]

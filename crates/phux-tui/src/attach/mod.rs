@@ -17,7 +17,7 @@
 //! from a tokio current-thread runtime (matching ADR-0003); embedders are
 //! responsible for the runtime lifecycle. The function takes over the
 //! controlling terminal (raw mode + alt screen) and restores it on every exit
-//! path including panic -- see [`driver::RawModeGuard`].
+//! path including panic -- see `RawModeGuard`.
 //!
 //! # Layering
 //!
@@ -143,9 +143,4 @@ impl From<render::RenderError> for AttachError {
     }
 }
 
-// Status bar lives under `crate::render::chrome::status_bar` post
-// phux-5ke.2 (ADR-0020). Re-exported here so external callers (the
-// `phux_tui::attach::status_bar::*` integration test path included) keep
-// working without changing their imports.
 pub use crate::render::chrome::status_bar;
-pub use crate::render::chrome::status_bar::{Position, StatusBarPainter, make_context};

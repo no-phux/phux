@@ -46,7 +46,7 @@ use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
 /// The dispatcher action plugin pane palette rows commit.
 ///
-/// Listed in [`super::input_dispatch::ACTION_NAMES`] and handled by a
+/// Listed in [`phux_config::vocab::ACTION_NAMES`] and handled by a
 /// `run_action` arm; exempt from the static palette registry because its
 /// rows are built dynamically from the plugin snapshot (same policy as
 /// [`super::plugin_actions::PLUGIN_ACTION_NAME`]).

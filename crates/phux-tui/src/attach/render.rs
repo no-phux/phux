@@ -546,7 +546,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
         self.front.invalidate_rows(rows);
     }
 
-    /// Cursor (row, col) as of the most recent [`Self::render`] call.
+    /// Cursor (row, col) as of the most recent [`Self::render_at`] call.
     /// Returns `None` if the cursor was hidden or no render has yet
     /// occurred. The predictive-echo layer reads this to re-anchor its
     /// cursor estimate after a server frame.
@@ -583,7 +583,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// reconcile treats `' '` and `None` as the same "blank" verdict.
     ///
     /// This takes a fresh snapshot of `terminal` — it must not be called
-    /// concurrently with [`Self::render`] (the `&mut self` receiver
+    /// concurrently with [`Self::render_at`] (the `&mut self` receiver
     /// guarantees that statically). Used by the per-cell reconcile in
     /// the predict layer (phux-9gw.1.1) to confirm or contradict
     /// predictions against the authoritative cell grid.
@@ -613,7 +613,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
     ///
     /// Same snapshot semantics as [`Self::read_grapheme_at`]: takes a
     /// fresh snapshot of `terminal`; the `&mut self` receiver guarantees
-    /// it is not called concurrently with [`Self::render`].
+    /// it is not called concurrently with [`Self::render_at`].
     pub fn read_grapheme_string_at(
         &mut self,
         walk: ReplicaWalk<'_, 'alloc, '_>,
@@ -691,6 +691,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// (see `attach::multi_pane`, phux-4li.4) use [`Self::render_at`] to
     /// position the terminal's content inside a sub-rectangle of the
     /// outer viewport.
+    #[cfg(test)]
     pub fn render(
         &mut self,
         walk: ReplicaWalk<'_, 'alloc, '_>,
@@ -1950,7 +1951,7 @@ impl Drop for SyncOutput {
 
 /// Convenience for callers that just want the cursor reset.
 ///
-/// Used by [`super::driver::RawModeGuard`]'s `Drop` to ensure the outer
+/// Used by `RawModeGuard`'s `Drop` to ensure the outer
 /// terminal isn't left with our hidden cursor or random SGR state. Kept
 /// fallible because the underlying `Write` might be a closed stdout.
 pub fn write_reset(out: &mut impl Write) -> io::Result<()> {

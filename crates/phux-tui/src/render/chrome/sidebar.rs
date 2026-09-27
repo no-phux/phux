@@ -33,7 +33,6 @@ use crate::render::chrome::{
     AGENT_BLOCKED_GLYPH as AGENT_BLOCKED, AGENT_DONE_GLYPH as AGENT_DONE,
     AGENT_WORKING_GLYPH as AGENT_WORKING,
 };
-use crate::render::overlay::HardcodedBinding;
 use crate::render::{clip_text, display_width};
 use phux_client::agent_meta::AgentMetaState;
 use phux_protocol::ids::{ResourceId, SessionId};
@@ -51,46 +50,9 @@ pub const SPACES_HEADER: &str = "Sessions";
 pub const AGENTS_EMPTY: &str = "—";
 /// Placeholder when no sessions are available.
 pub const SESSIONS_EMPTY: &str = "—";
-/// Label of a truncated area's overflow row.
-pub const OVERFLOW_LABEL: &str = "more";
 /// The collapse chevron painted in the strip's bottom corner
 /// (phux-foz.9). Clicking it runs `toggle-sidebar`.
 pub const COLLAPSE_GLYPH: &str = "‹";
-
-/// The sidebar's click-target table for handler-adjacency tests.
-/// `Mouse & menus` section (phux-i0e8.10.3).
-///
-/// COLOCATED with [`hit_test`]
-/// and the row model it reads, and REUSING the affordance-label consts
-/// above so a rename breaks the help text visibly instead of letting it
-/// rot. The `help_table_matches_hit_targets` adjacency test drives each
-/// advertised click through the real [`hit_test`].
-pub static HELP_BINDINGS: &[HardcodedBinding] = &[
-    HardcodedBinding {
-        chord: "click",
-        action: "select the clicked window (sidebar row)",
-    },
-    HardcodedBinding {
-        chord: NEEDS_YOU_HEADER,
-        action: "jump to the clicked agent (sidebar click)",
-    },
-    HardcodedBinding {
-        chord: SPACES_HEADER,
-        action: "switch to that session (sidebar roster click)",
-    },
-    HardcodedBinding {
-        chord: OVERFLOW_LABEL,
-        action: "open agents or sessions for that area's overflow (sidebar click)",
-    },
-    HardcodedBinding {
-        chord: NEW_LABEL,
-        action: "create a window (sidebar click)",
-    },
-    HardcodedBinding {
-        chord: COLLAPSE_GLYPH,
-        action: "collapse the sidebar (bottom-corner click)",
-    },
-];
 
 /// Minimum strip height (rows) at which the footer affordances render.
 /// Below this every row goes to the section body — a 2–3 row strip
@@ -2767,76 +2729,6 @@ mod tests {
         );
     }
 
-    /// phux-i0e8.10.3: every click the help table advertises resolves
-    /// through the real [`hit_test`] to the target its row describes, on
-    /// a strip tall enough to render the footer. The affordance row
-    /// matches on the shared label const, so renaming `+ new window`
-    /// without updating the table (or vice versa) breaks here.
-    #[test]
-    fn help_table_matches_hit_targets() {
-        let rect = Rect {
-            x: 0,
-            y: 0,
-            w: 28,
-            h: 14,
-        };
-        let quiet = SidebarCounts {
-            active_session: Some(0),
-            rule: SidebarRule::Trailing,
-            ..counts(0, 1, 1)
-        };
-        for binding in HELP_BINDINGS {
-            match binding.chord {
-                "click" => {
-                    assert_eq!(
-                        hit_test(rect, quiet, 3, 9),
-                        Some(SidebarHit::Window(0)),
-                        "a window row click selects that window"
-                    );
-                }
-                NEW_LABEL => {
-                    assert_eq!(hit_test(rect, quiet, 3, 13), Some(SidebarHit::NewWindow));
-                }
-                COLLAPSE_GLYPH => {
-                    assert_eq!(hit_test(rect, quiet, 27, 13), Some(SidebarHit::Collapse));
-                }
-                NEEDS_YOU_HEADER => {
-                    let tall = Rect { h: 12, ..rect };
-                    assert_eq!(
-                        hit_test(tall, counts(2, 1, 0), 3, 0),
-                        Some(SidebarHit::Fleet),
-                        "the Agents header opens the fleet"
-                    );
-                }
-                SPACES_HEADER => {
-                    let tall = Rect { h: 12, ..rect };
-                    assert_eq!(
-                        hit_test(tall, counts(0, 1, 2), 3, 5),
-                        Some(SidebarHit::Sessions),
-                        "the Sessions header opens host and session management"
-                    );
-                }
-                OVERFLOW_LABEL => {
-                    let tall = Rect { h: 16, ..rect };
-                    let c = counts(9, 1, 0);
-                    let row = row_model(c, tall.h)
-                        .iter()
-                        .position(|r| matches!(r, SidebarRow::NeedsYouOverflow))
-                        .expect("overflow allocated");
-                    assert_eq!(
-                        hit_test(tall, c, 3, u16::try_from(row).unwrap()),
-                        Some(SidebarHit::Fleet),
-                        "an overflow row click opens the fleet dashboard"
-                    );
-                }
-                other => panic!(
-                    "help table row `{other}` has no adjacency check — \
-                     add one that drives hit_test"
-                ),
-            }
-        }
-    }
-
     // ---------- phux-fce4 / phux-foz.9: row model + hit-test ----------
 
     fn counts(needs_you: usize, windows: usize, roster: usize) -> SidebarCounts {
@@ -3213,7 +3105,7 @@ mod tests {
                     assert_eq!(hit, Some(SidebarHit::Roster(*j)));
                 }
                 SidebarRow::NeedsYouOverflow => {
-                    assert!(row_text(&buf, rect, y16).contains(OVERFLOW_LABEL));
+                    assert!(row_text(&buf, rect, y16).contains("more"));
                     assert_eq!(hit, Some(SidebarHit::Fleet));
                 }
                 SidebarRow::RosterOverflow => {

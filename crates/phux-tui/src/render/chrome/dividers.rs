@@ -77,23 +77,9 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::attach::multi_pane::PaneLayout;
 use crate::layout::Rect;
 use crate::render::chrome::{AgentBadge, agent_badge, attention_badge};
-use crate::render::overlay::HardcodedBinding;
 use crate::render::theme::Theme;
 use crate::render::{ELLIPSIS, cell_width};
 use phux_client::agent_meta::AgentMetaState;
-
-/// The divider drag-resize table for handler-adjacency tests
-/// section (phux-i0e8.10.3).
-///
-/// COLOCATED with the divider layer: the drag
-/// itself is driven by the dispatcher's ADR-0048 grab, whose targets are
-/// the `divider_hits` that `compute_layout` produces alongside the glyph
-/// cells this module paints. The `help_table_targets_exist` adjacency
-/// test asserts a split layout actually yields those grab targets.
-pub static HELP_BINDINGS: &[HardcodedBinding] = &[HardcodedBinding {
-    chord: "drag divider",
-    action: "resize the panes either side",
-}];
 
 /// Cells of chrome a pane title needs before any of its label shows:
 /// one lead-in `\u{2500}`, a space, a space, and the closing `\u{2500}` the run
@@ -1707,25 +1693,6 @@ mod tests {
                 d.y
             );
         }
-    }
-
-    /// phux-i0e8.10.3: the help table advertises drag-to-resize, so the
-    /// drag targets must actually exist — a split layout yields the
-    /// `divider_hits` the dispatcher's ADR-0048 grab resolves against
-    /// (the drag behavior itself is held by `input_dispatch`'s ADR-0048
-    /// tests). If dividers stop producing hit targets, the advertised
-    /// gesture would be dead and this fails.
-    #[test]
-    fn help_table_targets_exist() {
-        assert!(
-            HELP_BINDINGS.iter().any(|b| b.chord.contains("drag")),
-            "the table must advertise the drag gesture"
-        );
-        let layout = split_layout(railed(80, 24));
-        assert!(
-            !layout.divider_hits.is_empty(),
-            "a split layout must yield divider grab targets"
-        );
     }
 
     // -- helpers ---------------------------------------------------------------

@@ -22,7 +22,7 @@ use crate::attach::render::write_reset;
 /// Restoration runs in `Drop`, so a panic anywhere in the attach loop —
 /// including the renderer or the connection — leaves the user's outer
 /// terminal in a usable state.
-pub struct RawModeGuard {
+pub(super) struct RawModeGuard {
     original_termios: Termios,
 }
 
@@ -33,15 +33,6 @@ impl std::fmt::Debug for RawModeGuard {
 }
 
 impl RawModeGuard {
-    /// Install the guard, writing the alt-screen-enter + cursor-hide
-    /// sequence to real stdout. Convenience wrapper around
-    /// [`Self::install_with_stdout`] for the common path; tests use
-    /// the writer-injecting variant. Enables mouse capture by default
-    /// (ADR-0048).
-    pub fn install() -> Result<Self, AttachError> {
-        Self::install_with_stdout(&mut io::stdout(), true)
-    }
-
     /// Install the guard. Errors if stdin is not a TTY or the termios
     /// dance fails. The alt-screen + cursor-hide bytes are written to
     /// `out` so tests can capture them and assert on the regression
@@ -53,7 +44,7 @@ impl RawModeGuard {
     /// turning mouse mode on; when `false` the client emits no mouse DECSET
     /// and only sees mouse when an inner program enables tracking (the host's
     /// native selection is untouched).
-    pub fn install_with_stdout<W: Write>(out: &mut W, mouse: bool) -> Result<Self, AttachError> {
+    pub(super) fn install_with_stdout<W: Write>(out: &mut W, mouse: bool) -> Result<Self, AttachError> {
         let stdin = io::stdin();
         if !stdin.is_terminal() {
             return Err(AttachError::NotATty);
@@ -342,7 +333,7 @@ pub(super) fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Resu
 /// disable bracketed paste and mouse capture, show the cursor, and (if we
 /// ever entered the alt screen) leave it.
 ///
-/// Used by both [`RawModeGuard::drop`] and the signal-handler arms in
+/// Used by both `RawModeGuard::drop` and the signal-handler arms in
 /// the private `main_loop` function. Safe to call multiple times — the
 /// second call sees
 /// `ALT_SCREEN_ACTIVE == false` and skips the leave sequence.

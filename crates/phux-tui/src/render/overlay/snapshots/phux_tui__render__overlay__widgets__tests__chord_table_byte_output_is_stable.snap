@@ -1,7 +1,0 @@
----
-source: crates/phux-client/src/render/overlay/widgets.rs
-expression: buf_to_string(&buf)
----
-Section
-C-a d  detach
-C-a x  kill-pane

@@ -37,7 +37,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 /// The dispatcher action plugin palette rows and merged bindings commit.
 ///
-/// Listed in [`super::input_dispatch::ACTION_NAMES`] and handled by a
+/// Listed in [`phux_config::vocab::ACTION_NAMES`] and handled by a
 /// `run_action` arm; exempt from the static palette registry because its
 /// rows are built dynamically from the plugin snapshot.
 pub const PLUGIN_ACTION_NAME: &str = "plugin-action";

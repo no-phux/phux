@@ -150,7 +150,7 @@ pub(super) async fn run_buffered(
 /// or the alt screen, so a missing server / bad session name / Ctrl-C
 /// during connect prints a one-line error on the normal screen and
 /// exits cleanly. Only after the server's `ATTACHED` frame arrives do
-/// we flip the terminal into raw + alt screen via [`RawModeGuard`].
+/// we flip the terminal into raw + alt screen via `RawModeGuard`.
 ///
 /// `initial_notice` (phux-i0e8.2.3) is a transient status-bar message shown
 /// once the session is attached and painting — the CLI's reconnect loop
@@ -305,7 +305,7 @@ pub async fn run_with_stdout<W: crate::attach::RenderSink>(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-pub async fn run_with_stdout_predict<W: crate::attach::RenderSink>(
+pub(super) async fn run_with_stdout_predict<W: crate::attach::RenderSink>(
     socket: &Path,
     target: AttachTarget,
     out: &mut W,

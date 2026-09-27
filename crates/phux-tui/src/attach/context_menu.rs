@@ -160,7 +160,7 @@ fn row(
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::attach::input_dispatch::ACTION_NAMES;
+    use phux_config::vocab::ACTION_NAMES;
 
     fn actions(spec: &MenuSpec) -> Vec<String> {
         spec.rows

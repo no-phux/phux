@@ -10,7 +10,7 @@
 //! ## Drift prevention
 //!
 //! There is one source of truth for the set of action *names*:
-//! [`ACTION_NAMES`](super::input_dispatch::ACTION_NAMES), owned next to
+//! [`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES), owned next to
 //! `run_action`. This module's [`REGISTRY`] supplies the *presentation*
 //! (description + the default [`ResolvedAction`] the palette commits) for
 //! each of those names; [`NON_PALETTE_ACTIONS`] documents the remainder —
@@ -74,7 +74,7 @@ impl Category {
 #[derive(Debug, Clone, Copy)]
 pub struct ActionSpec {
     /// Canonical action name (matches a `run_action` arm and an
-    /// [`super::input_dispatch::ACTION_NAMES`] entry).
+    /// [`phux_config::vocab::ACTION_NAMES`] entry).
     pub name: &'static str,
     /// The section the palette groups this action under.
     pub category: Category,
@@ -136,7 +136,7 @@ impl ActionSpec {
 /// The canonical, in-tree catalogue of palette-offerable actions.
 ///
 /// Every name here MUST be handled by a `run_action` arm and listed in
-/// [`super::input_dispatch::ACTION_NAMES`] (enforced by a unit test).
+/// [`phux_config::vocab::ACTION_NAMES`] (enforced by a unit test).
 ///
 /// Notes on inclusions/exclusions:
 /// - `select-window` is parameterized by `index`, which the palette has
@@ -769,10 +769,7 @@ mod tests {
     /// keeps the generated `docs/reference/actions.md` complete.
     #[test]
     fn every_action_has_exactly_one_doc_home() {
-        let dispatched: BTreeSet<&str> = super::super::input_dispatch::ACTION_NAMES
-            .iter()
-            .copied()
-            .collect();
+        let dispatched: BTreeSet<&str> = phux_config::vocab::ACTION_NAMES.iter().copied().collect();
         let registered: BTreeSet<&str> = REGISTRY.iter().map(|s| s.name).collect();
         let non_palette: BTreeSet<&str> = NON_PALETTE_ACTIONS.iter().map(|s| s.name).collect();
 

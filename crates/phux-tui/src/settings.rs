@@ -41,7 +41,7 @@ use phux_config::{Config, ConfigError, KeybindingsCfg, SidebarPosition};
 use crate::attach::paint::SidebarEdge;
 use crate::attach::plugin_actions::{self, PluginActionEntry};
 use crate::attach::plugin_panes::{self, PluginPaneEntry};
-use crate::render::chrome::status_bar::{Position, StatusBarPainter};
+use crate::render::chrome::status_bar::StatusBarPainter;
 use crate::render::{ChromeBreakpoints, Theme};
 
 /// The which-key popup knobs (`[keybindings] which-key` /
@@ -321,22 +321,6 @@ impl TuiSettings {
             hosts: crate::attach::hosts::HostsSettings::from_cfg(&cfg.sidebar),
             mouse_capture: cfg.defaults.mouse,
         }
-    }
-
-    /// Which outer-terminal row the bar reserves, or `None` for no bar.
-    #[must_use]
-    pub fn bar_position(&self) -> Option<Position> {
-        self.status_bar.as_ref().map(StatusBarPainter::position)
-    }
-
-    /// The `exec` widget feeds the driver spawns bounded interval runners
-    /// for.
-    #[must_use]
-    pub fn exec_feeds(&self) -> Vec<phux_config::widget::ExecFeed> {
-        self.status_bar
-            .as_ref()
-            .map(StatusBarPainter::exec_feeds)
-            .unwrap_or_default()
     }
 }
 

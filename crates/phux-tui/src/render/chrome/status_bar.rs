@@ -11,13 +11,10 @@
 //!
 //! 1. Higher layer ([`phux_config::widget::StatusBar`]) composes the
 //!    widget row into a `Vec<WidgetCell>` of caller-supplied width.
-//! 2. [`render_status_bar`] copies those cells into a ratatui
-//!    [`ratatui::buffer::Buffer`] of shape `cols × 1`. Layout splits
-//!    are available via ratatui's [`ratatui::layout::Layout`] if a
-//!    consumer ever wants per-segment styling — today we mirror the
-//!    composer's output 1:1.
-//! 3. [`render_status_bar`] emits raw VT bytes (CUP + per-cell SGR +
-//!    grapheme) to the writer. We do **not** route through crossterm;
+//! 2. [`StatusBarPainter`] copies those cells into a ratatui
+//!    [`ratatui::buffer::Buffer`] of shape `cols × 1`.
+//! 3. It emits raw VT bytes (CUP + per-cell SGR + grapheme) to the
+//!    writer. We do **not** route through crossterm;
 //!    the rest of `phux-client` writes raw VT to stdout and the
 //!    boundary stays clean.
 //!
@@ -123,7 +120,7 @@ impl<'a> StatusBarContext<'a> {
 ///
 /// Kept so callers in `attach/` can construct one without depending on
 /// `phux-config`'s internals directly. Window data is injected by the
-/// painter (see [`StatusBarPainter::paint`]); standalone callers pass an
+/// painter (see `StatusBarPainter::paint_outcome`); standalone callers pass an
 /// empty slice. The focused-pane data feeds (`cwd`, `last_exit`) are
 /// painter-owned too and injected the same way.
 #[must_use]
@@ -170,54 +167,6 @@ fn parse_color(spec: Option<&str>) -> Option<Color> {
         },
         Some,
     )
-}
-
-/// Render the composed status row at `row_index`, spanning `cols` columns from
-/// origin column `x`, and emit raw VT bytes to `out`.
-///
-/// `x` is `0` for a full-width bar; a docked sidebar shifts the origin (and
-/// narrows `cols`) so the row paints beside the strip rather than under it —
-/// see [`BarInset`].
-///
-/// `bar` is the already-composed widget pipeline — we ask it for a
-/// `Vec<WidgetCell>` of the right width and copy that into a ratatui
-/// [`Buffer`] of shape `cols × 1`. The buffer is then walked
-/// left-to-right and emitted as CUP + per-cell glyphs. A hard SGR
-/// reset (`\x1b[0m`) closes the row per the invariant in the module
-/// header.
-///
-/// # Errors
-///
-/// Forwards any [`io::Error`] from `out`.
-pub fn render_status_bar<W: Write>(
-    out: &mut W,
-    bar: &StatusBar,
-    ctx: &StatusBarContext<'_>,
-    row_index: u16,
-    x: u16,
-    cols: u16,
-) -> io::Result<()> {
-    // phux-4li.17: paint when there are configured widgets OR a window
-    // bar to draw. An empty bar with no windows is still a no-op.
-    if cols == 0 || (bar.is_empty() && ctx.windows.is_empty()) {
-        return Ok(());
-    }
-
-    // 1. Compose widget cells (left/center/right slot policy lives in
-    //    phux-config; we just consume the resulting strip).
-    let row = bar.render(&ctx.as_widget(), cols);
-
-    // 2. Lay into a ratatui Buffer of shape `cols × 1`, carrying each
-    //    cell's style across the boundary. The Buffer's coordinate space
-    //    is (0,0)..(cols,1); we never read it back.
-    let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
-    fill_buffer(&mut buffer, &row, cols, Color::Reset);
-
-    // 3. Emit the buffer to VT. Cursor hide for the duration of the
-    //    paint; SGR reset on entry and exit so we don't inherit nor
-    //    bequeath attributes. Cursor restore is the caller's job —
-    //    see module header.
-    write_buffer(out, &buffer, row_index, x, cols)
 }
 
 /// phux-9vf: the persistent error strip's style — reverse video + bold,
@@ -660,11 +609,9 @@ pub(crate) enum ComposePolicy {
 
 /// VT painter for a composed [`StatusBar`].
 ///
-/// Thin stateful wrapper over [`render_status_bar`]: caches the last
-/// rendered widget row so repeated paints with unchanged inputs are
-/// no-ops, and tracks viewport dims so a resize invalidates the
-/// cache. The cache lives here (not in `render_status_bar`) because
-/// the function-level renderer is stateless and reusable.
+/// Caches the last rendered widget row so repeated paints with unchanged
+/// inputs are no-ops, and tracks viewport dims so a resize invalidates the
+/// cache.
 pub struct StatusBarPainter {
     bar: StatusBar,
     position: Position,
@@ -1048,9 +995,7 @@ impl StatusBarPainter {
     /// dims is a no-op (zero bytes written). Dimension changes force
     /// a fresh paint.
     ///
-    /// # Errors
-    ///
-    /// Forwards any [`io::Error`] from `out`.
+    #[cfg(test)]
     pub fn paint<W: Write>(
         &mut self,
         out: &mut W,
@@ -1111,12 +1056,6 @@ impl StatusBarPainter {
             return Ok(false);
         }
         let row_index = self.row_index(rows);
-        // Emit the strip we just composed rather than delegating to
-        // `render_status_bar`, which would run the whole widget pipeline a
-        // SECOND time for the same inputs. Same two steps it performs (lay
-        // the cells into a `cols x 1` buffer, write it), so the bytes are
-        // identical; `render_status_bar` stays as the standalone entry point
-        // for callers that have no painter.
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
         fill_buffer(&mut buffer, &new_row, cols, self.fill);
         write_buffer(out, &buffer, row_index, x, cols)?;
@@ -1400,7 +1339,7 @@ impl StatusBarPainter {
         self.bar.exec_feeds()
     }
 
-    /// Force the next [`Self::paint`] to redraw unconditionally —
+    /// Force the next `paint_outcome` to redraw unconditionally —
     /// e.g. after a SIGWINCH or after the pane renderer wrote the
     /// bottom row.
     pub fn invalidate(&mut self) {
@@ -1410,7 +1349,7 @@ impl StatusBarPainter {
 
     /// phux-foz.12: resolve a click column on the bar row to the window
     /// tab painted there, reading the strip cached by the last
-    /// [`Self::paint`] — so hit targets derive from exactly what is on
+    /// `paint_outcome` — so hit targets derive from exactly what is on
     /// screen and cannot drift from the composed layout (slot placement,
     /// separators, truncation, `Z`/`!` markers all included).
     ///
@@ -1432,7 +1371,7 @@ impl StatusBarPainter {
     /// The interactive target under screen column `x` on the bar row, or
     /// `None` when the cell is inert.
     ///
-    /// Resolved against the cached strip [`Self::paint`] last emitted, so
+    /// Resolved against the cached strip `paint_outcome` last emitted, so
     /// hit targets are exactly the cells on screen — slot placement,
     /// separators, responsive tab dropping and widget visibility gating
     /// all included. There is no second layout to keep in step.
@@ -2039,57 +1978,6 @@ mod tests {
     }
 
     #[test]
-    fn windows_widget_renders_tab_strip() {
-        let bar = windows_bar();
-        let windows = [
-            WindowInfo {
-                name: "bash".to_owned(),
-                active: true,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-            WindowInfo {
-                name: "vim".to_owned(),
-                active: false,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-        ];
-        let ctx = StatusBarContext {
-            windows: &windows,
-            ..make_context("", UNIX_EPOCH)
-        };
-        let mut buf = Vec::new();
-        render_status_bar(&mut buf, &bar, &ctx, 0, 0, 40).unwrap();
-        let s = String::from_utf8(buf).unwrap();
-        // The active tab carries an SGR (default preset = bold+reverse),
-        // so glyphs interleave with escapes — strip CSI before the text
-        // assertion.
-        assert!(
-            s.contains("\x1b[1"),
-            "expected bold SGR for the active tab; got {s:?}"
-        );
-        let visible = strip_csi(&s);
-        assert!(visible.contains("0:bash"), "first tab; got {visible:?}");
-        assert!(visible.contains("1:vim"), "second tab; got {visible:?}");
-    }
-
-    #[test]
-    fn empty_bar_and_no_windows_is_noop() {
-        let bar = build_bar(&StatusCfg::default());
-        let ctx = make_context("", UNIX_EPOCH);
-        let mut buf = Vec::new();
-        render_status_bar(&mut buf, &bar, &ctx, 0, 0, 40).unwrap();
-        assert!(buf.is_empty(), "empty bar + no windows must not paint");
-    }
-
-    #[test]
     fn painter_set_windows_paints_tab_strip() {
         // A painter whose bar has the `windows` widget renders the strip
         // from its injected window list; a changed list forces a repaint.
@@ -2613,23 +2501,6 @@ mod tests {
     }
 
     #[test]
-    fn render_status_bar_function_emits_cup_and_text() {
-        // Direct test of the stateless function form.
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let bar = build_bar(&cfg);
-        let mut buf = Vec::new();
-        render_status_bar(&mut buf, &bar, &ctx_default("hello"), 23, 0, 20).unwrap();
-        let s = String::from_utf8_lossy(&buf);
-        // 23 → 24 (1-based).
-        assert!(s.contains("\x1b[24;1H"), "no CUP-to-row-24: {s:?}");
-        assert!(s.contains("hello"), "missing text: {s:?}");
-        assert!(s.ends_with("\x1b[0m"), "missing SGR reset tail: {s:?}");
-    }
-
-    #[test]
     fn painter_threads_configured_prefix_to_help_hints_widget() {
         let cfg = StatusCfg {
             center: vec![spec("help-hints", &[])],
@@ -2652,27 +2523,6 @@ mod tests {
             !visible.contains("C-a"),
             "default prefix must not leak after rebind: {visible:?}"
         );
-    }
-
-    #[test]
-    fn render_status_bar_empty_bar_is_noop() {
-        let cfg = StatusCfg::default();
-        let bar = build_bar(&cfg);
-        let mut buf = Vec::new();
-        render_status_bar(&mut buf, &bar, &ctx_default(""), 0, 0, 80).unwrap();
-        assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn render_status_bar_zero_cols_is_noop() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let bar = build_bar(&cfg);
-        let mut buf = Vec::new();
-        render_status_bar(&mut buf, &bar, &ctx_default("x"), 0, 0, 0).unwrap();
-        assert!(buf.is_empty());
     }
 
     /// The bar is one bed with the sidebar: cells a widget leaves without a

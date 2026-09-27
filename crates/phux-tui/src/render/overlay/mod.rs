@@ -15,10 +15,9 @@
 //!
 //! Submodules:
 //! - [`prompt`] — single-line text-input modal (phux-ahv.1)
-//! - [`widgets`] — reusable themed primitives ([`Modal`], [`KeyChordTable`])
+//! - [`widgets`] — reusable themed primitives ([`Modal`])
 //!
 //! [`Modal`]: widgets::Modal
-//! [`KeyChordTable`]: widgets::KeyChordTable
 
 use std::io::{self, Write};
 
@@ -57,16 +56,6 @@ pub use selection::{
 };
 pub use toast::ToastOverlay;
 pub use which_key::WhichKeyOverlay;
-
-/// One driver-owned, non-rebindable interaction kept beside its handler so
-/// adjacency tests can prevent discovery text from drifting from behavior.
-#[derive(Debug, Clone, Copy)]
-pub struct HardcodedBinding {
-    /// Literal key, mouse gesture, or clickable label.
-    pub chord: &'static str,
-    /// What the gesture does.
-    pub action: &'static str,
-}
 
 /// Test double: a [`RenderOverlay`] that records every key handed to it and
 /// never dismisses, so a test can assert exactly which keystrokes reached
@@ -378,6 +367,7 @@ impl OverlayState {
     }
 
     /// Number of overlays currently stacked (0 when inactive).
+    #[cfg(test)]
     #[must_use]
     pub fn depth(&self) -> usize {
         self.stack.len()

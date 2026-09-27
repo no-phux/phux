@@ -5,7 +5,7 @@
 //! The driver owns:
 //!
 //! * the [`super::connection::Connection`] (UDS transport),
-//! * stdout via a [`RawModeGuard`] that flips the outer terminal into raw
+//! * stdout via a `RawModeGuard` that flips the outer terminal into raw
 //!   mode + alt screen on construction and restores it on drop (panic-safe
 //!   per ADR-0003's "no hung outer terminals" requirement),
 //! * a stdin reader,
@@ -37,7 +37,7 @@ mod viewport;
 
 pub use entry::{
     connect_for_attach, run_recorded_connection, run_recorded_dial, run_with_predict_connection,
-    run_with_predict_dial, run_with_stdout, run_with_stdout_predict,
+    run_with_predict_dial, run_with_stdout,
 };
 pub use headless::run_headless_rendered;
-pub use terminal::{RawModeGuard, write_terminal_reset};
+pub use terminal::write_terminal_reset;

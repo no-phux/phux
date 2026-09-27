@@ -28,13 +28,13 @@ use crate::predict::Overlay;
 use crate::render::Theme;
 use crate::render::overlay::OverlayState;
 
-use super::ACTION_NAMES;
 use super::args::*;
 use super::ctx::*;
 use super::dispatch::*;
 use super::effects::*;
 use super::run_action::*;
 use super::test_support::*;
+use phux_config::vocab::ACTION_NAMES;
 
 // The `RecordingOverlay` test double lives in `crate::render::overlay`
 // because implementing `RenderOverlay::render` names ratatui types, which

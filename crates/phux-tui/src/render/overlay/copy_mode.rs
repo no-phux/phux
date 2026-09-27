@@ -14,68 +14,12 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::HardcodedBinding;
 use super::{
     CopyRequest, OverlayCommand, RenderOverlay, ScreenSelectionPoint, SelectionGrab, SelectionMode,
     SelectionRect,
 };
 
 const WHEEL_SCROLL_LINES: isize = 3;
-
-/// Copy-mode's key table for handler-adjacency tests
-/// (phux-i0e8.10.3).
-///
-/// COLOCATED with the `handle_key` / `handle_mouse`
-/// arms below on purpose: every row must map to a real handler arm, and
-/// the `help_table_matches_handler_arms` adjacency test holds the two in
-/// lockstep — change a key here or there and the other side breaks
-/// visibly.
-pub static HELP_BINDINGS: &[HardcodedBinding] = &[
-    HardcodedBinding {
-        chord: "Arrows",
-        action: "move the cursor (Shift extends the selection)",
-    },
-    HardcodedBinding {
-        chord: "Tab",
-        action: "cycle selection mode (char / line / rect)",
-    },
-    HardcodedBinding {
-        chord: "Enter",
-        action: "copy the selection and exit",
-    },
-    HardcodedBinding {
-        chord: "w",
-        action: "copy the word under the cursor",
-    },
-    HardcodedBinding {
-        chord: "v",
-        action: "copy the line under the cursor",
-    },
-    HardcodedBinding {
-        chord: "V",
-        action: "copy the semantic line (prompt zones)",
-    },
-    HardcodedBinding {
-        chord: "A",
-        action: "copy all selectable content",
-    },
-    HardcodedBinding {
-        chord: "]",
-        action: "copy the command output under the cursor",
-    },
-    HardcodedBinding {
-        chord: "PageUp/PageDown",
-        action: "scroll the viewport a page",
-    },
-    HardcodedBinding {
-        chord: "drag",
-        action: "select with the mouse; release copies",
-    },
-    HardcodedBinding {
-        chord: "Esc",
-        action: "exit copy mode",
-    },
-];
 
 fn quantize_mouse_cell(value: f64, max: u16) -> u16 {
     if !value.is_finite() || max == 0 {
@@ -175,17 +119,6 @@ impl CopyModeOverlay {
     pub fn set_mouse_anchor_screen(&mut self, anchor: ScreenSelectionPoint) {
         self.mouse_anchor_screen = Some(anchor);
         self.mouse_anchor_viewport_row = Some(i32::from(self.anchor_row));
-    }
-
-    /// The current selection mode.
-    ///
-    /// The lockstep read side of the mode state machine: the in-overlay `Tab`
-    /// key flips the mode via [`Self::cycle_mode`], the renderer and the
-    /// copy path read it back through here. Mode is client-local UI state, so
-    /// nothing about it touches the wire (ADR-0030).
-    #[must_use]
-    pub const fn mode(&self) -> SelectionMode {
-        self.mode
     }
 
     /// Advance the selection mode `Char -> Line -> Rect -> Char`.
@@ -646,13 +579,13 @@ mod tests {
     #[test]
     fn cycle_mode_advances_char_line_rect_char() {
         let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-        assert_eq!(overlay.mode(), SelectionMode::Char, "default is Char");
+        assert_eq!(overlay.mode, SelectionMode::Char, "default is Char");
         overlay.cycle_mode();
-        assert_eq!(overlay.mode(), SelectionMode::Line);
+        assert_eq!(overlay.mode, SelectionMode::Line);
         overlay.cycle_mode();
-        assert_eq!(overlay.mode(), SelectionMode::Rect);
+        assert_eq!(overlay.mode, SelectionMode::Rect);
         overlay.cycle_mode();
-        assert_eq!(overlay.mode(), SelectionMode::Char, "wraps back to Char");
+        assert_eq!(overlay.mode, SelectionMode::Char, "wraps back to Char");
     }
 
     #[test]
@@ -660,7 +593,7 @@ mod tests {
         let mut overlay = CopyModeOverlay::new(2, 5, 80, 24);
         overlay.cycle_mode(); // Char -> Line
         overlay.cycle_mode(); // Line -> Rect
-        assert_eq!(overlay.mode(), SelectionMode::Rect);
+        assert_eq!(overlay.mode, SelectionMode::Rect);
         let req = overlay.copy_request();
         assert!(
             req.rectangle,
@@ -676,13 +609,13 @@ mod tests {
     #[test]
     fn char_and_line_mode_copy_request_is_linear() {
         let mut overlay = CopyModeOverlay::new(2, 5, 80, 24);
-        assert_eq!(overlay.mode(), SelectionMode::Char);
+        assert_eq!(overlay.mode, SelectionMode::Char);
         assert!(
             !overlay.copy_request().rectangle,
             "Char mode is linear, not block"
         );
         overlay.cycle_mode(); // Char -> Line
-        assert_eq!(overlay.mode(), SelectionMode::Line);
+        assert_eq!(overlay.mode, SelectionMode::Line);
         assert!(
             !overlay.copy_request().rectangle,
             "Line mode is linear over the two-corner range, not block"
@@ -695,16 +628,16 @@ mod tests {
         // an in-overlay key (ADR-0045). Tab advances Char -> Line -> Rect ->
         // Char and stays in copy-mode (the driver repaints on `Stay`).
         let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-        assert_eq!(overlay.mode(), SelectionMode::Char);
+        assert_eq!(overlay.mode, SelectionMode::Char);
         assert_eq!(
             overlay.handle_key(&press(PhysicalKey::Tab, ModSet::empty())),
             OverlayCommand::Stay
         );
-        assert_eq!(overlay.mode(), SelectionMode::Line);
+        assert_eq!(overlay.mode, SelectionMode::Line);
         overlay.handle_key(&press(PhysicalKey::Tab, ModSet::empty()));
-        assert_eq!(overlay.mode(), SelectionMode::Rect);
+        assert_eq!(overlay.mode, SelectionMode::Rect);
         overlay.handle_key(&press(PhysicalKey::Tab, ModSet::empty()));
-        assert_eq!(overlay.mode(), SelectionMode::Char, "wraps back to Char");
+        assert_eq!(overlay.mode, SelectionMode::Char, "wraps back to Char");
     }
 
     #[test]
@@ -725,7 +658,7 @@ mod tests {
         assert!(!sel.rectangle, "Char mode is linear");
 
         overlay.cycle_mode(); // Char -> Line
-        assert_eq!(overlay.mode(), SelectionMode::Line);
+        assert_eq!(overlay.mode, SelectionMode::Line);
         let sel = overlay.copy_selection().expect("selection");
         assert_eq!(
             (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
@@ -920,115 +853,6 @@ mod tests {
         );
     }
 
-    /// phux-i0e8.10.3: the colocated help table and the handler arms stay
-    /// in lockstep. Every advertised chord is driven through the real
-    /// handler and must produce the behavior its row describes; a table
-    /// row with no matching arm here panics, so adding a row forces
-    /// adding its adjacency check (and its handler).
-    #[test]
-    fn help_table_matches_handler_arms() {
-        for binding in HELP_BINDINGS {
-            match binding.chord {
-                "Arrows" => {
-                    let mut overlay = CopyModeOverlay::new(2, 5, 80, 24);
-                    overlay.handle_key(&press(PhysicalKey::ArrowRight, ModSet::empty()));
-                    assert_eq!(overlay.cursor_col, 6, "arrow moves the cursor");
-                    overlay.handle_key(&press(PhysicalKey::ArrowRight, ModSet::SHIFT));
-                    assert_eq!(
-                        overlay.anchor_col, 6,
-                        "shift-arrow leaves the anchor behind (extends)"
-                    );
-                }
-                "Tab" => {
-                    let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-                    overlay.handle_key(&press(PhysicalKey::Tab, ModSet::empty()));
-                    assert_eq!(overlay.mode(), SelectionMode::Line, "Tab cycles the mode");
-                }
-                "Enter" => {
-                    assert_eq!(
-                        grab_of(&dispatch(PhysicalKey::Enter, ModSet::empty())),
-                        SelectionGrab::Rect
-                    );
-                }
-                "w" => {
-                    assert_eq!(
-                        grab_of(&dispatch(PhysicalKey::W, ModSet::empty())),
-                        SelectionGrab::Word
-                    );
-                }
-                "v" => {
-                    assert_eq!(
-                        grab_of(&dispatch(PhysicalKey::V, ModSet::empty())),
-                        SelectionGrab::Line
-                    );
-                }
-                "V" => {
-                    assert_eq!(
-                        grab_of(&dispatch(PhysicalKey::V, ModSet::SHIFT)),
-                        SelectionGrab::LineSemantic
-                    );
-                }
-                "A" => {
-                    assert_eq!(
-                        grab_of(&dispatch(PhysicalKey::A, ModSet::SHIFT)),
-                        SelectionGrab::All
-                    );
-                }
-                "]" => {
-                    assert_eq!(
-                        grab_of(&dispatch(PhysicalKey::BracketRight, ModSet::empty())),
-                        SelectionGrab::Output
-                    );
-                }
-                "PageUp/PageDown" => {
-                    assert!(matches!(
-                        dispatch(PhysicalKey::PageUp, ModSet::empty()),
-                        OverlayCommand::ScrollViewport(n) if n < 0
-                    ));
-                    assert!(matches!(
-                        dispatch(PhysicalKey::PageDown, ModSet::empty()),
-                        OverlayCommand::ScrollViewport(n) if n > 0
-                    ));
-                }
-                "drag" => {
-                    let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-                    overlay.handle_mouse(&mouse_event(
-                        MouseAction::Press,
-                        MouseButton::Left,
-                        1.0,
-                        1.0,
-                    ));
-                    overlay.handle_mouse(&mouse_event(
-                        MouseAction::Motion,
-                        MouseButton::Left,
-                        5.0,
-                        2.0,
-                    ));
-                    let cmd = overlay.handle_mouse(&mouse_event(
-                        MouseAction::Release,
-                        MouseButton::Left,
-                        5.0,
-                        2.0,
-                    ));
-                    assert!(
-                        matches!(cmd, OverlayCommand::Copy(_)),
-                        "releasing a drag copies: {cmd:?}"
-                    );
-                }
-                "Esc" => {
-                    assert_eq!(
-                        dispatch(PhysicalKey::Escape, ModSet::empty()),
-                        OverlayCommand::Dismiss
-                    );
-                }
-                other => panic!(
-                    "help table row `{other}` has no adjacency check — \
-                     add one that drives its handler arm"
-                ),
-            }
-        }
-    }
-
     #[test]
     fn mouse_drag_updates_selection_and_copies_on_release() {
         let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
@@ -1122,7 +946,7 @@ mod tests {
     fn line_mode_spans_the_new_width_after_a_grow() {
         let mut overlay = CopyModeOverlay::new(1, 0, 60, 20);
         overlay.cycle_mode(); // Char -> Line
-        assert_eq!(overlay.mode(), SelectionMode::Line);
+        assert_eq!(overlay.mode, SelectionMode::Line);
         assert_eq!(
             overlay.copy_request().end_col,
             59,
