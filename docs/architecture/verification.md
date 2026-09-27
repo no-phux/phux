@@ -87,7 +87,7 @@ reproduction command. The engineering surfaces behind it are:
   `phux-client-core` (`history`), `phux-tui` (`render_frame`).
 - `just perf-echo` — reproducible keystroke-echo latency against an
   isolated release server.
-- Server integration tests under `crates/phux-server/tests/perf_*.rs`
+- Server integration tests under `crates/phux-server/tests/perf/`
   and `benchmark_budget.rs`.
 
 The release profile uses fat LTO and a single codegen unit, since the speed

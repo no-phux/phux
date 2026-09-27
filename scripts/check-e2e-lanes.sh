@@ -31,9 +31,7 @@
 # SCOPE is the `*_e2e.rs` naming convention, including subsystem harness
 # modules under `tests/<harness>/`, not every test target, and that
 # is deliberate. Outside that convention an `#[ignore]` can legitimately mean
-# "this needs a host tool or a machine property CI does not have" -- e.g.
-# phux-server's kip_roundtrip probe needs a host-provided htop, and one
-# replay_equivalence case is ignored with a recorded finding. Those are
+# "this needs a host tool or a machine property CI does not have". Those are
 # correct as unrun; forcing them into a lane would mean weakening them or
 # maintaining an exemption list, which is the very failure mode this gate
 # exists to remove. `*_e2e.rs` carries the opposite intent by convention:

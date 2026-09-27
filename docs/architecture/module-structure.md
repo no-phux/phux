@@ -192,8 +192,9 @@ src/
   main.rs         — usage-rs dispatch
   commands/       — one module or tree per verb
   refdocs/        — generators for docs/reference/ (see CONVENTIONS.md)
-  selector.rs, exit_codes.rs, json_err.rs, output.rs, deprecations.rs,
-  help_inventory.rs, feature_names.rs
+  exit_codes.rs, output.rs, deprecations.rs, capabilities.rs,
+  environment.rs, companion.rs, skill.rs
+  help_inventory.rs — test-time lint over the clap help tree
 ```
 
 The verb catalog is generated: [`docs/reference/`](../reference/). Opt-in
