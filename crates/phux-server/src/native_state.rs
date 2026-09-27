@@ -1,11 +1,9 @@
-//! Native checkpoint hosts over libghostty's official GHOSTSNP snapshot codec.
+//! Native checkpoint hosts over libghostty's GHOSTSNP snapshot codec.
 //!
-//! Prefix capture advances one bounded engine record at a time through READY.
-//! Detaching READY is O(1): the engine registers a history cut and encodes
-//! nothing. Each later `HISTORY_REQUEST` borrows the live terminal for one
-//! bounded scan or record step, so live PTY bytes continue between client
-//! pulls. Phux forwards exact engine records and typed metadata without
-//! decoding terminal contents.
+//! Prefix capture advances one bounded record at a time through READY;
+//! detaching READY registers a history cut in O(1), and each later
+//! `HISTORY_REQUEST` borrows the live terminal for one bounded step, so PTY
+//! output continues between pulls. Records are forwarded without decoding.
 
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -36,10 +34,7 @@ pub(crate) const MAX_NATIVE_PREFIX_CHUNKS: usize = 4_096;
 /// Greatest aggregate opaque codec payload retained before READY publication.
 pub(crate) const MAX_NATIVE_PREFIX_BYTES: usize = 64 * 1024 * 1024;
 
-/// Typed failures from native capture, history, and generation management.
-///
-/// Variant names match the previous incremental-wrapper surface so actor and
-/// runtime matches stay stable.
+/// Failures from native capture, history, and generation management.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum NativeStateError {
     /// The linked engine cannot encode an official snapshot.
@@ -218,12 +213,8 @@ impl NativeGenerationBounds {
     }
 }
 
-/// The one native continuation produced by a capture that reached READY.
-///
-/// The continuation is leased, not encoded: [`OwnedCapture::detach`]
-/// registers engine lease state (tracked pins and the history generation at
-/// READY) and copies no page. It must be installed back into the actor-local
-/// manager rather than sent to another thread.
+/// The continuation of a capture that reached READY: a leased engine cut
+/// (no pages copied), installed back into the actor-local manager.
 #[derive(Debug)]
 pub(crate) struct NativeGenerationSeed {
     capture: HistoryCapture<'static>,
@@ -321,9 +312,7 @@ impl NativeRecordTable {
 struct NativeCheckpointGeneration {
     records: NativeRecordTable,
     capture: Option<HistoryCapture<'static>>,
-    /// Why the cut was spent before FINISH, when it was. A prune, mutation,
-    /// reset, or engine failure at the frontier is kept so every later
-    /// request from any owner gets that reason instead of `InvalidHandle`.
+    /// Why the cut was spent before FINISH, reported to every later request.
     failure: Option<NativeStateError>,
     scratch: Vec<u8>,
     pending: Vec<u8>,
@@ -347,11 +336,8 @@ impl NativeCheckpointGeneration {
     }
 }
 
-/// Actor-owned terminal and bounded concurrent native history cuts.
-///
-/// Generations hold detached engine cuts whose pins live in `terminal`'s
-/// page list. [`Drop`] releases those cuts first so a live lease cannot
-/// outlive the terminal it tracks.
+/// Actor-owned terminal and bounded concurrent history cuts. `Drop` releases
+/// the cuts first, since their pins live in the terminal's page list.
 #[derive(Debug)]
 pub(crate) struct NativeTerminalManager {
     terminal: Option<GhosttyTerminal<'static, 'static>>,
@@ -414,33 +400,16 @@ impl NativeTerminalManager {
         })
     }
 
-    /// The canonical terminal, or `None` while a snapshot capture holds it.
-    ///
-    /// A native bootstrap capture MOVES the terminal out of this manager for
-    /// the length of the cut (up to `NATIVE_CAPTURE_LIFETIME`), so there is a
-    /// real window in which no reader can have it. This used to be an
-    /// `unreachable!`, which made that window a SIGABRT: release builds are
-    /// `panic = "abort"` with one current-thread runtime and no
-    /// `catch_unwind` on any task boundary, and the process holds every
-    /// session the user has with nothing persisted. Two callers reached it in
-    /// production before the routes were closed one at a time.
-    ///
-    /// Returning `Option` is the durable answer: a reader that cannot have
-    /// the terminal now degrades — skips a paint, refuses a read — instead of
-    /// destroying the workspace, and the type makes that unavoidable for
-    /// future callers rather than depending on every `select!` guard staying
-    /// correct.
+    /// The canonical terminal, or `None` while a capture holds it. Readers
+    /// degrade (skip a paint, refuse a read) rather than abort the server
+    /// holding every session.
     pub(crate) const fn try_terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         self.terminal.as_ref()
     }
 
-    /// Apply VT bytes to the canonical screen.
-    ///
-    /// The actor defers live output into the capture's replay queue
-    /// (`buffer_native_live_output`) rather than calling this while a cut is
-    /// out, so the `None` arm should not be reachable. It must still not
-    /// abort: this process owns every session the user has, and dropping one
-    /// write that a later resync repairs is not worth losing all of them.
+    /// Apply VT bytes. The actor queues live output during a capture, so the
+    /// `None` arm should be unreachable; it drops the write rather than
+    /// abort (a resync repairs it).
     pub(crate) fn vt_write(&mut self, bytes: &[u8]) {
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.vt_write(bytes);
@@ -463,11 +432,8 @@ impl NativeTerminalManager {
         self.retire_all_generations();
         self.terminal.as_mut().map_or_else(
             || {
-                // Same contract as `reset`: the resize arms are gated on
-                // `!bootstrap_pending`, so this is a caller bug rather than
-                // an expected state — but aborting would take every session
-                // on this server with it. Refuse the resize instead; the
-                // gated arm re-applies the queued request once the cut lands.
+                // Resize arms are gated during captures, so this is a caller
+                // bug; refuse rather than abort (the request is re-applied).
                 tracing::error!(
                     "resize while the canonical terminal is out on a prefix capture; refusing it"
                 );
@@ -477,14 +443,9 @@ impl NativeTerminalManager {
         )
     }
 
-    /// Clear the canonical screen for a replacement child.
-    ///
-    /// Callers are expected to land any in-flight capture first (the actor's
-    /// `reset_for_replacement` does), but this must never abort the process
-    /// if one slips through: a panic here kills the server and every session
-    /// on it. When the terminal is on loan to a capture the reset is recorded
-    /// and applied the moment the capture hands it back. Every generation is
-    /// retired either way, so no cursor outlives the screen it described.
+    /// Clear the screen for a replacement child. Callers land captures
+    /// first; if one slips through, the reset is applied when the terminal
+    /// returns. Every generation is retired either way.
     pub(crate) fn reset(&mut self) {
         self.retire_all_generations();
         if let Some(terminal) = self.terminal.as_mut() {
@@ -916,9 +877,7 @@ impl NativeTerminalManager {
 
 impl Drop for NativeTerminalManager {
     fn drop(&mut self) {
-        // Detached cuts untrack pins from the terminal's page list when
-        // released, so they must go first. Cached payloads that already
-        // escaped through `Bytes` own their own allocations.
+        // Release cuts before the terminal (they untrack its pins).
         self.generations.clear();
     }
 }
@@ -1146,9 +1105,7 @@ mod tests {
         .unwrap_or_else(|error| panic!("history record: {error:?}"))
     }
 
-    /// A 200x50 terminal pruned to `history_bytes` of retained scrollback,
-    /// filled with styled full-width rows so a row's cost is representative
-    /// rather than the best case an all-blank grid would give.
+    /// A 200x50 terminal of styled full rows, pruned to `history_bytes`.
     fn deep_terminal(history_bytes: usize) -> GhosttyTerminal<'static, 'static> {
         let mut terminal = GhosttyTerminal::new(200, 50).expect("deep terminal");
         terminal
@@ -1171,9 +1128,8 @@ mod tests {
         terminal
     }
 
-    /// The wall time one attach spends inside the terminal's mutation
-    /// exclusion, taken as the best of `samples` runs so a loaded build host
-    /// cannot turn a constant-time operation into a false regression.
+    /// Best-of-`samples` wall time one attach spends in the mutation
+    /// exclusion.
     fn best_detach_cost(
         manager: &mut NativeTerminalManager,
         limits: BootstrapLimits,
@@ -1506,13 +1462,8 @@ mod tests {
         assert!(manager.has_generation(&cursor));
     }
 
-    /// The attach critical path must not scale with `defaults.history-bytes`.
-    ///
-    /// Releasing a READY capture registers an engine lease and encodes
-    /// nothing, so the exclusion is held for the same time whatever the
-    /// scrollback depth. The bound is relative: 16 MiB may cost at most
-    /// three times what 2 MiB does, plus 2 ms for timer and scheduling noise
-    /// that best-of-seven sampling does not absorb.
+    /// Attach cost does not scale with `defaults.history-bytes` (16 MiB costs
+    /// at most 3x 2 MiB plus 2 ms of noise).
     #[test]
     fn attach_detach_cost_is_flat_in_retained_history() {
         let limits = BootstrapLimits::default();
@@ -1661,13 +1612,8 @@ mod tests {
         drop(manager);
     }
 
-    /// Output under a scroll region between READY and the first request.
-    ///
-    /// The incremental lease reported `Stale` here: a fixed status line
-    /// (`DECSTBM`) rewrites the page holding the newest pin. The official
-    /// GHOSTSNP cut does not: both plain output and scroll-region output
-    /// leave the retained pages deliverable. Pin that so a later engine
-    /// change cannot silently start dropping the cut.
+    /// Scroll-region output between READY and the first request leaves the
+    /// cut deliverable.
     #[test]
     fn scroll_region_output_after_ready_is_reported_not_misread() {
         fn lease_unrequested_through(mutation: &[u8]) -> Result<usize, NativeStateError> {

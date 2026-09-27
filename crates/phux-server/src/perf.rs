@@ -1,14 +1,9 @@
-//! Server-side performance telemetry: the metric table `GET_PERF` reports.
+//! Server performance telemetry for `GET_PERF`.
 //!
-//! Every metric is a `static` from [`phux_perf`], recorded at the hop it
-//! measures and read only when a client asks. Names are dotted and grouped
-//! by stage so `phux perf` renders them as a pipeline you can read top to
-//! bottom: `pty.*` (child output arriving), `echo.*` (input to first output
-//! on the same pane), `input.*`, `tick.*` (state-sync fanout), `pump.*`
-//! (raw broadcast fanout), `wire.*` (socket writes), `cmd.*` / `attach.*`
-//! (control plane), `consumer.*` (per-client backpressure), and process
-//! gauges. `docs/operations.md` §"Performance observability" is the human
-//! catalog; the names are diagnostic and not a wire contract.
+//! Static [`phux_perf`] metrics are recorded at each hop, grouped by pipeline
+//! stage (`pty.*`, `echo.*`, `input.*`, `tick.*`, `pump.*`, `wire.*`,
+//! `cmd.*`/`attach.*`, `consumer.*`, process gauges). Names are diagnostic,
+//! not a wire contract; see `docs/operations.md`.
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -17,9 +12,7 @@ use phux_perf::{Counter, Gauge, Histogram, Metric, PerfReport, Unit};
 
 // --- pty: child output into the actor -------------------------------------
 
-/// Bytes handed back by each `read(2)` on a PTY master. On macOS this caps at
-/// 1024 regardless of buffer size, so a burst shows up here as a spike of
-/// exactly-1024 reads; the histogram is how you see that.
+/// Bytes per PTY master `read(2)` (macOS caps at 1024).
 pub static PTY_READ_SIZE: Histogram = Histogram::new();
 /// Total bytes read from every PTY.
 pub static PTY_READ_BYTES: Counter = Counter::new();
@@ -38,14 +31,10 @@ pub static PTY_VT_APPLY: Histogram = Histogram::new();
 
 // --- echo: input in, output out, same pane --------------------------------
 
-/// Microseconds from handing a key or paste to the PTY writer until the next
-/// output burst arrived from that pane.
+/// Microseconds from input to the PTY writer until the pane's next output.
 ///
-/// Armed only when the pane was quiet for [`ECHO_QUIET_WINDOW`] beforehand
-/// (a streaming pane would pair the input with an unrelated chunk). Includes
-/// the child's own reaction time, so it is an upper bound on the server's
-/// share; samples over [`ECHO_SAMPLE_CEILING`] are discarded as "the program
-/// did not echo".
+/// Armed only after [`ECHO_QUIET_WINDOW`] of silence. Includes the child's
+/// reaction time; samples over [`ECHO_SAMPLE_CEILING`] are dropped.
 pub static ECHO_SERVER: Histogram = Histogram::new();
 
 // --- input ----------------------------------------------------------------
@@ -114,11 +103,7 @@ pub static CLIENTS: Gauge = Gauge::new();
 pub static PANES: Gauge = Gauge::new();
 /// Sessions.
 pub static SESSIONS: Gauge = Gauge::new();
-/// `1` when the runtime thread was promoted to user-interactive scheduling.
-///
-/// Set from `phux_perf::promote_current_thread`; `0` when the OS declined or
-/// has no such class. A `0` on macOS means keystroke echo competes evenly
-/// with every batch job on the box.
+/// `1` when the runtime thread got user-interactive scheduling.
 pub static SCHED_INTERACTIVE: Gauge = Gauge::new();
 
 /// The table `GET_PERF` reports, in render order.
@@ -159,9 +144,7 @@ pub static TABLE: &[Metric] = &[
 /// echo, not a slow server, and are dropped rather than skewing the tail.
 pub const ECHO_SAMPLE_CEILING: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// A key or paste arms `echo.server` only if the pane produced no output for
-/// this long beforehand, so a streaming pane does not pair the input with
-/// the next unrelated chunk.
+/// Quiet time before input arms `echo.server`.
 pub const ECHO_QUIET_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Rate limit shared by the degradation warnings this module owns.
@@ -170,29 +153,21 @@ pub const WARN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10
 /// Warn throttle for a consumer whose mailbox is full.
 pub static MAILBOX_FULL_WARN: phux_perf::Throttle = phux_perf::Throttle::new(WARN_INTERVAL);
 
-/// Uptime epoch and the rusage reading taken with it. Pinned together so the
-/// report's process section covers the same span as its uptime: after a
-/// `phux upgrade` re-exec the pid, and its cumulative rusage, survive while
-/// the epoch restarts.
+/// Uptime epoch and the rusage read with it (the epoch restarts on upgrade
+/// re-exec while the pid's rusage survives).
 fn started() -> &'static (Instant, Option<phux_perf::ProcessStats>) {
     static STARTED: OnceLock<(Instant, Option<phux_perf::ProcessStats>)> = OnceLock::new();
     STARTED.get_or_init(|| (Instant::now(), phux_perf::ProcessStats::capture()))
 }
 
-/// Pin the uptime epoch and promote the calling thread to interactive scheduling.
-///
-/// The calling thread is the runtime thread every actor, pump, and writer
-/// task runs on. Call once at server start; harmless to repeat.
+/// Pin the uptime epoch and promote the runtime thread to interactive
+/// scheduling (idempotent).
 pub fn mark_started() {
     let _ = started();
     SCHED_INTERACTIVE.set(u64::from(phux_perf::promote_current_thread()));
 }
 
-/// Promote a helper thread that carries keystrokes or their echo.
-///
-/// The PTY reader and writer, the input lane, and the ack waiter all call
-/// this first thing; the result is only logged because a refusal is not an
-/// error.
+/// Promote a helper thread on the keystroke path (refusal is only logged).
 pub fn promote_helper_thread(name: &str) {
     if !phux_perf::promote_current_thread() {
         tracing::debug!(thread = name, "interactive scheduling not granted");

@@ -8,16 +8,9 @@ use nix::sys::signal::{Signal, kill, killpg};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::Pid;
 
-/// Registered before spawning, so normal return and unwinding both stop the
-/// whole job. Drop cannot run after SIGKILL or a runner's hard timeout.
-///
-/// On a passing run the job has usually exited by teardown (its HUP trap, the
-/// server's hard kill, EIO), and as a grandchild it was reaped by init, so the
-/// recorded pid and group id may already belong to an unrelated process. Drop
-/// therefore signals only a leader that is alive and still runs a script from
-/// this fixture's tempdir. Residual risk: the leader exiting and its pid being
-/// reused between that check and the `killpg`, and group members that outlive
-/// a dead leader, which are left alone rather than guessed at.
+/// A test job's process group, stopped on drop (not after SIGKILL). Drop
+/// signals only a live leader still running this fixture's script, since the
+/// pid may have been reused.
 pub(super) struct FixtureGroup {
     pid_file: PathBuf,
     env: &'static str,
@@ -39,14 +32,9 @@ impl FixtureGroup {
         &self.pid_file
     }
 
-    /// The job registers itself atomically before doing work. Teardown publishes
-    /// a stop marker first, closing the race with a not-yet-scheduled shell.
-    /// The directory check also covers teardown removing the entire tempdir.
-    ///
-    /// Callers must run the script as its own job, `/bin/sh <tempdir>/<name>.sh`
-    /// under `set -m`: `$$` is then both its pid and its process group id, and
-    /// its command line names the tempdir Drop verifies ownership by. For the
-    /// same reason the body must not `exec` away from the shell.
+    /// The script prelude: register, honor a stop marker, run `body`. Run it
+    /// as `/bin/sh <tempdir>/<name>.sh` under `set -m` and never `exec` away,
+    /// so `$$` is the group and the command line names the tempdir.
     pub(super) fn script(&self, body: &str) -> String {
         let env = self.env;
         format!(
@@ -101,9 +89,7 @@ impl FixturePane {
 
 impl Drop for FixturePane {
     fn drop(&mut self) {
-        // On the normal path the actor has already reaped its child. The
-        // leader is the group's only member, so a reaped leader means an empty
-        // group whose id may be recycled: signal only a still-running leader.
+        // Signal only a still-running leader (a reaped one's id may recycle).
         let pid = Pid::from_raw(self.0);
         if waitpid(pid, Some(WaitPidFlag::WNOHANG)) == Ok(WaitStatus::StillAlive) {
             kill_and_reap_group(self.0);
@@ -125,15 +111,8 @@ fn kill_and_reap_group(raw: i32) {
     reap_bounded(pid);
 }
 
-/// Reap a direct child without ever blocking teardown on it. Detached
-/// grandchildren are reaped by init, so waitpid returns ECHILD for them.
-///
-/// Never a blocking wait: a killed session leader cannot finish exiting on
-/// macOS while its terminal still holds output nobody drains, and while a
-/// test unwinds nothing does, because the actor that owns the master is
-/// dropped later. Blocking here would hang the test and stop every guard
-/// dropped after this one. A reap that runs out of budget is completed when
-/// the test process exits and closes the master.
+/// Reap a direct child without blocking teardown (a killed macOS session
+/// leader cannot exit while its output is undrained).
 fn reap_bounded(pid: Pid) {
     const BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
     let deadline = std::time::Instant::now() + BUDGET;
@@ -152,9 +131,7 @@ mod tests {
 
     use super::*;
 
-    /// A shell whose command line names `dir`, as a registered fixture's does.
-    /// It blocks in the `read` builtin, so it has no children that could
-    /// outlive it, and its stdio holds none of the runner's pipes.
+    /// A shell naming `dir` that blocks in `read`.
     fn fixture_shell(dir: &Path) -> Command {
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", "read _"])

@@ -1,10 +1,6 @@
-//! The public enrollment material `phux workload add-key` accepts
-//! (`workload-auth.md` §8): one PEM client certificate, optionally followed
-//! by intermediate certificates, or one PEM certificate signing request.
-//!
-//! Anything that carries a private key is refused before a byte of it is
-//! decoded, and no error names or echoes the input, so key material handed
-//! to the wrong command stops here without reaching stderr or a log.
+//! Public enrollment material for `phux workload add-key`
+//! (`workload-auth.md` §8): PEM client certificate(s) or one CSR. Anything
+//! carrying a private key is refused undecoded, and errors never echo input.
 
 use rustls::pki_types::pem::{PemObject, SectionKind};
 use rustls::pki_types::{CertificateDer, CertificateSigningRequestDer};
@@ -13,9 +9,7 @@ use rustls::pki_types::{CertificateDer, CertificateSigningRequestDer};
 /// is a few kilobytes; the bound keeps a mistaken pipe from being buffered.
 pub const MAX_MATERIAL_BYTES: usize = 64 * 1024;
 
-/// Every PEM private-key label (`PRIVATE KEY`, `RSA PRIVATE KEY`,
-/// `EC PRIVATE KEY`, `ENCRYPTED PRIVATE KEY`, `OPENSSH PRIVATE KEY`) ends in
-/// this, so one substring test refuses them all.
+/// Suffix of every PEM private-key label.
 const PRIVATE_KEY_MARKER: &[u8] = b"PRIVATE KEY";
 
 /// Why enrollment material was refused. No variant carries the input.

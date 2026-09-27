@@ -33,9 +33,7 @@ pub mod runtime;
 pub mod state;
 pub mod stream_diagnostics;
 pub mod telemetry;
-/// The Terminal engine, at the path it has always been reachable from.
-/// [`resource::terminal`] is the module; this alias keeps every
-/// `terminal_actor::` path in tests, examples, and the CLI valid.
+/// Alias for [`resource::terminal`], used by tests, examples, and the CLI.
 pub use resource::terminal as terminal_actor;
 pub mod transport;
 pub mod upgrade;

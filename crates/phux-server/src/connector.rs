@@ -220,17 +220,9 @@ impl Incoming for ConnectorIncoming {
                 .await
                 .map_err(io::Error::other)?;
             let relay = self.connection.remote_address();
-            // Only the preamble is bounded, deliberately. `accept_bi` above is
-            // the idle wait for the *next* bridged consumer on this
-            // connection, so timing it would log a refusal every few seconds
-            // on a healthy but quiet tunnel. Reading the preamble, by
-            // contrast, is driven by a consumer the relay has already
-            // blind-spliced through after its own deadline, so a consumer that
-            // sends nothing would pin this loop and starve every later one.
-            //
-            // A timeout joins the refusal path rather than returning `Err`:
-            // `accept_errors_are_fatal` is `true` here, so an error would tear
-            // down the relay leg and force a redial over one bad consumer.
+            // Only the preamble read is bounded (`accept_bi` is a normal idle
+            // wait): a silent consumer would otherwise starve later ones. A
+            // timeout refuses that consumer instead of tearing down the leg.
             let authorized = tokio::time::timeout(
                 crate::transport::HANDSHAKE_DEADLINE,
                 authorize_preamble(&mut recv, &self.consumer_tokens),
@@ -256,11 +248,8 @@ impl Incoming for ConnectorIncoming {
                 }
             };
             return Ok((
-                // One accepted tunnel stream belongs to exactly this
-                // authenticated consumer. The tunnel has no consumer-group
-                // envelope, so this route intentionally remains single-stream:
-                // accepting another tunnel-global stream here would race the
-                // next consumer and cross the authentication boundary.
+                // One tunnel stream per authenticated consumer; accepting more
+                // would cross the authentication boundary.
                 QuicReader::from_stream(recv),
                 QuicWriter::from_stream(send, self.window.clone()),
                 crate::auth::ConnectionIdentity {
@@ -272,9 +261,7 @@ impl Incoming for ConnectorIncoming {
                         transport: TransportType::Quic,
                         source_addr: Some(relay.ip()),
                     },
-                    // Kept so the consumer bearer's revocation ends the
-                    // bridged connection live; written before `credential`
-                    // moves.
+                    // Kept so revocation ends the bridged connection live.
                     bearer: Some(crate::auth::BearerAdmission::new(
                         Arc::clone(&self.consumer_tokens),
                         &credential,

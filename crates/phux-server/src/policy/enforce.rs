@@ -1,19 +1,10 @@
-//! The dispatch guard: one [`enforce`] behind the three entry points the
-//! client loop calls (`docs/spec/workload-auth.md` §6, §7).
+//! The dispatch guard: [`enforce`] behind three entry points
+//! (`docs/spec/workload-auth.md` §6, §7).
 //!
-//! The classification is [`phux_protocol::kinds`], full stop. This module
-//! only resolves each row's subject against server state, side-effect-free
-//! and under the caller's state borrow, and checks the connection's
-//! conjunctive clauses against it. Absent and unauthorized targets resolve
-//! to subjects no selector the connection holds contains, so they are
-//! refused identically.
-//!
-//! Group means a session here: the resolved Group of an `ATTACH` or a
-//! forced detach is a session, and a Terminal's current Group is the session
-//! whose window holds it, named by its wire session id. `GroupId` (the
-//! `SPAWN_RESOURCE` payload group and the `Scope::Group` metadata key) is an
-//! opaque grouping key the server serves only as `GroupId(1)` (L1 §3.1,
-//! L2 §3), so it resolves to the local host as a whole.
+//! The classification is [`phux_protocol::kinds`]; this module resolves each
+//! row's subject against state (side-effect-free) and checks the grant's
+//! clauses. Absent and unauthorized targets are refused identically. A Group
+//! here is a session; the opaque `GroupId(1)` resolves to the local host.
 
 use phux_core::ids::ResourceId as CoreResourceId;
 use phux_protocol::ids::{ResourceId as WireResourceId, SessionId as WireSessionId};
@@ -33,10 +24,7 @@ const OBSERVE: Verbs = Verbs::of(&[Verb::Observe]);
 const CREATE: Verbs = Verbs::of(&[Verb::Create]);
 const BIND: Verbs = Verbs::of(&[Verb::Bind]);
 
-/// Why a frame, command, or stream bind was refused.
-///
-/// It names the verbs and the *kind* of subject, never the subject itself,
-/// so the tracing line it becomes cannot disclose topology.
+/// Why a request was refused: verbs and subject kind, never the subject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Denial {
     /// The verbs the refused operation needed; empty for a default-deny row.
@@ -97,9 +85,8 @@ pub fn authorize_frame(s: &ServerState, client: ClientId, frame: &FrameKind) -> 
     authorize(s, client, Request::Frame(frame)).map(drop)
 }
 
-/// Guard one nested command for `client`, before any handler, input-lane
-/// route, or satellite relay: run it, or hold it for a decision
-/// (ADR-0128).
+/// Guard one nested command before any handler or relay: run it, or hold
+/// it for a decision (ADR-0128).
 pub fn authorize_command(
     s: &ServerState,
     client: ClientId,
@@ -129,12 +116,8 @@ fn authorize(s: &ServerState, client: ClientId, request: Request<'_>) -> Result<
         .inspect_err(|denial| trace_denial(grant, *denial))
 }
 
-/// A `VIEWER` subscription is observe-only (ADR-0127): a request that needs
-/// `INPUT` on a Terminal the connection subscribed as a viewer, or asks for
-/// its lease, is refused whatever the grant admits, through the same
-/// refusal paths a scope denial takes. The role is intent the connection
-/// declared; widening it takes a fresh `ATTACH_RESOURCE { PRIMARY }`, which
-/// is journaled.
+/// A `VIEWER` subscription is observe-only (ADR-0127): input or lease
+/// requests on such a Terminal are refused whatever the grant admits.
 fn refuse_viewer_input(
     s: &ServerState,
     client: ClientId,
@@ -163,28 +146,21 @@ fn is_input_request(request: Request<'_>) -> bool {
     )
 }
 
-/// Decide `request` for `client` under `grant`, reading `s` as the snapshot
-/// the handler will route with.
-///
-/// The owner's grant admits everything: its handlers and their domain checks
-/// are the whole policy, as before enforcement existed. A scoped grant is
-/// checked against the request's §6 row.
+/// Decide `request` for `client` under `grant` against the handler's state
+/// snapshot. The owner's grant admits everything; a scoped grant is checked
+/// against the request's §6 row.
 ///
 /// # Errors
 ///
-/// A [`Denial`] when the row is default-deny, carries a transport predicate
-/// a scoped grant cannot meet, or needs a verb no clause grants on the
-/// resolved subject.
+/// A [`Denial`] for a default-deny row, an unmet transport predicate, or a
+/// missing verb on the resolved subject.
 pub fn enforce(
     s: &ServerState,
     client: ClientId,
     grant: &ConnectionGrant,
     request: Request<'_>,
 ) -> Result<(), Denial> {
-    // A revoked connection admits nothing, whatever shape its authority had
-    // (workload-auth §7 step 1). Checked before the owner's shortcut: a
-    // bearer-admitted connection holds the owner's grant in the transitional
-    // posture, and its revocation must still stop it.
+    // Revocation first (§7 step 1): it stops owner grants too.
     if grant.revocation().is_some() {
         return Err(Denial::REVOKED);
     }
@@ -253,9 +229,7 @@ fn trace_denial(grant: &ConnectionGrant, denial: Denial) {
     );
 }
 
-// -----------------------------------------------------------------------------
-// Needs: one verb set on one resolved subject; every need must pass.
-// -----------------------------------------------------------------------------
+// --- Needs: one verb set on one subject; all must pass ---
 
 pub(super) struct Need {
     verbs: Verbs,
@@ -313,9 +287,7 @@ pub(super) fn needs_for(
             .map(one),
         Subject::MetadataScope => metadata_scope(request).map(|scope| one(scope_subject(s, scope))),
         Subject::HeldAction => super::hold::held_action_needs(s, request),
-        // The filtered result `ObservableTerminals` and `InventoryMatches`
-        // allow is not built: they require Global, which the unfiltered
-        // result is.
+        // The filtered results require Global, which the unfiltered one is.
         Subject::ObservableTerminals
         | Subject::InventoryMatches
         | Subject::Global {
@@ -354,11 +326,8 @@ const fn subject_kind(subject: Subject) -> &'static str {
     }
 }
 
-/// `FRAME_ACK` names the Terminal *and* its current stream generation. The
-/// guard admits it only from a connection subscribed to that local Terminal;
-/// the Terminal's actor then drops an ack for any stream or bootstrap
-/// generation other than the current one. A satellite Terminal's ack is
-/// relayed, and its actor on the satellite holds the generation.
+/// `FRAME_ACK` is admitted only from a subscriber of that local Terminal
+/// (the actor drops stale generations); satellite acks are relayed.
 fn frame_ack_is_current(s: &ServerState, client: ClientId, request: Request<'_>) -> bool {
     let Request::Frame(FrameKind::FrameAck { terminal_id, .. }) = request else {
         return true;
@@ -370,19 +339,16 @@ fn frame_ack_is_current(s: &ServerState, client: ClientId, request: Request<'_>)
         .is_some_and(|core| s.subscribers_for_terminal(core).contains(&client))
 }
 
-// -----------------------------------------------------------------------------
-// Resolved subjects and containment.
-// -----------------------------------------------------------------------------
+// --- Resolved subjects and containment ---
 
 /// A resolved subject.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Point {
     /// Every subject: server-global data.
     Global,
-    /// A local subject no narrower selector names: a Group that does not
-    /// exist (yet or any more), the opaque `GroupId` scope key, or the
-    /// session an unowned spawn lands in. Only Global and the local Host
-    /// contain it.
+    /// A local subject no narrower selector names (absent Group, the opaque
+    /// `GroupId`, an unowned spawn's session); only Global and Host contain
+    /// it.
     LocalHost,
     /// A local Group (session), by wire session id.
     Group(u32),
@@ -476,11 +442,9 @@ fn terminal_subject(s: &ServerState, wire: &WireResourceId) -> Point {
     Point::Terminal(TerminalPoint::of(s, wire))
 }
 
-/// `APPEND_RESOURCE_OUTPUT` is admitted through the named resource's parent
-/// alone; a grant naming only the child does not suffice. A local resource
-/// with no parent (a Terminal, or an absent id) is its own subject, and the
-/// handler then refuses it. A satellite child's parent is not known here, so
-/// it fails closed.
+/// `APPEND_RESOURCE_OUTPUT` is admitted through the parent only; a
+/// parentless local resource is its own subject; a satellite child fails
+/// closed.
 fn parent_subject(s: &ServerState, wire: &WireResourceId) -> Option<Point> {
     let WireResourceId::Local { id } = wire else {
         return None;
@@ -540,9 +504,7 @@ fn terminal_in(selector: &Selector, terminal: &TerminalPoint) -> bool {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Subject extraction, per row.
-// -----------------------------------------------------------------------------
+// --- Subject extraction, per row ---
 
 /// The Terminal a "named Terminal" row names.
 pub(super) const fn named_terminal(request: Request<'_>) -> Option<&WireResourceId> {
@@ -654,11 +616,8 @@ fn resolved_group(s: &ServerState, request: Request<'_>) -> Option<Point> {
     Some(session_point(s, session))
 }
 
-/// Side-effect-free mirror of `resolve_attach_target`: nothing is created,
-/// and a create-if-missing target names the session it would reuse.
-///
-/// The attach handler pins this id before its first await and attaches to it,
-/// so the session the guard authorized is the session the client joins.
+/// Side-effect-free mirror of `resolve_attach_target`; the attach handler
+/// pins the id this authorized.
 #[must_use]
 pub fn resolve_attach_session(
     s: &ServerState,
@@ -712,9 +671,8 @@ fn spawn_parent(request: Request<'_>) -> Option<&WireResourceId> {
     resource.as_deref().and_then(|spawn| spawn.parent.as_ref())
 }
 
-/// `CREATE` on the anchor Terminal's resolved Group and `BIND` on the anchor
-/// itself: owner-addressed spawn, and a local agent session's parent. An
-/// anchor with no local Group (absent, satellite, windowless) fails closed.
+/// `CREATE` on the anchor's Group and `BIND` on the anchor; no local Group
+/// fails closed.
 fn create_beside(s: &ServerState, anchor: &WireResourceId) -> Option<Vec<Need>> {
     let anchor = TerminalPoint::of(s, anchor);
     let group = anchor.local_group()?;

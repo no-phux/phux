@@ -1,33 +1,16 @@
-//! Server start history, so a crash-loop is a reportable fact (phux-zomb.6).
-//!
-//! A supervised server that dies and is restarted looks, from outside,
-//! exactly like a server that has been up the whole time: the socket answers,
-//! `phux ls` works, and the only trace is another startup line buried in a
-//! log nobody reads. That is how a genuinely broken server went unnoticed on
-//! a developer machine for weeks while accumulating 1487 generations.
-//!
-//! Supervision is worth keeping (ADR-0080) — but only alongside something
-//! that can say "this server keeps dying." Each server start appends one
-//! record here; `phux doctor` reads them back and reports the restart rate.
-//!
-//! Deliberately not derived from `server.log`: that file is rotated, is
-//! written by a `tracing` formatter whose shape is not a stable contract, and
-//! may carry ANSI escapes. A purpose-built, append-only, fixed-format file is
-//! both cheaper to read and impossible to misparse.
+//! Server start history, so a crash-loop is reportable. Each start appends
+//! one fixed-format record (not derived from the rotated, unstable
+//! `server.log`); `phux doctor` reports the restart rate.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// How many records are retained. Comfortably more than the restart count
-/// that constitutes a crash-loop, and small enough that reading the whole
-/// file is free.
+/// Records retained.
 const MAX_RECORDS: usize = 64;
 
-/// Restarts within this window that constitute a crash-loop.
-///
-/// With the supervisor's 30s throttle a healthy server starts once and stays
-/// up; five starts in an hour cannot happen without something killing it.
+/// Starts within the window that mean a crash-loop (a healthy supervised
+/// server starts once).
 pub const CRASH_LOOP_THRESHOLD: usize = 5;
 
 /// The window over which restarts are counted.
@@ -50,10 +33,7 @@ pub fn history_path() -> PathBuf {
     crate::telemetry::state_dir().join("server-starts.log")
 }
 
-/// Append a record for this process, trimming the file to a fixed cap.
-///
-/// Every failure is swallowed: health bookkeeping must never be the reason a
-/// server refuses to start.
+/// Append a record for this process (capped); failures are ignored.
 pub fn record_start(pid: u32, version: &str) {
     let path = history_path();
     let Some(now) = epoch_secs() else { return };
@@ -82,14 +62,8 @@ pub fn recent_starts(window: Duration) -> Vec<StartRecord> {
         .collect()
 }
 
-/// The version of the most recently started server, if one is recorded.
-///
-/// The wire handshake negotiates the *protocol* version, not the binary's, so
-/// this history is the only place a client can learn which build is actually
-/// serving it. That matters because the common upgrade path — a package
-/// manager replacing the binary — leaves the running server on the old build
-/// indefinitely: nothing restarts it, and the socket keeps answering
-/// (phux-zomb.7).
+/// The version of the most recently started server: the only way a client
+/// learns the running build, which a package upgrade leaves running.
 #[must_use]
 pub fn running_version() -> Option<String> {
     read_records(&history_path())
@@ -97,10 +71,7 @@ pub fn running_version() -> Option<String> {
         .map(|record| record.version)
 }
 
-/// Whether the recent restart rate looks like a crash-loop, and the count.
-///
-/// Returns `None` when the server is starting normally, so a caller can treat
-/// `Some` as "there is something to report".
+/// Whether recent restarts look like a crash-loop, and the count.
 #[must_use]
 pub fn crash_loop() -> Option<usize> {
     let count = recent_starts(CRASH_LOOP_WINDOW).len();
