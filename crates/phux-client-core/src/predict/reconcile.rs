@@ -1,26 +1,11 @@
 //! Reconciliation — confirm, contradict, or keep predictions when
 //! authoritative state arrives.
 //!
-//! The entry point is [`reconcile_terminal_output_per_cell`], the v1.1
-//! per-cell match game (phux-9gw.1.1). It walks the prediction queue
-//! from the front, peeks each prediction's target cell via a
-//! caller-supplied read closure, and partitions the queue into:
-//!
-//! - **confirmed** — drop (the server already painted the cell
-//!   exactly as predicted, so the overlay can stop decorating it);
-//! - **pending** — keep (the cell is still blank, the server
-//!   hasn't echoed yet — keep the overlay alive);
-//! - **contradicted** — drop this *and* every subsequent prediction
-//!   (the server diverged from our guess, so the entire suffix is
-//!   suspect).
-//!
-//! The match game is what eliminates the visual flicker that the retired
-//! v0 wholesale-drain policy suffered:
-//! every server frame previously dropped all predictions, briefly
-//! showing the underline disappear before the renderer caught up. With
-//! per-cell match, predictions that the server has already confirmed
-//! transition cleanly to authoritative paint, and predictions still
-//! ahead of confirmed state keep their decoration.
+//! [`reconcile_terminal_output_per_cell`] walks the prediction queue from
+//! the front, reads each prediction's target cell, and partitions it into
+//! **confirmed** (drop: the server painted exactly the guess), **pending**
+//! (keep: not echoed yet), and **contradicted** (drop it and the whole
+//! suffix: the server diverged).
 //!
 //! ## Confirmation rules
 //!
@@ -39,8 +24,7 @@
 
 use super::state::{PredictionKind, PredictionState};
 
-/// Summary of a reconcile pass. Returned for diagnostics and asserted
-/// against in the test suite.
+/// Summary of a reconcile pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReconcileStats {
     /// Predictions whose cell matched the authoritative grapheme.
@@ -56,18 +40,11 @@ pub struct ReconcileStats {
 /// authoritative cell grid (read via the `read_cell` closure) and the
 /// fresh cursor position.
 ///
-/// `read_cell(row, col)` returns the full grapheme cluster of the cell at
-/// the given coordinates, or `None` if the cell is blank (no grapheme or a
-/// `" "` placeholder — callers may treat those equivalently). Returning
-/// the whole cluster (not just the base scalar) lets `Insert` reconcile
-/// confirm multi-codepoint predictions — flag emoji, ZWJ sequences, base
-/// plus combining marks (phux-9gw.1.6).
+/// `read_cell(row, col)` returns the cell's full grapheme cluster (so
+/// multi-codepoint inserts can confirm), or `None` when blank.
 ///
-/// The cursor estimate is resynced to `(cursor_row, cursor_col)` if and
-/// only if the queue is fully drained. If predictions remain (i.e. the
-/// front of the queue is still pending), the predict-side cursor is
-/// left ahead of the authoritative cursor so subsequent inserts queue
-/// at the right anchor; the renderer will catch up on the next ack.
+/// The cursor estimate resyncs to `(cursor_row, cursor_col)` only when the
+/// queue drains; otherwise it stays ahead so later inserts queue correctly.
 pub fn reconcile_terminal_output_per_cell<F>(
     state: &mut PredictionState,
     cursor_row: u16,
@@ -131,11 +108,8 @@ where
         match verdict {
             Verdict::Confirmed => {
                 summary.confirmed += 1;
-                // ADR-0090: only a NON-BLANK insert confirmation is echo
-                // evidence. A confirmed backspace or a confirmed space is
-                // trivially satisfiable by a blank cell in a non-echoing
-                // app (space is page-down in less, pause in htop), so it
-                // must not unlock alt-screen display.
+                // Only a non-blank insert is echo evidence (ADR-0090): a
+                // blank cell also "confirms" in non-echoing apps.
                 if kind == PredictionKind::Insert && predicted != " " {
                     state.confirm_echo_at(queued_at_ms, now_ms);
                 }
@@ -161,13 +135,9 @@ where
         state.set_cursor(cursor_row, cursor_col);
     }
 
-    // Feed this pass into the adaptive tentative-display heuristic
-    // (phux-pxaj, reshaped by ADR-0090): a run of contradicting passes
-    // (vi-mode, a modal app, fast transitions) hides the overlay; clean
-    // productive passes afterward lift the lock. Predicting itself keeps
-    // running while tentative — a confirmed prediction is the only
-    // re-arm signal, so suspending prediction here would make the lock
-    // permanent.
+    // Contradicting runs hide the overlay; clean passes lift the lock.
+    // Prediction keeps running while tentative: a confirm is the only
+    // re-arm signal.
     state.note_reconcile(summary);
 
     summary
@@ -298,13 +268,7 @@ mod tests {
         }
     }
 
-    // -- per-cell match game ---------------------------------------------
-
-    /// Build a row read closure backed by an associative slice of
-    /// `((row, col), &str)` mappings. The `&str` is the cell's full
-    /// grapheme cluster (a single scalar in the common case, a flag /
-    /// ZWJ / combining cluster otherwise). Cells not in the slice are
-    /// blank.
+    /// Cells not listed are blank; values are full grapheme clusters.
     fn row_reader<'a>(
         cells: &'a [((u16, u16), &'a str)],
     ) -> impl FnMut(u16, u16) -> Option<String> + 'a {
@@ -316,373 +280,95 @@ mod tests {
         }
     }
 
+    enum K {
+        T(&'static str),
+        N(PhysicalKey),
+    }
+
+    struct Case {
+        name: &'static str,
+        start: Option<(u16, u16)>,
+        keys: &'static [K],
+        server_cursor: (u16, u16),
+        cells: &'static [((u16, u16), &'static str)],
+        /// (confirmed, contradicted, pending)
+        stats: (usize, usize, usize),
+        left: usize,
+        cursor_after: Option<(u16, u16)>,
+    }
+
+    const FLAG: &str = "\u{1F1FA}\u{1F1F8}";
+    const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    const ACCENTED: &str = "e\u{0301}";
+
     #[test]
-    fn per_cell_all_confirmed_drains_and_resyncs_cursor() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["h", "i"] {
-            s.predict_key(&key_text(ch));
+    fn per_cell_match_game() {
+        use K::{N, T};
+        use PhysicalKey::{ArrowLeft, ArrowRight, Backspace, Enter};
+        #[rustfmt::skip]
+        let cases = [
+            Case { name: "all confirmed drains and resyncs", start: None, keys: &[T("h"), T("i")], server_cursor: (0, 2), cells: &[((0, 0), "h"), ((0, 1), "i")], stats: (2, 0, 0), left: 0, cursor_after: Some((0, 2)) },
+            // The predict-side cursor stays ahead while predictions remain.
+            Case { name: "partial confirm keeps tail", start: None, keys: &[T("h"), T("e"), T("l"), T("l"), T("o")], server_cursor: (0, 2), cells: &[((0, 0), "h"), ((0, 1), "e")], stats: (2, 0, 3), left: 3, cursor_after: Some((0, 5)) },
+            Case { name: "contradiction drops suffix", start: None, keys: &[T("a"), T("b"), T("c")], server_cursor: (0, 1), cells: &[((0, 0), "a"), ((0, 1), "X")], stats: (1, 2, 0), left: 0, cursor_after: Some((0, 1)) },
+            Case { name: "pending preserves predict anchor", start: None, keys: &[T("a"), T("b"), T("c")], server_cursor: (0, 0), cells: &[], stats: (0, 0, 3), left: 3, cursor_after: Some((0, 3)) },
+            Case { name: "empty queue resyncs", start: None, keys: &[], server_cursor: (9, 9), cells: &[], stats: (0, 0, 0), left: 0, cursor_after: Some((9, 9)) },
+            // Multi-codepoint clusters compare whole, not by base scalar.
+            Case { name: "flag", start: None, keys: &[T(FLAG)], server_cursor: (0, 2), cells: &[((0, 0), FLAG)], stats: (1, 0, 0), left: 0, cursor_after: Some((0, 2)) },
+            Case { name: "zwj family", start: None, keys: &[T(FAMILY)], server_cursor: (0, 2), cells: &[((0, 0), FAMILY)], stats: (1, 0, 0), left: 0, cursor_after: Some((0, 2)) },
+            Case { name: "combining mark", start: None, keys: &[T(ACCENTED)], server_cursor: (0, 1), cells: &[((0, 0), ACCENTED)], stats: (1, 0, 0), left: 0, cursor_after: Some((0, 1)) },
+            Case { name: "bare base contradicts combining", start: None, keys: &[T(ACCENTED)], server_cursor: (0, 1), cells: &[((0, 0), "e")], stats: (0, 1, 0), left: 0, cursor_after: None },
+            Case { name: "grapheme pending on blank", start: None, keys: &[T(FLAG)], server_cursor: (0, 0), cells: &[], stats: (0, 0, 1), left: 1, cursor_after: None },
+            // A pending insert at the front blocks the backspace behind it.
+            Case { name: "backspace behind pending insert", start: None, keys: &[T("a"), N(Backspace)], server_cursor: (0, 0), cells: &[], stats: (0, 0, 2), left: 2, cursor_after: None },
+            Case { name: "backspace confirmed by blank", start: Some((0, 6)), keys: &[N(Backspace)], server_cursor: (0, 5), cells: &[], stats: (1, 0, 0), left: 0, cursor_after: None },
+            Case { name: "backspace contradicted by glyph", start: Some((0, 6)), keys: &[N(Backspace)], server_cursor: (0, 6), cells: &[((0, 5), "q")], stats: (0, 1, 0), left: 0, cursor_after: None },
+            Case { name: "newline confirmed by row advance", start: None, keys: &[T("h"), T("i"), N(Enter)], server_cursor: (1, 0), cells: &[((0, 0), "h"), ((0, 1), "i")], stats: (3, 0, 0), left: 0, cursor_after: Some((1, 0)) },
+            Case { name: "newline contradicted when row stays", start: None, keys: &[T("h"), T("i"), N(Enter)], server_cursor: (0, 2), cells: &[((0, 0), "h"), ((0, 1), "i")], stats: (2, 1, 0), left: 0, cursor_after: Some((0, 2)) },
+            Case { name: "left confirmed", start: Some((0, 5)), keys: &[N(ArrowLeft)], server_cursor: (0, 4), cells: &[], stats: (1, 0, 0), left: 0, cursor_after: Some((0, 4)) },
+            Case { name: "left pending while server lags", start: Some((0, 5)), keys: &[N(ArrowLeft)], server_cursor: (0, 5), cells: &[], stats: (0, 0, 1), left: 1, cursor_after: Some((0, 4)) },
+            Case { name: "left contradicted by row jump", start: Some((0, 5)), keys: &[N(ArrowLeft)], server_cursor: (1, 0), cells: &[], stats: (0, 1, 0), left: 0, cursor_after: None },
+            Case { name: "right confirmed", start: Some((0, 3)), keys: &[N(ArrowRight)], server_cursor: (0, 4), cells: &[], stats: (1, 0, 0), left: 0, cursor_after: Some((0, 4)) },
+            Case { name: "right pending while server lags", start: Some((0, 3)), keys: &[N(ArrowRight)], server_cursor: (0, 3), cells: &[], stats: (0, 0, 1), left: 1, cursor_after: Some((0, 4)) },
+        ];
+        for case in cases {
+            let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+            if let Some((row, col)) = case.start {
+                s.set_cursor(row, col);
+            }
+            for key in case.keys {
+                let event = match key {
+                    T(text) => key_text(text),
+                    N(named) => key_named(*named, ModSet::empty()),
+                };
+                // Every cell is a known narrow glyph so arrows can predict.
+                let outcome = s.predict_key_with_grid(&event, |_, _| Some('a'));
+                assert_eq!(outcome, PredictionOutcome::Predicted, "{}", case.name);
+            }
+            let (row, col) = case.server_cursor;
+            let summary =
+                reconcile_terminal_output_per_cell(&mut s, row, col, row_reader(case.cells));
+            let (confirmed, contradicted, pending) = case.stats;
+            assert_eq!(
+                summary,
+                ReconcileStats {
+                    confirmed,
+                    contradicted,
+                    pending
+                },
+                "{}",
+                case.name
+            );
+            assert_eq!(s.pending_len(), case.left, "{}", case.name);
+            if let Some(cursor) = case.cursor_after {
+                assert_eq!(s.cursor(), cursor, "{}", case.name);
+            }
         }
-        assert_eq!(s.pending_len(), 2);
-        // Server has caught up: cells 'h' and 'i' painted; cursor at col 2.
-        let summary = reconcile_terminal_output_per_cell(
-            &mut s,
-            0,
-            2,
-            row_reader(&[((0, 0), "h"), ((0, 1), "i")]),
-        );
-        assert_eq!(summary.confirmed, 2);
-        assert_eq!(summary.contradicted, 0);
-        assert_eq!(summary.pending, 0);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (0, 2));
-    }
-
-    #[test]
-    fn per_cell_partial_confirm_keeps_tail_alive() {
-        // Predicted "hello", server has echoed only "he" so far.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["h", "e", "l", "l", "o"] {
-            s.predict_key(&key_text(ch));
-        }
-        assert_eq!(s.pending_len(), 5);
-        let summary = reconcile_terminal_output_per_cell(
-            &mut s,
-            0,
-            2,
-            row_reader(&[((0, 0), "h"), ((0, 1), "e")]),
-        );
-        assert_eq!(summary.confirmed, 2);
-        assert_eq!(summary.pending, 3);
-        assert_eq!(summary.contradicted, 0);
-        // Three predictions still alive; their cells still blank.
-        assert_eq!(s.pending_len(), 3);
-        let remaining_cols: Vec<u16> = s.pending().map(|p| p.col).collect();
-        assert_eq!(remaining_cols, vec![2, 3, 4]);
-        // Cursor estimate stays ahead — we have predictions in flight.
-        // The predict-side cursor was at (0, 5) and reconcile must not
-        // pull it backward to (0, 2).
-        assert_eq!(s.cursor(), (0, 5));
-    }
-
-    #[test]
-    fn per_cell_contradiction_drops_suffix() {
-        // Predicted "abc", server painted 'X' at col 1 instead.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["a", "b", "c"] {
-            s.predict_key(&key_text(ch));
-        }
-        assert_eq!(s.pending_len(), 3);
-        let summary = reconcile_terminal_output_per_cell(
-            &mut s,
-            0,
-            1,
-            row_reader(&[((0, 0), "a"), ((0, 1), "X")]),
-        );
-        // 'a' confirmed, 'b' contradicted (cell is 'X'), 'c' dropped as
-        // suffix. The contradicted counter records the size of the
-        // dropped suffix (including the contradicting prediction itself).
-        assert_eq!(summary.confirmed, 1);
-        assert_eq!(summary.contradicted, 2);
-        assert_eq!(summary.pending, 0);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (0, 1));
-    }
-
-    // -- multi-codepoint grapheme reconcile (phux-9gw.1.6) ---------------
-
-    #[test]
-    fn per_cell_flag_emoji_confirmed_against_full_cluster() {
-        // 🇺🇸 = U+1F1FA U+1F1F8, predicted as one width-2 insert. The
-        // server paints the full cluster into the base cell; reconcile
-        // must compare the whole cluster, not just the base scalar.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        let flag = "\u{1F1FA}\u{1F1F8}";
-        assert_eq!(s.predict_key(&key_text(flag)), PredictionOutcome::Predicted);
-        assert_eq!(s.pending_len(), 1);
-        let summary =
-            reconcile_terminal_output_per_cell(&mut s, 0, 2, row_reader(&[((0, 0), flag)]));
-        assert_eq!(summary.confirmed, 1);
-        assert_eq!(summary.contradicted, 0);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (0, 2));
-    }
-
-    #[test]
-    fn per_cell_zwj_family_emoji_confirmed_against_full_cluster() {
-        // 👨‍👩‍👧 — man + ZWJ + woman + ZWJ + girl, one width-2 cell.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
-        assert_eq!(
-            s.predict_key(&key_text(family)),
-            PredictionOutcome::Predicted
-        );
-        let summary =
-            reconcile_terminal_output_per_cell(&mut s, 0, 2, row_reader(&[((0, 0), family)]));
-        assert_eq!(summary.confirmed, 1);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (0, 2));
-    }
-
-    #[test]
-    fn per_cell_combining_mark_cluster_confirmed_against_full_cluster() {
-        // "e\u{0301}" — base 'e' plus COMBINING ACUTE ACCENT, one width-1
-        // cell. Reconcile confirms only when the cell carries the full
-        // two-scalar cluster, not a bare 'e'.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        let accented = "e\u{0301}";
-        assert_eq!(
-            s.predict_key(&key_text(accented)),
-            PredictionOutcome::Predicted
-        );
-        let summary =
-            reconcile_terminal_output_per_cell(&mut s, 0, 1, row_reader(&[((0, 0), accented)]));
-        assert_eq!(summary.confirmed, 1);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (0, 1));
-    }
-
-    #[test]
-    fn per_cell_combining_mark_cluster_contradicted_by_bare_base() {
-        // Prediction is the full "e\u{0301}" cluster, but the server
-        // painted only a bare 'e' (combining mark not yet applied). The
-        // clusters differ → contradiction, not confirmation.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        let accented = "e\u{0301}";
-        assert_eq!(
-            s.predict_key(&key_text(accented)),
-            PredictionOutcome::Predicted
-        );
-        let summary =
-            reconcile_terminal_output_per_cell(&mut s, 0, 1, row_reader(&[((0, 0), "e")]));
-        assert_eq!(summary.confirmed, 0);
-        assert_eq!(summary.contradicted, 1);
-        assert_eq!(s.pending_len(), 0);
-    }
-
-    #[test]
-    fn per_cell_grapheme_pending_when_cell_blank() {
-        // Server hasn't echoed the flag yet — cell blank → keep pending.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        let flag = "\u{1F1FA}\u{1F1F8}";
-        s.predict_key(&key_text(flag));
-        let summary = reconcile_terminal_output_per_cell(&mut s, 0, 0, row_reader(&[]));
-        assert_eq!(summary.pending, 1);
-        assert_eq!(s.pending_len(), 1);
-    }
-
-    #[test]
-    fn per_cell_backspace_confirmed_when_cell_blank() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.predict_key(&key_text("a"));
-        let bs = key_named(PhysicalKey::Backspace, ModSet::empty());
-        s.predict_key(&bs);
-        assert_eq!(s.pending_len(), 2);
-        // Server confirms: cell at col 0 is blank, cursor at col 0.
-        let summary = reconcile_terminal_output_per_cell(&mut s, 0, 0, row_reader(&[]));
-        // The 'a' prediction is pending (cell blank → still waiting),
-        // so the front-of-queue is pending and we stop. The backspace
-        // never gets reconciled because we hit pending first.
-        // This is the "Insert prediction is still pending" semantics.
-        // For backspace-after-pending-insert: the predict layer made a
-        // sequence the server hasn't shown yet; we keep both.
-        assert_eq!(summary.confirmed, 0);
-        assert_eq!(summary.pending, 2);
-        assert_eq!(s.pending_len(), 2);
-    }
-
-    #[test]
-    fn per_cell_backspace_alone_confirmed_when_blank() {
-        // Backspace directly: predict layer thinks col 5 is now blank.
-        // Server confirms by painting blank there.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 6);
-        let bs = key_named(PhysicalKey::Backspace, ModSet::empty());
-        s.predict_key(&bs);
-        assert_eq!(s.pending_len(), 1);
-        let summary = reconcile_terminal_output_per_cell(&mut s, 0, 5, row_reader(&[]));
-        assert_eq!(summary.confirmed, 1);
-        assert_eq!(s.pending_len(), 0);
-    }
-
-    #[test]
-    fn per_cell_backspace_contradicted_when_cell_nonblank() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 6);
-        let bs = key_named(PhysicalKey::Backspace, ModSet::empty());
-        s.predict_key(&bs);
-        // Server painted 'q' there instead — the shell wasn't ready for
-        // backspace (e.g. the line had no input to delete).
-        let summary =
-            reconcile_terminal_output_per_cell(&mut s, 0, 6, row_reader(&[((0, 5), "q")]));
-        assert_eq!(summary.contradicted, 1);
-        assert_eq!(s.pending_len(), 0);
-    }
-
-    #[test]
-    fn per_cell_newline_confirmed_when_cursor_advances() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["h", "i"] {
-            s.predict_key(&key_text(ch));
-        }
-        let enter = key_named(PhysicalKey::Enter, ModSet::empty());
-        assert_eq!(s.predict_key(&enter), PredictionOutcome::Predicted);
-        assert_eq!(s.pending_len(), 3);
-        // Server has caught up: 'hi' at row 0, cursor advanced to row 1.
-        let summary = reconcile_terminal_output_per_cell(
-            &mut s,
-            1,
-            0,
-            row_reader(&[((0, 0), "h"), ((0, 1), "i")]),
-        );
-        assert_eq!(summary.confirmed, 3);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (1, 0));
-    }
-
-    #[test]
-    fn per_cell_newline_contradicted_when_cursor_stayed() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["h", "i"] {
-            s.predict_key(&key_text(ch));
-        }
-        let enter = key_named(PhysicalKey::Enter, ModSet::empty());
-        s.predict_key(&enter);
-        // Server painted 'hi' but did not honor Enter (program intercepted).
-        // Cursor still on row 0.
-        let summary = reconcile_terminal_output_per_cell(
-            &mut s,
-            0,
-            2,
-            row_reader(&[((0, 0), "h"), ((0, 1), "i")]),
-        );
-        // First two predictions confirmed; Newline contradicted → drop.
-        assert_eq!(summary.confirmed, 2);
-        assert_eq!(summary.contradicted, 1);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (0, 2));
-    }
-
-    #[test]
-    fn per_cell_empty_queue_resyncs_cursor() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        let summary = reconcile_terminal_output_per_cell(&mut s, 9, 9, row_reader(&[]));
-        assert_eq!(summary.confirmed, 0);
-        assert_eq!(summary.pending, 0);
-        assert_eq!(summary.contradicted, 0);
-        assert_eq!(s.cursor(), (9, 9));
-    }
-
-    #[test]
-    fn per_cell_pending_preserves_predict_cursor_anchor() {
-        // Regression: when predictions remain (server hasn't caught up),
-        // do not overwrite the predict-side cursor with the lagging
-        // authoritative cursor — subsequent inserts must continue to
-        // queue at the predicted position, not snap backward.
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        for ch in ["a", "b", "c"] {
-            s.predict_key(&key_text(ch));
-        }
-        assert_eq!(s.cursor(), (0, 3));
-        let _ = reconcile_terminal_output_per_cell(&mut s, 0, 0, row_reader(&[]));
-        // Cells blank → all predictions still pending → cursor stays at (0, 3).
-        assert_eq!(s.cursor(), (0, 3));
-        assert_eq!(s.pending_len(), 3);
     }
 
     use crate::predict::state::PredictionOutcome;
 
-    // -- cursor-motion arrows (phux-9gw.1.3) ----------------------------
-
-    #[test]
-    fn per_cell_cursor_left_confirmed_when_cursor_matches() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 5);
-        let arrow = key_named(PhysicalKey::ArrowLeft, ModSet::empty());
-        let outcome =
-            s.predict_key_with_grid(
-                &arrow,
-                |r, c| {
-                    if (r, c) == (0, 4) { Some('a') } else { None }
-                },
-            );
-        assert_eq!(outcome, PredictionOutcome::Predicted);
-        // Server catches up: cursor now at (0, 4).
-        let summary = reconcile_terminal_output_per_cell(&mut s, 0, 4, row_reader(&[]));
-        assert_eq!(summary.confirmed, 1);
-        assert_eq!(s.pending_len(), 0);
-        assert_eq!(s.cursor(), (0, 4));
-    }
-
-    #[test]
-    fn per_cell_cursor_left_pending_when_server_lags() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 5);
-        let arrow = key_named(PhysicalKey::ArrowLeft, ModSet::empty());
-        s.predict_key_with_grid(
-            &arrow,
-            |r, c| {
-                if (r, c) == (0, 4) { Some('a') } else { None }
-            },
-        );
-        // Server hasn't applied the motion yet — cursor still at (0, 5).
-        let summary = reconcile_terminal_output_per_cell(&mut s, 0, 5, row_reader(&[]));
-        assert_eq!(summary.pending, 1);
-        assert_eq!(s.pending_len(), 1);
-        // Predict-side cursor stays at the predicted target.
-        assert_eq!(s.cursor(), (0, 4));
-    }
-
-    #[test]
-    fn per_cell_cursor_left_contradicted_when_cursor_diverges() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 5);
-        let arrow = key_named(PhysicalKey::ArrowLeft, ModSet::empty());
-        s.predict_key_with_grid(
-            &arrow,
-            |r, c| {
-                if (r, c) == (0, 4) { Some('a') } else { None }
-            },
-        );
-        // Server jumped to a different row (e.g. shell repainted prompt).
-        let summary = reconcile_terminal_output_per_cell(&mut s, 1, 0, row_reader(&[]));
-        assert_eq!(summary.contradicted, 1);
-        assert_eq!(s.pending_len(), 0);
-    }
-
-    #[test]
-    fn per_cell_cursor_right_confirmed_when_cursor_matches() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 3);
-        let arrow = key_named(PhysicalKey::ArrowRight, ModSet::empty());
-        s.predict_key_with_grid(
-            &arrow,
-            |r, c| {
-                if (r, c) == (0, 3) { Some('x') } else { None }
-            },
-        );
-        let summary = reconcile_terminal_output_per_cell(&mut s, 0, 4, row_reader(&[]));
-        assert_eq!(summary.confirmed, 1);
-        assert_eq!(s.cursor(), (0, 4));
-    }
-
-    #[test]
-    fn per_cell_cursor_right_pending_when_server_lags() {
-        let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
-        s.set_cursor(0, 3);
-        let arrow = key_named(PhysicalKey::ArrowRight, ModSet::empty());
-        s.predict_key_with_grid(
-            &arrow,
-            |r, c| {
-                if (r, c) == (0, 3) { Some('x') } else { None }
-            },
-        );
-        // Server hasn't seen the arrow yet — cursor still at (0, 3).
-        let summary = reconcile_terminal_output_per_cell(&mut s, 0, 3, row_reader(&[]));
-        assert_eq!(summary.pending, 1);
-        assert_eq!(s.cursor(), (0, 4));
-    }
-
-    // -- adaptive tentative display (phux-pxaj, reshaped by ADR-0090) ---
+    // -- adaptive tentative display (ADR-0090) ---
 
     /// Type one char and reconcile against a cell the server painted
     /// differently — a single contradicting per-cell pass driven entirely

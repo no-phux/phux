@@ -344,19 +344,88 @@ fn kernel_with_profile(mode: ReadyMode, profile: BootstrapProfile) -> SessionKer
     SessionKernel::new(FakeAdapter { ready_mode: mode }, profile)
 }
 
+const fn attach_started(attach_id: u32, terminals: &[ResourceId]) -> KernelInput<'_> {
+    KernelInput::AttachStarted {
+        attach_id,
+        terminals,
+    }
+}
+
+const fn attach_ready<'a>(attach_id: u32) -> KernelInput<'a> {
+    KernelInput::AttachReady { attach_id }
+}
+
+const fn begin_input(
+    terminal_id: &ResourceId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    profile: BootstrapStreamProfile,
+    geometry: CanonicalGeometry,
+    base_seq: u64,
+) -> KernelInput<'_> {
+    KernelInput::BootstrapBegin {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        profile,
+        geometry,
+        base_seq,
+    }
+}
+
+const fn chunk<'a>(
+    terminal_id: &'a ResourceId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    chunk_seq: u32,
+    payload: &'a [u8],
+) -> KernelInput<'a> {
+    KernelInput::BootstrapChunk {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        chunk_seq,
+        payload,
+    }
+}
+
+const fn ready<'a>(
+    terminal_id: &'a ResourceId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    history_cursor: Option<&'a [u8]>,
+) -> KernelInput<'a> {
+    KernelInput::BootstrapReady {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        history_cursor,
+    }
+}
+
+const fn output<'a>(
+    terminal_id: &'a ResourceId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+    seq: u64,
+    payload: &'a [u8],
+) -> KernelInput<'a> {
+    KernelInput::ResourceOutput {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        seq,
+        payload,
+    }
+}
+
 #[test]
 fn release_terminal_preserves_initial_attach_inventory_and_barrier() {
     let mut kernel = kernel(ReadyMode::ChunkFirst);
     let id = terminal(1);
     let mut effects = EffectBuffer::new();
     kernel
-        .update(
-            KernelInput::AttachStarted {
-                attach_id: 10,
-                terminals: std::slice::from_ref(&id),
-            },
-            &mut effects,
-        )
+        .update(attach_started(10, std::slice::from_ref(&id)), &mut effects)
         .unwrap();
     assert!(!kernel.release_terminal(&id));
     assert!(kernel.active_attach_contains(&id));
@@ -373,9 +442,7 @@ fn release_terminal_preserves_initial_attach_inventory_and_barrier() {
         .unwrap();
     assert!(!kernel.release_terminal(&id));
     assert!(kernel.closed.contains(&id));
-    kernel
-        .update(KernelInput::AttachReady { attach_id: 10 }, &mut effects)
-        .unwrap();
+    kernel.update(attach_ready(10), &mut effects).unwrap();
     kernel.release_active_attach();
     assert!(kernel.release_terminal(&id));
     assert!(!kernel.closed.contains(&id));
@@ -387,25 +454,13 @@ fn explicit_detach_cannot_bypass_initial_barrier_but_withdraws_released_particip
     let id = terminal(1);
     let mut effects = EffectBuffer::new();
     kernel
-        .update(
-            KernelInput::AttachStarted {
-                attach_id: 10,
-                terminals: std::slice::from_ref(&id),
-            },
-            &mut effects,
-        )
+        .update(attach_started(10, std::slice::from_ref(&id)), &mut effects)
         .unwrap();
     assert!(!kernel.detach_terminal(&id));
     assert!(kernel.active_attach_contains(&id));
-    assert!(
-        kernel
-            .update(KernelInput::AttachReady { attach_id: 10 }, &mut effects)
-            .is_err()
-    );
+    assert!(kernel.update(attach_ready(10), &mut effects).is_err());
     publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
-    kernel
-        .update(KernelInput::AttachReady { attach_id: 10 }, &mut effects)
-        .unwrap();
+    kernel.update(attach_ready(10), &mut effects).unwrap();
     assert!(!kernel.release_terminal(&id));
     effects.clear();
     assert!(kernel.detach_terminal(&id));
@@ -547,14 +602,14 @@ fn begin(
 ) {
     kernel
         .update(
-            KernelInput::BootstrapBegin {
+            begin_input(
                 terminal_id,
                 stream_id,
                 bootstrap_id,
-                profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                geometry: geometry(),
+                BootstrapStreamProfile::SynthesizedVtRaw,
+                geometry(),
                 base_seq,
-            },
+            ),
             effects,
         )
         .unwrap();
@@ -572,26 +627,20 @@ fn bootstrap_staging_rejects_many_legal_chunks_before_excess_allocation() {
     for chunk_seq in 0..u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap() {
         kernel
             .update(
-                KernelInput::BootstrapChunk {
-                    terminal_id: &id,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq,
-                    payload: &[],
-                },
+                chunk(&id, stream_id, bootstrap_id, chunk_seq, &[]),
                 &mut effects,
             )
             .expect("individually legal bounded chunk");
     }
     let error = kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &id,
+            chunk(
+                &id,
                 stream_id,
                 bootstrap_id,
-                chunk_seq: u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap(),
-                payload: &[],
-            },
+                u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap(),
+                &[],
+            ),
             &mut effects,
         )
         .expect_err("aggregate chunk ceiling must terminate staging");
@@ -639,13 +688,7 @@ fn bootstrap_staging_byte_ceiling_is_connection_wide() {
 
     let error = kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &second,
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: b"x",
-            },
+            chunk(&second, stream_id, bootstrap_id, 0, b"x"),
             &mut effects,
         )
         .expect_err("another generation may not exceed the connection budget");
@@ -679,13 +722,7 @@ fn bootstrap_staging_ceiling_counts_engine_and_pending_effect_capacity() {
 
     let error = kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: b"bootstrap-effects",
-            },
+            chunk(&id, stream_id, bootstrap_id, 0, b"bootstrap-effects"),
             &mut effects,
         )
         .expect_err("engine and pending effects count against retained capacity");
@@ -704,13 +741,7 @@ fn bootstrap_staging_lifetime_is_checked_before_adapter_input() {
     let error = kernel
         .update_at(
             MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1,
-            KernelInput::BootstrapChunk {
-                terminal_id: &id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: b"not-applied",
-            },
+            chunk(&id, stream_id, bootstrap_id, 0, b"not-applied"),
             &mut effects,
         )
         .expect_err("expired staging must fail");
@@ -729,12 +760,7 @@ fn bootstrap_staging_lifetime_is_checked_at_protocol_ready() {
     let error = kernel
         .update_at(
             MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1,
-            KernelInput::BootstrapReady {
-                terminal_id: &id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
+            ready(&id, stream_id, bootstrap_id, None),
             &mut effects,
         )
         .expect_err("expired staging must fail at READY too");
@@ -762,41 +788,27 @@ fn progressive_native_ready_requires_cursor_until_finish_is_authenticated() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::BootstrapBegin {
-                terminal_id: &id,
+            begin_input(
+                &id,
                 stream_id,
                 bootstrap_id,
-                profile: BootstrapStreamProfile::NativeState {
+                BootstrapStreamProfile::NativeState {
                     codec: EngineCodec::LibghosttySnapshotV1,
                 },
-                geometry: geometry(),
-                base_seq: 13,
-            },
+                geometry(),
+                13,
+            ),
             &mut effects,
         )
         .expect("begin progressive native bootstrap");
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: READY_MARKER,
-            },
+            chunk(&id, stream_id, bootstrap_id, 0, READY_MARKER),
             &mut effects,
         )
         .expect("engine READY");
     let error = kernel
-        .update(
-            KernelInput::BootstrapReady {
-                terminal_id: &id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-            &mut effects,
-        )
+        .update(ready(&id, stream_id, bootstrap_id, None), &mut effects)
         .expect_err("v1 must receive and authenticate FINISH through history");
     assert!(matches!(
         error,
@@ -840,14 +852,14 @@ fn apply_decoded_native_frame(
             base_seq,
         } => kernel
             .update(
-                KernelInput::BootstrapBegin {
-                    terminal_id: &terminal_id,
+                begin_input(
+                    &terminal_id,
                     stream_id,
                     bootstrap_id,
                     profile,
-                    geometry: CanonicalGeometry::new(cols, rows).expect("wire geometry"),
+                    CanonicalGeometry::new(cols, rows).expect("wire geometry"),
                     base_seq,
-                },
+                ),
                 effects,
             )
             .expect("wire bootstrap begin"),
@@ -859,13 +871,7 @@ fn apply_decoded_native_frame(
             payload,
         } => kernel
             .update(
-                KernelInput::BootstrapChunk {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq,
-                    payload: &payload,
-                },
+                chunk(&terminal_id, stream_id, bootstrap_id, chunk_seq, &payload),
                 effects,
             )
             .expect("wire bootstrap chunk"),
@@ -876,12 +882,12 @@ fn apply_decoded_native_frame(
             history_cursor,
         } => kernel
             .update(
-                KernelInput::BootstrapReady {
-                    terminal_id: &terminal_id,
+                ready(
+                    &terminal_id,
                     stream_id,
                     bootstrap_id,
-                    history_cursor: history_cursor.as_deref(),
-                },
+                    history_cursor.as_deref(),
+                ),
                 effects,
             )
             .expect("wire bootstrap READY"),
@@ -893,13 +899,7 @@ fn apply_decoded_native_frame(
             bytes,
         } => kernel
             .update(
-                KernelInput::ResourceOutput {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    seq,
-                    payload: &bytes,
-                },
+                output(&terminal_id, stream_id, bootstrap_id, seq, &bytes),
                 effects,
             )
             .expect("wire live output"),
@@ -1157,13 +1157,7 @@ fn push_ready_transcript(
     for (chunk_seq, payload) in (0_u32..).zip(chunks) {
         kernel
             .update(
-                KernelInput::BootstrapChunk {
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq,
-                    payload,
-                },
+                chunk(terminal_id, stream_id, bootstrap_id, chunk_seq, payload),
                 effects,
             )
             .unwrap();
@@ -1178,15 +1172,7 @@ fn protocol_ready(
     effects: &mut EffectBuffer,
 ) {
     kernel
-        .update(
-            KernelInput::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-            effects,
-        )
+        .update(ready(terminal_id, stream_id, bootstrap_id, None), effects)
         .unwrap();
 }
 
@@ -1230,12 +1216,7 @@ fn publish_direct_with_history(
     push_ready_transcript(kernel, terminal_id, stream_id, bootstrap_id, effects);
     kernel
         .update(
-            KernelInput::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: Some(cursor),
-            },
+            ready(terminal_id, stream_id, bootstrap_id, Some(cursor)),
             effects,
         )
         .unwrap();
@@ -1252,10 +1233,7 @@ fn dual_ready_orders_and_fragmentation_hold_first_damage() {
 
         kernel
             .update(
-                KernelInput::AttachStarted {
-                    attach_id: 7,
-                    terminals: std::slice::from_ref(&terminal_id),
-                },
+                attach_started(7, std::slice::from_ref(&terminal_id)),
                 &mut effects,
             )
             .unwrap();
@@ -1304,9 +1282,7 @@ fn dual_ready_orders_and_fragmentation_hold_first_damage() {
         assert!(published.engine().transcript.ends_with(READY_MARKER));
         assert!(effects.is_empty(), "publication is behind ATTACH_READY");
 
-        kernel
-            .update(KernelInput::AttachReady { attach_id: 7 }, &mut effects)
-            .unwrap();
+        kernel.update(attach_ready(7), &mut effects).unwrap();
         assert_eq!(
             effects.as_slice(),
             &[
@@ -1341,24 +1317,12 @@ fn chunk_sequence_rejects_duplicates_and_gaps_without_applying() {
 
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: b"first",
-            },
+            chunk(&terminal_id, stream_id, bootstrap_id, 0, b"first"),
             &mut effects,
         )
         .unwrap();
     let duplicate = kernel.update(
-        KernelInput::BootstrapChunk {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 0,
-            payload: b"duplicate",
-        },
+        chunk(&terminal_id, stream_id, bootstrap_id, 0, b"duplicate"),
         &mut effects,
     );
     assert!(matches!(
@@ -1369,13 +1333,7 @@ fn chunk_sequence_rejects_duplicates_and_gaps_without_applying() {
         })
     ));
     let gap = kernel.update(
-        KernelInput::BootstrapChunk {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            chunk_seq: 2,
-            payload: b"gap",
-        },
+        chunk(&terminal_id, stream_id, bootstrap_id, 2, b"gap"),
         &mut effects,
     );
     assert!(matches!(
@@ -1410,13 +1368,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
 
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 42,
-                payload: b"first-live",
-            },
+            output(&terminal_id, stream_id, bootstrap_id, 42, b"first-live"),
             &mut effects,
         )
         .unwrap();
@@ -1429,13 +1381,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         .clone();
 
     let duplicate = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq: 42,
-            payload: b"duplicate",
-        },
+        output(&terminal_id, stream_id, bootstrap_id, 42, b"duplicate"),
         &mut effects,
     );
     assert!(matches!(
@@ -1446,13 +1392,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         })
     ));
     let gap = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq: 44,
-            payload: b"gap",
-        },
+        output(&terminal_id, stream_id, bootstrap_id, 44, b"gap"),
         &mut effects,
     );
     assert!(matches!(
@@ -1463,13 +1403,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         })
     ));
     let wrong_stream = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal_id,
-            stream_id: stream(999),
-            bootstrap_id,
-            seq: 43,
-            payload: b"wrong-stream",
-        },
+        output(&terminal_id, stream(999), bootstrap_id, 43, b"wrong-stream"),
         &mut effects,
     );
     assert!(matches!(
@@ -1477,13 +1411,13 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         Err(KernelError::GenerationMismatch { .. })
     ));
     let wrong_bootstrap = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal_id,
+        output(
+            &terminal_id,
             stream_id,
-            bootstrap_id: bootstrap(999),
-            seq: 43,
-            payload: b"wrong-bootstrap",
-        },
+            bootstrap(999),
+            43,
+            b"wrong-bootstrap",
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -1492,13 +1426,13 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
     ));
     let wrong_terminal_id = terminal(999);
     let wrong_terminal = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &wrong_terminal_id,
+        output(
+            &wrong_terminal_id,
             stream_id,
             bootstrap_id,
-            seq: 43,
-            payload: b"wrong-terminal",
-        },
+            43,
+            b"wrong-terminal",
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -1538,13 +1472,7 @@ fn raw_sequence_ids_and_tombstones_are_exact() {
         InputEligibility::Ineligible(InputBlockReason::FrozenReplica)
     );
     let stale = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq: 43,
-            payload: b"stale",
-        },
+        output(&terminal_id, stream_id, bootstrap_id, 43, b"stale"),
         &mut effects,
     );
     assert!(matches!(stale, Err(KernelError::RetiredGeneration { .. })));
@@ -1631,13 +1559,13 @@ fn published_history_is_generation_bound_and_interleaves_without_advancing_live_
 
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
+            output(
+                &terminal_id,
                 stream_id,
                 bootstrap_id,
-                seq: 41,
-                payload: b"live-between-history",
-            },
+                41,
+                b"live-between-history",
+            ),
             &mut effects,
         )
         .unwrap();
@@ -1923,16 +1851,16 @@ fn grown_history_limits_survive_busy_then_reach_authenticated_finish() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::BootstrapBegin {
-                terminal_id: &terminal_id,
+            begin_input(
+                &terminal_id,
                 stream_id,
                 bootstrap_id,
-                profile: BootstrapStreamProfile::NativeState {
+                BootstrapStreamProfile::NativeState {
                     codec: EngineCodec::LibghosttySnapshotV1,
                 },
-                geometry: geometry(),
-                base_seq: 50,
-            },
+                geometry(),
+                50,
+            ),
             &mut effects,
         )
         .unwrap();
@@ -1945,12 +1873,7 @@ fn grown_history_limits_survive_busy_then_reach_authenticated_finish() {
     );
     kernel
         .update(
-            KernelInput::BootstrapReady {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: Some(b"grown-cursor"),
-            },
+            ready(&terminal_id, stream_id, bootstrap_id, Some(b"grown-cursor")),
             &mut effects,
         )
         .unwrap();
@@ -2104,13 +2027,13 @@ fn history_engine_failure_invalidates_only_history_and_live_output_continues() {
     effects.clear();
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
+            output(
+                &terminal_id,
                 stream_id,
                 bootstrap_id,
-                seq: 74,
-                payload: b"live-after-history-error",
-            },
+                74,
+                b"live-after-history-error",
+            ),
             &mut effects,
         )
         .unwrap();
@@ -2176,13 +2099,13 @@ fn oversized_history_rejection_ends_history_without_retiring_live_generation() {
 
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
+            output(
+                &terminal_id,
                 stream_id,
                 bootstrap_id,
-                seq: 81,
-                payload: b"live-after-limit",
-            },
+                81,
+                b"live-after-limit",
+            ),
             &mut effects,
         )
         .unwrap();
@@ -2223,13 +2146,13 @@ fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
     );
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
+            chunk(
+                &terminal_id,
                 stream_id,
-                bootstrap_id: new_bootstrap,
-                chunk_seq: 0,
-                payload: b"replacement-prefix",
-            },
+                new_bootstrap,
+                0,
+                b"replacement-prefix",
+            ),
             &mut effects,
         )
         .unwrap();
@@ -2240,25 +2163,13 @@ fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
 
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id: old_bootstrap,
-                seq: 1,
-                payload: b"old-still-live",
-            },
+            output(&terminal_id, stream_id, old_bootstrap, 1, b"old-still-live"),
             &mut effects,
         )
         .unwrap();
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id: new_bootstrap,
-                chunk_seq: 1,
-                payload: READY_MARKER,
-            },
+            chunk(&terminal_id, stream_id, new_bootstrap, 1, READY_MARKER),
             &mut effects,
         )
         .unwrap();
@@ -2289,13 +2200,7 @@ fn replacement_is_atomic_and_old_view_remains_live_until_swap() {
     );
 
     let stale = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal_id,
-            stream_id,
-            bootstrap_id: old_bootstrap,
-            seq: 2,
-            payload: b"stale-old",
-        },
+        output(&terminal_id, stream_id, old_bootstrap, 2, b"stale-old"),
         &mut effects,
     );
     assert!(matches!(stale, Err(KernelError::RetiredGeneration { .. })));
@@ -2311,10 +2216,7 @@ fn two_pane_attach_barrier_accepts_one_ready_and_one_close() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::AttachStarted {
-                attach_id: 8,
-                terminals: &[ready_terminal.clone(), closed_terminal.clone()],
-            },
+            attach_started(8, &[ready_terminal.clone(), closed_terminal.clone()]),
             &mut effects,
         )
         .unwrap();
@@ -2348,9 +2250,7 @@ fn two_pane_attach_barrier_accepts_one_ready_and_one_close() {
         })]
     );
 
-    kernel
-        .update(KernelInput::AttachReady { attach_id: 8 }, &mut effects)
-        .unwrap();
+    kernel.update(attach_ready(8), &mut effects).unwrap();
     assert_eq!(
         effects.as_slice(),
         &[
@@ -2385,14 +2285,14 @@ fn selected_synth_profile_is_explicit_and_enforced() {
     );
 
     let mismatched = kernel.update(
-        KernelInput::BootstrapBegin {
-            terminal_id: &terminal_id,
-            stream_id: stream(16),
-            bootstrap_id: bootstrap(27),
-            profile: BootstrapStreamProfile::SynthesizedVtStateSync,
-            geometry: geometry(),
-            base_seq: 0,
-        },
+        begin_input(
+            &terminal_id,
+            stream(16),
+            bootstrap(27),
+            BootstrapStreamProfile::SynthesizedVtStateSync,
+            geometry(),
+            0,
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -2414,23 +2314,20 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::AttachStarted {
-                attach_id: 73,
-                terminals: std::slice::from_ref(&terminal_id),
-            },
+            attach_started(73, std::slice::from_ref(&terminal_id)),
             &mut effects,
         )
         .unwrap();
 
     let wrong_profile = kernel.update(
-        KernelInput::BootstrapBegin {
-            terminal_id: &terminal_id,
+        begin_input(
+            &terminal_id,
             stream_id,
             bootstrap_id,
-            profile: BootstrapStreamProfile::SynthesizedVtStateSync,
-            geometry: geometry(),
-            base_seq: 100,
-        },
+            BootstrapStreamProfile::SynthesizedVtStateSync,
+            geometry(),
+            100,
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -2458,13 +2355,13 @@ fn host_boundary_rejects_profile_and_pre_ready_data_with_typed_errors() {
     assert!(staging_before.engine().transcript.is_empty());
     assert!(effects.is_empty());
     let live_before_ready = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal_id,
+        output(
+            &terminal_id,
             stream_id,
             bootstrap_id,
-            seq: 101,
-            payload: b"\xfflive-before-ready",
-        },
+            101,
+            b"\xfflive-before-ready",
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -2526,14 +2423,14 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::BootstrapBegin {
-                terminal_id: &terminal_id,
+            begin_input(
+                &terminal_id,
                 stream_id,
                 bootstrap_id,
                 profile,
-                geometry: geometry(),
-                base_seq: 900,
-            },
+                geometry(),
+                900,
+            ),
             &mut effects,
         )
         .unwrap();
@@ -2544,13 +2441,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     for (chunk_seq, payload) in [(0, checkpoint_a), (1, checkpoint_b)] {
         kernel
             .update(
-                KernelInput::BootstrapChunk {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq,
-                    payload,
-                },
+                chunk(&terminal_id, stream_id, bootstrap_id, chunk_seq, payload),
                 &mut effects,
             )
             .unwrap();
@@ -2558,12 +2449,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     }
     kernel
         .update(
-            KernelInput::BootstrapReady {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: Some(b"cursor-0"),
-            },
+            ready(&terminal_id, stream_id, bootstrap_id, Some(b"cursor-0")),
             &mut effects,
         )
         .unwrap();
@@ -2589,13 +2475,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     let live_b: &[u8] = b"\xfdlive-b\0";
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 901,
-                payload: live_a,
-            },
+            output(&terminal_id, stream_id, bootstrap_id, 901, live_a),
             &mut effects,
         )
         .unwrap();
@@ -2622,13 +2502,7 @@ fn selected_native_host_preserves_opaque_bytes_and_lifecycle_order() {
     )));
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 902,
-                payload: live_b,
-            },
+            output(&terminal_id, stream_id, bootstrap_id, 902, live_b),
             &mut effects,
         )
         .unwrap();
@@ -2661,16 +2535,16 @@ fn published_recording_native(
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::BootstrapBegin {
+            begin_input(
                 terminal_id,
                 stream_id,
                 bootstrap_id,
-                profile: BootstrapStreamProfile::NativeState {
+                BootstrapStreamProfile::NativeState {
                     codec: EngineCodec::LibghosttyCheckpointV2,
                 },
-                geometry: geometry(),
-                base_seq: 10,
-            },
+                geometry(),
+                10,
+            ),
             &mut effects,
         )
         .unwrap();
@@ -2680,25 +2554,14 @@ fn published_recording_native(
     ] {
         kernel
             .update(
-                KernelInput::BootstrapChunk {
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq,
-                    payload,
-                },
+                chunk(terminal_id, stream_id, bootstrap_id, chunk_seq, payload),
                 &mut effects,
             )
             .unwrap();
     }
     kernel
         .update(
-            KernelInput::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: Some(b"cursor-0"),
-            },
+            ready(terminal_id, stream_id, bootstrap_id, Some(b"cursor-0")),
             &mut effects,
         )
         .unwrap();
@@ -2784,13 +2647,7 @@ fn engine_effects_are_drained_after_apply_in_order() {
 
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 1,
-                payload: b"effects",
-            },
+            output(&terminal_id, stream_id, bootstrap_id, 1, b"effects"),
             &mut effects,
         )
         .unwrap();
@@ -2818,13 +2675,7 @@ fn engine_effects_are_drained_after_apply_in_order() {
 
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 2,
-                payload: b"plain",
-            },
+            output(&terminal_id, stream_id, bootstrap_id, 2, b"plain"),
             &mut effects,
         )
         .unwrap();
@@ -2841,10 +2692,7 @@ fn input_gate_requires_published_replica_and_attach_ready() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::AttachStarted {
-                attach_id: 9,
-                terminals: std::slice::from_ref(&terminal_id),
-            },
+            attach_started(9, std::slice::from_ref(&terminal_id)),
             &mut effects,
         )
         .unwrap();
@@ -2895,9 +2743,7 @@ fn input_gate_requires_published_replica_and_attach_ready() {
         })
     ));
 
-    kernel
-        .update(KernelInput::AttachReady { attach_id: 9 }, &mut effects)
-        .unwrap();
+    kernel.update(attach_ready(9), &mut effects).unwrap();
     assert_eq!(
         kernel.input_eligibility(&terminal_id),
         InputEligibility::Eligible {
@@ -2941,13 +2787,7 @@ fn effect_buffer_reuses_high_water_capacity() {
     );
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 1,
-                payload: b"effects",
-            },
+            output(&terminal_id, stream_id, bootstrap_id, 1, b"effects"),
             &mut effects,
         )
         .unwrap();
@@ -2961,13 +2801,7 @@ fn effect_buffer_reuses_high_water_capacity() {
 
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 2,
-                payload: b"plain",
-            },
+            output(&terminal_id, stream_id, bootstrap_id, 2, b"plain"),
             &mut effects,
         )
         .unwrap();
@@ -2989,14 +2823,14 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
     let mut effects = EffectBuffer::new();
     state_sync_kernel
         .update(
-            KernelInput::BootstrapBegin {
-                terminal_id: &terminal_id,
+            begin_input(
+                &terminal_id,
                 stream_id,
                 bootstrap_id,
-                profile: BootstrapStreamProfile::SynthesizedVtStateSync,
-                geometry: geometry(),
-                base_seq: 0,
-            },
+                BootstrapStreamProfile::SynthesizedVtStateSync,
+                geometry(),
+                0,
+            ),
             &mut effects,
         )
         .unwrap();
@@ -3017,13 +2851,7 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
 
     state_sync_kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 1,
-                payload: b"state-sync",
-            },
+            output(&terminal_id, stream_id, bootstrap_id, 1, b"state-sync"),
             &mut effects,
         )
         .unwrap();
@@ -3057,13 +2885,7 @@ fn state_sync_ack_is_generation_bound_and_raw_has_no_ack() {
     );
     raw_kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &raw_terminal,
-                stream_id: raw_stream,
-                bootstrap_id: raw_bootstrap,
-                seq: 1,
-                payload: b"raw",
-            },
+            output(&raw_terminal, raw_stream, raw_bootstrap, 1, b"raw"),
             &mut effects,
         )
         .unwrap();
@@ -3093,13 +2915,13 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         &mut effects,
     );
     let chunk_error = kernel.update(
-        KernelInput::BootstrapChunk {
-            terminal_id: &chunk_terminal,
-            stream_id: chunk_stream,
-            bootstrap_id: chunk_bootstrap,
-            chunk_seq: 0,
-            payload: b"mutate-then-error",
-        },
+        chunk(
+            &chunk_terminal,
+            chunk_stream,
+            chunk_bootstrap,
+            0,
+            b"mutate-then-error",
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -3122,13 +2944,7 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         })]
     );
     let chunk_retry = kernel.update(
-        KernelInput::BootstrapChunk {
-            terminal_id: &chunk_terminal,
-            stream_id: chunk_stream,
-            bootstrap_id: chunk_bootstrap,
-            chunk_seq: 0,
-            payload: b"retry",
-        },
+        chunk(&chunk_terminal, chunk_stream, chunk_bootstrap, 0, b"retry"),
         &mut effects,
     );
     assert!(matches!(
@@ -3149,23 +2965,18 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
     );
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &finish_terminal,
-                stream_id: finish_stream,
-                bootstrap_id: finish_bootstrap,
-                chunk_seq: 0,
-                payload: b"<FINISH_ERROR>",
-            },
+            chunk(
+                &finish_terminal,
+                finish_stream,
+                finish_bootstrap,
+                0,
+                b"<FINISH_ERROR>",
+            ),
             &mut effects,
         )
         .unwrap();
     let finish_error = kernel.update(
-        KernelInput::BootstrapReady {
-            terminal_id: &finish_terminal,
-            stream_id: finish_stream,
-            bootstrap_id: finish_bootstrap,
-            history_cursor: None,
-        },
+        ready(&finish_terminal, finish_stream, finish_bootstrap, None),
         &mut effects,
     );
     assert!(matches!(
@@ -3179,12 +2990,7 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
             .is_some()
     );
     let finish_retry = kernel.update(
-        KernelInput::BootstrapReady {
-            terminal_id: &finish_terminal,
-            stream_id: finish_stream,
-            bootstrap_id: finish_bootstrap,
-            history_cursor: None,
-        },
+        ready(&finish_terminal, finish_stream, finish_bootstrap, None),
         &mut effects,
     );
     assert!(matches!(
@@ -3204,13 +3010,13 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         &mut effects,
     );
     let live_error = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &live_terminal,
-            stream_id: live_stream,
-            bootstrap_id: live_bootstrap,
-            seq: 1,
-            payload: b"mutate-then-error",
-        },
+        output(
+            &live_terminal,
+            live_stream,
+            live_bootstrap,
+            1,
+            b"mutate-then-error",
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -3239,13 +3045,7 @@ fn mutating_adapter_errors_retire_staging_and_published_replicas() {
         ]
     );
     let live_retry = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &live_terminal,
-            stream_id: live_stream,
-            bootstrap_id: live_bootstrap,
-            seq: 1,
-            payload: b"retry",
-        },
+        output(&live_terminal, live_stream, live_bootstrap, 1, b"retry"),
         &mut effects,
     );
     assert!(matches!(
@@ -3271,13 +3071,13 @@ fn bootstrap_effects_wait_for_publication_and_suppress_send_and_damage() {
     );
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
+            chunk(
+                &terminal_id,
                 stream_id,
                 bootstrap_id,
-                chunk_seq: 0,
-                payload: b"bootstrap-effects",
-            },
+                0,
+                b"bootstrap-effects",
+            ),
             &mut effects,
         )
         .unwrap();
@@ -3285,13 +3085,7 @@ fn bootstrap_effects_wait_for_publication_and_suppress_send_and_damage() {
 
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 1,
-                payload: READY_MARKER,
-            },
+            chunk(&terminal_id, stream_id, bootstrap_id, 1, READY_MARKER),
             &mut effects,
         )
         .unwrap();
@@ -3340,10 +3134,7 @@ fn replacement_attach_close_flushes_pending_removal_at_barrier() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::AttachStarted {
-                attach_id: 40,
-                terminals: std::slice::from_ref(&terminal_id),
-            },
+            attach_started(40, std::slice::from_ref(&terminal_id)),
             &mut effects,
         )
         .unwrap();
@@ -3355,16 +3146,11 @@ fn replacement_attach_close_flushes_pending_removal_at_barrier() {
         0,
         &mut effects,
     );
-    kernel
-        .update(KernelInput::AttachReady { attach_id: 40 }, &mut effects)
-        .unwrap();
+    kernel.update(attach_ready(40), &mut effects).unwrap();
 
     kernel
         .update(
-            KernelInput::AttachStarted {
-                attach_id: 41,
-                terminals: std::slice::from_ref(&terminal_id),
-            },
+            attach_started(41, std::slice::from_ref(&terminal_id)),
             &mut effects,
         )
         .unwrap();
@@ -3389,9 +3175,7 @@ fn replacement_attach_close_flushes_pending_removal_at_barrier() {
             reason: CloseReason::Unknown,
         })]
     );
-    kernel
-        .update(KernelInput::AttachReady { attach_id: 41 }, &mut effects)
-        .unwrap();
+    kernel.update(attach_ready(41), &mut effects).unwrap();
     assert_eq!(
         effects.as_slice(),
         &[
@@ -3437,13 +3221,13 @@ fn replacement_effects_are_hidden_until_swap_and_discarded_on_retirement() {
     );
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
+            chunk(
+                &terminal_id,
                 stream_id,
-                bootstrap_id: cancelled_bootstrap,
-                chunk_seq: 0,
-                payload: b"bootstrap-effects",
-            },
+                cancelled_bootstrap,
+                0,
+                b"bootstrap-effects",
+            ),
             &mut effects,
         )
         .unwrap();
@@ -3481,26 +3265,26 @@ fn replacement_effects_are_hidden_until_swap_and_discarded_on_retirement() {
     );
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
+            chunk(
+                &terminal_id,
                 stream_id,
-                bootstrap_id: replacement_bootstrap,
-                chunk_seq: 0,
-                payload: b"bootstrap-effects",
-            },
+                replacement_bootstrap,
+                0,
+                b"bootstrap-effects",
+            ),
             &mut effects,
         )
         .unwrap();
     assert!(effects.is_empty());
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
+            chunk(
+                &terminal_id,
                 stream_id,
-                bootstrap_id: replacement_bootstrap,
-                chunk_seq: 1,
-                payload: READY_MARKER,
-            },
+                replacement_bootstrap,
+                1,
+                READY_MARKER,
+            ),
             &mut effects,
         )
         .unwrap();
@@ -3593,13 +3377,7 @@ fn gap_resync_replacement_generation_resets_the_live_sequence() {
         publish_direct(&mut kernel, &terminal_id, stream_id, old, 41, &mut effects);
         kernel
             .update(
-                KernelInput::ResourceOutput {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id: old,
-                    seq: 42,
-                    payload: b"before-the-gap",
-                },
+                output(&terminal_id, stream_id, old, 42, b"before-the-gap"),
                 &mut effects,
             )
             .unwrap();
@@ -3642,13 +3420,7 @@ fn gap_resync_replacement_generation_resets_the_live_sequence() {
 
         kernel
             .update(
-                KernelInput::ResourceOutput {
-                    terminal_id: &terminal_id,
-                    stream_id,
-                    bootstrap_id: replacement,
-                    seq: resync_base + 1,
-                    payload: b"after-the-gap",
-                },
+                output(&terminal_id, stream_id, replacement, resync_base + 1, b"after-the-gap"),
                 &mut effects,
             )
             .unwrap_or_else(|err| {
@@ -3663,13 +3435,7 @@ fn gap_resync_replacement_generation_resets_the_live_sequence() {
         // ignorable, not fatal: `engine_route` folds `RetiredGeneration` into
         // "ignored", and any other error would detach the client.
         let stale = kernel.update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
-                stream_id,
-                bootstrap_id: old,
-                seq: 43,
-                payload: b"stale",
-            },
+            output(&terminal_id, stream_id, old, 43, b"stale"),
             &mut effects,
         );
         assert!(
@@ -3762,10 +3528,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::AttachStarted {
-                attach_id: 1,
-                terminals: std::slice::from_ref(&parent),
-            },
+            attach_started(1, std::slice::from_ref(&parent)),
             &mut effects,
         )
         .unwrap();
@@ -3795,9 +3558,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
         0,
         &mut effects,
     );
-    kernel
-        .update(KernelInput::AttachReady { attach_id: 1 }, &mut effects)
-        .unwrap();
+    kernel.update(attach_ready(1), &mut effects).unwrap();
 
     agent_begin(
         &mut kernel,
@@ -3808,7 +3569,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
         &mut effects,
     )
     .unwrap();
-    let chunk = format!(
+    let records = format!(
         "{}{}",
         agent_line(
             1,
@@ -3819,27 +3580,13 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     );
     kernel
         .update(
-            KernelInput::BootstrapChunk {
-                terminal_id: &agent,
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: chunk.as_bytes(),
-            },
+            chunk(&agent, stream_id, bootstrap_id, 0, records.as_bytes()),
             &mut effects,
         )
         .unwrap();
     assert!(effects.is_empty(), "staging emits nothing until READY");
     kernel
-        .update(
-            KernelInput::BootstrapReady {
-                terminal_id: &agent,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-            &mut effects,
-        )
+        .update(ready(&agent, stream_id, bootstrap_id, None), &mut effects)
         .unwrap();
     assert_eq!(
         agent_records_effect(&effects),
@@ -3871,13 +3618,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     let live = agent_line(6, "stop", "{}");
     kernel
         .update(
-            KernelInput::ResourceOutput {
-                terminal_id: &agent,
-                stream_id,
-                bootstrap_id,
-                seq: 6,
-                payload: live.as_bytes(),
-            },
+            output(&agent, stream_id, bootstrap_id, 6, live.as_bytes()),
             &mut effects,
         )
         .unwrap();
@@ -3892,13 +3633,13 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     // Sequencing stays exact.
     assert!(matches!(
         kernel.update(
-            KernelInput::ResourceOutput {
-                terminal_id: &agent,
+            output(
+                &agent,
                 stream_id,
                 bootstrap_id,
-                seq: 8,
-                payload: agent_line(8, "stop", "{}").as_bytes(),
-            },
+                8,
+                agent_line(8, "stop", "{}").as_bytes()
+            ),
             &mut effects,
         ),
         Err(KernelError::SequenceGap {
@@ -3955,14 +3696,14 @@ fn agent_profile_skips_the_geometry_check_but_terminals_still_need_one() {
         Some(ResourceKind::AgentSession)
     );
     let zero = kernel.update(
-        KernelInput::BootstrapBegin {
-            terminal_id: &terminal(3),
-            stream_id: stream(2),
-            bootstrap_id: bootstrap(2),
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            geometry: CanonicalGeometry { cols: 0, rows: 0 },
-            base_seq: 0,
-        },
+        begin_input(
+            &terminal(3),
+            stream(2),
+            bootstrap(2),
+            BootstrapStreamProfile::SynthesizedVtRaw,
+            CanonicalGeometry { cols: 0, rows: 0 },
+            0,
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -3979,10 +3720,7 @@ fn kind_mismatches_are_rejected_in_both_directions() {
     let mut effects = EffectBuffer::new();
     kernel
         .update(
-            KernelInput::AttachStarted {
-                attach_id: 1,
-                terminals: std::slice::from_ref(&parent),
-            },
+            attach_started(1, std::slice::from_ref(&parent)),
             &mut effects,
         )
         .unwrap();
@@ -3990,14 +3728,14 @@ fn kind_mismatches_are_rejected_in_both_directions() {
 
     // A terminal-profile bootstrap on a declared AgentSession.
     let wrong = kernel.update(
-        KernelInput::BootstrapBegin {
-            terminal_id: &agent,
-            stream_id: stream(1),
-            bootstrap_id: bootstrap(1),
-            profile: BootstrapStreamProfile::SynthesizedVtRaw,
-            geometry: geometry(),
-            base_seq: 0,
-        },
+        begin_input(
+            &agent,
+            stream(1),
+            bootstrap(1),
+            BootstrapStreamProfile::SynthesizedVtRaw,
+            geometry(),
+            0,
+        ),
         &mut effects,
     );
     assert!(matches!(
@@ -4056,13 +3794,13 @@ fn malformed_agent_records_retire_only_that_generation() {
     )
     .unwrap();
     let bad = kernel.update(
-        KernelInput::BootstrapChunk {
-            terminal_id: &agent,
+        chunk(
+            &agent,
             stream_id,
             bootstrap_id,
-            chunk_seq: 0,
-            payload: b"{\"seq\":1,\"ts_ms\":1}\n",
-        },
+            0,
+            b"{\"seq\":1,\"ts_ms\":1}\n",
+        ),
         &mut effects,
     );
     assert!(matches!(bad, Err(KernelError::AgentRecord(_))));
@@ -4079,30 +3817,14 @@ fn malformed_agent_records_retire_only_that_generation() {
         "agent generations retire inside the stream, not the terminal table"
     );
     assert!(matches!(
-        kernel.update(
-            KernelInput::BootstrapReady {
-                terminal_id: &agent,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-            &mut effects,
-        ),
+        kernel.update(ready(&agent, stream_id, bootstrap_id, None), &mut effects,),
         Err(KernelError::RetiredGeneration { .. })
     ));
     // A replacement generation is accepted and publishes cleanly.
     let next = bootstrap(5);
     agent_begin(&mut kernel, &agent, stream_id, next, 0, &mut effects).unwrap();
     kernel
-        .update(
-            KernelInput::BootstrapReady {
-                terminal_id: &agent,
-                stream_id,
-                bootstrap_id: next,
-                history_cursor: None,
-            },
-            &mut effects,
-        )
+        .update(ready(&agent, stream_id, next, None), &mut effects)
         .unwrap();
     assert_eq!(
         agent_records_effect(&effects),
@@ -4134,29 +3856,15 @@ fn a_republished_agent_stream_rebuilds_state_from_its_retained_records() {
             &mut effects,
         )
         .unwrap();
-        let chunk = agent_line(1, kind, "{}");
+        let records = agent_line(1, kind, "{}");
         kernel
             .update(
-                KernelInput::BootstrapChunk {
-                    terminal_id: &agent,
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq: 0,
-                    payload: chunk.as_bytes(),
-                },
+                chunk(&agent, stream_id, bootstrap_id, 0, records.as_bytes()),
                 &mut effects,
             )
             .unwrap();
         kernel
-            .update(
-                KernelInput::BootstrapReady {
-                    terminal_id: &agent,
-                    stream_id,
-                    bootstrap_id,
-                    history_cursor: None,
-                },
-                &mut effects,
-            )
+            .update(ready(&agent, stream_id, bootstrap_id, None), &mut effects)
             .unwrap();
     }
     let view = kernel.agent_session(&agent).expect("published");
@@ -4175,13 +3883,7 @@ fn a_republished_agent_stream_rebuilds_state_from_its_retained_records() {
         kernel.tombstone(&agent, stream_id, bootstrap(1)).is_none()
             && kernel
                 .update(
-                    KernelInput::ResourceOutput {
-                        terminal_id: &agent,
-                        stream_id,
-                        bootstrap_id: bootstrap(1),
-                        seq: 1,
-                        payload: b"",
-                    },
+                    output(&agent, stream_id, bootstrap(1), 1, b""),
                     &mut effects,
                 )
                 .is_err(),
@@ -4204,15 +3906,7 @@ fn published_agent_for_batches(base_seq: u64) -> SessionKernel<FakeAdapter> {
     )
     .unwrap();
     kernel
-        .update(
-            KernelInput::BootstrapReady {
-                terminal_id: &agent,
-                stream_id: stream(3),
-                bootstrap_id: bootstrap(4),
-                history_cursor: None,
-            },
-            &mut effects,
-        )
+        .update(ready(&agent, stream(3), bootstrap(4), None), &mut effects)
         .unwrap();
     kernel
 }
@@ -4237,13 +3931,13 @@ fn apply_agent_batch(
     records: &[(u64, &str)],
 ) -> Result<(), KernelError<FakeError>> {
     kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal(2),
-            stream_id: stream(3),
-            bootstrap_id: bootstrap(4),
+        output(
+            &terminal(2),
+            stream(3),
+            bootstrap(4),
             seq,
-            payload: batch_payload(records).as_bytes(),
-        },
+            batch_payload(records).as_bytes(),
+        ),
         effects,
     )
 }
@@ -4324,13 +4018,13 @@ fn agent_live_batches_preserve_duplicate_and_generation_fences() {
     assert!(effects.is_empty());
     assert!(matches!(
         kernel.update(
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal(2),
-                stream_id: stream(3),
-                bootstrap_id: bootstrap(99),
-                seq: 4,
-                payload: batch_payload(&[(3, "prompt"), (4, "stop")]).as_bytes(),
-            },
+            output(
+                &terminal(2),
+                stream(3),
+                bootstrap(99),
+                4,
+                batch_payload(&[(3, "prompt"), (4, "stop")]).as_bytes()
+            ),
             &mut effects
         ),
         Err(KernelError::GenerationMismatch { .. })
@@ -4375,13 +4069,7 @@ fn malformed_later_agent_batch_record_retires_without_partial_publication() {
     let mut effects = EffectBuffer::new();
     let payload = batch_payload(&[(1, "ask")]) + "{malformed}\n";
     let result = kernel.update(
-        KernelInput::ResourceOutput {
-            terminal_id: &terminal(2),
-            stream_id: stream(3),
-            bootstrap_id: bootstrap(4),
-            seq: 2,
-            payload: payload.as_bytes(),
-        },
+        output(&terminal(2), stream(3), bootstrap(4), 2, payload.as_bytes()),
         &mut effects,
     );
     assert!(matches!(result, Err(KernelError::AgentRecord(_))));
@@ -4408,13 +4096,7 @@ fn cwd_changed_event_becomes_a_cwd_status() {
     let id = terminal(1);
     let mut effects = EffectBuffer::new();
     kernel
-        .update(
-            KernelInput::AttachStarted {
-                attach_id: 1,
-                terminals: std::slice::from_ref(&id),
-            },
-            &mut effects,
-        )
+        .update(attach_started(1, std::slice::from_ref(&id)), &mut effects)
         .unwrap();
     let event = AgentEvent::CwdChanged {
         cwd: "/srv/app".to_owned(),
@@ -4443,13 +4125,7 @@ fn command_boundaries_become_statuses_in_order() {
     let id = terminal(1);
     let mut effects = EffectBuffer::new();
     kernel
-        .update(
-            KernelInput::AttachStarted {
-                attach_id: 1,
-                terminals: std::slice::from_ref(&id),
-            },
-            &mut effects,
-        )
+        .update(attach_started(1, std::slice::from_ref(&id)), &mut effects)
         .unwrap();
 
     let started = AgentEvent::CommandStarted;
@@ -4508,13 +4184,7 @@ fn resource_closed_exit_and_signal_become_exited_status() {
     let id = terminal(1);
     let mut effects = EffectBuffer::new();
     kernel
-        .update(
-            KernelInput::AttachStarted {
-                attach_id: 1,
-                terminals: std::slice::from_ref(&id),
-            },
-            &mut effects,
-        )
+        .update(attach_started(1, std::slice::from_ref(&id)), &mut effects)
         .unwrap();
     kernel
         .update(
@@ -4736,10 +4406,7 @@ fn event_for_an_untracked_or_already_closed_terminal_is_ignored() {
     let closed = terminal(1);
     kernel
         .update(
-            KernelInput::AttachStarted {
-                attach_id: 1,
-                terminals: std::slice::from_ref(&closed),
-            },
+            attach_started(1, std::slice::from_ref(&closed)),
             &mut effects,
         )
         .unwrap();
