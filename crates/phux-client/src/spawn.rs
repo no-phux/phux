@@ -291,6 +291,7 @@ async fn request_fresh(
 ) -> Result<(CommandResult, Vec<String>), AttachError> {
     let mut conn = Connection::connect(socket_path).await?;
     let (result, interleaved) = conn.request(1, command).await?.into_parts();
+    drop(conn);
     let notices = Degradation::from_interleaved(&interleaved)
         .notices()
         .to_vec();
