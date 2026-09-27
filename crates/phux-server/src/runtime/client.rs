@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use bytes::BytesMut;
+use phux_core::ids::ResourceId as CoreResourceId;
+use phux_core::process::ExitOutcome;
 use phux_dial::window::SendWindow;
 use phux_protocol::PROTOCOL_VERSION;
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
@@ -18,13 +20,14 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
 use phux_protocol::policy::TransportType;
+use phux_protocol::wire::frame::Scope;
 use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, Command, CommandResult, DetachReason, ErrorCode, FrameKind,
     RESOURCE_AGENT_KEY,
 };
 use phux_protocol::wire::framing::FramingError;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -37,6 +40,7 @@ use super::{
     subscribe_attach_terminal,
 };
 use crate::auth::Standing;
+use crate::hooks::HookEvent;
 use crate::policy::{Goodbye, Revocation};
 use crate::state::{
     ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, ServerState, SharedState,
@@ -56,7 +60,7 @@ const MAX_PENDING_INPUT_RECEIPTS: usize = 128;
 fn spawn_input_receipt(
     receipts: &mut JoinSet<()>,
     slot: tokio::sync::OwnedSemaphorePermit,
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: mpsc::Sender<Outbound>,
     request_id: u32,
     receipt: super::input_lane::InputReceipt,
 ) {
@@ -137,7 +141,7 @@ pub(super) fn route(command: &Command, has_input_lane: bool) -> Route {
 struct CommandDispatch<'a> {
     state: &'a SharedState,
     client_id: ClientId,
-    out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &'a mpsc::Sender<Outbound>,
     input_lane: Option<&'a InputLaneHandle>,
     token: &'a CancellationToken,
     root_token: &'a CancellationToken,
@@ -616,7 +620,7 @@ mod negotiated_feature_tests {
 /// full sink is a typed loss rather than silence.
 pub(crate) struct PaneEvents {
     /// The pane's wire id, interned at spawn.
-    pub(crate) wire: phux_protocol::ids::ResourceId,
+    pub(crate) wire: WireResourceId,
     /// The runtime end of the pane's event sink.
     pub(crate) source: crate::resource::event_sink::EventSource,
 }
@@ -661,9 +665,9 @@ fn spawn_pane_event_drain(state: SharedState, mut events: PaneEvents) {
 /// whose already-queued events the reap lock journals before the close.
 async fn journal_until_exit(
     state: &SharedState,
-    mut exit: oneshot::Receiver<phux_core::process::ExitOutcome>,
+    mut exit: oneshot::Receiver<ExitOutcome>,
     events: Option<PaneEvents>,
-) -> (phux_core::process::ExitOutcome, Option<PaneEvents>) {
+) -> (ExitOutcome, Option<PaneEvents>) {
     let Some(mut events) = events else {
         return (exit.await.unwrap_or_default(), None);
     };
@@ -716,7 +720,7 @@ pub(crate) fn ensure_event_pump(state: &SharedState, client_id: ClientId) {
 async fn pump_owed_frames(
     state: &SharedState,
     (client_id, epoch): (ClientId, u64),
-    tx: &tokio::sync::mpsc::Sender<Outbound>,
+    tx: &mpsc::Sender<Outbound>,
     cancel: &CancellationToken,
 ) -> bool {
     loop {
@@ -740,12 +744,9 @@ async fn pump_owed_frames(
 /// generation was lost): journal its `pane_closed` in the same lock, once
 /// (ADR-0123). The pane's exit watcher then finds it gone and journals
 /// nothing more, so every `pane_spawned` is followed by exactly one
-/// `pane_closed`. Returns what [`crate::state::ServerState::reap_terminal`]
+/// `pane_closed`. Returns what [`ServerState::reap_terminal`]
 /// returns; `false` without journaling when the pane is already gone.
-pub(crate) fn reap_pane_journaling_close(
-    s: &mut crate::state::ServerState,
-    pane: phux_core::ids::ResourceId,
-) -> bool {
+pub(crate) fn reap_pane_journaling_close(s: &mut ServerState, pane: CoreResourceId) -> bool {
     if s.registry().resource(pane).is_none() {
         return false;
     }
@@ -765,7 +766,7 @@ pub(crate) fn reap_pane_journaling_close(
 
 /// Journal every event a closing pane already queued, and any loss its
 /// sink counted, so all of them take a `seq` before its `pane_closed`.
-fn journal_pending_events(s: &mut crate::state::ServerState, events: &mut PaneEvents) {
+fn journal_pending_events(s: &mut ServerState, events: &mut PaneEvents) {
     while let Some(event) = events.source.try_recv() {
         journal_drained_event(s, &events.wire, event, 0);
     }
@@ -777,8 +778,8 @@ fn journal_pending_events(s: &mut crate::state::ServerState, events: &mut PaneEv
 /// reaped by a failed publication or its parent's cascade already has its
 /// `pane_closed`, and nothing about it may follow.
 fn journal_drained_event(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
     emitted: crate::resource::event_sink::Emitted,
     dropped: u64,
 ) {
@@ -798,11 +799,7 @@ fn journal_drained_event(
 }
 
 /// Journal `source_gap { dropped }` for a pane, when anything was dropped.
-fn journal_source_gap(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    dropped: u64,
-) {
+fn journal_source_gap(s: &mut ServerState, wire_terminal_id: &WireResourceId, dropped: u64) {
     if dropped == 0 || !pane_is_live(s, wire_terminal_id) {
         return;
     }
@@ -815,20 +812,14 @@ fn journal_source_gap(
 
 /// Whether the pane `wire_terminal_id` names is still registered. A reap
 /// retires the wire id, so a reaped pane no longer resolves.
-fn pane_is_live(
-    s: &crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-) -> bool {
+fn pane_is_live(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
     s.terminal_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.registry().resource(pane).is_some())
 }
 
 /// Whether the pane `wire_terminal_id` names is retained after its process
 /// exited (ADR-0124).
-fn pane_exited(
-    s: &crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-) -> bool {
+fn pane_exited(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
     s.terminal_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.retained_exit(pane).is_some())
 }
@@ -850,11 +841,10 @@ fn control_actor(event: &AgentEvent) -> Option<ClientId> {
 /// `ServerState`, performs the authority check and the metadata write.
 pub(crate) fn spawn_agent_state_drain(
     state: SharedState,
-    wire_terminal_id: phux_protocol::ids::ResourceId,
+    wire_terminal_id: WireResourceId,
     mut rx: tokio::sync::mpsc::Receiver<crate::agent_detect::AgentDetectEvent>,
 ) {
     use crate::agent_detect::AgentDetectEvent;
-    use phux_protocol::wire::frame::Scope;
 
     tokio::task::spawn_local(async move {
         while let Some(event) = rx.recv().await {
@@ -911,8 +901,8 @@ pub(crate) fn spawn_agent_state_drain(
 /// uses and returns the payload to broadcast, if any. A cleared marker
 /// retracts only a sentinel-owned ask and broadcasts nothing.
 fn drain_ask_sentinel(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
     ask: Option<crate::agent_asked::AskedPayload>,
 ) -> Option<crate::agent_asked::AskedPayload> {
     use crate::agent_asked::AskedSource;
@@ -934,56 +924,56 @@ fn drain_ask_sentinel(
     emitted
 }
 
-/// The drain's `Retract` arm: the pane's agent is confirmed gone. In order:
-///
-/// 1. A declared record (L3 §3.7) is withdrawn: `state` becomes `unknown`,
-///    the writer's other fields stay.
-/// 2. A detector-authored record carrying a human's identity is withdrawn
-///    the same way, so their label survives.
-/// 3. A record the detector wrote alone is deleted.
-///
-/// Anything else is not ours.
+/// The drain's `Retract` arm: the pane's agent is confirmed gone. A declared
+/// record (L3 §3.7), or a detector record carrying a human's identity, is
+/// withdrawn to `unknown` with its other fields kept; a record the detector
+/// wrote alone is deleted; anything else is not ours.
 fn drain_retract(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    scope: &phux_protocol::wire::frame::Scope,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    scope: &Scope,
     hooks_live: bool,
-) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
-
+) -> Option<HookEvent> {
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
-    let from = hooks_live
-        .then(|| crate::agent_state::stored_state(existing.as_deref()))
-        .flatten();
-
+    let prior = prior_state(hooks_live, existing.as_deref());
     if s.agent_records().is_declared(wire_terminal_id) {
-        let bytes = crate::agent_state::withdraw_state(existing.as_deref())?;
-        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
-        s.agent_records_mut()
-            .note_declaration_withdrawn(wire_terminal_id);
-        return hooks_live
-            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
-            .flatten();
+        withdraw_declared(s, wire_terminal_id, scope, existing.as_deref())?;
+        return retract_hook(wire_terminal_id, prior);
     }
     if !s.agent_records().detector_owns(wire_terminal_id) {
         return None;
     }
-    if s.agent_records().has_explicit_identity(wire_terminal_id)
-        && let Some(bytes) = crate::agent_state::withdraw_state(existing.as_deref())
-    {
-        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
-        s.agent_records_mut()
-            .note_detector_retract(wire_terminal_id);
-        return hooks_live
-            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
-            .flatten();
+    let withdrawn = if s.agent_records().has_explicit_identity(wire_terminal_id) {
+        crate::agent_state::withdraw_state(existing.as_deref())
+    } else {
+        None
+    };
+    match withdrawn {
+        Some(bytes) => {
+            s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
+        }
+        None => {
+            s.metadata_delete(scope, RESOURCE_AGENT_KEY);
+        }
     }
-    s.metadata_delete(scope, RESOURCE_AGENT_KEY);
     s.agent_records_mut()
         .note_detector_retract(wire_terminal_id);
-    hooks_live
-        .then(|| retract_hook(wire_terminal_id, from.as_deref()))
-        .flatten()
+    retract_hook(wire_terminal_id, prior)
+}
+
+/// Withdraw a declared record's state to `unknown`, keeping its writer's
+/// other fields. `None` when there is nothing to withdraw.
+fn withdraw_declared(
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    scope: &Scope,
+    existing: Option<&[u8]>,
+) -> Option<()> {
+    let bytes = crate::agent_state::withdraw_state(existing)?;
+    s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
+    s.agent_records_mut()
+        .note_declaration_withdrawn(wire_terminal_id);
+    Some(())
 }
 
 /// The drain's `Reidentified` arm: a different occupant now owns the pane.
@@ -991,51 +981,27 @@ fn drain_retract(
 /// declared record is withdrawn rather than corrected, and a pane with no
 /// record is left without one.
 fn drain_reidentified(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    scope: &phux_protocol::wire::frame::Scope,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    scope: &Scope,
     hooks_live: bool,
     kind: &str,
     name: &str,
-) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
+) -> Option<HookEvent> {
+    use crate::hooks::AGENT_STATE_UNKNOWN;
 
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY)?;
-    let from = hooks_live
-        .then(|| crate::agent_state::stored_state(Some(&existing)))
-        .flatten();
-
+    let prior = prior_state(hooks_live, Some(&existing));
     if s.agent_records().is_declared(wire_terminal_id) {
-        let bytes = crate::agent_state::withdraw_state(Some(&existing))?;
-        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
-        s.agent_records_mut()
-            .note_declaration_withdrawn(wire_terminal_id);
-        return hooks_live
-            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
-            .flatten();
+        withdraw_declared(s, wire_terminal_id, scope, Some(&existing))?;
+        return retract_hook(wire_terminal_id, prior);
     }
-
     let owned = s.agent_records().identity_ownership(wire_terminal_id);
-    let bytes = crate::agent_state::compose(
-        Some(&existing),
-        kind,
-        name,
-        crate::hooks::AGENT_STATE_UNKNOWN,
-        owned,
-    );
+    let bytes =
+        crate::agent_state::compose(Some(&existing), kind, name, AGENT_STATE_UNKNOWN, owned);
     s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     s.agent_records_mut().note_detector_write(wire_terminal_id);
-    hooks_live
-        .then(|| {
-            state_change_hook(
-                wire_terminal_id,
-                kind,
-                name,
-                from.as_deref(),
-                crate::hooks::AGENT_STATE_UNKNOWN,
-            )
-        })
-        .flatten()
+    state_change_hook(wire_terminal_id, kind, name, prior, AGENT_STATE_UNKNOWN)
 }
 
 /// The drain's `State` arm: the detector derived a state for this pane.
@@ -1045,21 +1011,17 @@ fn drain_reidentified(
 /// explicit writer's `kind` contradicts the detector, the `kind` is kept and
 /// the state is withdrawn to `unknown` (invariant I2).
 fn drain_state(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    scope: &phux_protocol::wire::frame::Scope,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    scope: &Scope,
     hooks_live: bool,
     report: &crate::agent_detect::AgentReport,
-) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
-
+) -> Option<HookEvent> {
     if s.agent_records().is_declared(wire_terminal_id) {
         return None;
     }
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
-    let from = hooks_live
-        .then(|| crate::agent_state::stored_state(existing.as_deref()))
-        .flatten();
+    let prior = prior_state(hooks_live, existing.as_deref());
     let owned = s.agent_records().identity_ownership(wire_terminal_id);
     let contradicted = owned.kind
         && crate::agent_state::explicit_kind_is_contradicted(
@@ -1082,69 +1044,49 @@ fn drain_state(
         // to delete an explicit writer's record.
         s.agent_records_mut().note_detector_write(wire_terminal_id);
     }
-    hooks_live
-        .then(|| {
-            state_change_hook(
-                wire_terminal_id,
-                &report.kind,
-                &report.name,
-                from.as_deref(),
-                to,
-            )
-        })
-        .flatten()
+    state_change_hook(wire_terminal_id, &report.kind, &report.name, prior, to)
 }
 
-/// The `agent-state-changed` event for a detector write, unless the store
-/// already held that state.
+/// The stored state before a detector write, if any.
+struct Prior(Option<String>);
+
+/// The prior state, read only when a hook could fire: `None` means no hook
+/// is owed at all.
+fn prior_state(hooks_live: bool, existing: Option<&[u8]>) -> Option<Prior> {
+    hooks_live.then(|| Prior(crate::agent_state::stored_state(existing)))
+}
+
+/// The `agent-state-changed` event for a detector write, unless hooks are
+/// off or the store already held that state.
 fn state_change_hook(
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    wire_terminal_id: &WireResourceId,
     kind: &str,
     name: &str,
-    from: Option<&str>,
+    prior: Option<Prior>,
     to: &str,
-) -> Option<crate::hooks::HookEvent> {
-    if from == Some(to) {
-        return None;
-    }
-    Some(crate::hooks::HookEvent::agent_state_changed(
-        wire_terminal_id,
-        kind,
-        name,
-        from,
-        to,
-    ))
+) -> Option<HookEvent> {
+    let Prior(from) = prior?;
+    (from.as_deref() != Some(to))
+        .then(|| HookEvent::agent_state_changed(wire_terminal_id, kind, name, from.as_deref(), to))
 }
 
-/// The `agent-state-changed` event for a withdrawn record, unless the record
-/// was already `unknown` (a retract that changes nothing owes no hook).
-fn retract_hook(
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    from: Option<&str>,
-) -> Option<crate::hooks::HookEvent> {
-    if from == Some(crate::hooks::AGENT_STATE_UNKNOWN) {
-        return None;
-    }
-    Some(crate::hooks::HookEvent::agent_state_changed(
+/// The `agent-state-changed` event for a withdrawn record: a write to
+/// `unknown` with no identity.
+fn retract_hook(wire_terminal_id: &WireResourceId, prior: Option<Prior>) -> Option<HookEvent> {
+    state_change_hook(
         wire_terminal_id,
         "",
         "",
-        from,
+        prior,
         crate::hooks::AGENT_STATE_UNKNOWN,
-    ))
+    )
 }
 
 /// Re-arm the pane detector's edge filter after someone else wrote its
 /// `phux.agent/v1` record (ADR-0046 §E); otherwise the filter keeps modelling
 /// a store that no longer exists and suppresses the next write. A full or
 /// closed control mailbox is benign (the actor is wedged or gone).
-fn invalidate_agent_detector(
-    state: &SharedState,
-    scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
-) {
-    use phux_protocol::wire::frame::Scope;
-
+fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
     if key != RESOURCE_AGENT_KEY {
         return;
     }
@@ -1169,8 +1111,8 @@ fn invalidate_agent_detector(
 /// event drain (ADR-0123), so every event is journaled before `pane_closed`.
 pub(crate) fn spawn_terminal_exit_watcher(
     state: SharedState,
-    pane: phux_core::ids::ResourceId,
-    exit_notify: Option<oneshot::Receiver<phux_core::process::ExitOutcome>>,
+    pane: CoreResourceId,
+    exit_notify: Option<oneshot::Receiver<ExitOutcome>>,
     root_token: CancellationToken,
     events: Option<PaneEvents>,
 ) {
@@ -1218,9 +1160,9 @@ pub(crate) fn spawn_terminal_exit_watcher(
 /// exit, replace the child in place and return the next EOF receiver.
 async fn replace_last_shell(
     state: &SharedState,
-    pane: phux_core::ids::ResourceId,
+    pane: CoreResourceId,
     root_token: &CancellationToken,
-) -> Option<oneshot::Receiver<phux_core::process::ExitOutcome>> {
+) -> Option<oneshot::Receiver<ExitOutcome>> {
     if root_token.is_cancelled() {
         return None;
     }
@@ -1244,7 +1186,7 @@ async fn replace_last_shell(
 
 fn replacement_shell_command(
     state: &SharedState,
-    pane: phux_core::ids::ResourceId,
+    pane: CoreResourceId,
 ) -> portable_pty::CommandBuilder {
     state.with_mut(|s| {
         let mut cmd = crate::terminal_actor::default_shell_command(s.shell(), s.login_shell());
@@ -1262,9 +1204,9 @@ struct RetainedExit {
     /// What a purge cancels, and when retention expires.
     retention: crate::state::Retention,
     /// The pane's wire id, for the `pane-exit` hook.
-    wire_terminal_id: phux_protocol::ids::ResourceId,
+    wire_terminal_id: WireResourceId,
     /// The `agent-state-changed` hook the withdrawn agent record owes.
-    agent_hook: Option<crate::hooks::HookEvent>,
+    agent_hook: Option<HookEvent>,
     /// The engine's control mailbox, for the `Retire` sent off the lock.
     control: Option<tokio::sync::mpsc::Sender<crate::resource::ControlRequest>>,
 }
@@ -1276,9 +1218,9 @@ struct RetainedExit {
 /// engine to stop the detector and refuse input. No `RESOURCE_CLOSED`: the
 /// resource is still here. `None` leaves the pane to the close path.
 fn retain_exited_pane(
-    s: &mut crate::state::ServerState,
-    pane: phux_core::ids::ResourceId,
-    exit: phux_core::process::ExitOutcome,
+    s: &mut ServerState,
+    pane: CoreResourceId,
+    exit: ExitOutcome,
     events: Option<&mut PaneEvents>,
 ) -> Option<RetainedExit> {
     let retention = s.retain_exited(pane, exit, unix_now_ms())?;
@@ -1301,7 +1243,7 @@ fn retain_exited_pane(
         exited,
     ));
     let control = s.resource_handle(pane).map(|handle| handle.control.clone());
-    let scope = phux_protocol::wire::frame::Scope::Resource(wire_terminal_id.clone());
+    let scope = Scope::Resource(wire_terminal_id.clone());
     let hooks_live = s.hook_dispatcher().is_some();
     let agent_hook = drain_retract(s, &wire_terminal_id, &scope, hooks_live);
     Some(RetainedExit {
@@ -1317,14 +1259,11 @@ fn retain_exited_pane(
 /// record's `agent-state-changed`.
 fn fire_retained_exit_hooks(
     state: &SharedState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    agent_hook: Option<crate::hooks::HookEvent>,
-    exit: phux_core::process::ExitOutcome,
+    wire_terminal_id: &WireResourceId,
+    agent_hook: Option<HookEvent>,
+    exit: ExitOutcome,
 ) {
-    crate::hooks::fire_hook(
-        state,
-        crate::hooks::HookEvent::pane_exit(wire_terminal_id, exit.status),
-    );
+    crate::hooks::fire_hook(state, HookEvent::pane_exit(wire_terminal_id, exit.status));
     if let Some(event) = agent_hook {
         crate::hooks::fire_hook(state, event);
     }
@@ -1396,9 +1335,9 @@ fn unix_now_ms() -> u64 {
 /// interleave between gathering subscribers and the reap. `None` when
 /// another closer already reaped the pane.
 fn reap_exited_pane(
-    s: &mut crate::state::ServerState,
-    pane: phux_core::ids::ResourceId,
-    exit: phux_core::process::ExitOutcome,
+    s: &mut ServerState,
+    pane: CoreResourceId,
+    exit: ExitOutcome,
     events: Option<&mut PaneEvents>,
 ) -> Option<ReapAndNotify> {
     // ADR-0104 §2: a cascading parent may already have reaped this child.
@@ -1415,7 +1354,7 @@ fn reap_exited_pane(
         .map(|parent| s.intern_terminal_wire(parent));
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
     // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
-    let targets: Vec<tokio::sync::mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
+    let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
     // ADR-0123: `pane_closed` is journaled in the lock that removes the pane.
     let attribution = s.take_close_attribution(pane);
     journal_pane_closed(
@@ -1451,9 +1390,9 @@ fn reap_exited_pane(
 /// parent has left. Each descendant's frame is emitted by the parent's
 /// watcher; its own watcher later finds it already claimed.
 fn cascade_children(
-    s: &mut crate::state::ServerState,
-    pane: phux_core::ids::ResourceId,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    s: &mut ServerState,
+    pane: CoreResourceId,
+    wire_terminal_id: &WireResourceId,
 ) -> Vec<CascadedClose> {
     // Deepest first, so no descendant leaves the registry unjournaled.
     let descendants = s.resource_descendants(pane);
@@ -1471,9 +1410,7 @@ fn cascade_children(
         };
         let wire_child_id = s.intern_terminal_wire(child);
         let child_targets = s.terminal_fanout_targets(child);
-        let child_exit = s
-            .retained_outcome(child)
-            .unwrap_or(phux_core::process::ExitOutcome::UNKNOWN);
+        let child_exit = s.retained_outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
         let attribution = s.take_close_attribution(child);
         journal_pane_closed(
             s,
@@ -1577,10 +1514,7 @@ async fn announce_close(
     } = reap;
     // A retained pane already fired `pane-exit` when its process exited.
     if exit_hook_owed {
-        crate::hooks::fire_hook(
-            state,
-            crate::hooks::HookEvent::pane_exit(&wire_terminal_id, exit.status),
-        );
+        crate::hooks::fire_hook(state, HookEvent::pane_exit(&wire_terminal_id, exit.status));
     }
 
     // Children first: the order the tree came apart in.
@@ -1619,7 +1553,7 @@ async fn announce_close(
 
 /// Yield until each client writer has taken the just-queued close frames,
 /// or a small turn budget expires.
-async fn yield_until_close_frames_taken(targets: &[tokio::sync::mpsc::Sender<Outbound>]) {
+async fn yield_until_close_frames_taken(targets: &[mpsc::Sender<Outbound>]) {
     for _ in 0..256 {
         if targets
             .iter()
@@ -1639,41 +1573,41 @@ async fn yield_until_close_frames_taken(targets: &[tokio::sync::mpsc::Sender<Out
 /// off-lock `RESOURCE_CLOSED` fanout.
 struct ReapAndNotify {
     /// The pane's wire id, interned before the reap retired it.
-    wire_terminal_id: phux_protocol::ids::ResourceId,
+    wire_terminal_id: WireResourceId,
     /// Why this pane is closing (ADR-0104 §4).
     reason: CloseReason,
-    exit: phux_core::process::ExitOutcome,
+    exit: ExitOutcome,
     /// Children already reaped, waiting only for their frames.
     cascaded: Vec<CascadedClose>,
     /// Every client subscribed to the pane at reap time.
-    targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
+    targets: Vec<mpsc::Sender<Outbound>>,
     /// The reap emptied the last session.
     server_empty: bool,
     /// ADR-0105: clients of a released session, detached with `SESSION_KILLED`.
-    killed_clients: Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>,
+    killed_clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
     /// Whether any client has ever attached.
     served: bool,
     /// Cancelled after `RESOURCE_CLOSED` is queued so a fenced pump can
     /// publish the last screen first.
-    actor_token: Option<tokio_util::sync::CancellationToken>,
+    actor_token: Option<CancellationToken>,
 }
 
 /// One resource closed because its parent did (ADR-0104 §2), captured
 /// under the parent's lock and broadcast off it.
 struct CascadedClose {
-    wire_terminal_id: phux_protocol::ids::ResourceId,
-    targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
+    wire_terminal_id: WireResourceId,
+    targets: Vec<mpsc::Sender<Outbound>>,
     reason: CloseReason,
     /// Unknown unless the child is a retained exited pane.
-    exit: phux_core::process::ExitOutcome,
+    exit: ExitOutcome,
 }
 
 /// Send `RESOURCE_CLOSED` to every mailbox in `targets`, gathered by the
 /// caller under the reap lock. Best-effort: closed mailboxes are skipped.
 pub(crate) async fn broadcast_terminal_closed(
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    targets: &[tokio::sync::mpsc::Sender<Outbound>],
-    exit: phux_core::process::ExitOutcome,
+    wire_terminal_id: &WireResourceId,
+    targets: &[mpsc::Sender<Outbound>],
+    exit: ExitOutcome,
     reason: phux_protocol::wire::frame::CloseReason,
 ) {
     if targets.is_empty() {
@@ -1704,9 +1638,9 @@ pub(crate) async fn broadcast_terminal_closed(
 /// Journal a resource's `pane_closed` (ADR-0123) under the lock that reaps
 /// it. A child's close names its parent (ADR-0104 §2).
 pub(super) fn journal_pane_closed(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    parent: Option<&phux_protocol::ids::ResourceId>,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    parent: Option<&WireResourceId>,
     exit_status: Option<i32>,
     attribution: crate::state::CloseAttribution,
 ) {
@@ -1765,7 +1699,7 @@ pub(crate) fn fire_client_detached(
     if let Some(from) = detached_from {
         crate::hooks::fire_hook(
             state,
-            crate::hooks::HookEvent::client_detached(client_id, from.session_name.as_deref()),
+            HookEvent::client_detached(client_id, from.session_name.as_deref()),
         );
     }
 }
@@ -1860,7 +1794,7 @@ fn release_relay_state(s: &ServerState, client_id: ClientId) {
     for (host, terminal) in s.satellite_leases_held_by(client_id) {
         if let Some(relay) = s.hub_relay(&host) {
             relay.command_detached(phux_protocol::wire::frame::Command::ReleaseInput {
-                terminal_id: phux_protocol::ids::ResourceId::local(terminal),
+                terminal_id: WireResourceId::local(terminal),
             });
         }
     }
@@ -2074,8 +2008,8 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         debug!(transport = listener.kind(), "client connected");
                         // Counted before the task exists so the idle watchdog
                         // never sees an unattended gap.
-                        state.with_mut(crate::state::ServerState::note_connection_opened);
-                        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                        state.with_mut(ServerState::note_connection_opened);
+                        let client_id = state.with_mut(ServerState::new_client_id);
                         state.with_mut(|s| s.set_connection_identity(client_id, connection_identity));
                         let task_state = state.clone();
                         let client_token = root_token.child_token();
@@ -2089,7 +2023,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                             }
                             // The one site that forgets connection state.
                             release_connection_state(&task_state, client_id);
-                            task_state.with_mut(crate::state::ServerState::note_connection_closed);
+                            task_state.with_mut(ServerState::note_connection_closed);
                         });
                     }
                     Err(err) => {
@@ -2167,7 +2101,7 @@ const WRITER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const CLIENT_SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 async fn close_client_writer(
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: mpsc::Sender<Outbound>,
     writer_close: &tokio::sync::watch::Sender<bool>,
     sibling_tasks: &mut JoinSet<()>,
 ) {
@@ -2194,7 +2128,7 @@ fn framing_violation(err: &io::Error) -> Option<FramingError> {
 }
 
 /// SPEC §7.4: echo the nonce in PONG.
-async fn reply_pong(out_tx: &tokio::sync::mpsc::Sender<Outbound>, client_id: ClientId, nonce: u64) {
+async fn reply_pong(out_tx: &mpsc::Sender<Outbound>, client_id: ClientId, nonce: u64) {
     debug!(nonce, "PING -> PONG");
     if out_tx
         .send(Outbound::Frame(FrameKind::Pong { nonce }))
@@ -2210,7 +2144,7 @@ async fn reply_pong(out_tx: &tokio::sync::mpsc::Sender<Outbound>, client_id: Cli
 async fn detach_on_request(
     state: &SharedState,
     client_id: ClientId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
     output_pumps: &mut JoinSet<()>,
 ) {
     info!(?client_id, "DETACH");
@@ -2258,9 +2192,9 @@ fn classify_attach_id(
 async fn dispatch_terminal_reply(
     client_id: ClientId,
     selection: NegotiatedConnection,
-    terminal_id: &phux_protocol::ids::ResourceId,
+    terminal_id: &WireResourceId,
     bytes: bytes::Bytes,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     if !selection.accepts_terminal_reply() {
         let _ = out_tx
@@ -2289,7 +2223,7 @@ struct ConnectionClose {
 /// drained by the same writer task every transport uses. Retirement closes
 /// admission, then drains with a bound.
 struct StreamBinding {
-    tx: tokio::sync::mpsc::Sender<Outbound>,
+    tx: mpsc::Sender<Outbound>,
     stream_id: StreamId,
     writer: JoinSet<()>,
     writer_close: tokio::sync::watch::Sender<bool>,
@@ -2332,7 +2266,7 @@ impl Drop for StreamBinding {
 /// the writer so DETACH can abort them while the writer still emits
 /// DETACHED and serves a later ATTACH.
 struct ClientPlumbing {
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: mpsc::Sender<Outbound>,
     writer_close: tokio::sync::watch::Sender<bool>,
     /// Sibling tasks (today: just the writer).
     sibling_tasks: JoinSet<()>,
@@ -2389,7 +2323,7 @@ impl ClientPlumbing {
 
     /// The mailbox for Terminal-addressed outbound: the bound stream's sender
     /// when this connection bound the Terminal, else the control mailbox.
-    fn sender_for(&self, terminal_id: &WireResourceId) -> tokio::sync::mpsc::Sender<Outbound> {
+    fn sender_for(&self, terminal_id: &WireResourceId) -> mpsc::Sender<Outbound> {
         self.stream_bindings
             .get(terminal_id)
             .map_or_else(|| self.out_tx.clone(), |binding| binding.tx.clone())
@@ -2405,7 +2339,7 @@ impl ClientPlumbing {
         stream_id: StreamId,
         writer: QuicWriter,
     ) -> (
-        tokio::sync::mpsc::Sender<Outbound>,
+        mpsc::Sender<Outbound>,
         Arc<std::sync::atomic::AtomicBool>,
         CancellationToken,
     ) {
@@ -2607,7 +2541,7 @@ struct HelloRequest {
 async fn negotiate_hello(
     state: &SharedState,
     client_id: ClientId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
     hello: HelloRequest,
     negotiated: &mut Option<NegotiatedConnection>,
     transport: TransportType,
@@ -2786,7 +2720,7 @@ fn select_hello_profile(
 /// The `HISTORY_REQUEST` frame's payload.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 struct HistoryPageRequest {
-    terminal_id: phux_protocol::ids::ResourceId,
+    terminal_id: WireResourceId,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
     cursor: bytes::Bytes,
@@ -2799,7 +2733,7 @@ struct HistoryPageRequest {
 /// unknown terminal or a resource of another kind.
 fn history_terminal(
     state: &SharedState,
-    terminal_id: &phux_protocol::ids::ResourceId,
+    terminal_id: &WireResourceId,
 ) -> Option<crate::terminal_actor::TerminalHandle> {
     let handle = state.with(|server| {
         server
@@ -2825,7 +2759,7 @@ fn history_terminal(
 async fn serve_history_request(
     state: &SharedState,
     client_id: ClientId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
     selection: NegotiatedConnection,
     request: HistoryPageRequest,
 ) {
@@ -3748,7 +3682,7 @@ fn route_client_input(
     state: &SharedState,
     input_lane: Option<&InputLaneHandle>,
     client_id: ClientId,
-    terminal_id: phux_protocol::ids::ResourceId,
+    terminal_id: WireResourceId,
     input: TerminalInput,
 ) {
     let frame_label = match &input {
@@ -3796,9 +3730,9 @@ pub(crate) async fn handle_get_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     state.with(|s| kick_satellite_metadata_mirror(s, scope, key));
     let nonce_result = is_reserved_session_create_result(scope, key);
@@ -3842,9 +3776,9 @@ pub(crate) async fn handle_get_metadata(
 /// `phux.whoami/v1` record (never stored), a nonce-bearing create result only
 /// its owner may read, or whatever the store holds.
 fn read_metadata_value(
-    s: &crate::state::ServerState,
+    s: &ServerState,
     client_id: ClientId,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
     nonce_result: bool,
 ) -> Option<Vec<u8>> {
@@ -3858,10 +3792,7 @@ fn read_metadata_value(
 }
 
 /// Why a client write or delete of `(scope, key)` is ignored, if it is.
-fn protected_key_refusal(
-    scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
-) -> Option<&'static str> {
+fn protected_key_refusal(scope: &Scope, key: &str) -> Option<&'static str> {
     if is_reserved_session_create_result(scope, key) {
         return Some("reserved session-create result key");
     }
@@ -3914,8 +3845,8 @@ fn run_session_create(
     state: &SharedState,
     writer: ClientId,
     request: SessionCreateRequest,
-    root_token: &tokio_util::sync::CancellationToken,
-) -> Result<Option<phux_protocol::ids::ResourceId>, String> {
+    root_token: &CancellationToken,
+) -> Result<Option<WireResourceId>, String> {
     if request.empty {
         return crate::runtime::commands::create_empty_session(state, &request.name).map(|()| None);
     }
@@ -3955,13 +3886,13 @@ fn run_session_create(
 fn session_create_payload(
     name: &str,
     session_id: Option<u32>,
-    wire: Option<&phux_protocol::ids::ResourceId>,
+    wire: Option<&WireResourceId>,
     request_token: Option<&str>,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "name": name,
         "session_id": session_id,
-        "terminal_id": wire.map(phux_protocol::ids::ResourceId::local_id),
+        "terminal_id": wire.map(WireResourceId::local_id),
         "request_token": request_token,
     });
     if wire.is_none() {
@@ -3978,9 +3909,9 @@ fn apply_session_keep_empty(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     value: &[u8],
-    root_token: &tokio_util::sync::CancellationToken,
+    root_token: &CancellationToken,
 ) {
     use crate::state::KeepEmptyOutcome;
 
@@ -4034,7 +3965,7 @@ fn apply_session_keep_empty(
 /// wedged client's full mailbox cannot block the write that killed it.
 fn detach_clients_of_killed_session(
     state: &SharedState,
-    clients: Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>,
+    clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
 ) {
     for (detached_client, tx) in clients {
         let detached_state = state.clone();
@@ -4101,11 +4032,7 @@ fn publish_session_create_result(
         return;
     };
     state.with_mut(|s| {
-        let _ = s.metadata_set(
-            &phux_protocol::wire::frame::Scope::Global,
-            &result_key,
-            bytes,
-        );
+        let _ = s.metadata_set(&Scope::Global, &result_key, bytes);
         if one_shot {
             s.track_session_create_result(client_id, result_key);
         }
@@ -4140,8 +4067,8 @@ fn valid_session_create_token(token: &str) -> bool {
         })
 }
 
-fn is_reserved_session_create_result(scope: &phux_protocol::wire::frame::Scope, key: &str) -> bool {
-    matches!(scope, phux_protocol::wire::frame::Scope::Global)
+fn is_reserved_session_create_result(scope: &Scope, key: &str) -> bool {
+    matches!(scope, Scope::Global)
         && key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)
 }
 
@@ -4150,7 +4077,7 @@ fn handle_session_create_metadata(
     client_id: ClientId,
     request_id: u32,
     value: &[u8],
-    root_token: &tokio_util::sync::CancellationToken,
+    root_token: &CancellationToken,
 ) {
     use crate::runtime::idempotent_create::SessionCreateAdmission;
 
@@ -4223,7 +4150,7 @@ fn run_and_publish_session_create(
     request_id: u32,
     request: SessionCreateRequest,
     claim: Option<&crate::runtime::operation_dedupe::OperationClaim>,
-    root_token: &tokio_util::sync::CancellationToken,
+    root_token: &CancellationToken,
 ) {
     let name = request.name.clone();
     let request_token = request.request_token.clone();
@@ -4271,12 +4198,10 @@ fn reject_unknown_local_terminal_scope(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
 ) -> bool {
-    use phux_protocol::wire::frame::Scope;
-
-    let Scope::Resource(terminal @ phux_protocol::ids::ResourceId::Local { .. }) = scope else {
+    let Scope::Resource(terminal @ WireResourceId::Local { .. }) = scope else {
         return false;
     };
     if state.with(|s| s.terminal_from_wire(terminal)).is_some() {
@@ -4298,7 +4223,7 @@ fn reject_set_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
     value: &[u8],
 ) -> bool {
@@ -4311,7 +4236,7 @@ fn reject_set_metadata(
         return true;
     }
     // ADR-0129 / L3 §2: an oversized value is refused whole.
-    let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
+    let cap = state.with(ServerState::metadata_value_bytes) as usize;
     if value.len() > cap {
         warn!(
             ?client_id,
@@ -4337,10 +4262,8 @@ fn reject_set_metadata(
         return true;
     }
     if key == RESOURCE_AGENT_SESSION_KEY
-        && (!matches!(
-            scope,
-            Scope::Resource(phux_protocol::ids::ResourceId::Local { .. })
-        ) || value.is_empty()
+        && (!matches!(scope, Scope::Resource(WireResourceId::Local { .. }))
+            || value.is_empty()
             || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
     {
         warn!(
@@ -4362,7 +4285,7 @@ fn apply_session_rename(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     value: &[u8],
 ) {
     let parsed = std::str::from_utf8(value).ok().and_then(|s| {
@@ -4412,18 +4335,15 @@ fn store_metadata_value(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
     value: Vec<u8>,
 ) {
-    let declared_agent_record = matches!(scope, phux_protocol::wire::frame::Scope::Resource(_))
-        && key == RESOURCE_AGENT_KEY;
+    let declared_agent_record = matches!(scope, Scope::Resource(_)) && key == RESOURCE_AGENT_KEY;
     let agent_value = declared_agent_record.then(|| value.clone());
 
     let delivered = state.with_mut(|s| {
-        if let (Some(bytes), phux_protocol::wire::frame::Scope::Resource(terminal)) =
-            (agent_value.as_deref(), scope)
-        {
+        if let (Some(bytes), Scope::Resource(terminal)) = (agent_value.as_deref(), scope) {
             s.agent_records_mut().note_explicit_set(terminal, bytes);
         }
         s.metadata_set_by(scope, key, value, Some(client_id))
@@ -4442,10 +4362,10 @@ pub(crate) fn handle_set_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
     value: Vec<u8>,
-    root_token: &tokio_util::sync::CancellationToken,
+    root_token: &CancellationToken,
 ) {
     use phux_protocol::wire::frame::{SESSION_CREATE_KEY, Scope};
 
@@ -4474,7 +4394,7 @@ pub(crate) fn handle_delete_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
 ) {
     debug!(?client_id, request_id, ?scope, %key, "DELETE_METADATA");
@@ -4485,7 +4405,7 @@ pub(crate) fn handle_delete_metadata(
     let delivered = state.with_mut(|s| {
         // ADR-0046 §E: deleting the record withdraws any human declaration,
         // so the detector resumes ownership of this Terminal.
-        if let phux_protocol::wire::frame::Scope::Resource(terminal) = scope
+        if let Scope::Resource(terminal) = scope
             && key == RESOURCE_AGENT_KEY
         {
             s.agent_records_mut().note_explicit_delete(terminal);
@@ -4505,12 +4425,12 @@ pub(crate) async fn handle_list_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    scope: &Scope,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     let (mut keys, speaks_l3) =
         state.with(|s| (s.metadata().list(scope), s.client_speaks_l3(client_id)));
-    if matches!(scope, phux_protocol::wire::frame::Scope::Global) {
+    if matches!(scope, Scope::Global) {
         keys.retain(|key| {
             !key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)
         });
@@ -4543,23 +4463,14 @@ pub(crate) async fn handle_list_metadata(
 
 /// A satellite Terminal scope. Client writes of one are ignored (ADR-0136):
 /// the mirror is read-only, and every other key stays on the satellite.
-const fn is_satellite_terminal_scope(scope: &phux_protocol::wire::frame::Scope) -> bool {
-    matches!(
-        scope,
-        phux_protocol::wire::frame::Scope::Resource(
-            phux_protocol::ids::ResourceId::Satellite { .. }
-        )
-    )
+const fn is_satellite_terminal_scope(scope: &Scope) -> bool {
+    matches!(scope, Scope::Resource(WireResourceId::Satellite { .. }))
 }
 
 /// Start the read-only agent-metadata mirror when `scope` names a satellite
 /// this hub routes and `key` is allowlisted. `false` otherwise.
-fn kick_satellite_metadata_mirror(
-    state: &crate::state::ServerState,
-    scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
-) -> bool {
-    let phux_protocol::wire::frame::Scope::Resource(terminal) = scope else {
+fn kick_satellite_metadata_mirror(state: &ServerState, scope: &Scope, key: &str) -> bool {
+    let Scope::Resource(terminal) = scope else {
         return false;
     };
     if !crate::hub::metadata_mirror::is_mirrored_key(key) {
@@ -4582,11 +4493,11 @@ fn kick_satellite_metadata_mirror(
 /// `true` when the caller must abandon the subscription.
 fn refuse_satellite_metadata_scope(
     client_id: ClientId,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) -> bool {
-    let phux_protocol::wire::frame::Scope::Resource(terminal) = scope else {
+    let Scope::Resource(terminal) = scope else {
         return false;
     };
     let Some((host, id)) = crate::hub::relay::satellite_route(terminal) else {
@@ -4617,9 +4528,9 @@ fn refuse_satellite_metadata_scope(
 pub(crate) fn handle_subscribe_metadata(
     state: &SharedState,
     client_id: ClientId,
-    scope: phux_protocol::wire::frame::Scope,
+    scope: Scope,
     key: String,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     if is_reserved_session_create_result(&scope, &key) {
         warn!(
@@ -4661,9 +4572,9 @@ pub(crate) fn handle_subscribe_metadata(
 pub(crate) fn handle_subscribe_events(
     state: &SharedState,
     client_id: ClientId,
-    terminal: Option<phux_protocol::ids::ResourceId>,
+    terminal: Option<WireResourceId>,
     after_seq: Option<u64>,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     debug!(?client_id, ?terminal, ?after_seq, "SUBSCRIBE_EVENTS");
     if let Some(wire_id) = &terminal
@@ -4686,10 +4597,10 @@ pub(crate) fn handle_subscribe_events(
 fn subscribe_via_hub(
     state: &SharedState,
     client_id: ClientId,
-    wire_id: &phux_protocol::ids::ResourceId,
+    wire_id: &WireResourceId,
     (host, id): (phux_protocol::ids::SatelliteHost, u32),
     after_seq: Option<u64>,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     let Some(relay) = state.with(|s| s.hub_relay(&host)) else {
         warn!(
@@ -4737,7 +4648,7 @@ fn subscribe_via_hub(
             bootstrap_limits: None,
         },
         FrameKind::SubscribeEvents {
-            terminal: Some(phux_protocol::ids::ResourceId::local(id)),
+            terminal: Some(WireResourceId::local(id)),
             after_seq: None,
         },
     );
@@ -4751,7 +4662,7 @@ fn subscribe_via_hub(
 
 /// Whether `terminal_id` resolves, on this server, to an agent session;
 /// `false` for unknown or satellite ids, which other handlers answer.
-fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::ResourceId) -> bool {
+fn is_agent_session(state: &SharedState, terminal_id: &WireResourceId) -> bool {
     state.with(|s| {
         s.terminal_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
@@ -4763,7 +4674,7 @@ fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::Resou
 /// (`None` for server-scoped) and fan it out (ADR-0123).
 pub(crate) fn broadcast_event(
     state: &SharedState,
-    terminal: Option<&phux_protocol::ids::ResourceId>,
+    terminal: Option<&WireResourceId>,
     event: &AgentEvent,
 ) {
     journal_event(
@@ -4814,7 +4725,7 @@ enum OutboundTerminalState {
 
 #[derive(Debug, Default)]
 struct OutboundGenerationFence {
-    terminals: HashMap<phux_protocol::ids::ResourceId, OutboundTerminalState>,
+    terminals: HashMap<WireResourceId, OutboundTerminalState>,
     diagnostics: Option<crate::stream_diagnostics::StreamTracker>,
 }
 
@@ -4866,7 +4777,7 @@ impl OutboundGenerationFence {
 
     fn admit_begin(
         &mut self,
-        terminal_id: &phux_protocol::ids::ResourceId,
+        terminal_id: &WireResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -4890,7 +4801,7 @@ impl OutboundGenerationFence {
 
     fn admit_tombstone(
         &mut self,
-        terminal_id: &phux_protocol::ids::ResourceId,
+        terminal_id: &WireResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -4914,7 +4825,7 @@ impl OutboundGenerationFence {
 
     fn admit_data(
         &self,
-        terminal_id: &phux_protocol::ids::ResourceId,
+        terminal_id: &WireResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -4924,14 +4835,14 @@ impl OutboundGenerationFence {
             })
     }
 
-    fn current(&self, terminal_id: &phux_protocol::ids::ResourceId) -> Option<OutboundGeneration> {
+    fn current(&self, terminal_id: &WireResourceId) -> Option<OutboundGeneration> {
         match self.terminals.get(terminal_id) {
             Some(OutboundTerminalState::Generation(generation)) => Some(*generation),
             Some(OutboundTerminalState::Closed) | None => None,
         }
     }
 
-    fn is_closed(&self, terminal_id: &phux_protocol::ids::ResourceId) -> bool {
+    fn is_closed(&self, terminal_id: &WireResourceId) -> bool {
         matches!(
             self.terminals.get(terminal_id),
             Some(OutboundTerminalState::Closed)
@@ -4945,7 +4856,7 @@ impl OutboundGenerationFence {
 const fn generation_of_outbound_frame(
     frame: &FrameKind,
 ) -> Option<(
-    &phux_protocol::ids::ResourceId,
+    &WireResourceId,
     phux_protocol::ids::StreamId,
     phux_protocol::ids::BootstrapId,
 )> {
@@ -6489,7 +6400,7 @@ mod agent_drain_tests {
     use phux_protocol::ids::ResourceId as WireResourceId;
     use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 
-    use super::{retract_hook, spawn_agent_state_drain, state_change_hook};
+    use super::{Prior, retract_hook, spawn_agent_state_drain, state_change_hook};
     use crate::agent_asked::AskedPayload;
     use crate::agent_detect::record::AgentRecordJson;
     use crate::agent_detect::{AgentDetectEvent, AgentReport, DetectedState};
@@ -6562,8 +6473,14 @@ mod agent_drain_tests {
     fn hooks_fire_only_on_real_edges() {
         let terminal = WireResourceId::local(1);
         let ctx = |event: &crate::hooks::HookEvent, key: &str| event.context.get(key).cloned();
+        let was = |state: &str| Some(Prior(Some(state.to_owned())));
 
-        let first = state_change_hook(&terminal, "claude", "", None, "working").expect("edge");
+        assert!(
+            state_change_hook(&terminal, "claude", "", None, "working").is_none(),
+            "no hook is owed while hooks are off"
+        );
+        let first =
+            state_change_hook(&terminal, "claude", "", Some(Prior(None)), "working").expect("edge");
         assert_eq!(first.name, crate::hooks::AGENT_STATE_CHANGED);
         assert_eq!(
             ctx(&first, "from"),
@@ -6571,53 +6488,103 @@ mod agent_drain_tests {
             "a first sighting has no prior state"
         );
         assert_eq!(ctx(&first, "agent-name"), None, "an empty name is omitted");
-        let blocked = state_change_hook(&terminal, "claude", "rev", Some("working"), "blocked")
-            .expect("edge");
+        let blocked =
+            state_change_hook(&terminal, "claude", "rev", was("working"), "blocked").expect("edge");
         assert_eq!(ctx(&blocked, "from").as_deref(), Some("working"));
         assert_eq!(ctx(&blocked, "to").as_deref(), Some("blocked"));
-        assert!(state_change_hook(&terminal, "claude", "claude", Some("idle"), "idle").is_none());
+        assert!(state_change_hook(&terminal, "claude", "claude", was("idle"), "idle").is_none());
 
-        let retract = retract_hook(&terminal, Some("working")).expect("a retract is an edge");
+        let retract = retract_hook(&terminal, was("working")).expect("a retract is an edge");
         assert_eq!(ctx(&retract, "to").as_deref(), Some(AGENT_STATE_UNKNOWN));
-        assert!(retract_hook(&terminal, Some(AGENT_STATE_UNKNOWN)).is_none());
+        assert!(retract_hook(&terminal, was(AGENT_STATE_UNKNOWN)).is_none());
     }
 
-    /// An identity-only record is not a declaration: the detector fills
-    /// `state` in, and a retract withdraws the state without deleting the
-    /// human's name and label.
+    /// One drain run per row over a pane that may carry a human's record:
+    /// the resulting `(kind, name, state, session)`, or `None` when no record
+    /// remains.
+    ///
+    /// - An identity-only record is not a declaration: the detector fills in
+    ///   `state`, and a retract withdraws it without deleting the name.
+    /// - A record the detector wrote alone is deleted by a retract.
+    /// - I2: a new occupant lands on `unknown` in one write; a declaration is
+    ///   withdrawn rather than corrected; no record means nothing is written.
+    /// - I1: a dropped `Reidentified` is healed by the next `State` write.
+    /// - A custom kind the detector cannot derive still gets its state, and
+    ///   reasserting a kind never drags a human's name with it.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_retract_does_not_delete_a_humans_name_from_the_record() {
-        local(async {
-            let (state, terminal) = pane(Some(
-                br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#,
-            ));
-            drain(
-                &state,
-                &terminal,
+    async fn detector_writes_respect_human_records() {
+        type Expect<'a> = Option<(Option<&'a str>, &'a str, &'a str, Option<&'a str>)>;
+        type Case<'a> = (Option<&'a [u8]>, Vec<AgentDetectEvent>, Expect<'a>);
+        let identity = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#.as_slice();
+        let declared = br#"{"name":"me","kind":"claude","state":"working"}"#.as_slice();
+        let custom = br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#.as_slice();
+        let nameless = br#"{"name":"reviewer","session":"fleet-7"}"#.as_slice();
+        let cases: Vec<Case<'_>> = vec![
+            (
+                Some(identity),
                 vec![claude(DetectedState::Working), AgentDetectEvent::Retract],
-            )
-            .await;
-            let record = stored(&state, &terminal).expect("the record survives the exit");
-            assert_eq!(record.name, "reviewer");
-            assert_eq!(record.session.as_deref(), Some("fleet-7"));
-            assert_eq!(record.state, AGENT_STATE_UNKNOWN);
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_retract_deletes_a_record_the_detector_wrote_alone() {
-        local(async {
-            let (state, terminal) = pane(None);
-            drain(
-                &state,
-                &terminal,
+                Some((
+                    Some("claude"),
+                    "reviewer",
+                    AGENT_STATE_UNKNOWN,
+                    Some("fleet-7"),
+                )),
+            ),
+            (
+                None,
                 vec![claude(DetectedState::Working), AgentDetectEvent::Retract],
-            )
+                None,
+            ),
+            (
+                None,
+                vec![claude(DetectedState::Working), reidentified("codex")],
+                Some((Some("codex"), "codex", AGENT_STATE_UNKNOWN, None)),
+            ),
+            (
+                None,
+                vec![
+                    claude(DetectedState::Working),
+                    report_of("codex", DetectedState::Blocked),
+                ],
+                Some((Some("codex"), "codex", "blocked", None)),
+            ),
+            (
+                Some(declared),
+                vec![reidentified("codex")],
+                Some((Some("claude"), "me", AGENT_STATE_UNKNOWN, None)),
+            ),
+            (None, vec![reidentified("codex")], None),
+            (
+                Some(custom),
+                vec![claude(DetectedState::Blocked)],
+                Some((Some("my-agent"), "reviewer", "blocked", Some("fleet-7"))),
+            ),
+            (
+                Some(nameless),
+                vec![
+                    claude(DetectedState::Working),
+                    report_of("codex", DetectedState::Idle),
+                ],
+                Some((Some("codex"), "reviewer", "idle", Some("fleet-7"))),
+            ),
+        ];
+        for (row, (record, events, expect)) in cases.into_iter().enumerate() {
+            local(async {
+                let (state, terminal) = pane(record);
+                drain(&state, &terminal, events).await;
+                let got = stored(&state, &terminal);
+                let got = got.as_ref().map(|r| {
+                    (
+                        r.kind.as_deref(),
+                        r.name.as_str(),
+                        r.state.as_str(),
+                        r.session.as_deref(),
+                    )
+                });
+                assert_eq!(got, expect, "row {row}");
+            })
             .await;
-            assert!(stored(&state, &terminal).is_none());
-        })
-        .await;
+        }
     }
 
     /// A declared state outranks derivations (L3 §3.7), but a confirmed
@@ -6647,72 +6614,6 @@ mod agent_drain_tests {
             let after = stored(&state, &terminal).expect("still there");
             assert_eq!(after.state, "working", "the detector resumed");
             assert_eq!(after.name, "me");
-        })
-        .await;
-    }
-
-    /// Invariant I2: a new occupant's record lands on `unknown` in one write
-    /// rather than pairing its kind with the previous occupant's state.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_kind_change_corrects_the_record_in_one_write_landing_on_unknown() {
-        local(async {
-            let (state, terminal) = pane(None);
-            drain(
-                &state,
-                &terminal,
-                vec![claude(DetectedState::Working), reidentified("codex")],
-            )
-            .await;
-            let record = stored(&state, &terminal).expect("corrected, not removed");
-            assert_eq!(record.kind.as_deref(), Some("codex"));
-            assert_eq!(record.name, "codex");
-            assert_eq!(record.state, AGENT_STATE_UNKNOWN);
-        })
-        .await;
-    }
-
-    /// Invariant I1: a dropped `Reidentified` is healed by the next `State`
-    /// write, which reasserts the kind.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_dropped_correction_is_healed_by_the_next_state_write() {
-        local(async {
-            let (state, terminal) = pane(None);
-            drain(
-                &state,
-                &terminal,
-                vec![
-                    claude(DetectedState::Working),
-                    report_of("codex", DetectedState::Blocked),
-                ],
-            )
-            .await;
-            let record = stored(&state, &terminal).expect("written");
-            assert_eq!(record.kind.as_deref(), Some("codex"));
-            assert_eq!(record.state, "blocked");
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_kind_change_withdraws_a_declaration_rather_than_correcting_it() {
-        local(async {
-            let (state, terminal) =
-                pane(Some(br#"{"name":"me","kind":"claude","state":"working"}"#));
-            drain(&state, &terminal, vec![reidentified("codex")]).await;
-            let record = stored(&state, &terminal).expect("still there");
-            assert_eq!(record.state, AGENT_STATE_UNKNOWN);
-            assert_eq!(record.name, "me");
-            assert_eq!(record.kind.as_deref(), Some("claude"));
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_kind_change_on_a_pane_with_no_record_writes_nothing() {
-        local(async {
-            let (state, terminal) = pane(None);
-            drain(&state, &terminal, vec![reidentified("codex")]).await;
-            assert!(stored(&state, &terminal).is_none());
         })
         .await;
     }
@@ -6751,24 +6652,6 @@ mod agent_drain_tests {
                 .collect();
             drain(&state, &terminal, ticks).await;
             assert_eq!(raw(&state, &terminal), first, "withholding is free");
-        })
-        .await;
-    }
-
-    /// A custom kind the detector cannot derive is not contradicted, so the
-    /// state keeps flowing around the human's name, kind, and label.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_custom_kind_the_detector_cannot_derive_still_gets_its_state_filled_in() {
-        local(async {
-            let (state, terminal) = pane(Some(
-                br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#,
-            ));
-            drain(&state, &terminal, vec![claude(DetectedState::Blocked)]).await;
-            let record = stored(&state, &terminal).expect("written");
-            assert_eq!(record.kind.as_deref(), Some("my-agent"));
-            assert_eq!(record.name, "reviewer");
-            assert_eq!(record.session.as_deref(), Some("fleet-7"));
-            assert_eq!(record.state, "blocked");
         })
         .await;
     }
@@ -6812,29 +6695,6 @@ mod agent_drain_tests {
             let record = stored(&state, &terminal).expect("rewritten");
             assert_eq!(record.kind.as_deref(), Some("codex"));
             assert_eq!(record.state, "working");
-        })
-        .await;
-    }
-
-    /// Reasserting the detector's kind never drags a human's name with it.
-    #[tokio::test(flavor = "current_thread")]
-    async fn reasserting_kind_does_not_overwrite_a_humans_name() {
-        local(async {
-            let (state, terminal) = pane(Some(br#"{"name":"reviewer","session":"fleet-7"}"#));
-            drain(
-                &state,
-                &terminal,
-                vec![
-                    claude(DetectedState::Working),
-                    report_of("codex", DetectedState::Idle),
-                ],
-            )
-            .await;
-            let record = stored(&state, &terminal).expect("written");
-            assert_eq!(record.name, "reviewer");
-            assert_eq!(record.session.as_deref(), Some("fleet-7"));
-            assert_eq!(record.kind.as_deref(), Some("codex"));
-            assert_eq!(record.state, "idle");
         })
         .await;
     }
