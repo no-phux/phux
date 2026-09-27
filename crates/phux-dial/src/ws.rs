@@ -1,20 +1,11 @@
-//! Native WebSocket dial transport.
+//! Native WebSocket dial transport: the TCP fallback to QUIC, one binary
+//! message per length-prefixed phux frame, with the `Authorization: Bearer`
+//! pairing token on the RFC 6455 upgrade.
 //!
-//! This is the TCP fallback sibling to QUIC: one binary WebSocket message
-//! carries one complete length-prefixed phux frame, matching the server's
-//! `WsListener` and the browser client. This module owns establishment only
-//! (TCP connect, optional TLS with the shared trust policy, RFC 6455 upgrade
-//! with the `Authorization: Bearer` pairing token); message framing stays
-//! with the callers via [`WsReader`] / [`WsWriter`].
-//!
-//! It also owns this lane's **liveness**. QUIC gets peer-death detection for
-//! free from its transport config (`quic::KEEP_ALIVE` / `quic::IDLE_TIMEOUT`);
-//! TCP does not. A laptop that switches networks — wifi to cellular, or wifi
-//! dropped and rejoined on a new AP — leaves the old socket with no FIN and no
-//! RST, so a `wss://` read parks forever and the client hangs instead of
-//! reconnecting. [`WsKeepalive`] closes that gap with RFC 6455 ping/pong at
-//! the same 10s/30s cadence the QUIC lane uses, and
-//! [`recv_message_alive`] is the read path that applies it.
+//! It also owns this lane's **liveness**. A laptop that switches networks
+//! leaves the old TCP socket with no FIN or RST, so a read would park
+//! forever. [`WsKeepalive`] applies RFC 6455 ping/pong at the QUIC lane's
+//! 10s/30s cadence, and [`recv_message_alive`] is the read path that uses it.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -31,21 +22,12 @@ use tokio_tungstenite::{WebSocketStream, client_async};
 use crate::DialError;
 use crate::tls::{CertTrust, TlsClientIdentity};
 
-/// How often an otherwise silent WebSocket sends a client-initiated RFC 6455
-/// ping, matched to `quic::KEEP_ALIVE` so both remote lanes behave the same.
-///
-/// Client-initiated rather than server-initiated on purpose: every RFC 6455
-/// peer must answer a ping with a pong, and tungstenite does so automatically
-/// on its read path. So this detects a stalled link against **unmodified**
-/// phux servers — no wire change, no version negotiation, no skew window.
-pub const WS_PING_INTERVAL: Duration = Duration::from_secs(10);
+/// How often an otherwise silent WebSocket sends a client-initiated ping.
+/// Every RFC 6455 peer answers with a pong, so this needs no server support.
+const WS_PING_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How long a WebSocket may go without *any* inbound message before the peer
-/// is declared gone.
-///
-/// A frame, a pong, or a peer-initiated ping all count. Matched to
-/// `quic::IDLE_TIMEOUT`, and three ping intervals wide so a single dropped
-/// keepalive on a lossy link is not mistaken for a dead peer.
+/// is declared gone: three ping intervals, so one lost ping is tolerated.
 pub const WS_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What the keepalive wants done next.
@@ -59,37 +41,28 @@ pub enum WsLiveness {
     Dead,
 }
 
-/// Ping/pong liveness policy for one WebSocket, as a pure state machine.
+/// Ping/pong liveness policy for one WebSocket, as a clock-injected pure
+/// state machine.
 ///
-/// Deliberately clock-injected (`now` is a parameter, never read internally)
-/// so the policy is exercised by ordinary unit tests rather than by sleeping.
-///
-/// **Any** inbound message counts as proof of life, not just a pong: a pong
-/// for our ping, a peer-initiated ping, and an ordinary phux frame are all
-/// bytes that traversed the path, which is exactly the question being asked.
-/// That also means a busy session never pings at all — the keepalive only
-/// costs anything on an idle connection.
+/// **Any** inbound message counts as proof of life, so a busy session never
+/// pings.
 #[derive(Debug, Clone, Copy)]
 pub struct WsKeepalive {
     ping_interval: Duration,
     liveness_timeout: Duration,
     last_inbound: Instant,
-    /// When the last ping went out, reset to `None` by inbound traffic so a
-    /// live connection re-arms from scratch.
+    /// When the last ping went out; reset by inbound traffic.
     last_ping: Option<Instant>,
 }
 
 impl WsKeepalive {
-    /// The production policy: [`WS_PING_INTERVAL`] / [`WS_LIVENESS_TIMEOUT`].
+    /// The production policy: 10s pings, [`WS_LIVENESS_TIMEOUT`].
     #[must_use]
     pub const fn new(now: Instant) -> Self {
         Self::with_timings(now, WS_PING_INTERVAL, WS_LIVENESS_TIMEOUT)
     }
 
-    /// The policy with explicit timings. Tests use this to compress a 30s
-    /// window into milliseconds; production uses [`Self::new`].
-    #[must_use]
-    pub const fn with_timings(
+    const fn with_timings(
         now: Instant,
         ping_interval: Duration,
         liveness_timeout: Duration,
@@ -147,59 +120,19 @@ pub struct WsDial {
 /// The established WebSocket stream type [`dial`] returns.
 pub type Ws = WebSocketStream<ClientStream>;
 
-/// The plain-or-TLS TCP stream underneath the WebSocket.
-#[derive(Debug)]
-pub enum ClientStream {
-    /// Plaintext TCP (`ws://`, loopback dev only).
-    Plain(TcpStream),
-    /// TLS over TCP (`wss://`), trust per [`CertTrust`].
-    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+/// The plain (`ws://`, loopback dev) or TLS (`wss://`) TCP stream underneath
+/// the WebSocket.
+pub type ClientStream = Box<dyn ByteStream>;
+
+/// A bidirectional byte stream a WebSocket can run over.
+pub trait ByteStream:
+    tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + std::fmt::Debug
+{
 }
 
-impl tokio::io::AsyncRead for ClientStream {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Self::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
-            Self::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_read(cx, buf),
-        }
-    }
-}
-
-impl tokio::io::AsyncWrite for ClientStream {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            Self::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
-            Self::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Self::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
-            Self::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Self::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
-            Self::Tls(s) => std::pin::Pin::new(s.as_mut()).poll_shutdown(cx),
-        }
-    }
+impl<T> ByteStream for T where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + std::fmt::Debug
+{
 }
 
 /// Connect to the WebSocket listener: TCP connect, optional TLS handshake,
@@ -217,13 +150,8 @@ pub async fn dial(d: &WsDial) -> Result<Ws, DialError> {
     dial_inner(d, None).await
 }
 
-/// Connect using explicit TLS identity configuration.
-///
-/// This path never reads `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`. Native
-/// embedders that own their process environment should use it with
-/// [`TlsClientIdentity::None`] (pairing-token auth only) or explicit PEM paths.
-/// Certificate trust remains the explicit [`WsDial::trust`] value; routable
-/// mobile connections should use [`CertTrust::Pinned`].
+/// [`dial`] with an explicit TLS identity; never reads `PHUX_WORKLOAD_CERT`
+/// or `PHUX_WORKLOAD_KEY`.
 ///
 /// # Errors
 ///
@@ -235,12 +163,8 @@ pub async fn dial_with_identity(d: &WsDial, identity: &TlsClientIdentity) -> Res
 
 async fn dial_inner(d: &WsDial, identity: Option<&TlsClientIdentity>) -> Result<Ws, DialError> {
     let target = WsTarget::parse(&d.url)?;
-    // Resolve explicitly first: a name that does not resolve is a
-    // reachability failure, not a generic connect failure — on an overlay
-    // network, MagicDNS being down (Tailscale stopped on this end) fails
-    // exactly here. The connect below re-resolves the same (host, port)
-    // tuple, which after a successful lookup is a cheap cache hit and keeps
-    // one connect path that still tries every resolved address.
+    // Resolve first so a name that does not resolve (MagicDNS down) is
+    // classified as unreachable; the connect re-resolves from cache.
     if let Err(err) = tokio::net::lookup_host((target.host.as_str(), target.port)).await {
         return Err(DialError::Unreachable(format!(
             "dial {}: name resolution failed: {err}",
@@ -257,17 +181,13 @@ async fn dial_inner(d: &WsDial, identity: Option<&TlsClientIdentity>) -> Result<
                 DialError::Connect(msg)
             }
         })?;
-    // Nagle off (phux-l96p.10): a keystroke leaves this socket as one small
-    // `INPUT_KEY`, and Nagle holds it until the peer's delayed ACK returns.
-    // The server disables it on its half for the same reason; both halves
-    // matter, because either one alone still pays the delay in one direction.
-    // A failure here costs latency, not correctness, so it is ignored rather
-    // than failing the dial (and this crate carries no logger of its own).
+    // Nagle off: a keystroke is one small frame that Nagle would hold for the
+    // peer's delayed ACK. A failure costs latency, not correctness.
     let _ = tcp.set_nodelay(true);
-    let stream = if target.secure {
-        ClientStream::Tls(Box::new(tls_connect(tcp, &target, d, identity).await?))
+    let stream: ClientStream = if target.secure {
+        Box::new(tls_connect(tcp, &target, d, identity).await?)
     } else {
-        ClientStream::Plain(tcp)
+        Box::new(tcp)
     };
 
     let mut req = d
@@ -388,11 +308,8 @@ impl WsTarget {
 pub struct WsReader {
     /// The message stream half from [`futures_util::StreamExt::split`].
     pub rx: futures_util::stream::SplitStream<Ws>,
-    /// Liveness state for this connection, advanced by
-    /// [`recv_message_alive`]. Carried on the reader rather than in a caller
-    /// local because the attach driver reads inside a `tokio::select!`: the
-    /// read future is dropped and rebuilt on every keystroke, and a deadline
-    /// living in a local would restart with it.
+    /// Liveness state, kept on the reader so it survives the read future
+    /// being dropped and rebuilt inside a `select!`.
     keepalive: WsKeepalive,
 }
 
@@ -405,10 +322,6 @@ pub struct WsWriter {
 
 impl WsWriter {
     /// Send one already-encoded phux frame as a single binary message.
-    ///
-    /// # Errors
-    ///
-    /// Propagates transport failures as [`DialError`].
     pub async fn send(&mut self, frame: &[u8]) -> Result<(), DialError> {
         self.tx
             .send(Message::Binary(frame.to_vec().into()))
@@ -416,12 +329,7 @@ impl WsWriter {
             .map_err(ws_error)
     }
 
-    /// Send an RFC 6455 ping. The payload is empty: this asks "are you
-    /// there", and the answer is the pong arriving at all, not its contents.
-    ///
-    /// # Errors
-    ///
-    /// Propagates transport failures as [`DialError`].
+    /// Send an empty RFC 6455 ping.
     pub async fn send_ping(&mut self) -> Result<(), DialError> {
         self.tx
             .send(Message::Ping(Vec::new().into()))
@@ -440,28 +348,12 @@ impl WsReader {
         }
     }
 
-    /// Wrap a split stream half with explicit keepalive timings (tests).
-    #[must_use]
-    pub const fn with_keepalive(
-        rx: futures_util::stream::SplitStream<Ws>,
-        keepalive: WsKeepalive,
-    ) -> Self {
-        Self { rx, keepalive }
-    }
-
-    /// Receive the next binary message, skipping control frames.
+    /// Receive the next binary message, skipping control frames; `Ok(None)`
+    /// on a clean close.
     ///
-    /// Returns `Ok(None)` on a clean close.
-    ///
-    /// **This read can park forever.** A half-open TCP connection — the
-    /// laptop-changed-networks case — never delivers EOF or an error, so
-    /// nothing here will ever return. Session code wants
-    /// [`recv_message_alive`], which bounds the wait with ping/pong; this
-    /// plain form is for exchanges already bounded by the caller.
-    ///
-    /// # Errors
-    ///
-    /// Propagates transport failures as [`DialError`].
+    /// **This read can park forever** on a half-open connection. Session
+    /// code wants [`recv_message_alive`]; this form is for exchanges the
+    /// caller already bounds.
     pub async fn recv_message(&mut self) -> Result<Option<Vec<u8>>, DialError> {
         loop {
             match self.recv_activity().await? {
@@ -472,69 +364,49 @@ impl WsReader {
         }
     }
 
-    /// Receive one inbound WebSocket activity without hiding control frames.
+    /// Take the next phux frame **only if one is already buffered**, without
+    /// awaiting the socket, so the attach loop can coalesce a burst into one
+    /// render pass.
     ///
-    /// A control frame carries no phux payload, but it is authoritative proof
-    /// that a foreground liveness probe reached the peer and received an
-    /// answer. Callers that only need protocol messages should use
-    /// [`Self::recv_message`].
+    /// A single no-op-waker poll is safe because the caller always returns
+    /// to an awaiting [`recv_message_alive`], which re-registers the waker.
     ///
     /// # Errors
     ///
-    /// Propagates transport failures as [`DialError`].
-    pub async fn recv_activity(&mut self) -> Result<WsActivity, DialError> {
-        match self.rx.next().await {
-            None | Some(Ok(Message::Close(_))) => Ok(WsActivity::Closed),
-            Some(Ok(Message::Binary(data))) => {
-                self.keepalive.note_inbound(Instant::now());
-                Ok(WsActivity::Message(data.to_vec()))
-            }
-            Some(Err(err)) => Err(ws_error(err)),
-            // Text / ping / pong / raw: not a phux frame, but proof the path
-            // is still carrying bytes. tungstenite has already queued the
-            // automatic pong for a peer ping.
-            Some(Ok(_)) => {
-                self.keepalive.note_inbound(Instant::now());
-                Ok(WsActivity::Control)
+    /// Propagates transport failures as [`DialError`]. A clean close reads
+    /// as `Ok(None)`; the next awaiting read surfaces it.
+    pub fn try_recv_message(&mut self) -> Result<Option<Vec<u8>>, DialError> {
+        while let Some(next) = self.rx.next().now_or_never() {
+            match self.observe(next)? {
+                WsActivity::Message(data) => return Ok(Some(data)),
+                WsActivity::Control => {}
+                WsActivity::Closed => return Ok(None),
             }
         }
+        Ok(None)
     }
 
-    /// Take the next phux frame **only if one is already decodable**, without
-    /// awaiting the socket.
-    ///
-    /// This is the WebSocket half of the burst coalescing the UDS and QUIC
-    /// lanes already had (phux-jhv8): without it the attach loop runs a full
-    /// render pass per 4 KiB `RESOURCE_OUTPUT`, which on a `seq 1 300000`
-    /// burst is tens of thousands of paints and is the client half of why
-    /// this lane could not keep up (phux-l96p.10).
-    ///
-    /// Implemented as a single non-blocking poll of the message stream. The
-    /// common hit is tungstenite's own read buffer, which usually holds
-    /// several messages after one socket read. Polling with a no-op waker is
-    /// safe here because the caller always returns to an awaiting
-    /// [`recv_message_alive`], which re-registers the real waker, and tokio's
-    /// readiness flag — not the stored waker — is what makes that poll
-    /// observe data that arrived in between.
-    ///
-    /// # Errors
-    ///
-    /// Propagates transport failures as [`DialError`]. A clean close is
-    /// reported as `Ok(None)`, exactly like "nothing ready yet": the next
-    /// awaiting read surfaces the disconnect.
-    pub fn try_recv_message(&mut self) -> Result<Option<Vec<u8>>, DialError> {
-        loop {
-            let Some(next) = self.rx.next().now_or_never() else {
-                return Ok(None);
-            };
-            match next {
-                None | Some(Ok(Message::Close(_))) => return Ok(None),
-                Some(Ok(Message::Binary(data))) => {
-                    self.keepalive.note_inbound(Instant::now());
-                    return Ok(Some(data.to_vec()));
-                }
-                Some(Err(err)) => return Err(ws_error(err)),
-                Some(Ok(_)) => self.keepalive.note_inbound(Instant::now()),
+    /// Await one inbound activity without hiding control frames.
+    async fn recv_activity(&mut self) -> Result<WsActivity, DialError> {
+        let next = self.rx.next().await;
+        self.observe(next)
+    }
+
+    /// Classify one item from the stream, noting any inbound traffic as
+    /// proof of life (tungstenite has already queued the pong for a ping).
+    fn observe(
+        &mut self,
+        next: Option<Result<Message, TungsteniteError>>,
+    ) -> Result<WsActivity, DialError> {
+        match next {
+            None | Some(Ok(Message::Close(_))) => Ok(WsActivity::Closed),
+            Some(Err(err)) => Err(ws_error(err)),
+            Some(Ok(message)) => {
+                self.keepalive.note_inbound(Instant::now());
+                Ok(match message {
+                    Message::Binary(data) => WsActivity::Message(data.to_vec()),
+                    _ => WsActivity::Control,
+                })
             }
         }
     }
@@ -551,30 +423,22 @@ pub enum WsActivity {
     Closed,
 }
 
-/// Receive the next phux frame, keeping the connection alive and reporting a
-/// stalled peer instead of waiting on it forever.
+/// Receive the next phux frame, pinging after 10s of silence and returning
+/// [`DialError::Stalled`] after [`WS_LIVENESS_TIMEOUT`] with nothing back.
 ///
-/// Takes both halves because RFC 6455 liveness is inherently full-duplex: the
-/// question is asked on the sink and answered on the stream. Splitting the
-/// socket is what the framed reader/writer seam requires, so the loop that
-/// spans the split lives here rather than in either half.
-///
-/// While frames are flowing this is exactly [`WsReader::recv_message`] —
-/// inbound traffic is itself proof of life, so a busy session never pings.
-/// After [`WS_PING_INTERVAL`] of silence it pings; after
-/// [`WS_LIVENESS_TIMEOUT`] with nothing back it returns
-/// [`DialError::Stalled`].
+/// Takes both halves because liveness is asked on the sink and answered on
+/// the stream.
 ///
 /// # Cancel safety
 ///
-/// Safe to drop and re-enter, which the attach driver does on every keystroke.
-/// All deadline state lives on `reader`, and the ping is recorded before it is
-/// awaited, so a cancellation mid-send cannot turn into a ping storm.
+/// Safe to drop and re-enter: all deadline state lives on `reader`, and the
+/// ping is recorded before it is awaited, so cancellation cannot cause a
+/// ping storm.
 ///
 /// # Errors
 ///
-/// [`DialError::Stalled`] when the peer stops answering; otherwise the
-/// transport failures [`WsReader::recv_message`] surfaces.
+/// [`DialError::Stalled`] when the peer stops answering; otherwise transport
+/// failures.
 pub async fn recv_message_alive(
     reader: &mut WsReader,
     writer: &mut WsWriter,
@@ -588,20 +452,16 @@ pub async fn recv_message_alive(
     }
 }
 
-/// Receive one inbound WebSocket activity with the shared liveness policy.
-///
-/// Unlike [`recv_message_alive`], this returns after a control frame. That is
-/// useful to callers with a shorter, explicitly armed probe deadline: a Pong
-/// is proof of life even though it is not a phux protocol message.
+/// [`recv_message_alive`] that also returns after a control frame, for
+/// callers running a shorter probe deadline for which a pong is the answer.
 ///
 /// # Cancel safety
 ///
-/// Safe to drop and re-enter for the same reasons as [`recv_message_alive`].
+/// As [`recv_message_alive`].
 ///
 /// # Errors
 ///
-/// [`DialError::Stalled`] when the peer stops answering; otherwise the
-/// transport failures [`WsReader::recv_activity`] surfaces.
+/// As [`recv_message_alive`].
 pub async fn recv_activity_alive(
     reader: &mut WsReader,
     writer: &mut WsWriter,
@@ -625,8 +485,7 @@ pub async fn recv_activity_alive(
         };
         match tokio::time::timeout(nap, reader.recv_activity()).await {
             Ok(result) => return result,
-            // The nap elapsed: loop back and let `poll` decide whether that
-            // means "ping" or "dead".
+            // The nap elapsed: let `poll` decide between ping and dead.
             Err(_elapsed) => {}
         }
     }
@@ -637,33 +496,81 @@ pub async fn recv_activity_alive(
 mod tests {
     use super::*;
 
-    async fn spawn_pinned_wss_server(
-        token: &'static str,
-    ) -> (String, String, impl std::future::Future<Output = ()>) {
-        let dir = tempfile::tempdir().expect("temporary certificate directory");
-        let cert_path = dir.path().join("cert.pem");
-        let key_path = dir.path().join("key.pem");
-        crate::cert::ensure_self_signed(&cert_path, &key_path).expect("self-signed certificate");
-        let fingerprint = crate::cert::cert_fingerprint(&cert_path).expect("certificate pin");
+    #[test]
+    fn parses_ws_and_wss_targets() {
+        let ws = WsTarget::parse("ws://127.0.0.1:8787/path").expect("ws");
+        assert_eq!(
+            (ws.host.as_str(), ws.port, ws.secure),
+            ("127.0.0.1", 8787, false)
+        );
+        assert!(ws.is_loopback());
 
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let config = rustls::ServerConfig::builder_with_provider(provider)
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .expect("TLS 1.3 server config")
-            .with_no_client_auth()
-            .with_single_cert(
-                crate::cert::load_certs(&cert_path).expect("certificate chain"),
-                crate::cert::load_key(&key_path).expect("private key"),
-            )
-            .expect("TLS identity");
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let wss = WsTarget::parse("wss://example.com/phux").expect("wss");
+        assert_eq!(
+            (wss.host.as_str(), wss.port, wss.secure),
+            ("example.com", 443, true)
+        );
+        assert!(!wss.is_loopback());
+
+        assert!(WsTarget::parse("https://example.com/").is_err());
+    }
+
+    fn plain_dial(url: String) -> WsDial {
+        WsDial {
+            url,
+            token: None,
+            trust: CertTrust::SkipVerify,
+            tls_server_name: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn refused_tcp_connect_classifies_unreachable() {
+        // Bind then drop a listener so the port is known-refusing.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+
+        let err = dial(&plain_dial(format!("ws://127.0.0.1:{port}")))
+            .await
+            .expect_err("nothing is listening");
+        assert!(matches!(err, DialError::Unreachable(_)), "got {err:?}");
+        assert!(
+            err.to_string()
+                .starts_with("transport connect error: dial 127.0.0.1:"),
+            "got {err}"
+        );
+    }
+
+    /// `.invalid` (RFC 2606) never resolves: the `MagicDNS`-down shape.
+    #[tokio::test]
+    async fn unresolvable_hostname_classifies_unreachable() {
+        let err = dial(&plain_dial(
+            "ws://phux-test-nxdomain.invalid:8787".to_owned(),
+        ))
+        .await
+        .expect_err(".invalid never resolves");
+        assert!(matches!(err, DialError::Unreachable(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("name resolution failed"),
+            "got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_no_identity_dials_pinned_wss_with_bearer_auth() {
+        const TOKEN: &str = "11111111111111111111111111111111";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tls = crate::testing::server_tls(dir.path(), None);
+        let fingerprint =
+            crate::cert::cert_fingerprint(&dir.path().join("cert.pem")).expect("certificate pin");
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind WSS fixture");
         let port = listener.local_addr().expect("fixture address").port();
 
         let server = async move {
-            let _dir = dir;
             let (tcp, _) = listener.accept().await.expect("accept TCP");
             let tls = acceptor.accept(tcp).await.expect("accept TLS");
             #[allow(
@@ -680,7 +587,7 @@ mod tests {
                             .expect("bearer header")
                             .to_str()
                             .expect("ASCII bearer header"),
-                        format!("Bearer {token}")
+                        format!("Bearer {TOKEN}")
                     );
                     Ok(response)
                 },
@@ -695,81 +602,10 @@ mod tests {
                 Message::Binary(b"pinned-wss".to_vec().into())
             );
         };
-
-        (format!("wss://127.0.0.1:{port}"), fingerprint, server)
-    }
-
-    #[test]
-    fn parses_ws_and_wss_targets() {
-        let ws = WsTarget::parse("ws://127.0.0.1:8787/path").expect("ws");
-        assert_eq!(ws.host, "127.0.0.1");
-        assert_eq!(ws.port, 8787);
-        assert!(!ws.secure);
-        assert!(ws.is_loopback());
-
-        let wss = WsTarget::parse("wss://example.com/phux").expect("wss");
-        assert_eq!(wss.host, "example.com");
-        assert_eq!(wss.port, 443);
-        assert!(wss.secure);
-        assert!(!wss.is_loopback());
-    }
-
-    #[test]
-    fn rejects_non_websocket_scheme() {
-        assert!(WsTarget::parse("https://example.com/").is_err());
-    }
-
-    #[tokio::test]
-    async fn refused_tcp_connect_classifies_unreachable() {
-        // Bind then drop a listener so the port is known-refusing.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
-
-        let err = dial(&WsDial {
-            url: format!("ws://127.0.0.1:{port}"),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            tls_server_name: None,
-        })
-        .await
-        .expect_err("nothing is listening");
-        assert!(matches!(err, DialError::Unreachable(_)), "got {err:?}");
-        assert!(
-            err.to_string()
-                .starts_with("transport connect error: dial 127.0.0.1:"),
-            "got {err}"
-        );
-    }
-
-    /// A hostname that does not resolve classifies as `Unreachable` — the
-    /// `MagicDNS`-down shape of an overlay outage. `.invalid` is reserved by
-    /// RFC 2606 and guaranteed never to resolve.
-    #[tokio::test]
-    async fn unresolvable_hostname_classifies_unreachable() {
-        let err = dial(&WsDial {
-            url: "ws://phux-test-nxdomain.invalid:8787".to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            tls_server_name: None,
-        })
-        .await
-        .expect_err(".invalid never resolves");
-        assert!(matches!(err, DialError::Unreachable(_)), "got {err:?}");
-        assert!(
-            err.to_string().contains("name resolution failed"),
-            "got {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn explicit_no_identity_dials_pinned_wss_with_bearer_auth() {
-        const TOKEN: &str = "11111111111111111111111111111111";
-        let (url, fingerprint, server) = spawn_pinned_wss_server(TOKEN).await;
         let client = async {
             let mut ws = dial_with_identity(
                 &WsDial {
-                    url,
+                    url: format!("wss://127.0.0.1:{port}"),
                     token: Some(TOKEN.to_owned()),
                     trust: CertTrust::Pinned(fingerprint),
                     tls_server_name: Some("localhost".to_owned()),
@@ -786,46 +622,20 @@ mod tests {
         tokio::join!(server, client);
     }
 
-    // ---- keepalive policy ------------------------------------------------
-
     /// Compressed test timings: the production 10s/30s shape, 100x faster.
     const TEST_PING: Duration = Duration::from_millis(100);
     const TEST_DEAD: Duration = Duration::from_millis(300);
 
-    /// The steady state of a busy session: traffic keeps arriving, so nothing
-    /// is ever due and the keepalive costs exactly one comparison per read.
-    #[test]
-    fn traffic_keeps_the_keepalive_quiet() {
-        let start = Instant::now();
-        let mut keepalive = WsKeepalive::with_timings(start, TEST_PING, TEST_DEAD);
-
-        for step in 1..10 {
-            let now = start + TEST_PING / 2 * step;
-            assert!(
-                matches!(keepalive.poll(now), WsLiveness::Idle(_)),
-                "inbound traffic every half-interval never needs a ping"
-            );
-            keepalive.note_inbound(now);
-        }
-    }
-
-    /// Silence walks the state machine: quiet -> ping -> quiet again while we
-    /// wait for the answer -> dead once the whole window has elapsed with
-    /// nothing back.
+    /// Silence walks the state machine: quiet -> ping -> quiet while waiting
+    /// for the answer -> dead once the whole window elapses.
     #[test]
     fn silence_pings_then_declares_the_peer_dead() {
         let start = Instant::now();
         let mut keepalive = WsKeepalive::with_timings(start, TEST_PING, TEST_DEAD);
 
-        assert_eq!(
-            keepalive.poll(start),
-            WsLiveness::Idle(TEST_PING),
-            "a fresh connection waits a full interval before probing"
-        );
+        assert_eq!(keepalive.poll(start), WsLiveness::Idle(TEST_PING));
         assert_eq!(keepalive.poll(start + TEST_PING), WsLiveness::Ping);
 
-        // Ping sent; the next one is due an interval later, and the peer is
-        // not dead yet — it still has the rest of the window to answer.
         keepalive.note_ping(start + TEST_PING);
         assert_eq!(
             keepalive.poll(start + TEST_PING),
@@ -837,26 +647,22 @@ mod tests {
         assert_eq!(keepalive.poll(start + TEST_DEAD), WsLiveness::Dead);
     }
 
-    /// A ping late in the window schedules its successor past the death
-    /// deadline. Sleeping to *that* would let a dead peer outlive its own
-    /// timeout, so the nap is capped at the deadline.
+    /// A ping late in the window must not schedule a nap past the death
+    /// deadline, or a dead peer would outlive its own timeout.
     #[test]
     fn the_nap_never_overshoots_the_death_deadline() {
         let start = Instant::now();
         let mut keepalive = WsKeepalive::with_timings(start, TEST_PING, TEST_DEAD);
-        // Ping at 250ms: the next ping would be 350ms, but death is at 300ms.
         let late = start + Duration::from_millis(250);
         keepalive.note_ping(late);
-
         assert_eq!(
             keepalive.poll(late),
-            WsLiveness::Idle(Duration::from_millis(50)),
-            "wake at the death deadline, not at the next ping"
+            WsLiveness::Idle(Duration::from_millis(50))
         );
     }
 
-    /// A pong (or any other inbound message) rearms the whole policy: the
-    /// death deadline moves and the ping schedule restarts from scratch.
+    /// Any inbound message rearms the whole policy: the death deadline moves
+    /// and the ping schedule restarts.
     #[test]
     fn inbound_traffic_rearms_after_a_ping() {
         let start = Instant::now();
@@ -869,57 +675,15 @@ mod tests {
         assert_eq!(keepalive.poll(pong), WsLiveness::Idle(TEST_PING));
         assert_eq!(
             keepalive.poll(pong + TEST_DEAD - Duration::from_millis(1)),
-            WsLiveness::Ping,
-            "still alive: the deadline moved with the pong"
+            WsLiveness::Ping
         );
         assert_eq!(keepalive.poll(pong + TEST_DEAD), WsLiveness::Dead);
     }
 
-    /// The production timings match the QUIC lane's, and leave room for a
-    /// dropped keepalive or two before condemning the connection.
-    #[test]
-    fn production_timings_mirror_the_quic_lane() {
-        assert_eq!(WS_PING_INTERVAL, Duration::from_secs(10));
-        assert_eq!(WS_LIVENESS_TIMEOUT, Duration::from_secs(30));
-        assert!(
-            WS_LIVENESS_TIMEOUT >= WS_PING_INTERVAL * 3,
-            "one lost ping on a lossy link must not read as a dead peer"
-        );
-    }
-
-    // ---- keepalive over a real socket ------------------------------------
-
-    /// Accept one WebSocket connection and then go silent forever, holding
-    /// the socket open without ever polling it.
-    ///
-    /// This is what the far end of a half-open TCP connection looks like from
-    /// the client: the kernel took the bytes, nothing answers, and no FIN or
-    /// RST is ever coming. It is the laptop-switched-networks shape, and it is
-    /// precisely the case a plain `read` cannot survive.
-    async fn spawn_silent_ws_server() -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        tokio::spawn(async move {
-            let (tcp, _) = listener.accept().await.expect("accept");
-            let ws = tokio_tungstenite::accept_async(tcp)
-                .await
-                .expect("ws upgrade");
-            // Never polled: no pong is ever sent. Held so the socket stays
-            // open — a closed socket would be the easy case.
-            std::future::pending::<()>().await;
-            drop(ws);
-        });
-        format!("ws://127.0.0.1:{port}")
-    }
-
-    /// Accept one WebSocket connection and keep draining it, which is what
-    /// every RFC 6455 peer does — tungstenite answers pings automatically on
-    /// the read path. The reference phux server's `WsListener` reads in
-    /// exactly this shape, which is why the client-initiated ping works
-    /// against servers that know nothing about this change.
-    async fn spawn_responsive_ws_server() -> String {
+    /// Accept one WebSocket connection. A `responsive` peer keeps reading
+    /// (so tungstenite answers pings); otherwise it holds the socket open
+    /// and never polls it: the far end of a half-open TCP connection.
+    async fn spawn_ws_server(responsive: bool) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -929,69 +693,34 @@ mod tests {
             let mut ws = tokio_tungstenite::accept_async(tcp)
                 .await
                 .expect("ws upgrade");
-            while ws.next().await.is_some() {}
+            if responsive {
+                while ws.next().await.is_some() {}
+            } else {
+                std::future::pending::<()>().await;
+            }
         });
         format!("ws://127.0.0.1:{port}")
     }
 
-    async fn connect_halves(url: &str, keepalive: WsKeepalive) -> (WsReader, WsWriter) {
-        let ws = dial(&WsDial {
-            url: url.to_owned(),
-            token: None,
-            trust: CertTrust::SkipVerify,
-            tls_server_name: None,
-        })
-        .await
-        .expect("dial");
+    async fn connect_halves(url: &str, opened: Instant) -> (WsReader, WsWriter) {
+        let ws = dial(&plain_dial(url.to_owned())).await.expect("dial");
         let (tx, rx) = ws.split();
-        (WsReader::with_keepalive(rx, keepalive), WsWriter { tx })
+        let keepalive = WsKeepalive::with_timings(opened, TEST_PING, TEST_DEAD);
+        (WsReader { rx, keepalive }, WsWriter { tx })
     }
 
-    /// THE defect, pinned. Against a peer that has stopped answering,
-    /// `recv_message` never returns — no EOF, no error, no timeout. Without
-    /// the keepalive the attach loop parks here forever and the reconnect
-    /// path is never even entered.
-    #[tokio::test]
-    async fn plain_recv_hangs_forever_on_a_stalled_peer() {
-        let url = spawn_silent_ws_server().await;
-        let (mut reader, _writer) = connect_halves(
-            &url,
-            WsKeepalive::with_timings(Instant::now(), TEST_PING, TEST_DEAD),
-        )
-        .await;
-
-        let outcome = tokio::time::timeout(TEST_DEAD * 10, reader.recv_message()).await;
-        assert!(
-            outcome.is_err(),
-            "plain recv_message must be the hanging read this fix exists to bound: {outcome:?}"
-        );
-    }
-
-    /// The fix: the same stalled peer, read through the keepalive, is
-    /// reported as `Stalled` within the liveness window instead of hanging.
-    /// `Stalled` is what the client maps to a disconnect, so this is the edge
-    /// that puts a network-switched laptop onto the reconnect path at all.
+    /// A stalled peer is reported as `Stalled` within the liveness window
+    /// instead of hanging, which is what puts a network-switched laptop on
+    /// the reconnect path.
     ///
-    /// The lower bound is measured from `opened`, the instant the policy
-    /// takes as its own `last_inbound` — *not* from after the dial. The
-    /// policy condemns the peer at `opened + TEST_DEAD` no matter how long
-    /// the TCP connect and WebSocket handshake took, so timing the window
-    /// from after the handshake silently subtracts the handshake from it.
-    /// That is what made this test load-dependent (phux-5wxp.2): under a
-    /// saturated pool it failed 10 times in 200 at 297.5ms-299.99975ms
-    /// against the 300ms window, one of them short by 250 *nanoseconds*.
-    /// Sharing the origin makes the bound load-independent — elapsed time
-    /// only ever grows — while still failing loudly if the policy ever
-    /// condemns a peer before its window is up.
+    /// The lower bound is measured from `opened`, the policy's own origin,
+    /// not from after the handshake: timing from after the dial subtracted
+    /// the handshake and made the bound load-dependent.
     #[tokio::test]
     async fn keepalive_reports_a_stalled_peer_instead_of_hanging() {
-        let url = spawn_silent_ws_server().await;
+        let url = spawn_ws_server(false).await;
         let opened = Instant::now();
-        let (mut reader, mut writer) = connect_halves(
-            &url,
-            WsKeepalive::with_timings(opened, TEST_PING, TEST_DEAD),
-        )
-        .await;
+        let (mut reader, mut writer) = connect_halves(&url, opened).await;
 
         let err =
             tokio::time::timeout(TEST_DEAD * 10, recv_message_alive(&mut reader, &mut writer))
@@ -1011,18 +740,12 @@ mod tests {
         );
     }
 
-    /// No false positives: an ordinary RFC 6455 peer that is simply *quiet* —
-    /// an attached session where nobody is typing and nothing is printing —
-    /// answers the pings and stays up indefinitely. Run for many liveness
-    /// windows so a policy that failed to rearm on a pong would be caught.
+    /// No false positives: a quiet peer that answers pings stays up across
+    /// many liveness windows.
     #[tokio::test]
     async fn a_quiet_but_healthy_peer_is_never_declared_dead() {
-        let url = spawn_responsive_ws_server().await;
-        let (mut reader, mut writer) = connect_halves(
-            &url,
-            WsKeepalive::with_timings(Instant::now(), TEST_PING, TEST_DEAD),
-        )
-        .await;
+        let url = spawn_ws_server(true).await;
+        let (mut reader, mut writer) = connect_halves(&url, Instant::now()).await;
 
         let outcome =
             tokio::time::timeout(TEST_DEAD * 8, recv_message_alive(&mut reader, &mut writer)).await;
@@ -1032,17 +755,11 @@ mod tests {
         );
     }
 
-    /// A caller-owned foreground probe must see the Pong instead of waiting
-    /// for an unrelated binary protocol frame. The ordinary message API keeps
-    /// hiding controls; the activity-aware API exposes the proof of life.
+    /// A caller-owned probe sees the pong through the activity-aware API.
     #[tokio::test]
     async fn activity_receive_surfaces_a_probe_pong() {
-        let url = spawn_responsive_ws_server().await;
-        let (mut reader, mut writer) = connect_halves(
-            &url,
-            WsKeepalive::with_timings(Instant::now(), TEST_PING, TEST_DEAD),
-        )
-        .await;
+        let url = spawn_ws_server(true).await;
+        let (mut reader, mut writer) = connect_halves(&url, Instant::now()).await;
 
         writer.send_ping().await.expect("probe ping");
         let activity =

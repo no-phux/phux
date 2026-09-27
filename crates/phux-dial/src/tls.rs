@@ -1,26 +1,24 @@
 //! Shared TLS trust policy for remote dial transports.
 //!
-//! QUIC and secure WebSocket both use the same operator flow: `phux pair`
-//! prints a self-signed certificate fingerprint, and the dialer pins that
-//! fingerprint for routable hosts. Loopback dev may skip certificate
-//! verification while still exercising the encrypted transport.
+//! `phux pair` prints a self-signed certificate fingerprint and the dialer
+//! pins it for routable hosts; loopback dev may skip verification while still
+//! encrypting.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use sha2::{Digest, Sha256};
 
 use crate::DialError;
 
 /// How a remote dialer decides to trust the server's TLS certificate.
 ///
-/// TLS still provides encryption in both modes. The choice here is whether the
-/// server's self-signed certificate is pinned out-of-band, or accepted blindly
-/// for loopback-only development. Handshake *signatures* are still verified
-/// with ring ECDSA in both modes; pin vs skip only changes
-/// `ServerCertVerifier::verify_server_cert`.
+/// Both modes encrypt and verify handshake signatures; they differ only in
+/// whether the leaf certificate is checked against a pin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CertTrust {
     /// Accept the server's certificate without verification. **Loopback dev
@@ -35,8 +33,7 @@ pub enum CertTrust {
 /// environment configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsClientIdentity {
-    /// Send no client certificate. Pairing-token authentication remains
-    /// available at the WebSocket or QUIC layer.
+    /// Send no client certificate; pairing-token auth still applies.
     None,
     /// Load one PEM certificate chain and private key from explicit paths.
     PemFiles {
@@ -47,15 +44,11 @@ pub enum TlsClientIdentity {
     },
 }
 
-/// Build a rustls client config with the phux remote trust policy.
+/// Build a rustls client config with the phux remote trust policy, taking the
+/// optional workload identity from `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY`.
 ///
-/// `alpn` is transport-specific: QUIC needs `phux-quic/1`; WebSocket leaves it
-/// unset because the RFC 6455 upgrade happens at HTTP level.
-///
-/// Public so that anything dialing a phux listener gets *this* verifier rather
-/// than a hand-rolled copy of it — including the listener tests on the server
-/// side, which previously carried their own `ServerCertVerifier`. A test that
-/// re-implements the trust policy is a test that can quietly disagree with it.
+/// `alpn` is set for QUIC and left unset for WebSocket. Public so every dialer
+/// (including server-side listener tests) uses this verifier, not a copy.
 pub fn client_config(
     trust: &CertTrust,
     alpn: Option<&[u8]>,
@@ -64,12 +57,8 @@ pub fn client_config(
     client_config_with_identity(trust, &identity, alpn)
 }
 
-/// Build a rustls client config from explicit trust and identity inputs.
-///
-/// Unlike [`client_config`], this function never reads
-/// `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`. Native embedders should use
-/// this path so another library or launch environment cannot silently change
-/// whether the dial presents a workload identity.
+/// Build a rustls client config from explicit trust and identity inputs;
+/// never reads the environment.
 ///
 /// # Errors
 ///
@@ -81,13 +70,13 @@ pub fn client_config_with_identity(
     alpn: Option<&[u8]>,
 ) -> Result<rustls::ClientConfig, DialError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let verifier: Arc<dyn rustls::client::danger::ServerCertVerifier> = match trust {
-        CertTrust::SkipVerify => Arc::new(SkipServerVerification(provider.clone())),
-        CertTrust::Pinned(fingerprint) => Arc::new(PinnedFingerprint {
-            provider: provider.clone(),
-            expected: normalize_fingerprint(fingerprint),
-        }),
-    };
+    let verifier = Arc::new(Verifier {
+        provider: provider.clone(),
+        pin: match trust {
+            CertTrust::SkipVerify => None,
+            CertTrust::Pinned(fingerprint) => Some(normalize_fingerprint(fingerprint)),
+        },
+    });
 
     let builder = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -99,7 +88,7 @@ pub fn client_config_with_identity(
         private_key,
     } = identity
     {
-        let certs = rustls::pki_types::CertificateDer::pem_file_iter(certificate)
+        let certs = CertificateDer::pem_file_iter(certificate)
             .map_err(|err| DialError::Connect(format!("read workload certificate: {err}")))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| DialError::Connect(format!("read workload certificate: {err}")))?;
@@ -117,9 +106,9 @@ pub fn client_config_with_identity(
     Ok(crypto)
 }
 
-/// Optional client identity for paired mTLS endpoints. Both paths are
-/// required; a half-configured identity fails closed at the server rather
-/// than silently downgrading to an unauthenticated client.
+/// Optional client identity for paired mTLS endpoints. Both variables are
+/// required; a half-configured identity fails rather than silently dialing
+/// unauthenticated.
 fn client_identity_from_env() -> Result<TlsClientIdentity, DialError> {
     let cert = std::env::var_os("PHUX_WORKLOAD_CERT").map(PathBuf::from);
     let key = std::env::var_os("PHUX_WORKLOAD_KEY").map(PathBuf::from);
@@ -135,8 +124,8 @@ fn client_identity_from_env() -> Result<TlsClientIdentity, DialError> {
     }
 }
 
-/// Uppercase hex digits only — drops separators and whitespace so a pin pasted
-/// as `AB:CD:...`, `abcd...`, or with spaces compares the same way.
+/// Uppercase hex digits only, so `AB:CD:...`, `abcd...`, and spaced pins
+/// compare equal.
 fn normalize_fingerprint(fingerprint: &str) -> String {
     fingerprint
         .chars()
@@ -145,8 +134,8 @@ fn normalize_fingerprint(fingerprint: &str) -> String {
         .collect()
 }
 
-/// SHA-256 of a leaf certificate as bare uppercase hex (no separators).
-fn leaf_fingerprint(cert: &rustls::pki_types::CertificateDer<'_>) -> String {
+/// SHA-256 of a leaf certificate as bare uppercase hex.
+fn leaf_fingerprint(cert: &CertificateDer<'_>) -> String {
     let digest = Sha256::digest(cert.as_ref());
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -155,28 +144,33 @@ fn leaf_fingerprint(cert: &rustls::pki_types::CertificateDer<'_>) -> String {
     hex
 }
 
+/// The phux server-certificate verifier: checks the leaf against `pin` when
+/// set, accepts any leaf otherwise, and always verifies handshake signatures.
 #[derive(Debug)]
-struct PinnedFingerprint {
+struct Verifier {
     provider: Arc<rustls::crypto::CryptoProvider>,
-    expected: String,
+    /// Normalized expected fingerprint; `None` is [`CertTrust::SkipVerify`].
+    pin: Option<String>,
 }
 
-impl rustls::client::danger::ServerCertVerifier for PinnedFingerprint {
+impl ServerCertVerifier for Verifier {
     fn verify_server_cert(
         &self,
-        end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
         _ocsp: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let Some(expected) = &self.pin else {
+            return Ok(ServerCertVerified::assertion());
+        };
         let actual = leaf_fingerprint(end_entity);
-        if actual == self.expected {
-            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        if &actual == expected {
+            Ok(ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::General(format!(
-                "server certificate fingerprint mismatch (pinned {}, got {})",
-                self.expected, actual
+                "server certificate fingerprint mismatch (pinned {expected}, got {actual})"
             )))
         }
     }
@@ -184,9 +178,9 @@ impl rustls::client::danger::ServerCertVerifier for PinnedFingerprint {
     fn verify_tls12_signature(
         &self,
         message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
+        cert: &CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         rustls::crypto::verify_tls12_signature(
             message,
             cert,
@@ -198,9 +192,9 @@ impl rustls::client::danger::ServerCertVerifier for PinnedFingerprint {
     fn verify_tls13_signature(
         &self,
         message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
+        cert: &CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         rustls::crypto::verify_tls13_signature(
             message,
             cert,
@@ -216,54 +210,6 @@ impl rustls::client::danger::ServerCertVerifier for PinnedFingerprint {
     }
 }
 
-#[derive(Debug)]
-struct SkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
-
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.0.signature_verification_algorithms.supported_schemes()
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
@@ -271,26 +217,37 @@ mod tests {
 
     #[test]
     fn normalize_fingerprint_is_separator_and_case_insensitive() {
-        let colons = "ab:CD:12:Ef";
-        let bare = "ABCD12EF";
-        assert_eq!(normalize_fingerprint(colons), bare);
-        assert_eq!(normalize_fingerprint(bare), bare);
-        assert_eq!(
-            normalize_fingerprint("  ab cd 12 ef  "),
-            bare,
-            "whitespace is dropped too"
-        );
+        for pin in ["ab:CD:12:Ef", "ABCD12EF", "  ab cd 12 ef  "] {
+            assert_eq!(normalize_fingerprint(pin), "ABCD12EF", "{pin:?}");
+        }
     }
 
+    /// The pin is enforced against a real leaf: its own fingerprint (in any
+    /// accepted shape) verifies, any other is refused.
     #[test]
-    fn explicit_no_identity_builds_pinned_config_without_environment() {
-        let config = client_config_with_identity(
-            &CertTrust::Pinned("ab:cd".to_owned()),
-            &TlsClientIdentity::None,
-            None,
-        )
-        .expect("explicit anonymous config");
-        assert!(config.alpn_protocols.is_empty());
+    fn pinned_verifier_accepts_only_the_pinned_leaf() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cert = dir.path().join("cert.pem");
+        crate::cert::ensure_self_signed(&cert, &dir.path().join("key.pem")).expect("pair");
+        let leaf = crate::cert::load_certs(&cert).expect("certs").remove(0);
+        let pinned = crate::cert::cert_fingerprint(&cert).expect("fingerprint");
+        let verify = |pin: Option<String>| {
+            Verifier {
+                provider: Arc::new(rustls::crypto::ring::default_provider()),
+                pin: pin.map(|p| normalize_fingerprint(&p)),
+            }
+            .verify_server_cert(
+                &leaf,
+                &[],
+                &ServerName::try_from("localhost").expect("name"),
+                &[],
+                UnixTime::now(),
+            )
+        };
+        assert!(verify(Some(pinned.clone())).is_ok());
+        assert!(verify(Some(pinned.to_lowercase().replace(':', ""))).is_ok());
+        assert!(verify(Some("00".repeat(32))).is_err());
+        assert!(verify(None).is_ok(), "skip-verify accepts any leaf");
     }
 
     #[test]

@@ -1,21 +1,10 @@
 //! Congestion-tracked QUIC send windows: TCP's `NOTSENT_LOWAT` rule for quinn.
 //!
-//! quinn's default send window is 10 MB, bounded in practice by the peer's
-//! 1.25 MB stream credit. On a link slower than the output (cmatrix over a
-//! thin Wi-Fi or DERP path) a writer kept accepting until that credit was
-//! spent, so the backlog — and the lag in front of every keystroke echo —
-//! grew to seconds before the writer ever blocked. Backpressure never reached
-//! whatever was producing the output, so nothing upstream could react to it.
-//!
-//! Holding the window to the congestion window plus [`UNSENT_SLACK`] keeps
-//! what is unsent small, so a slow link queues about one round trip of output
-//! instead of megabytes, and a writer that finds the window full blocks. The
-//! window is re-read before every partial write so it follows the path as the
-//! congestion controller learns it.
-//!
-//! This is the one implementation every phux QUIC writer whose output can
-//! outrun its path shares: the server's raw-QUIC and WebTransport writers
-//! (wtransport rides quinn) and `phux-relay`'s consumer-facing leg.
+//! quinn's default send window lets a writer on a slow link queue megabytes
+//! (seconds of lag) before it blocks. Holding the window to the congestion
+//! window plus [`UNSENT_SLACK`], re-read before every partial write, queues
+//! about one round trip instead and pushes backpressure to the producer.
+//! Shared by the server's raw-QUIC and WebTransport writers and the relay.
 
 use std::io;
 use std::pin::Pin;
@@ -24,11 +13,8 @@ use std::task::{Context, Poll};
 
 use tokio::io::AsyncWrite;
 
-/// Output quinn may hold beyond what the congestion window lets it send.
-///
-/// The slack keeps the next write ready when an ack opens room, so the path
-/// stays window-limited and the congestion window keeps growing on a fast
-/// link; anything more is backlog a slow link turns into lag.
+/// Output quinn may hold beyond what the congestion window lets it send: enough
+/// to keep the path window-limited so the congestion window keeps growing.
 pub const UNSENT_SLACK: u64 = 16 * 1024;
 
 /// Ceiling for the tracked send window: quinn's own default.
@@ -47,12 +33,9 @@ pub const fn send_window_for(cwnd: u64) -> u64 {
 
 /// One connection's congestion-tracked send window.
 ///
-/// quinn's send window belongs to the connection, not to a stream, so this
-/// is built once per connection and cloned for every stream written on it.
-/// Clones share the value last handed to quinn: a connection that carries
-/// many streams (a relay tunnel bridging several consumers) has one window,
-/// and a per-writer cache would let one writer skip an update because it
-/// remembers a value another writer has since replaced.
+/// quinn's send window is per connection, so this is built once per
+/// connection and cloned per stream; clones share the last applied value so
+/// one writer never skips an update another writer invalidated.
 #[derive(Debug, Clone)]
 pub struct SendWindow {
     conn: quinn::Connection,
@@ -74,10 +57,9 @@ impl SendWindow {
     /// Hold the connection's send window to its congestion window plus
     /// [`UNSENT_SLACK`].
     ///
-    /// quinn's setter wakes the connection driver, so it is only called when
-    /// the value changes. The congestion window is read, compared and applied
-    /// under one lock: read outside it, two clones could race and the one
-    /// holding the older congestion window could overwrite the newer value.
+    /// Only calls quinn's setter (which wakes the driver) on change. Read,
+    /// compare and apply happen under one lock so racing clones cannot
+    /// overwrite a newer value with an older one.
     pub fn track(&self) {
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
         let window = send_window_for(self.conn.stats().path.cwnd);
@@ -97,17 +79,8 @@ impl SendWindow {
 /// A QUIC send stream that re-tracks its connection's [`SendWindow`] before
 /// every partial write.
 ///
-/// Wraps anything that writes into a quinn connection — `quinn::SendStream`,
-/// or a stream layered on one such as wtransport's — and is itself an
-/// [`AsyncWrite`], so `write_all` and `tokio::io::copy` get the bound without
-/// knowing about it.
-///
-/// Per write, not per buffer: pinning the window once for a whole
-/// `write_all` would freeze it for the length of a bootstrap batch that runs
-/// to megabytes. Once the congestion window grew past the pinned value quinn
-/// would be starved of unsent data, count the path as app-limited and stop
-/// growing the window — a fresh connection would crawl through its first
-/// screen at one pinned window per round trip instead of ramping up in slow
+/// Per write, not per buffer: pinning the window once for a multi-megabyte
+/// `write_all` would starve quinn, mark the path app-limited, and stall slow
 /// start.
 #[derive(Debug)]
 pub struct TrackedSend<W> {
@@ -177,40 +150,16 @@ mod tests {
 
     #[test]
     fn send_window_is_the_congestion_window_plus_unsent_slack() {
-        // Even a collapsed path keeps the slack, so the writer always has
-        // somewhere to put its next batch.
         assert_eq!(send_window_for(0), UNSENT_SLACK);
-        // In range, only the slack sits beyond what the path may send.
-        assert_eq!(send_window_for(14_720), 14_720 + UNSENT_SLACK);
         assert_eq!(send_window_for(100_000), 100_000 + UNSENT_SLACK);
-        // A huge window is capped at quinn's own default, without overflow.
+        // Capped at quinn's own default, without overflow.
         assert_eq!(send_window_for(MAX_SEND_WINDOW), MAX_SEND_WINDOW);
         assert_eq!(send_window_for(u64::MAX), MAX_SEND_WINDOW);
     }
 
-    /// A quinn server endpoint on an ephemeral loopback port with a fresh
-    /// self-signed certificate (the tempdir holds the PEM files).
     fn server_endpoint() -> (tempfile::TempDir, quinn::Endpoint) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let cert = dir.path().join("cert.pem");
-        let key = dir.path().join("key.pem");
-        crate::cert::ensure_self_signed(&cert, &key).expect("provision cert");
-        let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .expect("tls13")
-        .with_no_client_auth()
-        .with_single_cert(
-            crate::cert::load_certs(&cert).expect("certs"),
-            crate::cert::load_key(&key).expect("key"),
-        )
-        .expect("server tls");
-        tls.alpn_protocols = vec![ALPN.to_vec()];
-        let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls).expect("quic crypto");
-        let config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-        let endpoint = quinn::Endpoint::server(config, "127.0.0.1:0".parse().expect("addr"))
-            .expect("bind server");
+        let endpoint = crate::testing::quic_server(dir.path(), ALPN);
         (dir, endpoint)
     }
 
