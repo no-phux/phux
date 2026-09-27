@@ -1,25 +1,10 @@
-//! Typed view of the `phux.agent/v1` L3 metadata record (ADR-0040).
+//! Typed view of the `phux.agent/v1` L3 metadata record (ADR-0040, L3 §3.7).
 //!
-//! The record is the structured agent identity + lifecycle path that
-//! replaces title-substring heuristics: an agent (or an integration acting
-//! for it) writes this record to the Terminal it runs in via `SET_METADATA`;
-//! consumers read it back and MUST prefer it over OSC-title or screen
-//! inference ([`docs/spec/L3.md`](../../../docs/spec/L3.md) §3.7). The
-//! server stores the bytes opaquely — the schema here is the normative
-//! *client* convention, exactly like `phux.tags/v1`.
-//!
-//! `state` and `attention` are OPEN string enums on the wire: an
-//! unrecognized value decodes to [`AgentMetaState::Unknown`] /
-//! [`AgentAttention::Normal`] rather than failing the parse, so the
-//! vocabulary can grow without breaking older consumers.
-//!
-//! The sibling `phux.pane-occupant/v1` record ([`PaneOccupantRecord`]) and
-//! the **available-shell precondition** built on it live here too, because
-//! the precondition is a reading of that record: every verb that types a
-//! shell command line into a pane someone else owns (`phux agent start`,
-//! `phux run`) answers the same question — is a shell actually in the
-//! foreground? — and must answer it from one implementation, or the two
-//! surfaces drift. See [`pane_shell_availability`].
+//! `state` and `attention` are OPEN enums: unrecognized values decode to
+//! [`AgentMetaState::Unknown`] / [`AgentAttention::Normal`] rather than
+//! failing the parse. The `phux.pane-occupant/v1` record and the one
+//! available-shell precondition (`phux agent start`, `phux run`) built on it
+//! live here too; see [`pane_shell_availability`].
 
 use std::path::Path;
 use std::time::Duration;
@@ -62,42 +47,23 @@ pub fn parse_pane_occupant(bytes: &[u8]) -> Option<PaneOccupantRecord> {
     Some(record)
 }
 
-// ---------------------------------------------------------------------------
-// The available-shell precondition.
-//
-// herdr's gate is three clauses: the pane's foreground pgid equals its child
-// pid, the job holds only that shell, and the name is a known shell. phux has
-// the raw materials for clauses 1 and 3 server-side, where the ADR-0046
-// detector already makes both process queries, and publishes the
-// privacy-bounded answer as `phux.pane-occupant/v1`. OSC-133 is a
-// conservative cross-check: a Prompt/Input mark on the cursor row
-// corroborates availability, while marks elsewhere positively prove the
-// screen is busy and override a possibly stale periodic process observation.
-// ---------------------------------------------------------------------------
+// The available-shell precondition: the server-published occupant record is
+// the process truth; OSC-133 marks are a conservative cross-check (a mark on
+// the cursor row corroborates, marks elsewhere prove the screen is busy).
 
-/// How long [`read_pane_occupant`] waits for the record to appear.
-///
-/// Covers the detector's first 500 ms unidentified tick without turning an
-/// older or degraded server into an unbounded preflight.
+/// How long [`read_pane_occupant`] waits for the record: the detector's
+/// first 500 ms tick, without an unbounded preflight on older servers.
 pub const PANE_OCCUPANT_WAIT: Duration = Duration::from_millis(650);
 
-/// What the client-side available-shell check could establish.
-///
-/// Three-valued because two of the answers are refusals for different reasons
-/// and the third is an admission. Collapsing them would make a verb either
-/// unusable (refusing every pane without shell integration) or unsafe
-/// (typing into `vim`).
+/// What the client-side OSC-133 check could establish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellCheck {
     /// An OSC-133 `Prompt`/`Input` mark sits on the cursor's row: whatever
     /// holds the screen right now is a shell command line.
     AtPrompt,
-    /// The pane carries OSC-133 marks somewhere, but not on the cursor's row.
-    /// Shell integration is on and the cursor is somewhere else — positive
-    /// evidence that something other than the prompt has the screen.
+    /// Marks exist, but not on the cursor's row: something else has the screen.
     NotAtPrompt,
-    /// No semantic marks at all, or no resolvable cursor. Shell integration is
-    /// probably off, and phux cannot answer the question client-side.
+    /// No marks or no cursor: shell integration is probably off.
     Unanswerable,
 }
 
@@ -113,12 +79,8 @@ impl ShellCheck {
     }
 }
 
-/// Evaluate the available-shell precondition against one screen.
-///
-/// Deliberately scoped to the **cursor's row** rather than the whole viewport:
-/// a prompt mark left further up the screen is equally true while a build runs
-/// in the foreground, and that is exactly the case the precondition exists to
-/// catch.
+/// Evaluate the OSC-133 check against one screen. Scoped to the cursor's
+/// row: a stale prompt mark further up is also present while a build runs.
 #[must_use]
 pub fn shell_check(screen: &ScreenState) -> ShellCheck {
     let Some(cells) = screen.cells.as_ref() else {
@@ -151,22 +113,16 @@ pub fn shell_check(screen: &ScreenState) -> ShellCheck {
 pub enum ShellAvailability {
     /// A shell is in the foreground; the command line is safe to submit.
     Available,
-    /// The server observed a foreground process that is not the pane shell.
-    /// Carries the login-dash-stripped basename, so a caller can name what
-    /// IS in the foreground.
+    /// The server observed this non-shell foreground process.
     BusyProcess(String),
     /// OSC-133 marks prove something other than the prompt has the screen.
     BusyScreen,
-    /// Neither source answered: no occupant record and no marks. Fail
-    /// CLOSED — an unevaluable precondition is not one that passed.
+    /// Neither source answered; fail closed.
     Unanswerable,
 }
 
-/// Combine the server-owned occupant record with the client-visible OSC-133
-/// reading.
-///
-/// A missing screen cannot erase a positive server observation, but it is
-/// never itself evidence of safety.
+/// Combine the occupant record with the OSC-133 reading. A missing screen
+/// cannot erase a server observation, and is never evidence of safety.
 #[must_use]
 pub fn shell_availability(
     occupant: Option<&PaneOccupantRecord>,
@@ -185,16 +141,8 @@ pub fn shell_availability(
     }
 }
 
-/// The available-shell precondition for `terminal`: server process truth,
-/// conservatively cross-checked with client-visible OSC-133 state.
-///
-/// The one implementation behind `phux agent start`'s precondition and
-/// `phux run`'s. Both reads are side-effect-free (a `GET_METADATA` and a
-/// `GET_SCREEN`), so evaluating the precondition never disturbs the pane it
-/// is asking about.
-///
-/// Fails CLOSED when neither source answers — see
-/// [`ShellAvailability::Unanswerable`].
+/// The available-shell precondition for `terminal`, from two side-effect-free
+/// reads; fails closed when neither answers.
 pub async fn pane_shell_availability(socket: &Path, terminal: &ResourceId) -> ShellAvailability {
     let occupant = read_pane_occupant(socket, terminal).await;
     let screen = crate::snapshot::get_screen_scrollback(socket, terminal.clone(), None, true).await;
@@ -204,11 +152,8 @@ pub async fn pane_shell_availability(socket: &Path, terminal: &ResourceId) -> Sh
     shell_availability(occupant.as_ref(), screen)
 }
 
-/// Read the detector-owned occupant record, allowing its first 500 ms tick
-/// to land.
-///
-/// Absence remains distinguishable from `is_pane_shell: false` so the
-/// OSC-133 compatibility fallback can serve older or degraded servers.
+/// Read the detector-owned occupant record, allowing its first tick to land.
+/// Absence stays distinct from `is_pane_shell: false`.
 pub async fn read_pane_occupant(
     socket: &Path,
     terminal: &ResourceId,
@@ -247,9 +192,7 @@ pub async fn read_pane_occupant(
     }
 }
 
-/// Lifecycle state a `phux.agent/v1` record declares.
-///
-/// OPEN enum: an unrecognized wire string decodes as [`Self::Unknown`].
+/// Lifecycle state a `phux.agent/v1` record declares (OPEN enum).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", from = "String")]
 pub enum AgentMetaState {
@@ -293,9 +236,7 @@ impl AgentMetaState {
     }
 }
 
-/// Attention priority a `phux.agent/v1` record declares.
-///
-/// OPEN enum: an unrecognized wire string decodes as [`Self::Normal`].
+/// Attention priority a `phux.agent/v1` record declares (OPEN enum).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", from = "String")]
 pub enum AgentAttention {
@@ -377,16 +318,11 @@ impl AgentRecord {
     }
 }
 
-/// Decode a `phux.agent/v1` metadata value.
-///
-/// Returns `None` for bytes that are not a JSON object with a non-empty
-/// `name` — the spec'd "no declared agent" reading — so a malformed write
-/// can never wedge a consumer.
+/// Decode a `phux.agent/v1` value; anything but a JSON object with a
+/// non-empty `name` is "no declared agent".
 #[must_use]
 pub fn parse_agent_record(bytes: &[u8]) -> Option<AgentRecord> {
-    // Route through `Value` so only a JSON *object* is accepted — serde
-    // would otherwise happily fill struct fields positionally from a JSON
-    // array, which the spec calls malformed.
+    // Via `Value`: serde would fill struct fields positionally from an array.
     let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     if !value.is_object() {
         return None;
@@ -491,9 +427,6 @@ mod tests {
         assert_eq!(parse_agent_record(br#"["name"]"#), None);
     }
 
-    /// The precondition reads the CURSOR'S row, not the whole viewport: a
-    /// prompt mark left further up the screen is equally true while a build
-    /// runs in the foreground, which is the case this check exists to catch.
     #[test]
     fn the_shell_check_reads_the_cursor_row_not_the_whole_screen() {
         let at_prompt = marked_screen(
@@ -538,9 +471,6 @@ mod tests {
         );
     }
 
-    /// No marks at all is an ADMISSION, not a refusal reason of the same
-    /// kind: shell integration is probably off and phux cannot answer. The
-    /// two must stay distinguishable, because only one of them is evidence.
     #[test]
     fn a_screen_without_semantic_marks_is_unanswerable() {
         assert_eq!(

@@ -1,11 +1,5 @@
-//! Wire primitives for `phux agent set` / `clear` — writing and reading the
-//! structured `phux.agent/v1` record (ADR-0040) over L3 `SET_METADATA` /
-//! `DELETE_METADATA` / `GET_METADATA`.
-//!
-//! The record type and its encode/parse convention live in
-//! [`crate::agent_meta`]; this module owns the round trips. Selector
-//! resolution (which pane a `phux agent set/clear TARGET` names) stays
-//! client-side — see `crates/phux/src/commands/agent/record.rs`.
+//! Wire round trips for the `phux.agent/v1` record (ADR-0040) behind
+//! `phux agent set` / `clear`; the record type lives in [`crate::agent_meta`].
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,10 +13,8 @@ use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
 use crate::state::Degradation;
 
-/// One `GET_METADATA` round-trip for `pane`'s agent record.
-///
-/// Returns an [`Answer`] rather than a bare `Option` so a refusal cannot be
-/// mistaken for "this pane has no record".
+/// One `GET_METADATA` round-trip for `pane`'s agent record; a refusal stays
+/// distinct from "no record".
 ///
 /// # Errors
 ///
@@ -47,13 +39,10 @@ pub async fn get_record(
     ))
 }
 
-/// Write `record` to `pane`, then confirm it landed with a trailing
-/// `GET_METADATA` (consuming `request_id + 1`).
+/// Write `record` to `pane`, then confirm with a trailing `GET_METADATA`.
 ///
-/// `SET_METADATA` carries no reply frame, so the confirming round-trip is
-/// load-bearing, not cosmetic: the process could otherwise exit before the
-/// server reads the write. Frames are ordered on one connection, so the
-/// reply proves the write was applied before this returns.
+/// The read-back consumes `request_id + 1`. `SET_METADATA` has no reply, so
+/// the ordered read-back proves the write applied before the process exits.
 ///
 /// # Errors
 ///
@@ -75,9 +64,7 @@ pub async fn set_record(
     get_record(conn, pane, request_id.wrapping_add(1)).await
 }
 
-/// Delete `pane`'s record, then confirm the delete with a trailing
-/// `GET_METADATA` (consuming `request_id + 1`). Same load-bearing shape as
-/// [`set_record`].
+/// Delete `pane`'s record, confirmed like [`set_record`].
 ///
 /// # Errors
 ///
@@ -97,19 +84,11 @@ pub async fn clear_record(
     get_record(conn, pane, request_id.wrapping_add(1)).await
 }
 
-/// Fetch the `phux.agent/v1` index — `ResourceId` → decoded record — for
-/// every pane in `snapshot`, over one fresh connection to `socket_path`.
+/// Fetch every pane's decoded `phux.agent/v1` record over one connection.
 ///
-/// One `GET_METADATA` round trip per pane: sequential rather than pipelined
-/// since phux-h5hj.12 (a hand-rolled pipeline that counted down only on
-/// `METADATA_VALUE` wedged on a correlated `ERROR` refusal). A pane with no
-/// record, or bytes that fail the §3.7 validation, is simply absent from the
-/// index, as is one the server refuses to read (this index has no channel to
-/// report a refusal on). Best-effort: a transport failure returns what was
-/// collected so the caller degrades to heuristics instead of erroring.
-///
-/// Every interleaved degradation notice observed along the way is appended
-/// to `notices`, in encounter order, for the caller to print.
+/// One sequential `GET_METADATA` per pane. Missing, invalid, or refused
+/// records are absent; a transport failure returns what was collected.
+/// Interleaved degradation notices are appended to `notices` in order.
 pub async fn fetch_index(
     socket_path: &Path,
     snapshot: &SessionSnapshot,
@@ -138,23 +117,18 @@ pub async fn fetch_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::{ScriptSpec, serve_one};
 
     #[tokio::test]
     async fn set_then_clear_round_trip_and_surface_interleaved_degradation() {
-        use crate::testkit::{ScriptSpec, ScriptedServer};
-
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
         let pane = ResourceId::local(9);
         let record = AgentRecord {
             name: "codex".to_owned(),
             ..AgentRecord::default()
         };
         let spec = ScriptSpec::new().degradation_notice("satellite edge is unreachable: timed out");
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = serve_one(dir.path(), spec);
 
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let (answer, degradation) = set_record(&mut conn, 1, &pane, &record)
@@ -189,16 +163,9 @@ mod tests {
 
     #[tokio::test]
     async fn clear_confirms_the_record_is_gone() {
-        use crate::testkit::{ScriptSpec, ScriptedServer};
-
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
         let pane = ResourceId::local(4);
-        let spec = ScriptSpec::new();
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = serve_one(dir.path(), ScriptSpec::new());
 
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let (answer, degradation) = clear_record(&mut conn, 5, &pane)

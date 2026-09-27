@@ -1,27 +1,12 @@
-//! The `AgentSession` resource from the client side: open, close, emit, log
-//! (ADR-0103, `docs/consumers/agents.md` §2 and §4.19).
+//! The `AgentSession` resource from the client side (ADR-0103).
 //!
-//! An agent session is the second resource kind the server serves: a
-//! producer-fed, ordered stream of `AgentEventsJsonlV1` records bound to the
-//! Terminal the agent runs in. This module is the library half of the four
-//! `phux agent` verbs the CLI and MCP adapter expose over it, and it speaks
-//! only wire verbs the server already has:
+//! [`open`] is `SPAWN_RESOURCE` with a kinded body, [`close`] is
+//! `KILL_RESOURCE`, [`emit`] is `APPEND_RESOURCE_OUTPUT` of JSONL records,
+//! and [`log`] is an observer attach whose bootstrap carries the retained
+//! records, then live `RESOURCE_OUTPUT` under `follow`.
 //!
-//! - [`open`] is `SPAWN_RESOURCE` with the additive kind/parent/provider/
-//!   native-id fields;
-//! - [`close`] is `KILL_RESOURCE` on the session resource (closing a child
-//!   never touches the parent);
-//! - [`emit`] is `APPEND_RESOURCE_OUTPUT`, one or more complete JSONL records
-//!   per call under the per-record and per-call byte ceilings;
-//! - [`log`] attaches to the session resource with `ATTACH_RESOURCE` the way
-//!   `phux rec` attaches to a Terminal: the retained records arrive as the
-//!   bootstrap transcript and, under `--follow`, live records as
-//!   `RESOURCE_OUTPUT` frames until the session closes.
-//!
-//! Every entry point is gated on [`ServerFeature::ResourceKinds`]: a server
-//! that does not advertise the bit has no agent sessions, and the refusal
-//! ([`AgentSessionError::Unsupported`]) happens before any frame that server
-//! would silently drop.
+//! Every verb is gated on [`ServerFeature::ResourceKinds`] before any frame
+//! a server without it would silently drop.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,10 +21,8 @@ use crate::attach::AttachError;
 use crate::attach::connection::{Answer, Connection};
 use crate::resource;
 
-/// The closed `AgentEventsJsonlV1` record `type` vocabulary (v1).
-///
-/// The server refuses any other word with `RECORD_INVALID`; the client checks
-/// first so a typo costs no round trip and writes nothing.
+/// The closed `AgentEventsJsonlV1` record `type` vocabulary (v1), checked
+/// client-side so a typo writes nothing.
 pub const EVENT_TYPES: &[&str] = &[
     "session_start",
     "prompt",
@@ -60,9 +43,7 @@ pub const MAX_RECORD_BYTES: usize = 16 * 1024;
 /// Largest payload one `APPEND_RESOURCE_OUTPUT` carries.
 pub const MAX_APPEND_BYTES: usize = 64 * 1024;
 
-/// Correlation ids for the request/response frames this module sends. One
-/// connection per verb, so the values only have to be distinct from each
-/// other.
+/// Correlation ids; one connection per verb, so they need only be distinct.
 const REQUEST_SPAWN: u32 = 1;
 const REQUEST_KILL: u32 = 2;
 const REQUEST_APPEND: u32 = 3;
@@ -77,8 +58,7 @@ pub struct AgentEventRecord {
     pub seq: u64,
     /// The server's clock at append, milliseconds since the Unix epoch.
     pub ts_ms: u64,
-    /// One of [`EVENT_TYPES`] (an open string here so a newer server's word
-    /// still decodes).
+    /// One of [`EVENT_TYPES`] (open here, so a newer word still decodes).
     #[serde(rename = "type")]
     pub kind: String,
     /// The producer's payload, a JSON object.
@@ -133,9 +113,7 @@ impl EmitRecord {
         &self.kind
     }
 
-    /// One JSONL line: the object plus its newline. `seq` and `ts_ms` are
-    /// deliberately absent — the server assigns them and ignores a
-    /// producer-supplied value.
+    /// One JSONL line; `seq` and `ts_ms` are the server's to assign.
     #[must_use]
     pub fn encode_line(&self) -> Vec<u8> {
         let object = serde_json::json!({ "type": self.kind, "data": self.data });
@@ -199,11 +177,8 @@ pub struct LogOutcome {
     pub end: LogEnd,
 }
 
-/// Why an agent session verb did not succeed.
-///
-/// Every server-side refusal has its own variant so the CLI can map it onto
-/// the closed error-code vocabulary (`docs/consumers/agents.md` §5.3) without
-/// parsing messages.
+/// Why an agent session verb did not succeed; one variant per refusal so
+/// the CLI maps codes without parsing messages.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentSessionError {
     /// The server did not advertise `RESOURCE_KINDS`, so agent sessions do
@@ -281,33 +256,25 @@ fn render_ids(ids: &[ResourceId]) -> String {
 }
 
 /// Whether `conn`'s server advertised agent sessions in `HELLO_OK`.
-#[must_use]
-pub fn supports(conn: &Connection) -> bool {
-    conn.negotiated_bootstrap().is_some_and(|negotiated| {
-        negotiated
-            .server_features
-            .contains(ServerFeature::ResourceKinds)
-    })
-}
-
-/// [`supports`] as a gate: `Ok(())` or [`AgentSessionError::Unsupported`].
 ///
 /// # Errors
 ///
 /// [`AgentSessionError::Unsupported`] when the bit is absent.
 pub fn require_support(conn: &Connection) -> Result<(), AgentSessionError> {
-    if supports(conn) {
+    let supported = conn.negotiated_bootstrap().is_some_and(|negotiated| {
+        negotiated
+            .server_features
+            .contains(ServerFeature::ResourceKinds)
+    });
+    if supported {
         Ok(())
     } else {
         Err(AgentSessionError::Unsupported)
     }
 }
 
-/// Open an `AgentSession` bound to `parent`.
-///
-/// The caller becomes the session's producer. The server does not
-/// deduplicate: a Terminal that already has a live session gets a second
-/// one.
+/// Open an `AgentSession` bound to `parent`; the caller becomes its
+/// producer. The server does not deduplicate sessions per Terminal.
 ///
 /// # Errors
 ///
@@ -397,11 +364,8 @@ pub async fn close(conn: &mut Connection, resource: &ResourceId) -> Result<(), A
     }
 }
 
-/// Append `records` to the `AgentSession` `resource` in one call.
-///
-/// Every record is encoded up front and the whole batch is refused before
-/// any byte is sent when it exceeds [`MAX_APPEND_BYTES`]; the server's own
-/// answer maps onto the typed refusals.
+/// Append `records` to `resource` in one call; a batch over
+/// [`MAX_APPEND_BYTES`] is refused before any byte is sent.
 ///
 /// # Errors
 ///
@@ -482,13 +446,11 @@ fn map_refusal(resource: &ResourceId, code: ErrorCode, message: String) -> Agent
     }
 }
 
-/// Read the `AgentSession` `resource`'s stream.
+/// Read `resource`'s stream as an observer.
 ///
-/// Attaches to the resource as an observer: the retained records arrive as
-/// the bootstrap transcript and are handed to `sink` after `READY` (trimmed
-/// to `options.tail`); with `options.follow`, live records follow until the
-/// session closes, the server goes away, or `sink` returns `false`. Without
-/// `follow` the read detaches after the retained records.
+/// The retained records (trimmed to `options.tail`) arrive after `READY`;
+/// with `follow`, live records follow until the session closes, the server
+/// goes away, or `sink` returns `false`.
 ///
 /// # Errors
 ///
@@ -525,10 +487,8 @@ pub async fn log(
         .await?;
     }
 
-    // Retained records: everything up to BOOTSTRAP_READY. The reference
-    // server pushes the whole transcript ahead of the attach ack, so it is
-    // normally all in `primed`; a server that acks first is read to READY
-    // here the same way.
+    // Retained records: everything up to BOOTSTRAP_READY, usually all in
+    // `primed` (the server pushes the transcript ahead of the ack).
     let mut reader = Reader::new(resource.clone());
     let mut retained: Vec<AgentEventRecord> = Vec::new();
     let mut ready = false;
@@ -540,12 +500,8 @@ pub async fn log(
         };
         match reader.absorb(frame)? {
             Absorbed::Records(records) => retained.extend(records),
-            Absorbed::Ready => ready = true,
-            Absorbed::Closed => {
-                // The session ended before its bootstrap completed: whatever
-                // was retained is still the honest answer.
-                ready = true;
-            }
+            // A session closed mid-bootstrap still answers with what it kept.
+            Absorbed::Ready | Absorbed::Closed => ready = true,
             Absorbed::Nothing => {}
         }
     }
@@ -555,29 +511,46 @@ pub async fn log(
         .tail
         .map_or(0, |tail| retained_count.saturating_sub(tail));
     let mut delivered = 0;
-    for record in retained.into_iter().skip(skip) {
-        delivered += 1;
+    let end = if !deliver(retained.into_iter().skip(skip), &mut sink, &mut delivered) {
+        LogEnd::Stopped
+    } else if options.follow {
+        follow(conn, &mut reader, pending, &mut sink, &mut delivered).await?
+    } else {
+        LogEnd::Retained
+    };
+    detach(conn, resource).await;
+    Ok(LogOutcome {
+        retained: retained_count,
+        delivered,
+        end,
+    })
+}
+
+/// Hand `records` to `sink`, counting each; `false` once the sink stops.
+fn deliver(
+    records: impl IntoIterator<Item = AgentEventRecord>,
+    sink: &mut impl FnMut(AgentEventRecord) -> bool,
+    delivered: &mut usize,
+) -> bool {
+    for record in records {
+        *delivered += 1;
         if !sink(record) {
-            detach(conn, resource).await;
-            return Ok(LogOutcome {
-                retained: retained_count,
-                delivered,
-                end: LogEnd::Stopped,
-            });
+            return false;
         }
     }
-    if !options.follow {
-        detach(conn, resource).await;
-        return Ok(LogOutcome {
-            retained: retained_count,
-            delivered,
-            end: LogEnd::Retained,
-        });
-    }
+    true
+}
 
-    // Live records, until the session closes or the stream ends. Frames the
-    // attach interleaved after READY (a fast producer) are drained first.
-    let end = loop {
+/// Live records until the session closes or the stream ends; frames the
+/// attach interleaved after READY are drained first.
+async fn follow(
+    conn: &mut Connection,
+    reader: &mut Reader,
+    mut pending: std::vec::IntoIter<FrameKind>,
+    sink: &mut impl FnMut(AgentEventRecord) -> bool,
+    delivered: &mut usize,
+) -> Result<LogEnd, AgentSessionError> {
+    Ok(loop {
         let frame = match pending.next() {
             Some(frame) => Ok(frame),
             None => conn.recv().await,
@@ -589,33 +562,18 @@ pub async fn log(
         };
         match reader.absorb(frame)? {
             Absorbed::Records(records) => {
-                let mut stopped = false;
-                for record in records {
-                    delivered += 1;
-                    if !sink(record) {
-                        stopped = true;
-                        break;
-                    }
-                }
-                if stopped {
+                if !deliver(records, sink, delivered) {
                     break LogEnd::Stopped;
                 }
             }
             Absorbed::Closed => break LogEnd::SessionClosed,
             Absorbed::Ready | Absorbed::Nothing => {}
         }
-    };
-    detach(conn, resource).await;
-    Ok(LogOutcome {
-        retained: retained_count,
-        delivered,
-        end,
     })
 }
 
-/// Best-effort `DETACH_RESOURCE`: idempotent and a no-op on a resource that
-/// is already gone (L1 §5.1), so it can never turn a completed read into a
-/// failure.
+/// Best-effort `DETACH_RESOURCE` (idempotent, L1 §5.1): never turns a
+/// completed read into a failure.
 async fn detach(conn: &mut Connection, resource: &ResourceId) {
     let _ = conn
         .send(&FrameKind::Command {
@@ -658,8 +616,7 @@ impl Reader {
     fn absorb(&mut self, frame: FrameKind) -> Result<Absorbed, AgentSessionError> {
         match frame {
             FrameKind::BootstrapBegin { terminal_id, .. } if terminal_id == self.resource => {
-                // A replacement generation: whatever half-line the previous
-                // one left behind is not part of this transcript.
+                // A replacement generation drops the previous half-line.
                 self.buffer.clear();
                 Ok(Absorbed::Nothing)
             }
@@ -727,10 +684,9 @@ impl Reader {
 )]
 mod tests {
     use super::*;
-    use crate::testkit::{ScriptSpec, ScriptedServer};
+    use crate::testkit::{ScriptSpec, serve_one};
     use phux_protocol::caps::ServerFeatureSet;
     use phux_protocol::ids::ResourceKind;
-    use tokio::net::UnixListener;
 
     fn session() -> ResourceId {
         ResourceId::local(9)
@@ -752,9 +708,7 @@ mod tests {
         tokio::task::JoinHandle<Vec<FrameKind>>,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("agent.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = serve_one(dir.path(), spec);
         (dir, socket, server)
     }
 
@@ -774,8 +728,6 @@ mod tests {
             EmitRecord::new("provider_raw", huge),
             Err(AgentSessionError::RecordInvalid(_))
         ));
-        // `seq` / `ts_ms` are the server's: the encoded line never carries
-        // them, whatever the caller put in `data`.
         let line = EmitRecord::new("stop", serde_json::json!({}))
             .unwrap()
             .encode_line();
@@ -786,11 +738,9 @@ mod tests {
 
     #[tokio::test]
     async fn every_verb_is_gated_on_the_resource_kinds_bit() {
-        // The default scripted server advertises no features, so each verb
-        // must refuse before sending anything the server would drop.
+        // The default scripted server advertises no features.
         let (_dir, socket, server) = serve(ScriptSpec::new());
         let mut conn = Connection::connect(&socket).await.unwrap();
-        assert!(!supports(&conn));
         assert!(matches!(
             open(&mut conn, &parent(), "claude", None).await,
             Err(AgentSessionError::Unsupported)
@@ -848,10 +798,16 @@ mod tests {
 
     #[tokio::test]
     async fn open_maps_the_structured_spawn_refusals() {
-        for (error, expect) in [
-            (SpawnError::ParentNotFound, "parent_not_found"),
-            (SpawnError::ParentKindMismatch, "parent_kind_mismatch"),
-        ] {
+        type Check = fn(&AgentSessionError) -> bool;
+        let cases: [(SpawnError, Check); 2] = [
+            (SpawnError::ParentNotFound, |err| {
+                matches!(err, AgentSessionError::ParentNotFound { .. })
+            }),
+            (SpawnError::ParentKindMismatch, |err| {
+                matches!(err, AgentSessionError::ParentKindMismatch { .. })
+            }),
+        ];
+        for (error, check) in cases {
             let spec = ScriptSpec::new()
                 .server_features(kinds())
                 .spawn_result(SpawnResult::Err(error));
@@ -860,18 +816,7 @@ mod tests {
             let err = open(&mut conn, &parent(), "claude", None)
                 .await
                 .unwrap_err();
-            match expect {
-                "parent_not_found" => {
-                    assert!(
-                        matches!(err, AgentSessionError::ParentNotFound { .. }),
-                        "{err}"
-                    );
-                }
-                _ => assert!(
-                    matches!(err, AgentSessionError::ParentKindMismatch { .. }),
-                    "{err}"
-                ),
-            }
+            assert!(check(&err), "{err}");
             drop(conn);
             server.await.unwrap();
         }
@@ -910,12 +855,22 @@ mod tests {
 
     #[tokio::test]
     async fn emit_maps_every_server_refusal_onto_its_own_variant() {
-        for (code, check) in [
-            (ErrorCode::WrongResourceKind, "wrong_kind"),
-            (ErrorCode::NotProducer, "not_producer"),
-            (ErrorCode::RecordInvalid, "record_invalid"),
-            (ErrorCode::Overflow, "overflow"),
-        ] {
+        type Check = fn(&AgentSessionError) -> bool;
+        let cases: [(ErrorCode, Check); 4] = [
+            (ErrorCode::WrongResourceKind, |err| {
+                matches!(err, AgentSessionError::WrongKind { .. })
+            }),
+            (ErrorCode::NotProducer, |err| {
+                matches!(err, AgentSessionError::NotProducer { .. })
+            }),
+            (ErrorCode::RecordInvalid, |err| {
+                matches!(err, AgentSessionError::RecordInvalid(_))
+            }),
+            (ErrorCode::Overflow, |err| {
+                matches!(err, AgentSessionError::Overflow(_))
+            }),
+        ];
+        for (code, check) in cases {
             let spec =
                 ScriptSpec::new()
                     .server_features(kinds())
@@ -927,13 +882,7 @@ mod tests {
             let mut conn = Connection::connect(&socket).await.unwrap();
             let record = EmitRecord::new("stop", serde_json::json!({})).unwrap();
             let err = emit(&mut conn, &session(), &[record]).await.unwrap_err();
-            let matched = match check {
-                "wrong_kind" => matches!(err, AgentSessionError::WrongKind { .. }),
-                "not_producer" => matches!(err, AgentSessionError::NotProducer { .. }),
-                "record_invalid" => matches!(err, AgentSessionError::RecordInvalid(_)),
-                _ => matches!(err, AgentSessionError::Overflow(_)),
-            };
-            assert!(matched, "{code:?} mapped to {err:?}");
+            assert!(check(&err), "{code:?} mapped to {err:?}");
             drop(conn);
             server.await.unwrap();
         }

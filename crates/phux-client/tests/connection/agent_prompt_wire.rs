@@ -1,32 +1,18 @@
 //! Wire-level contract for acknowledged input delivery (ADR-0053, ADR-0076).
 //!
-//! # Why this is not `phux_client::testkit`
-//!
-//! The shared scripted server is the right harness for almost everything, and
-//! this file does not fork it lightly. It cannot express the two facts this
-//! contract turns on:
-//!
-//! 1. It negotiates `ServerCapabilities::new()` — **no** features — so
-//!    `ACKNOWLEDGED_INPUT` is never advertised and every acknowledged submit
-//!    is refused at the capability gate before a frame is sent.
-//! 2. It acks every command `Ok`, so no `APPLY_INPUT` **refusal** can be
-//!    scripted — and the refusals are the entire point: `RESOURCE_EXHAUSTED`
-//!    (retry, same id) and `INPUT_DELIVERY_UNKNOWN` (never retry, ever) are
-//!    exactly the two answers a caller must not confuse.
-//!
-//! So this file stands up a purpose-built server that advertises the
-//! capability, answers `APPLY_INPUT` from a script, and **records the
-//! operation id of every submit it saw**. The last of those is what makes the
-//! idempotency claim testable rather than asserted: the test reads the ids off
-//! the wire, not off the client's own bookkeeping.
-//!
-//! The capability-gate refusal itself is tested against the *shared* harness,
-//! in `phux_client::agent_prompt`'s unit tests, precisely because an
-//! unmodified reference server is the older server that gate exists for.
+//! Not `phux_client::testkit`: that server advertises no features and acks
+//! every command, so it can neither offer `ACKNOWLEDGED_INPUT` nor script an
+//! `APPLY_INPUT` refusal. This one does both and records every submit's
+//! operation id, so idempotency is read off the wire.
 
-#![allow(clippy::expect_used, clippy::panic, reason = "tests")]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::future_not_send,
+    reason = "tests; the prompt futures are !Send by design"
+)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -37,8 +23,8 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use phux_client::agent_meta::{AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY};
 use phux_client::agent_prompt::{
-    Delivery, MAX_PROMPT_BYTES, PromptError, PromptWait, Refusal, deliver_acknowledged,
-    prompt_agent,
+    Delivery, MAX_PROMPT_BYTES, PromptError, PromptOutcome, PromptWait, Refusal,
+    deliver_acknowledged, prompt_agent,
 };
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
@@ -91,12 +77,8 @@ struct Script {
     record: Option<Vec<u8>>,
     /// Answers for successive `APPLY_INPUT` submits; the last one repeats.
     apply: Vec<CommandResult>,
-    /// `METADATA_CHANGED` payloads pushed after the first `APPLY_INPUT`
-    /// result — i.e. strictly post-write, which is the only kind that may
-    /// satisfy `prompt --wait`.
+    /// `METADATA_CHANGED` payloads pushed strictly after each result.
     post_result: Vec<Option<Vec<u8>>>,
-    /// Whether to advertise `ACKNOWLEDGED_INPUT`.
-    acknowledged: bool,
 }
 
 impl Script {
@@ -105,7 +87,6 @@ impl Script {
             record,
             apply: vec![CommandResult::Ok],
             post_result: Vec::new(),
-            acknowledged: true,
         }
     }
 
@@ -123,9 +104,8 @@ impl Script {
 /// Every operation id the server saw, in submit order.
 type SeenIds = Arc<Mutex<Vec<InputOperationId>>>;
 
-/// Owns the listener directory and the accept task. Aborting the accept
-/// task drops its [`JoinSet`], which aborts every session — otherwise the
-/// unjoined `tokio::spawn`s leak past nextest's grace window under load.
+/// Owns the listener directory and the accept task; aborting it drops the
+/// [`JoinSet`] and with it every session.
 struct Server {
     _dir: tempfile::TempDir,
     accept: JoinHandle<()>,
@@ -171,11 +151,7 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
                 let (selected_profile, bootstrap_limits) =
                     select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
                         .expect("shared bootstrap profile");
-                let features = if script.acknowledged {
-                    ServerFeatureSet::from_wire(ServerFeature::AcknowledgedInput as u32)
-                } else {
-                    ServerFeatureSet::default()
-                };
+                let features = ServerFeatureSet::from_wire(ServerFeature::AcknowledgedInput as u32);
                 link.send(&FrameKind::HelloOk {
                     protocol_major: PROTOCOL_VERSION.major,
                     protocol_minor: PROTOCOL_VERSION.minor,
@@ -215,8 +191,6 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
                 applies = applies.saturating_add(1);
                 link.send(&FrameKind::CommandResult { request_id, result })
                     .await;
-                // Strictly after the result, which is the only position from
-                // which a transition may satisfy `prompt --wait`.
                 for value in script.post_result.clone() {
                     link.send(&FrameKind::MetadataChanged {
                         scope: Scope::Resource(terminal_id.clone()),
@@ -227,15 +201,7 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
                     .await;
                 }
             }
-            // Subscriptions register and reply with nothing, like the server.
-            // Spelled out rather than folded into the trailing wildcard
-            // because "no reply" is the load-bearing fact: a fake that acked
-            // them would teach the client to wait forever.
-            #[allow(
-                clippy::match_same_arms,
-                reason = "documents an ordering fact, not a fallthrough"
-            )]
-            FrameKind::SubscribeEvents { .. } | FrameKind::SubscribeMetadata { .. } => {}
+            // Subscriptions get no reply, like the real server.
             FrameKind::Command { request_id, .. } => {
                 link.send(&FrameKind::CommandResult {
                     request_id,
@@ -270,21 +236,38 @@ const fn always_ok(_record: &AgentRecord) -> Option<String> {
     None
 }
 
-/// The happy path: subscribe, re-verify the occupant, submit ONE batch, and
-/// report the receipt with the operation id the caller can correlate on.
+/// `prompt_agent` "ship it" on `@7` under `op_id(fill)`, verifying nothing.
+async fn prompt(
+    socket: &Path,
+    fill: u8,
+    wait: Option<&PromptWait>,
+) -> Result<PromptOutcome, PromptError> {
+    prompt_agent(
+        socket,
+        &ResourceId::local(7),
+        "ship it",
+        op_id(fill),
+        &always_ok,
+        wait,
+    )
+    .await
+}
+
+fn wait_for_idle(timeout: Duration) -> PromptWait {
+    PromptWait {
+        targets: vec![AgentMetaState::Idle],
+        timeout: Some(timeout),
+        poll_interval: Duration::from_millis(30),
+    }
+}
+
+/// The happy path: one batch, and a receipt with a correlatable id.
 #[tokio::test]
 async fn a_verified_pane_takes_one_batch_and_reports_the_receipt() {
     let (_server, socket, seen) = serve(Script::new(Some(record("working"))));
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x31),
-        &always_ok,
-        None,
-    )
-    .await
-    .expect("a verified pane accepts the batch");
+    let outcome = prompt(&socket, 0x31, None)
+        .await
+        .expect("a verified pane accepts the batch");
 
     assert_eq!(outcome.delivery, Delivery::Acked);
     assert_eq!(outcome.attempts, 1);
@@ -296,11 +279,8 @@ async fn a_verified_pane_takes_one_batch_and_reports_the_receipt() {
     assert_eq!(seen.lock().expect("ids").len(), 1);
 }
 
-/// **The idempotency test, read off the wire.** A `RESOURCE_EXHAUSTED` wrote
-/// nothing, so the CLI resubmits — and every resubmission carries the *same*
-/// operation id. A fresh id would be the duplicate prompt this whole design
-/// exists to prevent, and the server's dedupe cache is keyed on that id, so
-/// the guarantee is only real if the id on the wire is stable.
+/// The idempotency test, read off the wire: every `RESOURCE_EXHAUSTED`
+/// resubmission carries the same operation id.
 #[tokio::test]
 async fn a_resource_exhausted_retry_reuses_the_same_operation_id() {
     let script = Script::new(Some(record("idle"))).apply(vec![
@@ -309,46 +289,25 @@ async fn a_resource_exhausted_retry_reuses_the_same_operation_id() {
         CommandResult::Ok,
     ]);
     let (_server, socket, seen) = serve(script);
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x42),
-        &always_ok,
-        None,
-    )
-    .await
-    .expect("the lane freed on the third attempt");
+    let outcome = prompt(&socket, 0x42, None)
+        .await
+        .expect("the lane freed on the third attempt");
 
     assert_eq!(outcome.delivery, Delivery::Acked);
     assert_eq!(outcome.attempts, 3);
     let ids = seen.lock().expect("ids").clone();
     assert_eq!(ids.len(), 3, "the retries actually happened");
-    assert!(
-        ids.iter().all(|id| *id == op_id(0x42)),
-        "every attempt must carry the id generated once for this invocation"
-    );
+    assert!(ids.iter().all(|id| *id == op_id(0x42)));
 }
 
-/// A lane that never frees is a **failure**, not a refusal, and nothing was
-/// written on any attempt — so re-running the command is safe. Every attempt
-/// still carried one id.
+/// A lane that never frees is a failure after the whole schedule, every
+/// attempt under one id.
 #[tokio::test]
 async fn a_lane_that_never_frees_fails_without_writing_anything() {
     let script =
         Script::new(Some(record("idle"))).apply(vec![refused(ErrorCode::ResourceExhausted)]);
     let (_server, socket, seen) = serve(script);
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x43),
-        &always_ok,
-        None,
-    )
-    .await;
-
-    match outcome {
+    match prompt(&socket, 0x43, None).await {
         Err(PromptError::LaneBusy { attempts, .. }) => {
             assert!(attempts > 1, "the backoff schedule must be spent");
             let ids = seen.lock().expect("ids").clone();
@@ -359,108 +318,44 @@ async fn a_lane_that_never_frees_fails_without_writing_anything() {
     }
 }
 
-/// **The rule an agent can violate catastrophically.**
-/// `INPUT_DELIVERY_UNKNOWN` is terminal: the CLI submits exactly once, reports
-/// the operation id, and stops. A same-id retry would replay the server's
-/// cached unknown; a new-id retry would duplicate the prompt.
+/// Unknown delivery (terminal), proven not-written (the caller's choice), and
+/// a canonical-limit refusal are each reported distinctly and submitted
+/// exactly once.
 #[tokio::test]
-async fn input_delivery_unknown_is_reported_once_and_never_retried() {
-    let script =
-        Script::new(Some(record("working"))).apply(vec![refused(ErrorCode::InputDeliveryUnknown)]);
-    let (_server, socket, seen) = serve(script);
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x44),
-        &always_ok,
-        None,
-    )
-    .await;
-
-    match outcome {
-        Err(PromptError::DeliveryUnknown { operation_id, .. }) => {
-            assert_eq!(operation_id.len(), 32);
-        }
-        other => panic!("an unknown delivery must be reported as such: {other:?}"),
-    }
-    assert_eq!(
-        seen.lock().expect("ids").len(),
-        1,
-        "an indeterminate delivery must be submitted exactly once"
-    );
-}
-
-/// **`INPUT_DELIVERY_UNKNOWN`'s honest opposite** (phux-w7z2.60).
-/// `INPUT_NOT_WRITTEN` is proven nothing-written, not merely unconfirmed, so
-/// it must land on its own `PromptError` variant rather than collapsing into
-/// `DeliveryUnknown` — and it must not be auto-retried like `Busy` either,
-/// since the module makes no claim the cause will clear on its own.
-#[tokio::test]
-async fn input_not_written_is_reported_distinctly_and_not_auto_retried() {
-    let script =
-        Script::new(Some(record("working"))).apply(vec![refused(ErrorCode::InputNotWritten)]);
-    let (_server, socket, seen) = serve(script);
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x46),
-        &always_ok,
-        None,
-    )
-    .await;
-
-    match outcome {
-        Err(PromptError::NotWritten { operation_id, .. }) => {
-            assert_eq!(operation_id.len(), 32);
-        }
-        other => panic!("a proven not-written batch must be reported as such: {other:?}"),
-    }
-    assert_eq!(
-        seen.lock().expect("ids").len(),
-        1,
-        "this module does not auto-retry INPUT_NOT_WRITTEN — that choice is the caller's"
-    );
-}
-
-/// A pane that refuses the batch before writing anything (canonical-mode
-/// limit) is a refusal the caller can act on, and it is NOT retried: the
-/// identical payload cannot succeed.
-#[tokio::test]
-async fn a_canonical_limit_refusal_is_not_retried() {
-    let script =
-        Script::new(Some(record("idle"))).apply(vec![refused(ErrorCode::CanonicalLimitExceeded)]);
-    let (_server, socket, seen) = serve(script);
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x45),
-        &always_ok,
-        None,
-    )
-    .await;
-
-    assert!(
-        matches!(
-            outcome,
-            Err(PromptError::Refused(Refusal::CanonicalLimitExceeded(_)))
+async fn non_busy_answers_are_reported_distinctly_and_never_retried() {
+    type Check = fn(&Result<PromptOutcome, PromptError>) -> bool;
+    let cases: [(ErrorCode, Check); 3] = [
+        (
+            ErrorCode::InputDeliveryUnknown,
+            |outcome| matches!(outcome, Err(PromptError::DeliveryUnknown { operation_id, .. }) if operation_id.len() == 32),
         ),
-        "{outcome:?}"
-    );
-    assert_eq!(seen.lock().expect("ids").len(), 1);
+        (
+            ErrorCode::InputNotWritten,
+            |outcome| matches!(outcome, Err(PromptError::NotWritten { operation_id, .. }) if operation_id.len() == 32),
+        ),
+        (ErrorCode::CanonicalLimitExceeded, |outcome| {
+            matches!(
+                outcome,
+                Err(PromptError::Refused(Refusal::CanonicalLimitExceeded(_)))
+            )
+        }),
+    ];
+    for (code, check) in cases {
+        let script = Script::new(Some(record("working"))).apply(vec![refused(code)]);
+        let (_server, socket, seen) = serve(script);
+        let outcome = prompt(&socket, 0x44, None).await;
+        assert!(check(&outcome), "{code:?}: {outcome:?}");
+        assert_eq!(seen.lock().expect("ids").len(), 1, "{code:?} was retried");
+    }
 }
 
-/// Ownership re-verification, on the connection that carries the submit: a
-/// pane hosting somebody else is refused with nothing written. This is the
-/// check that stops a prompt landing in the bare shell an exited agent left
-/// behind — and being executed there, since a readline shell inserts a
-/// bracketed paste and our Enter then runs it.
+/// Refusals that must precede the submit: a mismatched occupant (which
+/// would otherwise land in the shell an exited agent left behind), a pane
+/// with no record, and an oversized prompt (never split or truncated).
 #[tokio::test]
-async fn a_mismatched_occupant_refuses_before_any_byte_is_written() {
+async fn pre_submit_refusals_write_nothing() {
     let (_server, socket, seen) = serve(Script::new(Some(record("idle"))));
-    let outcome = prompt_agent(
+    let mismatched = prompt_agent(
         &socket,
         &ResourceId::local(7),
         "ship it",
@@ -469,47 +364,11 @@ async fn a_mismatched_occupant_refuses_before_any_byte_is_written() {
         None,
     )
     .await;
-
-    match outcome {
-        Err(PromptError::Refused(Refusal::AgentMismatch(who))) => {
-            assert!(who.contains("reviewer"), "{who}");
-        }
-        other => panic!("a mismatched occupant must refuse: {other:?}"),
-    }
     assert!(
-        seen.lock().expect("ids").is_empty(),
-        "the refusal must precede the submit"
+        matches!(&mismatched, Err(PromptError::Refused(Refusal::AgentMismatch(who))) if who.contains("reviewer")),
+        "{mismatched:?}"
     );
-}
-
-/// A pane with no `phux.agent/v1` record has no identity the gate could pass.
-#[tokio::test]
-async fn a_pane_with_no_record_is_refused_before_the_submit() {
-    let (_server, socket, seen) = serve(Script::new(None));
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x47),
-        &always_ok,
-        None,
-    )
-    .await;
-
-    assert!(
-        matches!(outcome, Err(PromptError::Refused(Refusal::NoAgentRecord))),
-        "{outcome:?}"
-    );
-    assert!(seen.lock().expect("ids").is_empty());
-}
-
-/// An oversized prompt is refused **client-side, before a socket is opened**,
-/// naming the measured size — never split across operations (which
-/// `docs/spec/input.md` forbids) and never quietly truncated.
-#[tokio::test]
-async fn an_oversized_prompt_never_reaches_the_wire() {
-    let (_server, socket, seen) = serve(Script::new(Some(record("idle"))));
-    let outcome = prompt_agent(
+    let oversized = prompt_agent(
         &socket,
         &ResourceId::local(7),
         &"x".repeat(MAX_PROMPT_BYTES + 1),
@@ -518,98 +377,71 @@ async fn an_oversized_prompt_never_reaches_the_wire() {
         None,
     )
     .await;
-
-    match outcome {
-        Err(PromptError::Refused(Refusal::TooLarge {
-            measured, limit, ..
-        })) => {
-            assert_eq!(measured, MAX_PROMPT_BYTES + 1);
-            assert_eq!(limit, MAX_PROMPT_BYTES);
-        }
-        other => panic!("an oversized prompt must be refused: {other:?}"),
-    }
     assert!(
-        seen.lock().expect("ids").is_empty(),
-        "nothing may reach the wire"
+        matches!(
+            oversized,
+            Err(PromptError::Refused(Refusal::TooLarge { measured, limit, .. }))
+                if measured == MAX_PROMPT_BYTES + 1 && limit == MAX_PROMPT_BYTES
+        ),
+        "{oversized:?}"
     );
+    assert!(seen.lock().expect("ids").is_empty());
+
+    let (_server, socket, seen) = serve(Script::new(None));
+    let unrecorded = prompt(&socket, 0x47, None).await;
+    assert!(
+        matches!(
+            unrecorded,
+            Err(PromptError::Refused(Refusal::NoAgentRecord))
+        ),
+        "{unrecorded:?}"
+    );
+    assert!(seen.lock().expect("ids").is_empty());
 }
 
-/// `prompt --wait` is satisfied by a transition observed **after** the
-/// result, on the connection that carried the submit. That single-connection
-/// ordering is the whole argument: the server writes to the PTY before
-/// replying and frames on one connection are ordered, so no sequence counter
-/// is needed.
+/// `prompt --wait` is satisfied by a transition observed after the result,
+/// on the connection that carried the submit.
 #[tokio::test]
 async fn a_post_result_transition_satisfies_prompt_wait() {
     let script = Script::new(Some(record("idle")))
         .post_result(vec![Some(record("working")), Some(record("idle"))]);
     let (_server, socket, _seen) = serve(script);
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x49),
-        &always_ok,
-        Some(&PromptWait {
-            targets: vec![AgentMetaState::Idle],
-            timeout: Some(Duration::from_secs(5)),
-            poll_interval: Duration::from_millis(30),
-        }),
-    )
-    .await
-    .expect("an observed transition is a success");
+    let outcome = prompt(&socket, 0x49, Some(&wait_for_idle(Duration::from_secs(5))))
+        .await
+        .expect("an observed transition is a success");
 
     assert_eq!(outcome.delivery, Delivery::Acked);
     assert!(outcome.transition_observed(), "{outcome:?}");
-    let wait = outcome.wait.expect("--wait carries a result");
-    let edge = wait.edge.expect("a satisfied wait names its edge");
+    let edge = outcome
+        .wait
+        .and_then(|wait| wait.edge)
+        .expect("a satisfied wait names its edge");
     assert_eq!(edge.from, AgentMetaState::Working);
     assert_eq!(edge.to, AgentMetaState::Idle);
 }
 
-/// **The corpse rule, on the prompt path.** A pane resting at `idle` that
-/// never transitions times out rather than reporting a finished turn — even
-/// though the pre-submit level was already `idle` and the target set is
-/// `idle`. Delivery succeeded and the result says so: "the bytes landed" and
-/// "the turn finished" are separate answers, and only the first is a receipt.
+/// The corpse rule on the prompt path: a pane resting at `idle` times out
+/// with delivery acked, never reporting a finished turn.
 #[tokio::test]
 async fn a_resting_level_never_satisfies_prompt_wait() {
     let (_server, socket, _seen) = serve(Script::new(Some(record("idle"))));
-    let outcome = prompt_agent(
+    let outcome = prompt(
         &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x4a),
-        &always_ok,
-        Some(&PromptWait {
-            targets: vec![AgentMetaState::Idle],
-            timeout: Some(Duration::from_millis(300)),
-            poll_interval: Duration::from_millis(30),
-        }),
+        0x4a,
+        Some(&wait_for_idle(Duration::from_millis(300))),
     )
     .await
     .expect("a timed-out wait is not an error");
 
     assert_eq!(outcome.delivery, Delivery::Acked);
-    assert!(
-        !outcome.transition_observed(),
-        "a level read of idle must never satisfy a completion gate: {outcome:?}"
-    );
+    assert!(!outcome.transition_observed(), "{outcome:?}");
     let wait = outcome.wait.expect("--wait carries a result");
     assert_eq!(wait.baseline, AgentMetaState::Idle);
     assert_eq!(wait.edges, 0);
 }
 
-/// `phux agent send-keys` (phux-w7z2.36) rides the same path with a
-/// multi-event batch, and gets the same guarantee: **one** `APPLY_INPUT` for
-/// the whole key sequence, and a retry that reuses the operation id.
-///
-/// The old fire-and-forget shape sent one `ROUTE_INPUT` per event, so a
-/// failure part-way left the caller unable to say whether the keys landed and
-/// unable to retry safely. This asserts both halves of the fix: the batch is
-/// one frame (no interior seam to fail at), and the resubmission carries the
-/// same id (so the server answers from its dedupe cache rather than typing the
-/// keys twice).
+/// `phux agent send-keys` rides the same path: one `APPLY_INPUT` for the
+/// whole key sequence, and a retry under the same id.
 #[tokio::test]
 async fn a_multi_event_key_batch_is_one_operation_and_retries_under_one_id() {
     let script = Script::new(Some(record("idle"))).apply(vec![
@@ -617,8 +449,6 @@ async fn a_multi_event_key_batch_is_one_operation_and_retries_under_one_id() {
         CommandResult::Ok,
     ]);
     let (_server, socket, seen) = serve(script);
-    // The shape `phux agent send-keys @7 "yes please" Enter` builds: a
-    // submission-safe paste plus the real Enter key.
     let events = phux_client::send_keys::events_for(&["yes please".to_owned(), "Enter".to_owned()]);
     assert_eq!(events.len(), 2, "{events:?}");
 
@@ -637,32 +467,15 @@ async fn a_multi_event_key_batch_is_one_operation_and_retries_under_one_id() {
     assert_eq!(outcome.attempts, 2);
     let ids = seen.lock().expect("ids").clone();
     assert_eq!(ids.len(), 2, "one APPLY_INPUT per attempt, not per event");
-    assert!(
-        ids.iter().all(|id| *id == op_id(0x4c)),
-        "a send-keys retry must reuse its operation id too"
-    );
+    assert!(ids.iter().all(|id| *id == op_id(0x4c)));
 }
 
-/// A record that goes away after the write is delivery to an unknown
-/// occupant, not a completion.
+/// A record that goes away after the write is not a completion.
 #[tokio::test]
 async fn a_tombstone_after_the_write_is_a_departure_not_a_completion() {
     let script = Script::new(Some(record("working"))).post_result(vec![None]);
     let (_server, socket, _seen) = serve(script);
-    let outcome = prompt_agent(
-        &socket,
-        &ResourceId::local(7),
-        "ship it",
-        op_id(0x4b),
-        &always_ok,
-        Some(&PromptWait {
-            targets: vec![AgentMetaState::Idle],
-            timeout: Some(Duration::from_secs(5)),
-            poll_interval: Duration::from_millis(30),
-        }),
-    )
-    .await;
-
+    let outcome = prompt(&socket, 0x4b, Some(&wait_for_idle(Duration::from_secs(5)))).await;
     assert!(
         matches!(
             outcome,
