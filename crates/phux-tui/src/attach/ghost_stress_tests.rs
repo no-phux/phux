@@ -1,24 +1,11 @@
-//! phux-foz.11 regression: rapid window switching / control spam must never
-//! leave doubled or ghosted text on screen.
+//! Regression: rapid window switching / control spam must never leave
+//! doubled or ghosted text. The snapshot and live-output paths once pinned an
+//! undersized mirror at the rect origin while the full frame letterboxed it,
+//! putting the same text at two offsets.
 //!
-//! Root cause: phux-7ubw made `paint_full_frame` / `paint_focused_pane`
-//! letterbox-centre an undersized mirror inside its render rect, but the
-//! bootstrap and live-output paint paths still painted the same mirror pinned
-//! at the rect origin. Whenever the server-authoritative mirror grid lags the
-//! client rect (any resize handshake in flight: sidebar toggle, zoom, split,
-//! attach from a larger terminal) the two paint families put the SAME
-//! content at TWO different origins — and because the incremental painter
-//! only touches dirty rows, neither copy clears the other. The user sees
-//! doubled/ghosted text until something forces a full repaint.
-//!
-//! The tests here drive the REAL paint pipeline (`handle_server_frame`,
-//! `paint_full_frame`) in the driver's own sequencing, feed every emitted
-//! byte into a "glass" libghostty terminal (exactly what a real terminal
-//! would parse), and diff the glass grid against a reference compose of the
-//! pane mirrors. Two deterministic unit tests pin the compose invariant per
-//! fixed paint path; the stress test replays the dogfood scenario — rapid
-//! window cycling, sidebar toggling, palette open/close, synchronized-output
-//! bursts, and snapshot resyncs, all while panes emit continuous output.
+//! These drive the real `handle_server_frame` / `paint_full_frame` in the
+//! driver's sequencing, replay every emitted byte into a "glass" terminal,
+//! and diff it against a reference compose of the pane mirrors.
 
 use std::collections::HashMap;
 
@@ -424,130 +411,57 @@ fn two_window_workspace(p: &ResourceId, q: &ResourceId, r: &ResourceId) -> Works
     Workspace {
         windows: vec![
             WindowState::new("one".to_owned(), LayoutState::single(p.clone())),
-            WindowState::new(
-                "two".to_owned(),
-                LayoutState {
-                    tree: Some(LayoutNode::Split {
-                        dir: SplitDir::Horizontal,
-                        ratio: 0.5,
-                        left: Box::new(LayoutNode::Leaf(q.clone())),
-                        right: Box::new(LayoutNode::Leaf(r.clone())),
-                    }),
-                    focus: Some(q.clone()),
-                },
-            ),
+            WindowState::new("two".to_owned(), split(q, r)),
         ],
         active: 0,
     }
 }
 
-/// The focused-pane snapshot resync must place an undersized mirror at the
-/// SAME letterboxed origin `paint_full_frame` uses — not pinned at the rect
-/// origin. Before the phux-foz.11 fix the resync painted at the origin,
-/// leaving the full frame's centred copy in place: the same text visible at
-/// two offsets (the doubling).
+fn split(q: &ResourceId, r: &ResourceId) -> LayoutState {
+    LayoutState {
+        tree: Some(LayoutNode::Split {
+            dir: SplitDir::Horizontal,
+            ratio: 0.5,
+            left: Box::new(LayoutNode::Leaf(q.clone())),
+            right: Box::new(LayoutNode::Leaf(r.clone())),
+        }),
+        focus: Some(q.clone()),
+    }
+}
+
+/// Every non-full-frame paint of an undersized mirror (focused snapshot
+/// resync, non-focused snapshot resync, non-focused incremental output)
+/// lands at the same letterboxed origin the full frame uses.
 #[test]
-fn snapshot_resync_of_undersized_mirror_letterboxes_like_the_full_frame() {
-    let p = tid(1);
-    let mut rig = Rig::new(
-        Workspace {
-            windows: vec![WindowState::new(
-                "one".to_owned(),
-                LayoutState::single(p.clone()),
-            )],
-            active: 0,
-        },
-        (80, 24),
-    );
-    // Server grid 40x24 vs client rect 80x24: a resize handshake in flight.
+fn every_paint_path_letterboxes_an_undersized_mirror_like_the_full_frame() {
+    let (p, q, r) = (tid(1), tid(2), tid(3));
+    let one = |layout| Workspace {
+        windows: vec![WindowState::new("w".to_owned(), layout)],
+        active: 0,
+    };
+    // Server grid smaller than the client rect: a resize handshake in flight.
+    let mut rig = Rig::new(one(LayoutState::single(p.clone())), (80, 24));
     rig.seed_pane(&p, 40, 24, b"ALPHA-CONTENT");
     rig.full_repaint();
-    rig.assert_consistent("baseline full frame");
-
-    // The server's resync snapshot at its (still-lagging) 40x24 size.
+    rig.assert_consistent("single pane baseline");
     rig.snapshot(&p, 40, 24, b"\x1b[2J\x1b[HALPHA-CONTENT");
-    rig.assert_consistent("after focused snapshot resync");
-}
+    rig.assert_consistent("focused snapshot resync");
 
-/// The non-focused snapshot resync path (multi-pane window) must letterbox
-/// identically. Symmetric to the focused case; hits the second
-/// `render_at_full` site.
-#[test]
-fn non_focused_snapshot_resync_letterboxes_like_the_full_frame() {
-    let q = tid(2);
-    let r = tid(3);
-    let mut rig = Rig::new(
-        Workspace {
-            windows: vec![WindowState::new(
-                "two".to_owned(),
-                LayoutState {
-                    tree: Some(LayoutNode::Split {
-                        dir: SplitDir::Horizontal,
-                        ratio: 0.5,
-                        left: Box::new(LayoutNode::Leaf(q.clone())),
-                        right: Box::new(LayoutNode::Leaf(r.clone())),
-                    }),
-                    focus: Some(q.clone()),
-                },
-            )],
-            active: 0,
-        },
-        (80, 24),
-    );
-    rig.seed_pane(&q, 40, 24, b"FOCUSED-LEFT");
-    // Right pane's mirror lags well behind its ~39-col rect.
-    rig.seed_pane(&r, 21, 24, b"RIGHT-PANE-ROW");
-    rig.full_repaint();
-    rig.assert_consistent("baseline split full frame");
-
-    rig.snapshot(&r, 21, 24, b"\x1b[2J\x1b[HRIGHT-PANE-ROW");
-    rig.assert_consistent("after non-focused snapshot resync");
-}
-
-/// Incremental output into a NON-focused undersized pane must paint its
-/// dirty rows at the letterboxed origin. Before the fix, dirty rows landed
-/// at the rect origin while the full frame's rows sat centred — adjacent
-/// rows of one pane at two different x offsets.
-#[test]
-fn non_focused_output_letterboxes_like_the_full_frame() {
-    let q = tid(2);
-    let r = tid(3);
-    let mut rig = Rig::new(
-        Workspace {
-            windows: vec![WindowState::new(
-                "two".to_owned(),
-                LayoutState {
-                    tree: Some(LayoutNode::Split {
-                        dir: SplitDir::Horizontal,
-                        ratio: 0.5,
-                        left: Box::new(LayoutNode::Leaf(q.clone())),
-                        right: Box::new(LayoutNode::Leaf(r.clone())),
-                    }),
-                    focus: Some(q.clone()),
-                },
-            )],
-            active: 0,
-        },
-        (80, 24),
-    );
+    let mut rig = Rig::new(one(split(&q, &r)), (80, 24));
     rig.seed_pane(&q, 40, 24, b"FOCUSED-LEFT");
     rig.seed_pane(&r, 21, 24, b"ROW-A");
     rig.full_repaint();
-    rig.assert_consistent("baseline split full frame");
-
-    // New output dirties row 1 only; the incremental paint must land it at
-    // the centred origin, in line with ROW-A above it.
+    rig.assert_consistent("split baseline");
     rig.output(&r, b"\r\nROW-B");
-    rig.assert_consistent("after non-focused incremental output");
+    rig.assert_consistent("non-focused incremental output");
+    rig.snapshot(&r, 21, 24, b"\x1b[2J\x1b[HRIGHT-PANE-ROW");
+    rig.assert_consistent("non-focused snapshot resync");
 }
 
-/// The dogfood stress: continuous output + synchronized-output
-/// bursts on every pane while the control plane is spammed — window cycling,
-/// sidebar toggling, palette open/close — with server snapshot resyncs
-/// landing mid-spam, including resyncs whose grid lags the rect (the resize
-/// race). After every settled step the glass must equal the mirror compose:
-/// any origin disagreement between the full-frame and incremental/snapshot
-/// paints shows up as doubled text and fails the diff.
+/// The dogfood stress: continuous output and synchronized-output bursts on
+/// every pane while windows cycle, the sidebar toggles, and a palette opens
+/// and closes, with lagging snapshot resyncs landing mid-spam. Every settled
+/// step must match the mirror compose.
 #[test]
 fn rapid_switch_and_control_spam_leaves_no_doubled_text() {
     let p = tid(1);
