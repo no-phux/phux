@@ -24,6 +24,7 @@ use super::args::*;
 use super::dispatch::*;
 use super::effects::*;
 use super::pickers::*;
+use super::run_action::run_action;
 use super::test_support::*;
 
 /// Run `action` against `workspace` on a current server.
@@ -585,6 +586,89 @@ fn go_to_directory_requests_a_listing() {
         DirectorySupport::from_features(ServerFeatureSet::with(&[ServerFeature::SpawnInitialSize]));
     let effects = f.run(&bare_action("go-to-directory"));
     assert!(effects.list_directory.is_none() && effects.bell);
+}
+
+/// `find-path` asks the focused pane's own host, at its directory, and
+/// neither spawns nor types anything.
+#[test]
+fn find_path_queries_the_panes_host_without_spawning_or_typing() {
+    let (mut f, panes) = satellite_pane(Some("/srv/work"));
+    let effects = f.run_in(&bare_action("find-path"), &panes);
+    let (pending, frame) = effects.query_path.expect("PATH_QUERY");
+    assert_eq!(pending.target, satellite_id("edge", 9));
+    assert_eq!(
+        frame,
+        FrameKind::PathQuery {
+            request_id: pending.request_id,
+            root: "/srv/work".into(),
+            query: String::new(),
+            recursive: false,
+            host: Some(edge()),
+        }
+    );
+    assert!(effects.spawn_window.is_none());
+    assert!(effects.insert_path.is_none());
+}
+
+fn pending_path(target: &ResourceId, request_id: u32) -> crate::attach::path_picker::PendingPath {
+    crate::attach::path_picker::PendingPath {
+        target: target.clone(),
+        holder: None,
+        request_id,
+        root: "/".into(),
+        query: String::new(),
+    }
+}
+
+/// `insert-path` types only into the pane the picker opened on, shell-quoted.
+#[test]
+fn insert_path_requires_the_original_focus_and_unchanged_lease() {
+    let pane = tid(9);
+    let other = tid(10);
+    let panes = HashMap::from([
+        (pane.clone(), PaneSlot::new().expect("pane")),
+        (other.clone(), PaneSlot::new().expect("pane")),
+    ]);
+    let action = act("insert-path", &[("path", "/a b/it's".into())]);
+    let mut f = fx(Workspace::single(pane.clone()));
+    f.pending_path = Some(pending_path(&pane, 1));
+    let effects = run_action(&action, &mut f.ctx(), Some(&other), &panes);
+    assert!(effects.bell);
+    assert!(
+        effects.insert_path.is_none(),
+        "never redirect to another focused pane"
+    );
+
+    f.pending_path = Some(pending_path(&pane, 2));
+    let effects = run_action(&action, &mut f.ctx(), Some(&pane), &panes);
+    assert_eq!(effects.insert_path, Some((pane, "'/a b/it'\\''s'".into())));
+}
+
+/// A path carrying a control byte never reaches the pane.
+#[test]
+fn inserted_path_with_control_bytes_is_rejected_before_paste() {
+    let pane = tid(1);
+    let mut f = fx(Workspace::single(pane.clone()));
+    f.pending_path = Some(pending_path(&pane, 7));
+    let panes = HashMap::from([(pane.clone(), PaneSlot::new().expect("pane"))]);
+    let action = act("insert-path", &[("path", "/foo\nbar".into())]);
+    let effects = run_action(&action, &mut f.ctx(), Some(&pane), &panes);
+    assert!(effects.bell);
+    assert!(
+        effects.insert_path.is_none(),
+        "newline must not become an unbracketed shell Enter"
+    );
+}
+
+/// Without the negotiated `PATH_QUERY` bit the picker bells, sending nothing.
+#[test]
+fn unsupported_host_path_query_bells_without_a_wire_request() {
+    let mut f = fx(Workspace::single(tid(1)));
+    f.path_query_supported = false;
+    let panes = HashMap::from([(tid(1), PaneSlot::new().expect("pane"))]);
+    let effects = f.run_in(&bare_action("find-path"), &panes);
+    assert!(effects.bell);
+    assert!(effects.query_path.is_none());
 }
 
 /// On a satellite pane the listing asks that satellite through the hub, at

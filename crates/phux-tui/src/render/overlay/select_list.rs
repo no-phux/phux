@@ -144,6 +144,8 @@ pub struct SelectList {
     /// `Some` for a live projection that accepts in-place refreshes tagged
     /// with this key ([`RenderOverlay::refresh_items`]); `None` ignores them.
     live_key: Option<&'static str>,
+    /// Path search uses every printable letter, including j/k, as query text.
+    vi_navigation: bool,
     /// First visible filtered row. Interior-mutable because the viewport
     /// height is only known at paint time and `render` takes `&self` (the
     /// bargain ratatui's `ListState::offset` makes).
@@ -155,6 +157,10 @@ pub struct SelectList {
 }
 
 impl SelectList {
+    /// Current filter, for server-backed lists which refresh as it changes.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
     /// A list titled `title` over `items`, selection on the first selectable
     /// row, empty query.
     #[must_use]
@@ -166,6 +172,7 @@ impl SelectList {
             selected: 0,
             theme: *theme,
             live_key: None,
+            vi_navigation: true,
             scroll: Cell::new(0),
             page: Cell::new(0),
             breakpoints: ChromeBreakpoints::default(),
@@ -180,6 +187,13 @@ impl SelectList {
     #[must_use]
     pub const fn with_live_key(mut self, key: &'static str) -> Self {
         self.live_key = Some(key);
+        self
+    }
+
+    /// Reserve bare `j`/`k` for filter text, even before typing starts.
+    #[must_use]
+    pub const fn without_vi_navigation(mut self) -> Self {
+        self.vi_navigation = false;
         self
     }
 
@@ -599,11 +613,11 @@ impl RenderOverlay for SelectList {
                 OverlayCommand::Stay
             }
             // `j`/`k` navigate only while the query is empty.
-            PhysicalKey::J if self.query.is_empty() => {
+            PhysicalKey::J if self.vi_navigation && self.query.is_empty() => {
                 self.select_down(&indices);
                 OverlayCommand::Stay
             }
-            PhysicalKey::K if self.query.is_empty() => {
+            PhysicalKey::K if self.vi_navigation && self.query.is_empty() => {
                 self.select_up(&indices);
                 OverlayCommand::Stay
             }

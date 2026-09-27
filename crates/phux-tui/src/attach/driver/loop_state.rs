@@ -348,6 +348,7 @@ pub(super) struct SessionLoop {
     spawn_initial_size_supported: bool,
     /// What the `go-to-directory` picker can list on this server.
     directory_support: crate::attach::directory_picker::DirectorySupport,
+    path_query_supported: bool,
     /// Whether the server advertised `ACKNOWLEDGED_INPUT` (ADR-0053 journal).
     acknowledged_input_supported: bool,
     /// ADR-0053 replay journal, shared with the CLI reconnect loop so an
@@ -395,6 +396,7 @@ pub(super) struct SessionLoop {
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
     /// it reads; a reply with any other id is stale and dropped.
     pending_directory: Option<crate::attach::directory_picker::PendingDirectory>,
+    pending_path: Option<crate::attach::path_picker::PendingPath>,
     /// Pane cwd + branch memo behind the sidebar's branch line.
     vcs: VcsIndex,
     /// Everything derived from the config file; the reloadable subset is
@@ -585,6 +587,12 @@ impl SessionLoop {
             directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
                 server_features,
             ),
+            // phux-client's NegotiatedBootstrap currently projects only the
+            // original feature word. This remains disabled until its extension
+            // word is exposed; guessing from an older bit would break peers.
+            path_query_supported: crate::attach::path_picker::supported(
+                phux_protocol::ServerFeatureExtSet::new(),
+            ),
             host_sessions_supported: server_features.contains(ServerFeature::HostSessions),
             whoami_supported: server_features.contains(ServerFeature::Whoami),
             host_refresh_request: false,
@@ -611,6 +619,7 @@ impl SessionLoop {
             review: crate::attach::review::ReviewIndex::new(),
             conditional_kill_supported,
             pending_directory: None,
+            pending_path: None,
             vcs: VcsIndex::default(),
             sidebar_painter: SidebarPainter::new(settings.theme),
             plugin_tx,
@@ -929,6 +938,30 @@ impl SessionLoop {
             return;
         }
         self.paint_overlay(out, sidebar);
+    }
+
+    fn update_path_picker<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        reply: Option<(u32, phux_protocol::wire::frame::PathQueryResult)>,
+    ) {
+        let Some((request_id, result)) = reply else {
+            return;
+        };
+        let Some(pending) = &self.pending_path else {
+            return;
+        };
+        let Some((root, query)) = self.overlays.path_search() else {
+            return;
+        };
+        if !crate::attach::path_picker::reply_matches(pending, request_id, root, query) {
+            tracing::debug!(request_id, "dropping stale PATH_RESULTS");
+            return;
+        }
+        if self.overlays.update_paths(&result) {
+            self.paint_overlay(out, sidebar);
+        }
     }
 
     /// Re-run the layered config loader and swap the config-derived state in
@@ -1931,6 +1964,9 @@ impl SessionLoop {
             pending_windows: &mut self.mirror.pending_windows,
             directory_support: self.directory_support,
             pending_directory: &mut self.pending_directory,
+            path_query_supported: self.path_query_supported,
+            pending_path: &mut self.pending_path,
+            own_client_id: self.own_client_id,
             expected_closes: &mut self.mirror.expected_closes,
             pending_kills: &mut self.mirror.pending_resource_ops,
             overlays: &mut self.overlays,
@@ -2437,6 +2473,7 @@ impl SessionLoop {
         self.resync_watches(conn, &mut outcome).await?;
         self.fold_chrome_and_notices(&mut outcome, repaint);
         self.open_directory_picker(out, sidebar, outcome.directory_listing.take());
+        self.update_path_picker(out, sidebar, outcome.path_results.take());
         self.emit_outcome_requests(conn, &mut outcome, sidebar, prev_rects)
             .await?;
         self.settle_frame_view(out, &outcome, sidebar, fleet_dirty, repaint);
