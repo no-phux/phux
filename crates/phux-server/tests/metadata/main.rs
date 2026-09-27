@@ -19,4 +19,5 @@ mod event_journal;
 mod get_perf;
 mod list_directory;
 mod metadata_reply;
+mod path_query;
 mod whoami;

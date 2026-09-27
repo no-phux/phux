@@ -7,7 +7,7 @@
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, DirectoryErrorCode, DirectoryListingError, ErrorCode, FrameKind,
-    MoveError, MoveResult, SpawnError, SpawnResult,
+    MoveError, MoveResult, PathErrorCode, PathQueryError, SpawnError, SpawnResult,
 };
 
 use crate::state::{ClientId, Outbound, SharedState};
@@ -135,6 +135,17 @@ fn native_refusal(frame: &FrameKind) -> Option<FrameKind> {
                 message: DENIED.to_owned(),
             }),
         }),
+        // L3 §5: a permission refusal is a `PATH_RESULTS`, never an ERROR.
+        FrameKind::PathQuery {
+            request_id, root, ..
+        } => Some(FrameKind::PathResults {
+            request_id: *request_id,
+            result: Err(PathQueryError {
+                root: root.clone(),
+                code: PathErrorCode::PermissionDenied,
+                message: DENIED.to_owned(),
+            }),
+        }),
         _ => None,
     }
 }
@@ -156,5 +167,34 @@ fn denied(request_id: Option<u32>) -> FrameKind {
         request_id,
         code: ErrorCode::PermissionDenied,
         message: DENIED.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A denied `PATH_QUERY` gets its own correlated refusal, so the picker
+    /// that sent it resolves instead of waiting on a reply (L3 §5).
+    #[test]
+    fn denied_path_query_answers_with_permission_denied_path_results() {
+        let frame = FrameKind::PathQuery {
+            request_id: 42,
+            root: "/srv".to_owned(),
+            query: "x".to_owned(),
+            recursive: true,
+            host: None,
+        };
+        assert_eq!(
+            native_refusal(&frame),
+            Some(FrameKind::PathResults {
+                request_id: 42,
+                result: Err(PathQueryError {
+                    root: "/srv".to_owned(),
+                    code: PathErrorCode::PermissionDenied,
+                    message: DENIED.to_owned(),
+                }),
+            })
+        );
     }
 }

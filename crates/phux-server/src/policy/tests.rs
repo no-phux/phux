@@ -340,6 +340,13 @@ fn samples(world: &World) -> Vec<FrameKind> {
             path: String::new(),
             host: None,
         },
+        FrameKind::PathQuery {
+            request_id: 1,
+            root: "~".to_owned(),
+            query: String::new(),
+            recursive: false,
+            host: None,
+        },
         FrameKind::SubscribeMetadata {
             scope: Scope::Resource(t.clone()),
             key: "phux.agent/v1".to_owned(),
@@ -861,6 +868,16 @@ fn rows(world: &mut World) -> Vec<Row> {
             FrameKind::ListDirectory {
                 request_id: 1,
                 path: String::new(),
+                host: None,
+            },
+            "inventory",
+        ),
+        on_global(
+            FrameKind::PathQuery {
+                request_id: 1,
+                root: "~".to_owned(),
+                query: String::new(),
+                recursive: false,
                 host: None,
             },
             "inventory",

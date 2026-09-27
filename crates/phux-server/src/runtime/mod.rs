@@ -37,6 +37,7 @@ pub mod idempotent_create;
 pub mod input_lane;
 pub mod keyed_ops;
 pub mod operation_dedupe;
+mod path_search;
 mod process_env;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
