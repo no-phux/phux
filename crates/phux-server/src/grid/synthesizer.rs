@@ -44,9 +44,7 @@ use phux_protocol::{
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
     fmt::{Format, Formatter, FormatterOptions},
-    render::{
-        CellIteration, CellIterator, CursorVisualStyle, Dirty, RowIteration, RowIterator, Snapshot,
-    },
+    render::{CellIteration, CellIterator, CursorVisualStyle, RowIteration, RowIterator, Snapshot},
     screen::{CellSemanticContent, CellWide, GridRef},
     selection::Selection,
     style::{RgbColor, Style, StyleColor},
@@ -197,11 +195,8 @@ impl std::io::Write for BoundedSnapshotBytes {
 /// the synthesis path reuses them across attaches instead of reallocating
 /// each time. The free [`synthesize`] function is the one-shot wrapper.
 ///
-/// The pool owns allocation and geometry only; every dirty-bit decision stays
-/// here, because this type alone holds three *different* policies
-/// ([`Self::mark_synced`] clears both levels, [`Self::synthesize_incremental`]
-/// deliberately clears neither, and the per-tick reference diff bypasses the
-/// bits entirely). See ADR-0086.
+/// The per-tick reference diff bypasses libghostty's shared dirty bits
+/// entirely (see [`Self::synthesize_against_reference`] and ADR-0086).
 #[derive(Debug)]
 pub struct SnapshotSynthesizer<'alloc> {
     /// Pooled render state + row/cell iterators, rebuilt on a geometry
@@ -736,139 +731,23 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         })
     }
 
-    /// Mark this consumer's `RenderState` as fully in sync with the
-    /// canonical Terminal — clears the snapshot-level dirty state and
-    /// every per-row dirty bit.
+    /// Synthesize one consumer's incremental diff against its own
+    /// [`ConsumerReference`] (phux-ia4).
     ///
-    /// Per ADR-0018 (Lazy state synchronization), this is the operation
-    /// the tick driver (phux-q0e.3) invokes when a `FRAME_ACK` for the
-    /// matching `seq` arrives from the consumer. It is deliberately
-    /// **not** called inside [`Self::synthesize_incremental`]: an unacked
-    /// diff must remain re-emittable so a lost packet causes the next
-    /// tick to re-diff against the same older reference rather than
-    /// returning a Clean-but-incorrect empty body.
+    /// libghostty's `RenderState::update` consumes the shared terminal's dirty
+    /// bits, so with N consumers on one pane only the first would see changes.
+    /// This compares rendered row bodies against the per-consumer reference
+    /// instead, so each consumer gets a correct diff regardless of the others.
     ///
-    /// After this returns successfully, the next `synthesize_incremental`
-    /// against an unchanged terminal will observe `Dirty::Clean` and emit
-    /// an empty body, saving wire bytes.
-    pub fn mark_synced(
-        &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-    ) -> Result<(), SynthesisError> {
-        let RenderWalk { snapshot, rows, .. } = self.pool.begin(terminal, 0)?;
-        let rows_n = snapshot.rows()?;
-        // Walk rows and clear each dirty bit. The row-level clear is
-        // separate from the snapshot-level clear — see render.h's "Dirty
-        // Tracking" section: both must be reset to bring this consumer
-        // back to Clean on the next `update`.
-        walk_viewport_rows(rows, &snapshot, rows_n, |_, row| {
-            row.set_dirty(false)?;
-            Ok(())
-        })?;
-        snapshot.set_dirty(Dirty::Clean)?;
-        Ok(())
-    }
-
-    /// Synthesize the **incremental** VT diff: the bytes that, applied via
-    /// `vt_write` to a mirror that's in sync with the per-consumer
-    /// `RenderState`'s last-acked reference, advance the mirror to match
-    /// the canonical Terminal now.
-    ///
-    /// Per ADR-0018 (Lazy state synchronization) and its 2026-05-26
-    /// Addendum, this is the per-tick emission primitive. It follows the
-    /// 5-step algorithm from `research/archive/2026-05-26-state-sync-algorithm.md`
-    /// Dependencies §2:
-    ///
-    /// 1. `render_state.update(terminal)` to refresh dirty state.
-    /// 2. Consult [`Snapshot::dirty`]:
-    ///    - `Dirty::Clean` → empty `replay_bytes`.
-    ///    - `Dirty::Full` → identical output to [`Self::synthesize`] (fall
-    ///      back to the full reset + paint path).
-    ///    - `Dirty::Partial` → walk rows, skip those with
-    ///      `Row::dirty() == false`, CUP to each dirty row and emit the
-    ///      same per-cell loop the full path uses.
-    /// 3. Re-emit cursor position + visibility + visual style + mode bits.
-    /// 4. **Do not clear dirty bits.** The tick driver (phux-q0e.3)
-    ///    clears bits only when a `FRAME_ACK` arrives (phux-q0e.4). An
-    ///    unacked diff must remain re-emittable; that is the loss-tolerance
-    ///    invariant ADR-0018 rests on.
-    pub fn synthesize_incremental(
-        &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-    ) -> Result<SnapshotBytes, SynthesisError> {
-        let RenderWalk {
-            snapshot,
-            rows,
-            cells,
-        } = self.pool.begin(terminal, 0)?;
-        let (cols, rows_n) = grid_dims(&snapshot)?;
-
-        let bytes = match snapshot.dirty()? {
-            Dirty::Clean => Vec::new(),
-            Dirty::Full => paint_full_reset(rows, cells, &snapshot, terminal, cols, rows_n)?,
-            Dirty::Partial => paint_dirty_rows(rows, cells, &snapshot, terminal, cols, rows_n)?,
-        };
-        Ok(SnapshotBytes {
-            cols,
-            rows: rows_n,
-            bytes,
-            scrollback: Vec::new(),
-        })
-    }
-
-    /// Synthesize the per-consumer incremental diff by comparing the live
-    /// `terminal` against a caller-owned [`ConsumerReference`] (phux-ia4).
-    ///
-    /// # Why this exists (the per-consumer dirty-isolation fix)
-    ///
-    /// libghostty's `RenderState::update` **consumes** the shared
-    /// `Terminal`'s dirty state: it clears `t.flags.dirty`, the active
-    /// screen's dirty flags, and the per-page / per-row dirty bits
-    /// (`render.zig` `update`, lines ~440-461 and ~647-648 of the pinned
-    /// `acc4b87` checkout). A `RenderState`'s own `Snapshot::dirty()` /
-    /// `Row::dirty()` are only *populated* from those shared bits during
-    /// `update`. So with N consumers sharing one pane, the FIRST
-    /// consumer's `update` in a tick consumes the shared dirty bits and
-    /// every OTHER consumer's `update` that tick observes `Dirty::Clean`
-    /// — starving all-but-one. [`Self::synthesize_incremental`] (which
-    /// reads `Snapshot::dirty()`) is therefore only correct for a single
-    /// consumer per tick.
-    ///
-    /// This method sidesteps the shared dirty bits entirely. It renders
-    /// each viewport row's cell body into bytes and compares it against
-    /// the per-consumer reference's stored row body. Rows whose rendered
-    /// body differs from the reference are re-emitted (CUP + cells);
-    /// unchanged rows are skipped. The reference is independent per
-    /// consumer, so consumers that have diverged (different ack/sync
-    /// points, dropped frames) each get their own correct diff regardless
-    /// of what any other consumer did to the shared `Terminal` this tick.
-    ///
-    /// # Emit-once semantics
-    ///
-    /// On a non-empty diff this advances `reference` to the just-rendered
-    /// state *before returning the bytes* (the caller commits by shipping
-    /// the frame). A given change is therefore emitted exactly once and
-    /// not re-emitted on subsequent ticks until the content changes again.
-    /// This matches the v0.1 reliable-transport emission model (the
-    /// broadcast pump ships each PTY byte once) and keeps a non-acking
-    /// consumer from re-receiving the same diff every tick. The
-    /// loss-tolerance "re-diff against an older reference" property
-    /// (ADR-0018) belongs to the future lossy-transport path and is not
-    /// v0.1 normative (proto.md §8); `FRAME_ACK` remains wired for
-    /// backpressure accounting and forward compatibility.
-    ///
-    /// Returns the synthesized bytes plus the queried `(cols, rows)`. An
+    /// A non-empty diff advances `reference` before returning (emit-once). An
     /// empty body means the viewport is byte-identical to the reference.
     pub fn synthesize_against_reference(
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         reference: &mut ConsumerReference,
     ) -> Result<SnapshotBytes, SynthesisError> {
-        // phux-ahk.2: render the tick once (consumer-independent), then diff
-        // this single consumer against it. `tick_emit` uses `prepare_tick` +
-        // `diff_consumer` directly so a pane with N consumers renders ONCE;
-        // this wrapper keeps the original one-call API for single-consumer
-        // callers and the unit tests.
+        // Single-consumer wrapper; `tick_emit` calls `prepare_tick` +
+        // `diff_consumer` directly so N consumers share one render.
         let (cols, rows_n, live_cm) = self.prepare_tick(terminal)?;
         Ok(self.diff_consumer(cols, rows_n, live_cm, reference))
     }
@@ -1298,101 +1177,6 @@ fn render_row_body<'alloc>(
     Ok(())
 }
 
-/// Which rows a paint walk emits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowSelection {
-    /// Every row in the viewport.
-    All,
-    /// Only rows whose `Row::dirty()` bit is set.
-    DirtyOnly,
-}
-
-/// Paint the selected rows into `out`: `CUP` to the row, then its cells.
-///
-/// The SGR pen carries across rows here (unlike [`render_row_body`]) because
-/// the emitted bytes are one continuous stream applied to the consumer's
-/// mirror, exactly as the pre-split full path emitted them.
-fn paint_rows<'alloc>(
-    rows: &mut RowIterator<'alloc>,
-    cells: &mut CellIterator<'alloc>,
-    snapshot: &Snapshot<'alloc, '_>,
-    rows_n: u16,
-    out: &mut Vec<u8>,
-    selection: RowSelection,
-) -> Result<(), SynthesisError> {
-    let mut prev_style: Option<Pen> = None;
-    walk_viewport_rows(rows, snapshot, rows_n, |row_index, row| {
-        if selection == RowSelection::DirtyOnly && !row.dirty()? {
-            return Ok(());
-        }
-        write_cup(out, row_index, 0);
-        let mut cell_iter = cells.update(row)?;
-        while let Some(cell) = cell_iter.next() {
-            emit_cell(cell, out, &mut prev_style)?;
-        }
-        Ok(())
-    })
-}
-
-/// Full reset + paint everything. Identical bytes to the
-/// [`SnapshotSynthesizer::synthesize`] path; the prologue is replicated here
-/// rather than re-entering `synthesize` so the caller keeps `render_state`
-/// borrowed by `snapshot` for the row walk.
-fn paint_full_reset<'alloc>(
-    rows: &mut RowIterator<'alloc>,
-    cells: &mut CellIterator<'alloc>,
-    snapshot: &Snapshot<'alloc, '_>,
-    terminal: &GhosttyTerminal<'alloc, '_>,
-    cols: u16,
-    rows_n: u16,
-) -> Result<Vec<u8>, SynthesisError> {
-    let mut out: Vec<u8> = Vec::with_capacity(usize::from(cols) * usize::from(rows_n) * 2);
-    out.extend_from_slice(b"\x1b[!p\x1b[2J\x1b[H");
-    // Select the screen buffer before painting (phux-99n).
-    emit_screen_mode(&mut out, terminal)?;
-    paint_rows(rows, cells, snapshot, rows_n, &mut out, RowSelection::All)?;
-    emit_epilogue(&mut out, snapshot, terminal)?;
-    Ok(out)
-}
-
-/// Walk rows; emit only those whose `Row::dirty() == true`. No reset preamble
-/// — the mirror's state outside the dirty rows is unchanged.
-fn paint_dirty_rows<'alloc>(
-    rows: &mut RowIterator<'alloc>,
-    cells: &mut CellIterator<'alloc>,
-    snapshot: &Snapshot<'alloc, '_>,
-    terminal: &GhosttyTerminal<'alloc, '_>,
-    cols: u16,
-    rows_n: u16,
-) -> Result<Vec<u8>, SynthesisError> {
-    let mut out: Vec<u8> = Vec::with_capacity(usize::from(cols) * usize::from(rows_n));
-    paint_rows(
-        rows,
-        cells,
-        snapshot,
-        rows_n,
-        &mut out,
-        RowSelection::DirtyOnly,
-    )?;
-
-    // Always re-emit the cursor + mode epilogue. Cursor
-    // position can change without any row being marked dirty
-    // (e.g. a bare CUP into a position whose cell is
-    // unchanged), and mode bits are diffed flat against the
-    // mirror's state, so we re-emit them on every non-empty
-    // tick to keep the algorithm simple. This matches the
-    // research note's step 3 + 4.
-    emit_epilogue(&mut out, snapshot, terminal)?;
-
-    // CRITICAL: do not call `snapshot.set_dirty(Clean)` or
-    // `row.set_dirty(false)` here. The tick driver clears
-    // bits only when FRAME_ACK arrives; an unacked diff must
-    // stay re-emittable so the next tick can re-diff against
-    // the same older reference if this packet is lost.
-
-    Ok(out)
-}
-
 /// Capacity hint for a full bounded paint: two bytes per cell, falling back to
 /// the ceiling itself when that product overflows.
 fn full_paint_hint(cols: u16, rows_n: u16, max_bytes: usize) -> usize {
@@ -1672,8 +1456,7 @@ fn write_scrollback_scroll_off(
     Ok(())
 }
 
-/// Per-cell emission shared by the full ([`SnapshotSynthesizer::synthesize`])
-/// and incremental ([`SnapshotSynthesizer::synthesize_incremental`]) paths.
+/// Per-cell emission shared by the full and per-row diff paths.
 ///
 /// Tracks the active SGR pen via `prev` (see [`Pen`]), skips wide-cell tails
 /// (`CellWide::SpacerTail`, see the comment in the body), and emits the
