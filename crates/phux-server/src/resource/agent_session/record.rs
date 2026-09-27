@@ -1,18 +1,10 @@
 //! `AgentEventsJsonlV1` record validation, stamping, and state derivation.
 //!
-//! One UTF-8 JSON object per line, at most [`MAX_RECORD_BYTES`] each,
+//! One JSON object per line, at most [`MAX_RECORD_BYTES`]:
 //! `{"seq":u64,"ts_ms":u64,"type":<str>,"data":{...}}` (ADR-0103 §2). The
-//! server parses the codec it serves for exactly two reasons: to refuse a
-//! record that would corrupt the stream, and to derive the session's
-//! lifecycle state. Neither reads further into `data` than the two keys
-//! ADR-0103 §5 names.
-//!
-//! `seq` and `ts_ms` belong to the server. A producer is a short-lived hook
-//! process that can race a sibling, so whatever it supplies for either is
-//! discarded and [`ValidRecord::stamp`] writes the server's own values. The
-//! stamped line is canonical — `{"seq":…,"ts_ms":…,"type":…,"data":{…}}` in
-//! that order, and no other top-level key — so every consumer reads one
-//! shape whatever the producer sent.
+//! server parses only to refuse corrupting records and to derive state
+//! (ADR-0103 §5). `seq` and `ts_ms` are the server's: [`ValidRecord::stamp`]
+//! discards the producer's and writes one canonical shape.
 
 use std::fmt;
 
@@ -50,9 +42,8 @@ pub enum StreamEvidence {
     Retract,
 }
 
-/// Why a record was refused. Every variant is `RECORD_INVALID` on the wire;
-/// the text rides the `COMMAND_RESULT` message so a producer can fix its
-/// emitter.
+/// Why a record was refused (`RECORD_INVALID` on the wire; the text helps
+/// the producer fix its emitter).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordError {
     /// The append carried no record at all.
@@ -124,13 +115,9 @@ pub struct ValidRecord {
 }
 
 impl ValidRecord {
-    /// What this record says about the session's state, or `None` when it
-    /// is not state-bearing (ADR-0103 §5).
-    ///
-    /// `notification` is evidence only for the two kinds that block on a
-    /// human; every other notification is narration. A `state` record is
-    /// the `REPORT_AGENT_STATE` fallback's synthesized form, so its
-    /// `data.state` word is read directly.
+    /// The session state this record asserts, if any (ADR-0103 §5). Only
+    /// the two human-blocking notification kinds count; a `state` record's
+    /// `data.state` is read directly.
     #[must_use]
     pub fn evidence(&self) -> Option<StreamEvidence> {
         match self.record_type.as_str() {
@@ -152,18 +139,9 @@ impl ValidRecord {
         }
     }
 
-    /// The pending question this record carries, if it carries one.
-    ///
-    /// The ask ladder (ADR-0036) is a separate ledger from the state one:
-    /// "who is asking" and "what state is the pane in" have different
-    /// sources and different retraction rules, so a record can feed both,
-    /// one, or neither. Only a record that actually names a question does —
-    /// an `ask` with no text is a state edge, not a question a human can
-    /// answer.
-    ///
-    /// Shaped as plain strings rather than the ask ledger's own type: the
-    /// engine validates a codec, and what the server does with a question is
-    /// the runtime's concern.
+    /// The question this record carries, if any (a separate ledger from
+    /// state, ADR-0036). An `ask` without text is a state edge, not a
+    /// question.
     #[must_use]
     pub fn ask(&self) -> Option<StreamAsk> {
         if self.evidence() != Some(StreamEvidence::Blocked) {
@@ -219,23 +197,15 @@ impl ValidRecord {
     }
 }
 
-/// Validate one `APPEND_RESOURCE_OUTPUT` payload into its records.
+/// Validate one `APPEND_RESOURCE_OUTPUT` payload into records.
 ///
-/// Newline-separated, and the trailing newline is optional: a producer
-/// piping one record through `phux agent emit` and one shipping a batch
-/// both round-trip. A blank segment is skipped rather than refused —
-/// concatenating two producers' output must not be an error — but an
-/// append that yields no record at all is [`RecordError::Empty`].
-///
-/// `already_ended` carries whether a `session_end` has already been
-/// accepted; the check lives here, not at the call site, so a batch whose
-/// second record follows its own `session_end` is refused too.
+/// Newline-separated, trailing newline optional, blank segments skipped;
+/// no records at all is [`RecordError::Empty`]. `already_ended` refuses
+/// anything after a `session_end`, including later records in the batch.
 ///
 /// # Errors
 ///
-/// The first [`RecordError`] the payload produces. Validation is
-/// all-or-nothing by construction: the caller commits nothing until this
-/// returns `Ok`.
+/// The first [`RecordError`]; the caller commits nothing unless `Ok`.
 pub fn validate(bytes: &[u8], already_ended: bool) -> Result<Vec<ValidRecord>, RecordError> {
     let text = std::str::from_utf8(bytes).map_err(|_| RecordError::NotUtf8)?;
     let mut ended = already_ended;

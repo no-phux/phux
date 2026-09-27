@@ -947,6 +947,11 @@ mod tests {
     fn shell_command_applies_login_flag_before_dash_c() {
         let cmd = shell_command("/bin/zsh", "htop", true);
         assert_eq!(argv_strings(&cmd), ["/bin/zsh", "-l", "-c", "htop"]);
+        let cmd = shell_command("/opt/fancy/fish", "btop --utf-force", false);
+        assert_eq!(
+            argv_strings(&cmd),
+            ["/opt/fancy/fish", "-c", "btop --utf-force"]
+        );
     }
 }
 

@@ -13,22 +13,13 @@ use super::{
 };
 use super::{NativeActorRequest, TerminalActor};
 
-/// Starting width of the per-pane native checkpoint scratch buffer.
-///
-/// One standard libghostty page is the unit a prefix record is built from, so
-/// a real active-area record is hundreds of kilobytes at most. The buffer
-/// grows to the exact `required_bytes` the engine reports when a record does
-/// not fit, so this is a starting point, never a cap.
+/// Starting width of the native checkpoint scratch buffer (one standard
+/// page); it grows to the engine's reported `required_bytes`.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) const INITIAL_NATIVE_SCRATCH_BYTES: usize = 64 * 1024;
 
-/// Width of the scratch buffer a fresh bootstrap starts with.
-///
-/// The negotiated `ceiling` is the whole connection staging budget (64 MiB by
-/// default) and the engine advertises `u32::MAX` for its own record bound, so
-/// sizing the buffer from either committed two orders of magnitude more memory
-/// than any real record uses. Seed one page-sized window instead and let the
-/// engine's exact `OutOfSpace { required_bytes }` widen it.
+/// Scratch width for a fresh bootstrap: one page, not the 64 MiB staging
+/// budget or the engine's `u32::MAX` record bound.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 pub(super) const fn initial_native_scratch_bytes(ceiling: usize) -> usize {
     if ceiling < INITIAL_NATIVE_SCRATCH_BYTES {
@@ -38,8 +29,8 @@ pub(super) const fn initial_native_scratch_bytes(ceiling: usize) -> usize {
     }
 }
 
-/// Widen `scratch` to exactly `required_bytes` without ever aborting on a
-/// failed allocation.
+/// Widen `scratch` to `required_bytes` without aborting on allocation
+/// failure.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn grow_native_scratch(
     scratch: &mut Vec<u8>,
@@ -129,14 +120,8 @@ impl TerminalActor {
                 }
             }
         };
-        // The scratch buffer holds ONE opaque prefix record at a time, not the
-        // whole connection staging budget. The engine advertises `u32::MAX`
-        // for `max_record_bytes`, so sizing it from the negotiated ceiling
-        // committed (and zeroed) 64 MiB per pane per attach — two orders of
-        // magnitude above the ~760 KiB a real active-area record needs. Start
-        // at one page-sized window and let `step_native_bootstrap` grow it to
-        // the configured record window libghostty reports as `required_bytes`;
-        // the negotiated ceiling still bounds it.
+        // The scratch holds one record at a time: start at one page and let
+        // the engine's `required_bytes` grow it, under the negotiated ceiling.
         let scratch_ceiling = match native_step_bytes(capture_bytes, 0, capture.max_record_bytes())
         {
             Ok(bytes) => bytes,
@@ -223,10 +208,8 @@ impl TerminalActor {
                 ),
                 event.bytes.len(),
             ),
-            // The engine reports the exact width of the record it could not
-            // write. Grow the scratch to it, still under the negotiated
-            // ceiling, and retry on the next cooperative turn: `next` does not
-            // consume the record when it returns `OutOfSpace`.
+            // Grow to the reported width and retry next turn (`next` does not
+            // consume a record on `OutOfSpace`).
             Err(crate::native_state::NativeStateError::OutOfSpace {
                 required_bytes,
                 required_rows: 0,
@@ -379,10 +362,8 @@ impl TerminalActor {
     }
 
     /// The READY publication fence: install the generation, charge its
-    /// reservation, notify every waiting owner, and unwind all of it on any
-    /// failure. Each stage below either answers every prepared waiter and
-    /// stops, or hands the still-live set to the next one, so a waiter is
-    /// answered exactly once no matter where the fence fails.
+    /// reservation, and notify every waiter, unwinding on failure so each
+    /// waiter is answered exactly once.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn finish_native_bootstrap(
         &mut self,
@@ -823,21 +804,14 @@ impl TerminalActor {
         req: &NativeHistoryRequest,
     ) -> Result<Option<FrameKind>, crate::native_state::NativeStateError> {
         let id = history_request_id(req);
-        // A cursor the actor cannot honour is a routine race, not a fault: a
-        // resize drains every binding (`invalidate_all_native_cursors`) while
-        // the client's HISTORY_REQUEST for the generation it was just handed
-        // is still in flight. That is guaranteed to happen for a pane created
-        // mid-attach, which the layout resizes immediately after its bootstrap
-        // (phux-rv52). HISTORY_TOMBSTONE is the frame the protocol defines for
-        // exactly this -- it degrades the one replica's scrollback and leaves
-        // the attach intact -- so an unusable cursor is answered, never
-        // escalated to a connection-scoped Error.
+        // An unusable cursor is a routine race (a resize drained the
+        // bindings while the request was in flight), answered with a
+        // HISTORY_TOMBSTONE rather than a connection error.
         let stale = phux_protocol::wire::frame::HistoryTombstoneReason::Stale;
         let Ok(cursor): Result<crate::native_state::OpaqueHistoryCursor, _> =
             id.cursor.as_ref().try_into()
         else {
-            // Unlike the races below this one is a client protocol violation,
-            // so it is worth a log line -- but not worth ending the attach.
+            // A protocol violation, worth a log line but not the attach.
             warn!(
                 len = id.cursor.len(),
                 terminal_id = ?id.terminal_id,
@@ -1252,9 +1226,6 @@ impl TerminalActor {
 }
 
 /// Answer every still-live prepared waiter with `error`.
-///
-/// The unwind path of the READY publication fence: whichever stage fails, the
-/// waiters it was holding are answered exactly once and dropped.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn fail_native_waiters(
     prepared: Vec<(NativeBootstrapRequest, NativeBootstrapReply)>,

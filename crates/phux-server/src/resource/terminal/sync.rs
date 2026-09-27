@@ -11,30 +11,17 @@ use libghostty_vt::{
 use phux_protocol::ids::{BootstrapId, StreamId};
 use tokio::sync::{mpsc, watch};
 
-/// Snapshot of the live `Terminal`'s cursor + DEC mode bits captured at
-/// the moment a consumer is brought up-to-date.
+/// Cursor and DEC mode bits captured when a consumer is brought up to date,
+/// compared by the tick to decide whether to re-emit the epilogue.
 ///
-/// Captured via ATTACH today; via `FRAME_ACK` in phux-q0e.4. The
-/// state-sync tick driver (phux-q0e.3) compares this against the live
-/// terminal's current state to decide whether the per-tick incremental
-/// synthesis must re-emit the cursor placement + DEC modes that
-/// `SnapshotSynthesizer::synthesize` would emit at the tail of a
-/// from-empty snapshot.
-///
-/// The set tracked here mirrors the modes that today's
-/// `SnapshotSynthesizer::synthesize` re-emits at the end of a snapshot
-/// (`BRACKETED_PASTE`, `FOCUS_EVENT`, `ALT_SCREEN_LEGACY`) plus the
-/// cursor placement/visibility/style read off the `RenderState::Snapshot`.
-/// New mode bits that synthesize starts re-emitting should be added here
-/// in lock-step.
+/// Tracks the modes the snapshot epilogue re-emits; keep them in step.
 #[derive(Debug, Clone, Copy)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "DEC mode bits are independent flags; collapsing them into a bitfield obscures the per-flag mapping to `Mode::*` constants"
 )]
 pub struct LastAckedCursorMode {
-    /// Cursor column (zero-based viewport coords). `None` when the
-    /// cursor is not viewport-resident (off-screen due to scrollback).
+    /// Cursor column; `None` when the cursor is off the viewport.
     pub cursor_x: Option<u16>,
     /// Cursor row (zero-based viewport coords).
     pub cursor_y: Option<u16>,
@@ -52,18 +39,14 @@ pub struct LastAckedCursorMode {
     pub alt_screen_legacy: bool,
     /// `ALT_SCREEN` (DEC private mode 1047).
     pub alt_screen: bool,
-    /// `ALT_SCREEN_SAVE` (DEC private mode 1049) — the mode vim/less/man/
-    /// htop/tmux actually use. Tracked alongside 47 so a 47<->1049
-    /// transition still trips the diff trigger; 47 and 1049 are
-    /// independent bits in libghostty, so tracking only 47 would miss it.
+    /// DEC 1049. Tracked with 47 because they are independent bits and a
+    /// 47<->1049 switch must still diff.
     pub alt_screen_save: bool,
 }
 
 impl LastAckedCursorMode {
-    /// Capture the live terminal's cursor + DEC mode state into a fresh
-    /// `LastAckedCursorMode`. Querying every field; libghostty FFI errors
-    /// degrade to safe defaults (cursor invisible, modes off) so a
-    /// transient FFI failure doesn't kill the actor.
+    /// Capture the live cursor and modes; FFI errors degrade to safe
+    /// defaults (cursor hidden, modes off).
     pub(crate) fn capture(terminal: &GhosttyTerminal<'_, '_>, snapshot: &Snapshot<'_, '_>) -> Self {
         let (cursor_x, cursor_y) = match snapshot.cursor_viewport() {
             Ok(Some(v)) => (Some(v.x), Some(v.y)),
@@ -85,13 +68,7 @@ impl LastAckedCursorMode {
         }
     }
 
-    /// A placeholder capture for a raw broadcast-pump consumer, whose
-    /// per-consumer cursor/mode state is never read (the tick path serves
-    /// only tick-managed consumers and `FRAME_ACK` is dropped for raw ones).
-    /// Uses the same safe defaults `capture` falls back to on FFI error, so
-    /// it costs no terminal walk on the human attach path. If such a consumer
-    /// were ever served by the tick, `needs_initial_emit` forces a full pass
-    /// that overwrites this.
+    /// Placeholder for a raw consumer, whose capture is never read.
     pub(crate) const fn unprimed() -> Self {
         Self {
             cursor_x: None,
@@ -108,34 +85,12 @@ impl LastAckedCursorMode {
     }
 }
 
-/// Defensive cap on [`ConsumerSyncState::emit_instants`].
-///
-/// The map is pruned to the in-flight window on every `FRAME_ACK`, so a
-/// well-behaved consumer keeps only a handful of entries. This cap guards the
-/// pathological case — a consumer that opts into state sync but never acks, or
-/// a transport that drops acks — where the map would otherwise grow one entry
-/// per emitted tick without bound. 256 entries is ~5s of in-flight ticks at
-/// the [`MIN_TICK_INTERVAL`](super::tick::MIN_TICK_INTERVAL) floor (20ms),
-/// far beyond any real RTT window, and bounds the map to a few KB per consumer.
+/// Cap on [`ConsumerSyncState::emit_instants`] (and pending refs), for a
+/// consumer that never acks: about 5 s of ticks at the 20 ms floor.
 pub const MAX_EMIT_INSTANTS: usize = 256;
 
-/// Per-consumer cached reference state for ADR-0018 lazy state
-/// synchronization. One per `(TerminalActor, attached ClientId)`.
-///
-/// Holds the libghostty `RenderState` that tracks "what cells this
-/// consumer has already seen" (so the tick driver in phux-q0e.3 can
-/// walk only the rows that changed since the last per-consumer
-/// snapshot), the `seq` of the last frame this consumer `ACK`ed (driven
-/// by phux-q0e.4's `FRAME_ACK` handler), and the cursor/mode state
-/// captured at the same instant.
-///
-/// `Drop` runs the libghostty `ghostty_render_state_free` via
-/// `RenderState`'s own destructor — no explicit cleanup needed in
-/// DETACH beyond removing the entry from the actor's map.
-///
-/// `!Send + !Sync` because `RenderState` is `!Send + !Sync` (per the
-/// `libghostty-send-sync` bd memory). Lives only inside the actor,
-/// which runs on the `LocalSet` thread that owns the `Terminal`.
+/// Per-consumer state-sync cache (ADR-0018), one per attached consumer on
+/// the actor. `!Send` like the terminal it tracks.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent per-consumer state flags (needs_initial_emit, behind, \
@@ -143,30 +98,13 @@ pub const MAX_EMIT_INSTANTS: usize = 256;
               obscure the per-flag lifecycle each drives"
 )]
 pub struct ConsumerSyncState {
-    /// Per-consumer reference grid for the lazy state-sync diff
-    /// (phux-ia4). Holds the last-synced rendered body of every viewport
-    /// row plus the last-synced cursor/mode state. The tick driver diffs
-    /// the live `Terminal` against this (via the actor's shared
-    /// [`crate::grid::SnapshotSynthesizer`]) and advances it on emit.
-    ///
-    /// This replaces the earlier per-consumer `RenderState` dirty cache.
-    /// `RenderState::update` *consumes* the shared `Terminal` dirty bits
-    /// on the first read each tick (libghostty `render.zig`), so a
-    /// per-consumer `RenderState` could not isolate dirty across N
-    /// consumers on one pane: the first consumer's `update` starved the
-    /// rest. The reference grid is fully independent per consumer and
-    /// never reads the shared dirty bits, so every consumer gets its own
-    /// correct diff each tick regardless of attach/ack divergence. See
-    /// [`crate::grid::SnapshotSynthesizer::synthesize_against_reference`].
+    /// Last-synced rendered row bodies and cursor/mode state. The tick diffs
+    /// the live grid against it and advances it on emit, independent of
+    /// libghostty's shared dirty bits.
     pub reference: ConsumerReference,
-    /// Per-consumer outbound mailbox the tick driver pushes
-    /// `RESOURCE_OUTPUT` frames into. Cloned from the
-    /// [`crate::state::AttachedClient`]'s `tx` at ATTACH time.
+    /// Outbound mailbox for tick-emitted frames.
     pub outbound: mpsc::Sender<Outbound>,
-    /// Wire-level terminal id for the `ResourceOutput` frame
-    /// (`docs/spec/L1.md` §2.1). Carried per-consumer because the runtime owns
-    /// the mapping `(TerminalActor, WireResourceId)` and may differ
-    /// across consumers in future tier topologies.
+    /// Wire terminal id for the `ResourceOutput` frame.
     pub wire_terminal_id: u32,
     /// Logical protocol-0.7 subscription identity.
     pub stream_id: StreamId,
@@ -174,93 +112,36 @@ pub struct ConsumerSyncState {
     pub bootstrap_id: BootstrapId,
     /// Aggregate-attach gate; false suppresses live output until `ATTACH_READY`.
     pub live_gate: watch::Receiver<bool>,
-    /// Per-consumer monotonic sequence id for `RESOURCE_OUTPUT`
-    /// (`docs/spec/L1.md` §2.1, §12). Starts at `1` and increments on each
-    /// emitted frame. Per-consumer (not shared) so each consumer can
-    /// `FRAME_ACK` against its own stream — this matches the existing
-    /// per-pump scheme in `runtime.rs::handle_attach`.
+    /// Per-consumer `RESOURCE_OUTPUT` sequence, starting at 1.
     pub next_seq: u64,
-    /// `FrameId` of the most recent `RESOURCE_OUTPUT` this consumer has
-    /// `ACK`ed. `0` means "no acks yet — the next emission is the only
-    /// thing this consumer has seen" (matches `FrameId::ZERO`'s "empty
-    /// initial frame" semantics).
+    /// Highest acked `seq`; `0` before any ack.
     pub last_acked_seq: u64,
-    /// Cursor + DEC mode bits captured at the last sync point. Used by
-    /// the tick driver to decide whether to re-emit cursor placement /
-    /// mode toggles in the incremental synthesis path. See
-    /// [`LastAckedCursorMode`] for the field set rationale.
+    /// Cursor/mode bits at the last sync point.
     pub last_cursor_mode: LastAckedCursorMode,
-    /// Set `true` at registration, cleared after this consumer's first
-    /// pass through the actor's per-tick synthesis (phux-4l0).
-    ///
-    /// The idle short-circuit skips the per-consumer row walk when the
-    /// shared terminal is `Clean` since the previous tick. A consumer
-    /// registered *after* the last write sits on a `Clean` terminal yet
-    /// has never been diffed; its reference is primed (so the diff is
-    /// empty and emit-once still holds), but we must still run its first
-    /// synthesis pass rather than silently skip it — this is the
-    /// "needs prime / has diverged" case the phux-ia4 fix must preserve.
-    /// While any consumer has this set, the short-circuit is suppressed.
+    /// Set at registration: walk once on the next tick even if the terminal
+    /// is clean.
     pub needs_initial_emit: bool,
-    /// Set when a tick skipped this consumer because its outbound mailbox
-    /// was full (backpressure), so its reference is *behind* the live grid
-    /// even though the grid has not mutated since. The idle short-circuit
-    /// must not skip the per-consumer loop while any consumer is behind, or
-    /// the held-back delta would never be retried once the client drains
-    /// (the terminal can stay `Clean` indefinitely). Cleared the moment this
-    /// consumer is successfully served — either a delta ships or the diff is
-    /// empty (reference caught up to the grid).
+    /// A tick skipped this consumer on a full mailbox, so its reference is
+    /// behind the grid; keeps the walk going on a clean terminal until it
+    /// is served.
     pub behind: bool,
-    /// Smoothed RTT estimate for the RTT-adaptive tick cadence (phux-q0e.5).
-    /// Fed one sample per `FRAME_ACK`; drives this consumer's desired tick
-    /// interval. See [`RttEstimator`].
+    /// Smoothed RTT for the adaptive cadence.
     pub rtt: RttEstimator,
-    /// Emit timestamps for in-flight (emitted, not-yet-acked) `seq`s, used to
-    /// measure RTT server-side when the matching `FRAME_ACK` arrives
-    /// (phux-q0e.5). Keyed by the `seq` stamped on each `RESOURCE_OUTPUT`;
-    /// the value is the `tokio::time::Instant` the frame was handed to the
-    /// outbound mailbox. Pruned up to the acked `seq` on every ack so it
-    /// stays bounded by the number of frames in flight within one RTT (a
-    /// handful at the clamped cadence) for an acking consumer, and hard-capped
-    /// at [`MAX_EMIT_INSTANTS`] (oldest-evicted) so a never-acking consumer
-    /// cannot grow it without bound. No wire change: the RTT round-trip
-    /// rides the `seq` that `FRAME_ACK` already echoes.
+    /// Emit instants of in-flight `seq`s, for RTT on ack. Pruned on ack and
+    /// capped at [`MAX_EMIT_INSTANTS`].
     pub emit_instants: std::collections::BTreeMap<u64, tokio::time::Instant>,
-    /// Whether this consumer negotiated the synthesized state-sync tick
-    /// emitter (phux-fseo). When `true`, `tick_emit` serves this consumer
-    /// even with the global test gate off; when `false` the consumer is
-    /// served by the runtime's raw broadcast pump and `tick_emit` stays
-    /// silent for it. The global `consumer_tick_emits` test override still
-    /// forces emission for every consumer regardless of this flag.
+    /// Whether this consumer negotiated `StateSync`; otherwise the broadcast
+    /// pump serves it (unless the test override forces the tick).
     pub wants_state_sync: bool,
-    /// Whether this consumer is on a lossy/forwarded leg and uses the
-    /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0042).
-    ///
-    /// `false` (the default) keeps the v0.1 emit-once model: the reference
-    /// (`reference`) advances on emit and `FRAME_ACK` only drives backpressure
-    /// accounting — correct and cheapest on a reliable ordered transport (UDS,
-    /// SSH stdio, WebSocket, a QUIC reliable stream). `true` switches to the
-    /// Mosh loss-tolerant model: each tick re-diffs the live grid against
-    /// [`Self::acked_reference`] (the last state the consumer provably has), the
-    /// reference advances only when a matching `FRAME_ACK` lands, and an
-    /// un-acked frame is retransmitted after a retransmit timeout — so a frame
-    /// the forwarded leg dropped self-heals rather than diverging the mirror
-    /// forever. Opt-in per consumer; the reliable-transport default path is
-    /// untouched.
+    /// Loss-tolerant model (ADR-0042): diff against [`Self::acked_reference`],
+    /// advance only on ack, and retransmit after a timeout, so drops on a
+    /// forwarded leg self-heal. Off by default (emit-once).
     pub loss_tolerant: bool,
-    /// The last-*acked* reference grid — the diff base for the loss-tolerant
-    /// model (phux-v45.8). Unused (empty) unless [`Self::loss_tolerant`]. Primed
-    /// to the live grid when loss-tolerance is enabled (the consumer's
-    /// `TERMINAL_SNAPSHOT` brings its mirror to this same point); advanced by
-    /// the actor's `on_frame_ack` to the grid snapshot a cumulative ack covers.
+    /// The last-acked reference (loss-tolerant only).
     pub acked_reference: ConsumerReference,
-    /// Grid snapshots of each emitted-but-not-yet-acked frame, keyed by the
-    /// `seq` stamped on its `RESOURCE_OUTPUT` (phux-v45.8). On `FRAME_ACK` the
-    /// consumer's [`Self::acked_reference`] advances to the snapshot of the
-    /// highest `seq` the (cumulative) ack covers, and every entry at or below it
-    /// is pruned. Bounded by the in-flight window for an acking consumer and
-    /// hard-capped at [`MAX_EMIT_INSTANTS`] (oldest-evicted) so a wedged leg
-    /// cannot grow it without bound. Empty unless [`Self::loss_tolerant`].
+    /// Snapshots of emitted, un-acked frames by `seq`; an ack advances
+    /// [`Self::acked_reference`] to the highest covered one. Capped at
+    /// [`MAX_EMIT_INSTANTS`].
     pub pending_refs: std::collections::BTreeMap<u64, ConsumerReference>,
 }
 
