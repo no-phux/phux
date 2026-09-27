@@ -877,6 +877,25 @@ fn directory_listing_reply_is_handed_to_the_driver() {
     assert!(!outcome.exit);
 }
 
+/// A `PATH_RESULTS` is handed to the driver, which matches it against the
+/// newest in-flight query.
+#[test]
+fn path_results_reply_reaches_driver_for_generation_matching() {
+    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    let result = Ok(phux_protocol::wire::frame::PathResults {
+        root: "/src".into(),
+        parent: Some("/".into()),
+        rows: vec![],
+        status: phux_protocol::wire::frame::PathStatus::Complete,
+    });
+    let outcome = h.send(FrameKind::PathResults {
+        request_id: 7,
+        result: result.clone(),
+    });
+    assert_eq!(outcome.path_results, Some((7, result)));
+    assert!(!outcome.exit);
+}
+
 /// A request-correlated reply whose awaiter already moved on arrives here as
 /// interleaved traffic and must be inert, not fatal (L1 §5). `C-a o` during
 /// a concurrent layout drive once tore the client down over a success reply.

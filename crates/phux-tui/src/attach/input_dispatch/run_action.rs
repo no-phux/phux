@@ -71,6 +71,8 @@ pub(super) fn run_action(
         "set-pane" => set_pane(resolved, ctx, focused, e),
         "new-window" => new_window(resolved, ctx, e),
         "go-to-directory" => go_to_directory(resolved, ctx, focused, panes, e),
+        "find-path" => find_path(resolved, ctx, focused, panes, e),
+        "insert-path" => insert_path(resolved, ctx, focused, panes, e),
         "kill-window" => kill_active_window(ctx, e),
         "next-window" => switch_window(ctx, e, Workspace::next),
         "previous-window" => switch_window(ctx, e, Workspace::prev),
@@ -509,6 +511,96 @@ fn go_to_directory(
         host: host.satellite().cloned(),
     };
     effects.list_directory = Some((PendingDirectory { request_id, host }, frame));
+}
+
+/// Browse a host path while preserving the pane captured at first open.
+fn find_path(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    effects: &mut ActionEffects,
+) {
+    if !ctx.path_query_supported {
+        effects.bell = true;
+        return;
+    }
+    let Some(target) = focused else {
+        effects.bell = true;
+        return;
+    };
+    // A browse row must never recapture a different pane when focus or its
+    // input lease moved during the overlay's lifetime.
+    let old = ctx.pending_path.as_ref();
+    if old.is_some_and(|pending| {
+        !crate::attach::path_picker::may_insert(pending, focused, ctx.own_client_id, panes)
+    }) {
+        *ctx.pending_path = None;
+        effects.bell = true;
+        return;
+    }
+    let holder = old.map_or_else(
+        || panes.get(target).and_then(|p| p.input_holder),
+        |p| p.holder,
+    );
+    if holder.is_some_and(|id| Some(id) != ctx.own_client_id) || panes.get(target).is_none() {
+        effects.bell = true;
+        return;
+    }
+    let root = str_arg(resolved, "path")
+        .or_else(|| pane_cwd_on(target.host(), focused, panes))
+        .unwrap_or_default();
+    let request_id = ctx.take_request_id();
+    let pending = crate::attach::path_picker::PendingPath {
+        target: target.clone(),
+        holder,
+        request_id,
+        root: root.clone(),
+        query: String::new(),
+    };
+    ctx.overlays
+        .push(Box::new(crate::render::overlay::PathPicker::new(
+            root.clone(),
+            ctx.theme,
+        )));
+    effects.layout_mutated = true;
+    effects.query_path = Some((
+        pending,
+        FrameKind::PathQuery {
+            request_id,
+            root,
+            query: String::new(),
+            recursive: false,
+            host: target.host().cloned(),
+        },
+    ));
+}
+
+fn insert_path(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    effects: &mut ActionEffects,
+) {
+    let Some(pending) = ctx.pending_path.take() else {
+        effects.bell = true;
+        return;
+    };
+    let Some(path) = str_arg(resolved, "path") else {
+        effects.bell = true;
+        return;
+    };
+    if path.chars().any(char::is_control)
+        || !crate::attach::path_picker::may_insert(&pending, focused, ctx.own_client_id, panes)
+    {
+        effects.bell = true;
+        return;
+    }
+    effects.insert_path = Some((
+        pending.target,
+        crate::attach::path_picker::shell_quote(&path),
+    ));
 }
 
 /// A non-empty `host` arg as a satellite name.

@@ -68,6 +68,19 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     )
     .await?;
     send_directory_request(effects.list_directory, conn, ctx.pending_directory).await?;
+    if let Some((pending, frame)) = effects.query_path {
+        *ctx.pending_path = Some(pending);
+        conn.send(&frame).await?;
+    }
+    if let Some((target, text)) = effects.insert_path {
+        // This is an input event, never a shell command or an Enter key.
+        let paste = phux_protocol::input::paste::PasteEvent {
+            data: text.into_bytes(),
+            trust: phux_protocol::input::paste::PasteTrust::Trusted,
+        };
+        conn.send(&phux_protocol::input::InputEvent::Paste(paste).into_frame(target))
+            .await?;
+    }
     send_kill_frames(
         effects.kill_frames,
         effects.expected_closes,
@@ -574,6 +587,8 @@ pub(super) struct ActionEffects {
     /// async caller records it (id and listed host) as the pending listing,
     /// then sends it; the reply opens the directory picker.
     pub(super) list_directory: Option<(PendingDirectory, FrameKind)>,
+    pub(super) query_path: Option<(crate::attach::path_picker::PendingPath, FrameKind)>,
+    pub(super) insert_path: Option<(ResourceId, String)>,
     /// `KILL_RESOURCE` commands, one per targeted Terminal, sent in order.
     pub(super) kill_frames: Vec<FrameKind>,
     /// `(request_id, Terminal)` per kill, parked in `pending_kills` so a

@@ -307,6 +307,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 if let Ok(text) = std::str::from_utf8(&paste.data) {
                     self.ctx.overlays.handle_paste(text);
                 }
+                self.send_changed_path_query().await?;
                 false
             }
             // Focus events are consumed without reaching the pane underneath.
@@ -330,6 +331,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let outcome = self.ctx.overlays.handle_key(key_event);
         self.release_abandoned_listing();
         let ran = self.apply_overlay_outcome(outcome).await?;
+        self.send_changed_path_query().await?;
+        self.release_abandoned_path();
         // On dismiss, repaint everything: the overlay scribbled
         // over pane cells and we need a coherent base for the
         // next RESOURCE_OUTPUT.
@@ -348,6 +351,42 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             .map(|pending| pending.request_id);
         if pending.is_some_and(|id| !self.ctx.overlays.awaits(id)) {
             *self.ctx.pending_directory = None;
+        }
+    }
+
+    /// Query the serving/satellite host as the search field changes. Every
+    /// edit gets a fresh request id, so delayed results cannot replace newer
+    /// results or resurrect a dismissed picker.
+    async fn send_changed_path_query(&mut self) -> Result<(), AttachError> {
+        let Some((root, query)) = self.ctx.overlays.path_search() else {
+            return Ok(());
+        };
+        let (root, query) = (root.to_owned(), query.to_owned());
+        let Some(pending) = self.ctx.pending_path.as_mut() else {
+            return Ok(());
+        };
+        if pending.root == root && pending.query == query {
+            return Ok(());
+        }
+        let request_id = *self.ctx.next_request_id;
+        *self.ctx.next_request_id = request_id.wrapping_add(1);
+        pending.request_id = request_id;
+        pending.root.clone_from(&root);
+        pending.query.clone_from(&query);
+        self.conn
+            .send(&FrameKind::PathQuery {
+                request_id,
+                root,
+                recursive: !query.is_empty(),
+                query,
+                host: crate::attach::path_picker::host(pending),
+            })
+            .await
+    }
+
+    fn release_abandoned_path(&mut self) {
+        if self.ctx.overlays.path_search().is_none() {
+            *self.ctx.pending_path = None;
         }
     }
 

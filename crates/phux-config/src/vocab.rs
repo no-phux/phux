@@ -13,6 +13,8 @@ pub const ACTION_NAMES: &[&str] = &[
     "kill-pane",
     "new-window",
     "go-to-directory",
+    "find-path",
+    "insert-path",
     "kill-window",
     "next-window",
     "previous-window",

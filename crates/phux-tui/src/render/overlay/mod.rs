@@ -18,6 +18,7 @@ use crate::render::{ChromeBreakpoints, Theme};
 pub mod copy_mode;
 pub mod line_edit;
 pub mod menu;
+pub mod path_picker;
 pub mod pending;
 pub mod prompt;
 pub mod select_list;
@@ -30,6 +31,7 @@ pub mod widgets;
 
 pub use copy_mode::{CopyModeOverlay, CopySearchRequest, CopySearchResult, CopySearchView};
 pub use menu::{ContextMenu, MenuRow};
+pub use path_picker::PathPicker;
 pub use pending::PendingOverlay;
 pub use prompt::PromptOverlay;
 pub use select_list::{SelectItem, SelectList};
@@ -154,6 +156,16 @@ pub trait RenderOverlay {
     /// The request id this placeholder overlay ([`PendingOverlay`]) awaits.
     fn pending_request(&self) -> Option<u32> {
         None
+    }
+
+    /// Active host-path discovery query, if this is a path picker.
+    fn path_search(&self) -> Option<(&str, &str)> {
+        None
+    }
+
+    /// Refresh one active path picker with a correlated host reply.
+    fn update_paths(&mut self, _result: &phux_protocol::wire::frame::PathQueryResult) -> bool {
+        false
     }
 }
 
@@ -313,6 +325,19 @@ impl OverlayState {
     #[must_use]
     pub fn top_pending_request(&self) -> Option<u32> {
         self.stack.last()?.pending_request()
+    }
+
+    /// Never update a hidden picker below another modal.
+    #[must_use]
+    pub fn path_search(&self) -> Option<(&str, &str)> {
+        self.stack.last()?.path_search()
+    }
+
+    /// Refresh only the active path picker; a covered or dismissed one stays inert.
+    pub fn update_paths(&mut self, result: &phux_protocol::wire::frame::PathQueryResult) -> bool {
+        self.stack
+            .last_mut()
+            .is_some_and(|top| top.update_paths(result))
     }
 
     /// `true` while some stacked placeholder awaits `request_id`.

@@ -204,6 +204,20 @@ pub const REGISTRY: &[ActionSpec] = &[
         args: &[],
     },
     ActionSpec {
+        name: "find-path",
+        category: Category::Pane,
+        description: "Browse or fuzzy-search host paths and insert a literal path into the focused pane",
+        params: "`path?` (directory to browse; defaults to the focused pane's directory)",
+        args: &[],
+    },
+    ActionSpec {
+        name: "insert-path",
+        category: Category::Pane,
+        description: "Insert a selected host path without running the command",
+        params: "`path` (selected absolute path)",
+        args: &[],
+    },
+    ActionSpec {
         name: "kill-window",
         category: Category::Window,
         description: "Close the active window and all its panes",

@@ -629,6 +629,7 @@ mod tests {
             ("Q", "return-from-attention"),
             ("A", "agent-fleet"),
             ("G", "go-to-directory"),
+            ("F", "find-path"),
         ] {
             let got = resolves(&mut resolver, &["C-a", chord]).expect(chord);
             assert_eq!(got.action, action, "C-a {chord}");

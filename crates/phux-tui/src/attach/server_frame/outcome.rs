@@ -85,6 +85,8 @@ pub(in crate::attach) struct FrameOutcome {
     /// A `DIRECTORY_LISTING` reply for the driver to match.
     pub(in crate::attach) directory_listing:
         Option<(u32, phux_protocol::wire::frame::DirectoryListingResult)>,
+    /// Latest host path discovery reply, correlated by the driver.
+    pub(in crate::attach) path_results: Option<(u32, phux_protocol::wire::frame::PathQueryResult)>,
     /// ATTACHED's session graph, for the session picker.
     pub(in crate::attach) sessions: Option<(Vec<SessionInfo>, SessionId)>,
     /// ATTACHED's windows and resources, so the Agents list can name panes in
@@ -131,6 +133,7 @@ pub(super) const fn frame_kind_label(frame: &FrameKind) -> &'static str {
         FrameKind::MetadataValue { .. } => "metadata_value",
         FrameKind::MetadataChanged { .. } => "metadata_changed",
         FrameKind::DirectoryListing { .. } => "directory_listing",
+        FrameKind::PathResults { .. } => "path_results",
         FrameKind::ResourceSpawned { .. } => "terminal_spawned",
         FrameKind::ResourceClosed { .. } => "terminal_closed",
         _ => "other",

@@ -330,6 +330,10 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         FrameKind::DirectoryListing { request_id, result } => {
             Ok(directory_listing_outcome(request_id, result))
         }
+        FrameKind::PathResults { request_id, result } => Ok(FrameOutcome {
+            path_results: Some((request_id, result)),
+            ..FrameOutcome::default()
+        }),
         FrameKind::ResourceSpawned { request_id, result } => {
             handle_terminal_spawned(ctx, request_id, result)
         }

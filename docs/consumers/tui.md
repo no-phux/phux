@@ -200,6 +200,7 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a 0`–`9` | `select-window` by index |
 | `C-a <` / `C-a >` | `move-window` one slot left / right |
 | `C-a G` | `go-to-directory` |
+| `C-a F` | `find-path` (browse or search paths on the focused pane's host; `insert-path` types one shell-quoted path, never Enter) |
 | `C-a w` | `window-picker` |
 | `C-a s` | `session-picker` (`C-a a` is a kept alias) |
 | `C-a A` | `agent-fleet` |
