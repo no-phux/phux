@@ -2579,7 +2579,6 @@ version = "0.46.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
- "chrono",
  "flate2",
  "insta",
  "int-enum",

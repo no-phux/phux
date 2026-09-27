@@ -412,15 +412,15 @@ fn held_signal_grammar_parses_merges_and_never_reaches_the_image() {
         "a held verb reaches"
     );
     assert!(
-        !effective.admits_unheld(Verb::Signal, |_| true),
+        !effective.without_holds().admits(Verb::Signal, |_| true),
         "but not without a decision"
     );
-    assert!(effective.admits_unheld(Verb::Input, |_| true));
+    assert!(effective.without_holds().admits(Verb::Input, |_| true));
 
     // Held on either side of an intersection holds the clause.
     let requested = set(&["signal@terminal:3"]);
     let ceiling = set(&["?signal@global"]);
     let clauses = EffectiveScopeSet::intersect(&requested, &ceiling).unwrap();
-    assert!(!clauses.admits_unheld(Verb::Signal, |_| true));
+    assert!(!clauses.without_holds().admits(Verb::Signal, |_| true));
     assert!(clauses.admits(Verb::Signal, |_| true));
 }

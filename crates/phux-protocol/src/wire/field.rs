@@ -709,15 +709,3 @@ pub mod event_pane_spawned {
     /// Parent resource (positional tagged `ResourceId`). Absent = a root.
     pub const PARENT: u32 = 2;
 }
-
-// -----------------------------------------------------------------------------
-// `SessionId` tagged union — ADR-0007 §3
-// -----------------------------------------------------------------------------
-
-/// `SessionId::Local` tag.
-pub const SESSION_ID_TAG_LOCAL: u32 = 0;
-/// `SessionId::Satellite` tag (reserved for v0.2+; decoders MUST reject).
-pub const SESSION_ID_TAG_SATELLITE: u32 = 1;
-
-// The `ResourceId` wire-side tag bytes (`u8`) live in `crate::ids` alongside the
-// [`ResourceId`](crate::ids::ResourceId) definition — ADR-0016 §Decision.

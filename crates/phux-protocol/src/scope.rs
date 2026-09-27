@@ -801,22 +801,11 @@ impl EffectiveScopeSet {
     /// Whether some clause carries `verb` and both of its selectors contain
     /// the subject, as `contains` decides against the live topology.
     ///
-    /// A held verb is admitted here: the question is whether the grant
-    /// reaches the subject at all. [`Self::admits_unheld`] asks whether it
-    /// reaches it without a decision (ADR-0128).
+    /// A held verb is admitted here; `without_holds().admits(..)` asks
+    /// whether it reaches the subject without a decision (ADR-0128).
     pub fn admits(&self, verb: Verb, contains: impl Fn(&Selector) -> bool) -> bool {
         self.clauses.iter().any(|clause| {
             clause.verbs.contains(verb) && contains(&clause.requested) && contains(&clause.ceiling)
-        })
-    }
-
-    /// Whether some clause carries `verb` un-held and both of its selectors
-    /// contain the subject: the verb needs no approval there.
-    pub fn admits_unheld(&self, verb: Verb, contains: impl Fn(&Selector) -> bool) -> bool {
-        self.clauses.iter().any(|clause| {
-            unheld(clause.verbs, clause.held).contains(verb)
-                && contains(&clause.requested)
-                && contains(&clause.ceiling)
         })
     }
 
