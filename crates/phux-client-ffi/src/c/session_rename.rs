@@ -1,26 +1,11 @@
-//! Rename a session on the server this client is connected to
-//! (`phux.session.name/v1`, `docs/spec/L3.md` section 3.1).
+//! Rename a session on the connected server (`phux.session.name/v1`,
+//! `docs/spec/L3.md` section 3.1), with the shared `phux_client_core::rename`
+//! policy: judge against the latest session list, send `SET_METADATA`
+//! (`current\0new`), then a `GET_STATE` barrier whose answer is the outcome.
 //!
-//! A rename is a `SET_METADATA` of the conventional key with the value
-//! `current\0new`. The server applies it to its registry and broadcasts the
-//! applied value as `METADATA_CHANGED` to subscribers of the key; a refused
-//! or no-op rename broadcasts nothing, and `SET_METADATA` has no reply. So
-//! the bridge does what `phux rename` does: it judges the request against the
-//! latest session list first (an unknown session or a name another session
-//! holds is refused here, with a reason), then sends the write, then a
-//! `GET_STATE` as an ordering barrier. Frames are ordered on one connection,
-//! so once that read is answered the write has been applied or refused: the
-//! answer names the outcome even if no `METADATA_CHANGED` arrives.
-//!
-//! The first rename on a client subscribes to the key, so this client hears
-//! its own rename and every later one on that server, and applies each to
-//! the session list in place. A client that asks to follow renames
-//! (`phux_client_follow_session_names`) subscribes as soon as `HELLO_OK` is
-//! applied instead, so renames other clients make reach its list before it
-//! has renamed anything. Neither a listing nor an attached client needs to
-//! attach anything for this: the subscription is read-only and a rename
-//! writes metadata; neither sizes anything. The server delivers
-//! `METADATA_CHANGED` to a subscriber that never attached.
+//! The first rename subscribes to the key so this client applies every
+//! later rename to its session list; `phux_client_follow_session_names`
+//! subscribes at `HELLO_OK` instead. No attach is needed for either.
 #![allow(
     clippy::redundant_pub_crate,
     reason = "private module shared by the bridge dispatcher and Client"

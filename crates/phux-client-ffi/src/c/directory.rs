@@ -1,21 +1,10 @@
 //! Host directory listing over `LIST_DIRECTORY` / `DIRECTORY_LISTING`
-//! (`docs/spec/L3.md` section 4, feature bit `LIST_DIRECTORY` 0x00008000).
+//! (`docs/spec/L3.md` section 4).
 //!
-//! A go-to-directory picker asks the serving server for one directory's child
-//! directories and waits for the correlated reply. The client keeps exactly
-//! one listing: a new request replaces the previous one, and a reply that
-//! answers anything but the latest request is dropped. That is how a picker
-//! that was cancelled, or moved on to another directory, never sees a late
-//! answer: the embedder simply issues its next request (or none), and the
-//! stale `DIRECTORY_LISTING` falls on the floor here rather than surfacing as
-//! a protocol error, because a reply outliving the request that asked for it
-//! is ordinary.
-//!
-//! Request IDs share the embedder's strictly increasing host request space
-//! (spawn, subscribe, workspace refresh and mutation), so one ledger serves
-//! every correlated request. The frame carries no terminal identity, so it is
-//! answered by whichever server this client is connected to: a local
-//! coordinator or a registered remote host alike.
+//! The client keeps exactly one listing: a new request replaces it, and a
+//! reply to anything but the latest request is dropped as ordinary, so a
+//! cancelled picker never sees a late answer. Request IDs share the
+//! embedder's increasing host request space.
 #![allow(
     clippy::redundant_pub_crate,
     reason = "private module shared by the bridge dispatcher and Client"

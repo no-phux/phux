@@ -1,18 +1,10 @@
 //! Connected mode: the runtime owns the socket (ADR-0133).
 //!
-//! `phux_client_new` builds the historical embedded lane, where the
-//! embedder dials, reconnects, and pumps frames itself.
-//! [`phux_client_connect`] builds the connected lane instead: the runtime's
-//! driver resolves the target under the CLI's trust rules, dials, walks the
-//! reconnect ladder, and reads and writes the socket on its own thread.
-//!
-//! The decode point does not move. This ABI's per-frame hooks read
-//! workspace-subscription state that only the owning thread may touch, so a
-//! connected driver retains inbound frames
-//! ([`InboundDelivery::Queued`](phux_client_runtime::control::InboundDelivery::Queued))
-//! and [`phux_client_poll`] feeds them from the owning thread, through the
-//! same path `phux_client_feed_frame` uses. What an embedder sheds is the
-//! dialer, the ladder, and the framing, not the frame semantics.
+//! [`phux_client_connect`] lets the runtime resolve, dial, reconnect and do
+//! the socket I/O; `phux_client_new` remains the embedded lane where the
+//! embedder does. Inbound frames are still decoded on the owning thread:
+//! the driver queues them and [`phux_client_poll`] feeds them through the
+//! same path as `phux_client_feed_frame`.
 
 use std::ffi::c_void;
 use std::mem;

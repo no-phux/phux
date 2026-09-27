@@ -3,17 +3,10 @@
     reason = "wire records intentionally share the parent UniFFI enum namespace"
 )]
 
-//! The Swift/Kotlin-facing records, and the lowering from
-//! [`crate::projection`] that fills them.
-//!
-//! Every type here is a mirror of a projected value, kept because the foreign
-//! names are a published surface: renaming `SessionTopology` to the
-//! projection's `SessionGraph` would rewrite generated Swift for no product
-//! reason. `UniFFI` 0.28's `remote` derives only reach types in *other* crates,
-//! so they cannot remove these mirrors without putting `uniffi` derives into
-//! the binding-neutral layer — which is exactly what ADR-0135 forbids. The
-//! mirrors are therefore `From` impls and nothing else: no decision is taken
-//! twice, only spelled twice.
+//! The Swift/Kotlin-facing records and their lowering from
+//! [`crate::projection`]. They mirror projected values because the foreign
+//! names are a published surface, and `uniffi` derives may not enter the
+//! binding-neutral layer (ADR-0135); the mirrors are `From` impls only.
 
 use super::*;
 

@@ -1,21 +1,10 @@
-//! Key input mapping — Swift keypresses to wire `KeyEvent`s.
-//!
-//! The native edition of `clients/phux-web/src/client.rs`'s browser mapping
-//! (`key_event_from_browser` + `code_to_physical_key`): Swift reports what the
-//! user pressed — a layout-resolved character or a named key, plus held
-//! modifiers — and this module builds the layout-independent wire `KeyEvent`.
-//! The mapping lives here, not in Swift, so the `PhysicalKey`/`ModSet`
-//! discriminants stay pinned to the `phux-protocol` source of truth and are
-//! unit-testable with plain `cargo test` (no Xcode, no zig).
-//!
-//! Mirrored phux-web rules:
-//! - every press is `KeyAction::Press` (the browser client sends no
-//!   Release/Repeat either);
-//! - `text` is carried only for printable presses without Ctrl/Meta — the
-//!   server's encoder derives control bytes from `key + mods`;
-//! - `text` never contains C0 control characters (the wire forbids them);
-//!   control characters in typed text are routed to named keys or Ctrl+letter.
+//! Key input mapping: Swift keypresses to wire `KeyEvent`s, with phux-web's
+//! rules. Every event is a `Press`; `text` rides only on printable presses
+//! without Ctrl/Meta (the server derives control bytes from `key + mods`).
+//! Character-to-key mapping is the runtime's
+//! [`physical_key_for_char`](phux_client_runtime::control::keys::physical_key_for_char).
 
+use phux_client_runtime::control::keys::physical_key_for_char;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
 /// What the user pressed, as Swift reports it.
@@ -131,94 +120,6 @@ pub(crate) fn key_event(press: &KeyPress, mods: KeyMods) -> KeyEvent {
     }
 }
 
-/// Split typed text (the line-compose commit path) into per-key presses.
-/// Control characters become named keys or Ctrl+letter chords — the wire
-/// forbids C0 bytes in `text`. Unmappable C0/PUA codes are dropped.
-#[cfg(test)]
-pub(crate) fn presses_for_text(text: &str) -> Vec<(KeyPress, KeyMods)> {
-    text.chars()
-        .filter_map(|ch| match ch {
-            '\r' | '\n' => Some((named(NamedKey::Enter), KeyMods::default())),
-            '\t' => Some((named(NamedKey::Tab), KeyMods::default())),
-            '\u{8}' | '\u{7f}' => Some((named(NamedKey::Backspace), KeyMods::default())),
-            '\u{1b}' => Some((named(NamedKey::Escape), KeyMods::default())),
-            // Remaining C0 controls 0x01..=0x1A are Ctrl+letter (0x03 = Ctrl-C).
-            '\u{1}'..='\u{1a}' => {
-                let letter = char::from(b'a' + (ch as u8 - 1));
-                Some((
-                    KeyPress::Character {
-                        text: letter.to_string(),
-                    },
-                    KeyMods {
-                        ctrl: true,
-                        ..KeyMods::default()
-                    },
-                ))
-            }
-            // Other C0 (0x00, 0x1C..=0x1F) and PUA function codes: drop.
-            c if (c as u32) < 0x20 || (0xF700..=0xF8FF).contains(&(c as u32)) => None,
-            c => Some((
-                KeyPress::Character {
-                    text: c.to_string(),
-                },
-                KeyMods::default(),
-            )),
-        })
-        .collect()
-}
-
-#[cfg(test)]
-fn named(key: NamedKey) -> KeyPress {
-    KeyPress::Named { key }
-}
-
-/// Physical key for a layout-resolved character, US-layout best effort
-/// (phux-web parity: letters/digits arithmetic, punctuation by name). Shifted
-/// symbols map to their base key; the produced character travels in `text`,
-/// so the server never has to re-derive it from key + mods. Unknown characters
-/// fall back to `Unidentified` — the server still gets them via `text`.
-fn physical_key_for_char(ch: char) -> PhysicalKey {
-    use PhysicalKey as K;
-    match ch {
-        'a'..='z' => letter_key(ch as u32 - 'a' as u32),
-        'A'..='Z' => letter_key(ch as u32 - 'A' as u32),
-        '0'..='9' => digit_key(ch as u32 - '0' as u32),
-        ' ' => K::Space,
-        '-' | '_' => K::Minus,
-        '=' | '+' => K::Equal,
-        '[' | '{' => K::BracketLeft,
-        ']' | '}' => K::BracketRight,
-        '\\' | '|' => K::Backslash,
-        ';' | ':' => K::Semicolon,
-        '\'' | '"' => K::Quote,
-        ',' | '<' => K::Comma,
-        '.' | '>' => K::Period,
-        '/' | '?' => K::Slash,
-        '`' | '~' => K::Backquote,
-        '!' => K::Digit1,
-        '@' => K::Digit2,
-        '#' => K::Digit3,
-        '$' => K::Digit4,
-        '%' => K::Digit5,
-        '^' => K::Digit6,
-        '&' => K::Digit7,
-        '*' => K::Digit8,
-        '(' => K::Digit9,
-        ')' => K::Digit0,
-        _ => K::Unidentified,
-    }
-}
-
-/// `A = 20` .. `Z = 45` (phux-protocol discriminants, ADR-0024).
-fn letter_key(offset: u32) -> PhysicalKey {
-    PhysicalKey::try_from(20 + offset).unwrap_or(PhysicalKey::Unidentified)
-}
-
-/// `Digit0 = 6` .. `Digit9 = 15`.
-fn digit_key(offset: u32) -> PhysicalKey {
-    PhysicalKey::try_from(6 + offset).unwrap_or(PhysicalKey::Unidentified)
-}
-
 fn physical_key_for_named(key: NamedKey) -> PhysicalKey {
     use PhysicalKey as K;
     match key {
@@ -257,6 +158,10 @@ mod tests {
 
     fn event(press: KeyPress, mods: KeyMods) -> KeyEvent {
         key_event(&press, mods)
+    }
+
+    fn named(key: NamedKey) -> KeyPress {
+        KeyPress::Named { key }
     }
 
     fn ch(s: &str) -> KeyPress {
@@ -353,41 +258,5 @@ mod tests {
         );
         assert!(e.mods.contains(ModSet::ALT));
         assert_eq!(e.key, PhysicalKey::ArrowLeft);
-    }
-
-    #[test]
-    fn typed_text_routes_control_chars_to_named_keys() {
-        let presses = presses_for_text("ls\r");
-        assert_eq!(presses.len(), 3);
-        assert_eq!(presses[0].0, ch("l"));
-        assert_eq!(presses[1].0, ch("s"));
-        assert_eq!(presses[2].0, named(NamedKey::Enter));
-
-        // No press in the commit path may carry a C0 byte in text.
-        for (press, mods) in presses_for_text("a\tb\u{8}c\u{1b}\n") {
-            let e = key_event(&press, mods);
-            if let Some(text) = &e.text {
-                assert!(
-                    text.chars().all(|c| c as u32 >= 0x20 && c as u32 != 0x7f),
-                    "C0 leaked into text: {text:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn typed_control_bytes_become_ctrl_chords() {
-        // A raw 0x03 (Ctrl-C) typed/pasted into the stream.
-        let presses = presses_for_text("\u{3}");
-        assert_eq!(presses.len(), 1);
-        let e = key_event(&presses[0].0, presses[0].1);
-        assert_eq!(e.key, PhysicalKey::C);
-        assert!(e.mods.contains(ModSet::CTRL));
-        assert_eq!(e.text, None);
-    }
-
-    #[test]
-    fn unmappable_controls_are_dropped() {
-        assert!(presses_for_text("\u{0}\u{1c}\u{f700}").is_empty());
     }
 }
