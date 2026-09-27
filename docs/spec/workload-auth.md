@@ -18,7 +18,7 @@ document previously specified; the authorization half stands.)
 
 ---
 
-<!-- impl-status: shipped; probe: WorkloadRegistry,enroll_client,credential_id,ReloadingWorkloadRegistry,prepare_enrollment,WorkloadAction,ScopedPolicy,enforce,revoke_connection -->
+<!-- impl-status: shipped; probe: WorkloadRegistry,credential_id,ReloadingWorkloadRegistry,prepare_enrollment,WorkloadAction,ScopedPolicy,enforce,revoke_connection -->
 > **Status: shipped.** The persisted workload CA, client enrollment,
 > credential-id derivation, and the scope registry are implemented in
 > `phux_server::workload`; the §5 scope types and registry grammar in
