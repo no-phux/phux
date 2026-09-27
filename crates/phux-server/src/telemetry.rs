@@ -92,7 +92,6 @@ const LOG_ROTATE_MAX_GENERATIONS: usize = 4;
 /// How often [`run_log_rotation_task`] checks the server log's size.
 const LOG_ROTATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
-
 /// The path of the `n`th rotated generation of `base`: `base.1`, `base.2`, …
 fn generation_path(base: &Path, n: usize) -> PathBuf {
     let mut path = base.as_os_str().to_owned();
@@ -570,7 +569,6 @@ mod tests {
             & 0o777;
         assert_eq!(mode, 0o600, "re-hardened sink mode was {mode:o}");
     }
-
 
     /// The shift plan runs highest generation first and stops at the cap.
     #[test]
