@@ -7,7 +7,7 @@
 
 use phux_client_runtime::control::{
     DeliveryOutcome, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,
-    TranscribeOutcome, TranscribeReceipt,
+    PathAnswer, PathFailure, PathMatchKind, PathSearchStatus, TranscribeOutcome, TranscribeReceipt,
 };
 
 /// How one acknowledged input operation ended.
@@ -138,6 +138,93 @@ pub struct Directory {
     pub message: String,
 }
 
+/// Filesystem kind of a host path match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    File,
+    Directory,
+    Symlink,
+}
+
+/// Whether the search is exhaustive, warming, or capped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathStatus {
+    Complete,
+    Warming,
+    Truncated,
+}
+
+/// Typed server refusal or connection cancellation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathError {
+    NotFound,
+    PermissionDenied,
+    NotADirectory,
+    Other,
+    Unanswered,
+}
+
+/// A matched absolute path, not a shell-escaped input sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathRow {
+    pub path: String,
+    pub kind: PathKind,
+}
+
+/// One correlated path answer for a host or satellite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathResult {
+    /// Request correlation.
+    pub request_id: u32,
+    /// Absolute resolved root or attempted root on refusal.
+    pub root: String,
+    /// Lexical parent of the root, absent at filesystem root.
+    pub parent: Option<String>,
+    /// Absolute path matches.
+    pub rows: Vec<PathRow>,
+    /// Completeness, absent on refusal.
+    pub status: Option<PathStatus>,
+    /// Refusal, absent on success.
+    pub error: Option<PathError>,
+    /// Display-only diagnostic.
+    pub message: String,
+}
+
+/// Project a host path result once for all language bindings.
+#[must_use]
+pub fn path_result(answer: PathAnswer) -> PathResult {
+    PathResult {
+        request_id: answer.request_id,
+        root: answer.root,
+        parent: answer.parent,
+        rows: answer
+            .rows
+            .into_iter()
+            .map(|row| PathRow {
+                path: row.path,
+                kind: match row.kind {
+                    PathMatchKind::File => PathKind::File,
+                    PathMatchKind::Directory => PathKind::Directory,
+                    PathMatchKind::Symlink => PathKind::Symlink,
+                },
+            })
+            .collect(),
+        status: answer.status.map(|status| match status {
+            PathSearchStatus::Complete => PathStatus::Complete,
+            PathSearchStatus::Warming => PathStatus::Warming,
+            PathSearchStatus::Truncated => PathStatus::Truncated,
+        }),
+        error: answer.failure.map(|failure| match failure {
+            PathFailure::NotFound => PathError::NotFound,
+            PathFailure::PermissionDenied => PathError::PermissionDenied,
+            PathFailure::NotADirectory => PathError::NotADirectory,
+            PathFailure::Other => PathError::Other,
+            PathFailure::Unanswered => PathError::Unanswered,
+        }),
+        message: answer.message,
+    }
+}
+
 /// Name one acknowledged-input outcome.
 #[must_use]
 pub const fn delivery(outcome: DeliveryOutcome) -> Delivery {
@@ -235,8 +322,40 @@ mod tests {
     };
     use phux_client_runtime::control::{
         DeliveryOutcome, DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome,
-        FileUploadReceipt, TranscribeOutcome, TranscribeReceipt,
+        FileUploadReceipt, PathAnswer, PathFailure, PathMatch, PathMatchKind, PathSearchStatus,
+        TranscribeOutcome, TranscribeReceipt,
     };
+
+    #[test]
+    fn path_projection_preserves_kind_status_and_cancellation() {
+        let answer = super::path_result(PathAnswer {
+            request_id: 17,
+            root: "/root".into(),
+            parent: Some("/".into()),
+            rows: vec![PathMatch {
+                path: "/root/a b".into(),
+                kind: PathMatchKind::Symlink,
+            }],
+            status: Some(PathSearchStatus::Truncated),
+            failure: None,
+            message: String::new(),
+        });
+        assert_eq!(answer.rows[0].path, "/root/a b");
+        assert_eq!(answer.rows[0].kind, super::PathKind::Symlink);
+        assert_eq!(answer.status, Some(super::PathStatus::Truncated));
+        assert_eq!(answer.error, None);
+        let cancelled = super::path_result(PathAnswer {
+            request_id: 18,
+            root: "/root".into(),
+            parent: None,
+            rows: Vec::new(),
+            status: None,
+            failure: Some(PathFailure::Unanswered),
+            message: "disconnected".into(),
+        });
+        assert_eq!(cancelled.error, Some(super::PathError::Unanswered));
+        assert_eq!(cancelled.status, None);
+    }
 
     #[test]
     fn the_three_input_outcomes_map_one_for_one() {

@@ -6,9 +6,9 @@ use std::sync::Arc;
 use super::{
     AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, ControlError,
     ControlPlane, DetachReason, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event,
-    FrameKind, HashSet, LayerSet, Pending, ResourceId, ResourceKind, ServerFeature,
-    ServerFeatureSet, ServerInfo, SessionSnapshot, SpawnResult, StateScope, Status, Topology,
-    ViewportInfo, topology, validate_hello_ok,
+    FrameKind, HashSet, Pending, ResourceId, ResourceKind, ServerFeature, ServerInfo,
+    SessionSnapshot, SpawnResult, StateScope, Status, Topology, ViewportInfo, topology,
+    validate_hello_ok,
 };
 
 impl ControlPlane {
@@ -18,8 +18,7 @@ impl ControlPlane {
         &mut self,
         protocol: (u16, u16, u16),
         server_id: &[u8],
-        features: ServerFeatureSet,
-        layers: LayerSet,
+        server_caps: phux_protocol::caps::ServerCapabilities,
         profile: BootstrapProfile,
         limits: BootstrapLimits,
     ) -> Result<(), ControlError> {
@@ -43,8 +42,9 @@ impl ControlPlane {
         self.requalify_attach_target(server_id)?;
         self.server = Some(ServerInfo {
             id: server_id.to_vec(),
-            features,
-            layers,
+            features: server_caps.features,
+            features_ext: server_caps.features_ext,
+            layers: server_caps.layers,
             protocol,
             profile,
             limits,
@@ -52,7 +52,9 @@ impl ControlPlane {
         self.ensure_engine(profile, limits)?;
         self.handshake_ready = true;
         self.set_status(Status::Negotiated);
-        let replay_supported = features.contains(ServerFeature::AcknowledgedInput);
+        let replay_supported = server_caps
+            .features
+            .contains(ServerFeature::AcknowledgedInput);
         let now_ms = self.now_ms();
         let reports =
             self.input_replay
@@ -287,6 +289,9 @@ impl ControlPlane {
         code: ErrorCode,
         message: String,
     ) -> Result<(), ControlError> {
+        if code != ErrorCode::VersionIncompatible && self.resolve_path_error(request_id, &message) {
+            return Ok(());
+        }
         let rendered = format!("server error {code:?}: {message}");
         // ATTACH uses attach_id, not the command request_id namespace. Its
         // refusals are uncorrelated; a correlated error belongs to a command,

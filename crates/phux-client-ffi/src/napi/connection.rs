@@ -58,6 +58,8 @@ pub struct DesktopServerInfo {
     pub profile: DesktopBootstrapProfile,
     /// Full advertised feature set, preserving bits without a product name.
     pub feature_bits: u32,
+    /// Advertised extended feature word; `PATH_QUERY` is bit zero.
+    pub feature_ext_bits: u32,
     /// The shared projection's named product capabilities.
     pub features: Vec<String>,
     pub layer_bits: u8,
@@ -72,6 +74,7 @@ fn encode_server(server: &ServerInfo, epoch: u64) -> Result<DesktopServerInfo> {
         protocol: status::protocol_version(server),
         profile: server.profile.try_into()?,
         feature_bits: server.features.as_wire(),
+        feature_ext_bits: server.features_ext.as_wire(),
         features: status::negotiated_features(server),
         layer_bits: server.layers.as_wire(),
         max_chunk_bytes: server.limits.max_chunk_bytes(),
@@ -118,13 +121,14 @@ pub(super) fn require_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_protocol::caps::{BootstrapLimits, LayerSet, ServerFeatureSet};
+    use phux_protocol::caps::{BootstrapLimits, LayerSet, ServerFeatureExtSet, ServerFeatureSet};
 
     #[test]
     fn non_utf8_incarnation_and_high_epoch_are_lossless() {
         let server = ServerInfo {
             id: vec![0, 0xff, 0x80, 0x0a],
             features: ServerFeatureSet::default(),
+            features_ext: ServerFeatureExtSet::new(),
             layers: LayerSet::all(),
             protocol: (1, 2, 3),
             profile: BootstrapProfile::SynthesizedVtRaw,
@@ -135,6 +139,7 @@ mod tests {
         assert_eq!(dto.connection_epoch, "18446744073709551615");
         assert_eq!(dto.protocol, "1.2.3");
         assert_eq!(dto.layer_bits, server.layers.as_wire());
+        assert_eq!(dto.feature_ext_bits, 0);
         assert!(matches!(
             dto.profile,
             DesktopBootstrapProfile::SynthesizedVtRaw {}

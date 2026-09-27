@@ -229,6 +229,41 @@ impl RemoteClient {
             .unwrap_or_default()
     }
 
+    /// Browse immediate children when `recursive` is false; search beneath
+    /// `root` when true. `host` names a satellite; `None` uses the serving
+    /// host. Zero means unavailable or capacity exhausted, with no request
+    /// sent. Results are paths, not text to paste into a focused pane.
+    pub fn path_query(
+        &self,
+        root: String,
+        query: String,
+        recursive: bool,
+        host: Option<String>,
+    ) -> u32 {
+        self.runtime_client().map_or(0, |client| {
+            client.path_query(
+                root,
+                query,
+                recursive,
+                host.filter(|name| !name.is_empty())
+                    .map(phux_protocol::ids::SatelliteHost::new),
+            )
+        })
+    }
+
+    /// Drain correlated answers and disconnect cancellations.
+    pub fn take_path_answers(&self) -> Vec<WirePathAnswer> {
+        self.runtime_client()
+            .map(|client| {
+                client
+                    .take_path_answers()
+                    .into_iter()
+                    .map(|answer| outcome::path_result(answer).into())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn kill_terminal(&self, terminal_id: String) {
         let _ = self.with_terminal(&terminal_id, Client::kill_terminal);
     }
