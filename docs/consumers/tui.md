@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-23
+last-reviewed: 2026-09-27
 ---
 
 # The phux reference TUI
@@ -407,10 +407,23 @@ Overflow is a `+N` row that opens the fleet dashboard.
 > `RESOURCE_KINDS` have no session stream; `phux status --json` is the
 > check. An agent session never earns a row of its own.
 
-**Sessions** lists every known session on this server, then
-host-qualified satellite sessions. The current session expands its
-windows. A satellite session shows a pane count and `?`, because its
-per-terminal metadata is not subscribable from here.
+**Sessions** is grouped by machine. Each machine gets a header row with
+its sessions beneath it. The machine this terminal is attached to comes
+first, marked `here`. The current session expands its windows. Next come
+host-qualified satellite sessions, if this server is a hub. Each satellite
+session shows a pane count and `?`, because its per-terminal metadata is
+not subscribable from here. Last come your other machines: this one, when
+you are attached somewhere else, and every host in `phux host ls`. A
+machine that did not answer is marked `down`.
+
+Clicking a session on another machine commits `switch-host`. That detaches
+and re-attaches this terminal there, the same as running
+`phux attach --remote HOST SESSION`. Other machines are re-listed every
+`[sidebar] hosts-refresh-secs` (default 10) by a *hosts provider*: a command
+that prints the `phux.hosts/v1` document. The default provider is
+`phux ls --all --json`. Set `[sidebar] hosts-provider = ["cmd", "arg"]` to
+supply your own, or `hosts = false` to list only the attached server
+([ADR-0140](../adr/0140-sidebar-machines-come-from-a-hosts-provider.md)).
 
 Click targets commit the same actions as keys. The **Agents** and **Sessions**
 headings open their full management views; window and roster rows select their

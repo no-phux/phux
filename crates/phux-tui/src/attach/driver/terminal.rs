@@ -451,6 +451,15 @@ fn write_terminal_reset_and_finalize<W: Write>(
     }
 }
 
+/// Put the outer terminal back to cooked mode and the primary screen for a
+/// process hand-off (`switch-host` execs `phux attach`), the same restore a
+/// detach performs, without exiting.
+pub(super) fn restore_terminal_for_handoff() {
+    restore_terminal_termios();
+    let mut stdout = io::stdout().lock();
+    write_terminal_reset_and_finalize(&mut stdout, None);
+}
+
 /// Clean client exit after a server-acknowledged DETACH (or a
 /// detach-intended disconnect). Restores the terminal and exits the
 /// process immediately rather than returning up the stack.

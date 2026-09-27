@@ -1,6 +1,5 @@
 ---
 source: crates/phux-tui/src/render/chrome/sidebar.rs
-assertion_line: 2575
 expression: "strip_text(&p, rect)"
 ---
  Agents                1 │
@@ -8,8 +7,8 @@ expression: "strip_text(&p, rect)"
                          │
                          │
  Sessions              2 │
+ mini               here │
  ○ development           │
-   mini                  │
    ● phux           main │
  +1 sessions, +1 windows │
  + new window            ‹

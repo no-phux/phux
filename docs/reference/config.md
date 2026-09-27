@@ -69,6 +69,8 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `limits.metadata-value-bytes` | `262144` |
 | `policy.mode` | unset — transitional: every admitted connection holds the owner's full grant, and a remote listener is warned about at startup. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
 | `sidebar.enabled` | `true` |
+| `sidebar.hosts` | `true` |
+| `sidebar.hosts-refresh-secs` | `10` |
 | `sidebar.position` | `"left"` |
 | `sidebar.width` | `0` |
 | `status.position` | `"top"` |

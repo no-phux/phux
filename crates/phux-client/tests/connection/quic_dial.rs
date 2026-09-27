@@ -253,7 +253,11 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         assert!(conn.multistream_enabled());
+        // A Terminal a persisted layout names before its attach is confirmed
+        // has no stream: callers must be able to ask before sending to it.
+        assert!(!conn.can_route_terminal(&terminal_id));
         conn.bind_terminal(&terminal_id).await.expect("bind");
+        assert!(conn.can_route_terminal(&terminal_id));
         conn.send(&from_client)
             .await
             .expect("send on Terminal stream");
@@ -272,6 +276,9 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
         conn.send(&FrameKind::Ping { nonce: 5 })
             .await
             .expect("control stays live");
+        // An ended stream stays routable: its frames are dropped, not refused.
+        assert!(conn.can_route_terminal(&terminal_id));
+        assert!(!conn.can_route_terminal(&ResourceId::local(10)));
         // A Terminal never bound is still a caller bug.
         let error = conn
             .send(&FrameKind::FrameAck {

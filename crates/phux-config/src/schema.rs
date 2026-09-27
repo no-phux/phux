@@ -814,6 +814,23 @@ pub struct SidebarCfg {
     /// Which edge the sidebar docks to. Default `left`.
     #[serde(default)]
     pub position: SidebarPosition,
+    /// Segment the Sessions area by machine (ADR-0140). Default `true`.
+    ///
+    /// The attached server's sessions are always shown live. The other
+    /// machines (this one, when attached to a remote, and every `[[remote]]`
+    /// host) come from a *hosts provider*: a command that prints the
+    /// `phux.hosts/v1` document, re-run every `hosts-refresh-secs`. `false`
+    /// lists only the attached server's sessions and runs no provider.
+    #[serde(default = "default_sidebar_enabled")]
+    pub hosts: bool,
+    /// Hosts provider argv. Empty (the default) runs this binary's own
+    /// `ls --all --json`; any command printing the same shape replaces it,
+    /// which is the same seam a plugin uses.
+    #[serde(default, rename = "hosts-provider")]
+    pub hosts_provider: Vec<String>,
+    /// Seconds between hosts provider runs. Default `10`; at least 2.
+    #[serde(default = "default_hosts_refresh_secs", rename = "hosts-refresh-secs")]
+    pub hosts_refresh_secs: u64,
 }
 
 impl Default for SidebarCfg {
@@ -822,8 +839,15 @@ impl Default for SidebarCfg {
             enabled: default_sidebar_enabled(),
             width: default_sidebar_width(),
             position: SidebarPosition::default(),
+            hosts: default_sidebar_enabled(),
+            hosts_provider: Vec::new(),
+            hosts_refresh_secs: default_hosts_refresh_secs(),
         }
     }
+}
+
+const fn default_hosts_refresh_secs() -> u64 {
+    10
 }
 
 const fn default_sidebar_enabled() -> bool {

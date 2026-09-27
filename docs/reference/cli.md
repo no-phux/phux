@@ -1739,9 +1739,10 @@ List sessions
 Queries the running server and prints one line per session. Does not start a
 server: with no server running it reports as much and exits non-zero (like `tmux
 ls`). Pass `--json` for the stable, versioned machine shape instead of the human
-text.
+text. `--all` lists every machine at once: this one and each registered host,
+grouped by machine.
 
-Usage: phux ls [--json] [--remote <[USER@]HOST[:PORT]>]
+Usage: phux ls [FLAGS]
 
 Flags:
       --json                      Emit stable, versioned JSON on stdout instead
@@ -1759,6 +1760,13 @@ Flags:
                                   instead, naming the remedies). PORT
                                   defaults to 8788. Cannot combine with
                                   `--socket`.
+  -a, --all                       List this machine and every registered host
+                                  (`phux host ls`), grouped by machine. Hosts
+                                  are queried at once with a short deadline; one
+                                  that does not answer is listed as unreachable
+                                  instead of failing the listing. With `--json`
+                                  the document is `phux.hosts/v1`, the shape the
+                                  TUI sidebar's hosts provider reads.
   -h, --help                      Print help
 
 Global flags:

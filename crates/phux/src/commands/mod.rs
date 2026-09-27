@@ -676,7 +676,8 @@ pub(crate) enum Command {
     /// Queries the running server and prints one line per session. Does not
     /// start a server: with no server running it reports as much and exits
     /// non-zero (like `tmux ls`). Pass `--json` for the stable, versioned
-    /// machine shape instead of the human text.
+    /// machine shape instead of the human text. `--all` lists every machine
+    /// at once: this one and each registered host, grouped by machine.
     #[usage(alias = "list")]
     #[usage(help_heading = "Sessions", display_order = 12)]
     Ls {
@@ -685,6 +686,14 @@ pub(crate) enum Command {
 
         #[usage(flatten)]
         remote: RemoteOpt,
+
+        /// List this machine and every registered host (`phux host ls`),
+        /// grouped by machine. Hosts are queried at once with a short
+        /// deadline; one that does not answer is listed as unreachable
+        /// instead of failing the listing. With `--json` the document is
+        /// `phux.hosts/v1`, the shape the TUI sidebar's hosts provider reads.
+        #[usage(short = 'a', long, conflicts("--remote"))]
+        all: bool,
     },
 
     /// Report who this connection is to the server

@@ -103,6 +103,7 @@ pub(super) struct CtxFixture {
     pub(super) plugin_actions: Vec<PluginActionEntry>,
     pub(super) plugin_panes: Vec<PluginPaneEntry>,
     pub(super) reload_request: bool,
+    pub(super) host_switch_request: Option<(String, String)>,
     pub(super) agent_meta: HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     pub(super) vcs: VcsIndex,
     /// The table `ctx()` lends, resolved from [`Self::sidebar_targets`].
@@ -156,6 +157,7 @@ impl Default for CtxFixture {
             plugin_actions: Vec::new(),
             plugin_panes: Vec::new(),
             reload_request: false,
+            host_switch_request: None,
             agent_meta: HashMap::new(),
             vcs: VcsIndex::default(),
             painted_targets: SidebarTargets::default(),
@@ -219,6 +221,7 @@ impl CtxFixture {
             plugin_panes: &self.plugin_panes,
             plugin_tx: None,
             reload_request: &mut self.reload_request,
+            host_switch_request: &mut self.host_switch_request,
             agent_meta: &self.agent_meta,
             vcs: &mut self.vcs,
         }
@@ -286,6 +289,7 @@ pub(super) fn targets(
             windows,
             roster,
             active_session: (windows > 0 && roster > 0).then_some(0),
+            host_starts: (0..roster.min(128)).fold(0, |mask, j| mask | (1u128 << j)),
             rule: crate::render::chrome::sidebar::SidebarRule::Trailing,
         },
         needs_you: (0..needs_you)
@@ -311,6 +315,7 @@ pub(super) fn targets(
                     name: format!("space-{j}"),
                     id: None,
                     host: None,
+                    switch_host: None,
                 })
             })
             .collect(),

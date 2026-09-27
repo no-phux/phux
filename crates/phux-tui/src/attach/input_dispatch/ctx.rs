@@ -296,6 +296,11 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// inside dispatch because the resolver/theme/keybindings borrows in
     /// this ctx ARE the state being replaced.
     pub reload_request: &'a mut bool,
+    /// ADR-0140: out-channel for a dispatched `switch-host`, as
+    /// `(host, session)`. The driver reads it after the batch, detaches, and
+    /// hands the terminal to `phux attach` on that machine; dispatch cannot
+    /// do it because the terminal it would restore belongs to the driver.
+    pub host_switch_request: &'a mut Option<(String, String)>,
     /// phux-foz.7 / ADR-0040: the driver's decoded `phux.agent/v1` records
     /// (`AgentMetaIndex::records`), kept live by the per-pane metadata
     /// subscriptions. The `agent-fleet` action projects them into the

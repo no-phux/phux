@@ -210,6 +210,10 @@ pub struct SessionRosterEntry {
     pub active: bool,
     /// Satellite name for the `switch-session` host argument, if required.
     pub route_host: Option<String>,
+    /// ADR-0140: the machine (`phux.hosts/v1` row name) a click re-attaches
+    /// to with `switch-host`, for a session on another machine. `None` for
+    /// the attached server's sessions and a hub's satellites.
+    pub switch_host: Option<String>,
     /// False for unreachable-host placeholders; actual sessions are selectable.
     pub selectable: bool,
     /// Panes on the top rung: blocked, or explicitly asking for a human.
@@ -274,6 +278,11 @@ pub struct SidebarCounts {
     pub roster: usize,
     /// Roster index whose windows expand, or None when there is no active entry.
     pub active_session: Option<usize>,
+    /// ADR-0140: bit `j` is set when roster entry `j` opens a machine
+    /// segment (its host differs from entry `j - 1`'s), so a host header row
+    /// precedes it. A bitmask keeps the shape `Copy`; entries past the 128th
+    /// open no segment, which a strip never has the rows to show anyway.
+    pub host_starts: u128,
     /// Which column carries the separator rule. Part of the shape because
     /// it moves every hit target: the rule and its collapse chevron are not
     /// row targets, and the rows shift away from a leading rule.
@@ -328,7 +337,9 @@ pub enum SidebarRow {
     SpacesHeader,
     /// Roster entry `j`'s row (dot + session name + state histogram).
     RosterEntry(usize),
-    /// Secondary serving-host identity; shares the session name's target.
+    /// ADR-0140: the machine segment header opening at roster entry `j`
+    /// (host label, and `here` for the attached machine); shares entry
+    /// `j`'s target.
     RosterHost(usize),
     /// Quiet placeholder beneath the Sessions header.
     SessionsEmpty,
@@ -417,6 +428,9 @@ pub struct SessionRosterTarget {
     pub id: Option<SessionId>,
     /// Satellite name passed to `switch-session`, if required.
     pub host: Option<String>,
+    /// ADR-0140: the machine a `switch-host` re-attaches to, for a session
+    /// on another machine. Wins over [`Self::host`].
+    pub switch_host: Option<String>,
 }
 
 /// Fixed half-height areas, independent of population.
@@ -498,16 +512,47 @@ fn session_row_count(counts: SidebarCounts) -> usize {
         .active_session
         .filter(|i| *i < counts.roster)
         .map_or(0, |_| counts.windows);
-    counts.roster.saturating_mul(2).saturating_add(windows)
+    let headers = (0..counts.roster.min(128))
+        .filter(|j| opens_segment(counts, *j))
+        .count();
+    counts
+        .roster
+        .saturating_add(headers)
+        .saturating_add(windows)
+}
+
+/// Whether roster entry `j` opens a machine segment (see
+/// [`SidebarCounts::host_starts`]).
+const fn opens_segment(counts: SidebarCounts, j: usize) -> bool {
+    j < 128 && counts.host_starts & (1u128 << j) != 0
+}
+
+/// The [`SidebarCounts::host_starts`] mask for `hosts`, in roster order.
+fn segment_starts<'a>(hosts: impl Iterator<Item = &'a str>) -> u128 {
+    let mut mask = 0u128;
+    let mut previous: Option<&str> = None;
+    for (j, host) in hosts.take(128).enumerate() {
+        if previous != Some(host) {
+            mask |= 1u128 << j;
+        }
+        previous = Some(host);
+    }
+    mask
 }
 
 /// Limit iteration by viewport capacity, even for extremely large counts.
+/// A segment header and its first session are indivisible: a header never
+/// paints without a session under it.
 fn push_session_entries(rows: &mut Vec<SidebarRow>, counts: SidebarCounts, limit: usize) {
     for j in 0..counts.roster {
-        if limit.saturating_sub(rows.len()) < 2 {
+        let header = opens_segment(counts, j);
+        if limit.saturating_sub(rows.len()) < 1 + usize::from(header) {
             break;
         }
-        rows.extend([SidebarRow::RosterEntry(j), SidebarRow::RosterHost(j)]);
+        if header {
+            rows.push(SidebarRow::RosterHost(j));
+        }
+        rows.push(SidebarRow::RosterEntry(j));
         if counts.active_session == Some(j) {
             let shown = counts.windows.min(limit - rows.len());
             rows.extend((0..shown).map(SidebarRow::WindowName));
@@ -701,6 +746,7 @@ impl SidebarPainter {
             windows: self.windows.len(),
             roster: self.roster.len(),
             active_session: self.roster.iter().position(|s| s.active),
+            host_starts: segment_starts(self.roster.iter().map(|s| s.host.as_str())),
             rule: self.rule,
         }
     }
@@ -736,6 +782,7 @@ impl SidebarPainter {
                         name: s.name.clone(),
                         id: s.id,
                         host: s.route_host.clone(),
+                        switch_host: s.switch_host.clone(),
                     })
                 })
                 .collect(),
@@ -912,13 +959,37 @@ impl SidebarPainter {
         }
     }
 
-    /// Host identity is a separate, dim line and is never inferred here.
+    /// A machine segment header (ADR-0140): the host label in the chord
+    /// tone, with `here` flush right on the machine this terminal is
+    /// attached to and `down` on one the provider could not reach. Host
+    /// identity comes from the projection and is never inferred here.
     fn host_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
-        let label = truncate(&s.host, usize::from(text_w).saturating_sub(2));
-        Line::from(Span::styled(
-            format!("  {label}"),
-            Style::default().fg(self.theme.dim),
-        ))
+        let here = s.switch_host.is_none() && !s.satellite;
+        let down = !s.selectable && s.name == "unreachable";
+        let (tag, tag_color) = if here {
+            ("here", self.theme.dim)
+        } else if down {
+            ("down", self.theme.agent_blocked)
+        } else {
+            ("", self.theme.dim)
+        };
+        let label_budget = usize::from(text_w).saturating_sub(display_width(tag) + 1);
+        let label = truncate(&s.host, label_budget);
+        let right = if tag.is_empty() {
+            Vec::new()
+        } else {
+            vec![Span::styled(tag, Style::default().fg(tag_color))]
+        };
+        justify(
+            vec![Span::styled(
+                label,
+                Style::default()
+                    .fg(self.theme.chord)
+                    .add_modifier(Modifier::BOLD),
+            )],
+            right,
+            text_w,
+        )
     }
 
     /// Render one agent row (phux-foz.9): lifecycle glyph and locator on
@@ -1469,12 +1540,14 @@ mod tests {
                 Some(SessionRosterTarget {
                     name: "development".to_owned(),
                     id: None,
-                    host: None
+                    host: None,
+                    switch_host: None,
                 }),
                 Some(SessionRosterTarget {
                     name: "development".to_owned(),
                     id: None,
-                    host: Some("satellite-dev".to_owned())
+                    host: Some("satellite-dev".to_owned()),
+                    switch_host: None,
                 }),
                 None,
             ]
@@ -1558,6 +1631,7 @@ mod tests {
             windows: usize::MAX,
             roster: usize::MAX,
             active_session: Some(0),
+            host_starts: u128::MAX,
             rule: SidebarRule::Trailing,
         };
         assert_eq!(row_model(c, 1), vec![SidebarRow::RosterOverflow]);
@@ -2003,7 +2077,7 @@ mod tests {
             1,
             "one CUP for the changed host row"
         );
-        assert!(changed.starts_with("\x1b[16;8H"));
+        assert!(changed.starts_with("\x1b[15;8H"));
         assert!(strip_ansi(&changed).contains("devbox"));
         assert!(!changed.contains("editor"));
         assert!(
@@ -2042,7 +2116,8 @@ mod tests {
         assert_eq!(b[(0, 8)].bg, p.theme.selection_bg);
         assert_eq!(b[(34, 8)].bg, p.theme.selection_bg);
         assert_eq!(b[(35, 8)].bg, p.theme.surface);
-        assert_eq!(b[(3, 7)].fg, p.theme.dim);
+        // The machine header wears the chord tone, not the session's.
+        assert_eq!(b[(1, 6)].fg, p.theme.chord);
         for name in ["构建工具", "cafe\u{301}", "build"] {
             let line = p.roster_line(&roster(name, 1, 2, 0), 30);
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
@@ -2179,12 +2254,13 @@ mod tests {
         };
         let buf = p.compose_buffer(rect, SidebarRule::Trailing, None);
         assert!(row_text(&buf, rect, 8).contains(SPACES_HEADER));
-        assert!(row_text(&buf, rect, 9).contains("development"));
-        assert!(row_text(&buf, rect, 10).contains("mini"));
+        assert!(row_text(&buf, rect, 9).contains("mini"));
+        assert!(row_text(&buf, rect, 10).contains("development"));
         assert!(row_text(&buf, rect, 11).starts_with("   ● phux"));
         assert!(row_text(&buf, rect, 12).starts_with("   ○ scratch"));
+        // A second session on the same machine opens no second header.
         assert!(row_text(&buf, rect, 13).contains("peer"));
-        assert!(row_text(&buf, rect, 14).contains("mini"));
+        assert!(!row_text(&buf, rect, 14).contains("mini"));
         assert!(!strip_text(&p, rect).contains("wave2/herdr"));
     }
 
@@ -2493,14 +2569,15 @@ mod tests {
             busy.contains("●1") && busy.contains("◐2"),
             "histogram carries how much, not just what: {busy:?}"
         );
-        assert!(row_text(&buf, rect, u16::try_from(first + 1).unwrap()).contains("mini"));
+        // Each machine's header sits directly above its sessions.
+        assert!(row_text(&buf, rect, u16::try_from(first - 1).unwrap()).contains("mini"));
+        assert!(row_text(&buf, rect, u16::try_from(first + 1).unwrap()).contains("devbox"));
         let sat = row_text(&buf, rect, u16::try_from(first + 2).unwrap());
         assert!(sat.contains("prod-3"), "satellite name: {sat:?}");
         assert!(
             sat.contains("?4"),
             "a satellite reads as unknown, never as a calm zero: {sat:?}"
         );
-        assert!(row_text(&buf, rect, u16::try_from(first + 3).unwrap()).contains("devbox"));
     }
 
     fn strip_text(p: &SidebarPainter, rect: Rect) -> String {
@@ -2768,8 +2845,15 @@ mod tests {
             windows,
             roster,
             active_session: None,
+            host_starts: every_segment(roster),
             rule: SidebarRule::Trailing,
         }
+    }
+
+    /// Every entry on its own machine: one header per session, the densest
+    /// shape the strip can take.
+    fn every_segment(roster: usize) -> u128 {
+        (0..roster.min(128)).fold(0, |mask, j| mask | (1u128 << j))
     }
 
     #[test]
@@ -2784,8 +2868,8 @@ mod tests {
         assert_eq!(rows[0], SidebarRow::NeedsYouHeader);
         assert_eq!(rows[1], SidebarRow::AgentsEmpty);
         assert_eq!(rows[4], SidebarRow::SpacesHeader);
-        assert_eq!(rows[5], SidebarRow::RosterEntry(0));
-        assert_eq!(rows[6], SidebarRow::RosterHost(0));
+        assert_eq!(rows[5], SidebarRow::RosterHost(0));
+        assert_eq!(rows[6], SidebarRow::RosterEntry(0));
         assert_eq!(rows[8], SidebarRow::NewWindow);
         // Keep hidden windows reachable even when a pair and overflow cannot fit.
         let rows = row_model(c, 7);
@@ -2827,10 +2911,19 @@ mod tests {
         let rows = row_model(counts(0, 1, 2), 12);
         assert_eq!(rows[0], SidebarRow::NeedsYouHeader);
         assert_eq!(rows[5], SidebarRow::SpacesHeader);
-        assert_eq!(rows[6], SidebarRow::RosterEntry(0));
-        assert_eq!(rows[7], SidebarRow::RosterHost(0));
+        assert_eq!(rows[6], SidebarRow::RosterHost(0));
+        assert_eq!(rows[7], SidebarRow::RosterEntry(0));
+        assert_eq!(rows[8], SidebarRow::RosterHost(1));
+        assert_eq!(rows[9], SidebarRow::RosterEntry(1));
+        // Sessions sharing a machine share one header.
+        let one_machine = SidebarCounts {
+            host_starts: 1,
+            ..counts(0, 1, 2)
+        };
+        let rows = row_model(one_machine, 12);
+        assert_eq!(rows[6], SidebarRow::RosterHost(0));
+        assert_eq!(rows[7], SidebarRow::RosterEntry(0));
         assert_eq!(rows[8], SidebarRow::RosterEntry(1));
-        assert_eq!(rows[9], SidebarRow::RosterHost(1));
         let rows = row_model(counts(0, 1, 0), 12);
         assert_eq!(rows[5], SidebarRow::SpacesHeader);
         assert_eq!(rows[6], SidebarRow::SessionsEmpty);
@@ -2901,8 +2994,19 @@ mod tests {
                 }
                 SidebarRow::RosterEntry(j) => {
                     assert!(*j < c.roster);
-                    assert_eq!(rows.get(y + 1), Some(&SidebarRow::RosterHost(*j)));
+                    // A segment's header sits directly above its first
+                    // session, and only there.
+                    let header = y.checked_sub(1).and_then(|above| rows.get(above));
+                    assert_eq!(
+                        header == Some(&SidebarRow::RosterHost(*j)),
+                        opens_segment(c, *j),
+                        "entry {j} at y={y}"
+                    );
                     sessions.push(*j);
+                }
+                SidebarRow::RosterHost(j) => {
+                    assert!(opens_segment(c, *j));
+                    assert_eq!(rows.get(y + 1), Some(&SidebarRow::RosterEntry(*j)));
                 }
                 SidebarRow::WindowName(i) => assert!(*i < c.windows),
                 _ => {}

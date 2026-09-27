@@ -591,6 +591,13 @@ async fn attach_with_reconnect(
     // is precisely the moment a user most wants the recording to be intact.
     // The file is opened here, on the cooked terminal, so a bad path is an
     // ordinary CLI error rather than a failure behind the alt screen.
+    // ADR-0140: a local-socket attach is this machine. A registered remote
+    // recorded its name before dialing, and the first record wins; an ad-hoc
+    // `--quic`/`--ws` dial has no registry name and records nothing, so its
+    // sidebar shows only the attached server.
+    if matches!(dial, Dial::Uds(_)) {
+        phux_tui::attach::hosts::set_attach_origin(phux_tui::attach::hosts::AttachOrigin::Local);
+    }
     let recorder: Option<RecorderHandle> = match rec {
         // v2 and not v3: v3 is not backward compatible, and every consumer
         // that reads v3 also reads v2 (ADR-0060). The interactive surface has
@@ -1011,6 +1018,11 @@ pub(crate) fn run_attach_remote_outcome(
         }
     };
     let session = session.or_else(|| entry.session.clone());
+    // ADR-0140: the sidebar draws this host's sessions live and every other
+    // machine from the hosts provider; it needs to know which one this is.
+    phux_tui::attach::hosts::set_attach_origin(phux_tui::attach::hosts::AttachOrigin::Remote(
+        entry.name.clone(),
+    ));
 
     let token = match remote::read_token(entry) {
         Ok(token) => token,
