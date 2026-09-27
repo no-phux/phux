@@ -11,9 +11,7 @@ impl ServerState {
         self.leases.holder(terminal)
     }
 
-    /// Whether `client`'s input to `pane` is blocked by another client's
-    /// lease (ADR-0033). `false` when the pane is `Open` or `client` is the
-    /// holder. The gate calls this before forwarding input to the actor.
+    /// Whether another client's lease blocks `client`'s input (ADR-0033).
     #[must_use]
     pub fn input_blocked(&self, terminal: ResourceId, client: ClientId) -> bool {
         self.leases.blocked(terminal, client)
@@ -25,29 +23,20 @@ impl ServerState {
         self.leases.acquire(terminal, client)
     }
 
-    /// Release `pane`'s input lease if `client` holds it (ADR-0033). Returns
-    /// `true` if a lease was actually released. A no-op (returns `false`) if
-    /// the pane is `Open` or held by someone else.
+    /// Release the lease if `client` holds it; `true` if released.
     pub fn release_input_lease(&mut self, terminal: ResourceId, client: ClientId) -> bool {
         self.leases.release(terminal, client)
     }
 
-    /// Every pane whose input lease `client` currently holds (ADR-0033). The
-    /// runtime reads this at disconnect time to broadcast `Released` events
-    /// before [`Self::detach`] clears the leases.
+    /// Every pane whose lease `client` holds (for disconnect broadcasts).
     #[must_use]
     pub fn leases_held_by(&self, client: ClientId) -> Vec<ResourceId> {
         self.leases.held_by(client)
     }
 
-    /// Invalidate `terminal`'s current expiry generation and, when
-    /// `scheduled` is true, record a fresh one (ADR-0033's `ttl_ms`, this
-    /// lane). The caller pairs a `Some` return with the `ttl_ms` it asked
-    /// for and arms a timer under that generation; a stale timer's wake
-    /// checks it with [`Self::input_lease_expiry_is_current`]. Called from
-    /// the same lock scope as [`Self::set_input_lease`] /
-    /// [`Self::release_input_lease`] so the lease and its TTL tracking
-    /// never observe each other mid-update.
+    /// Invalidate `terminal`'s expiry generation and, when `scheduled`, mint
+    /// a fresh one for a new timer. Called in the same lock scope as the
+    /// lease change.
     pub fn refresh_input_lease_expiry(
         &mut self,
         terminal: ResourceId,
@@ -56,18 +45,14 @@ impl ServerState {
         self.leases.refresh_expiry(terminal, scheduled)
     }
 
-    /// Whether `generation` is still the expiry generation on file for
-    /// `terminal` — the check a woken TTL timer makes before treating
-    /// itself as the one that gets to expire the lease.
+    /// Whether `generation` is still current (checked by a woken timer).
     #[must_use]
     pub fn input_lease_expiry_is_current(&self, terminal: ResourceId, generation: u64) -> bool {
         self.leases.expiry_is_current(terminal, generation)
     }
 
-    /// Record `terminal`'s just-spawned TTL timer's abort handle, provided
-    /// `generation` is still current. `false` means the caller should
-    /// abort the handle itself: the timer was already superseded between
-    /// minting `generation` and getting here.
+    /// Store the spawned timer's abort handle if still current; `false`
+    /// tells the caller to abort it.
     #[must_use]
     pub fn attach_input_lease_expiry_abort(
         &mut self,
@@ -78,17 +63,12 @@ impl ServerState {
         self.leases.attach_expiry_abort(terminal, generation, abort)
     }
 
-    /// Clear `terminal`'s expiry tracking without aborting its timer task
-    /// — for the timer's own legitimate firing; see
-    /// `state::lease_table::LeaseTable::clear_expiry` for why that one
-    /// case must not go through the aborting `refresh_input_lease_expiry`.
+    /// Clear expiry tracking without aborting (the timer's own firing).
     pub fn clear_input_lease_expiry(&mut self, terminal: ResourceId) {
         self.leases.clear_expiry(terminal);
     }
 
-    /// A clone of the live-TTL-timer-task counter, for the
-    /// `runtime::commands` regression test proving repeated re-arms do not
-    /// accumulate sleeping tasks.
+    /// A clone of the live TTL-timer counter (tests).
     #[must_use]
     pub fn input_lease_expiry_task_counter(
         &self,
@@ -96,9 +76,7 @@ impl ServerState {
         self.leases.expiry_task_counter()
     }
 
-    /// The hub consumer currently holding the input lease over satellite
-    /// terminal `(host, id)` (phux-v45.7, L1 §9.1), or `None` when free.
-    /// See the `LeaseTable::satellite` field doc for why this ledger exists.
+    /// The hub consumer holding the satellite lease (L1 §9.1), if any.
     #[must_use]
     pub fn satellite_lease_holder(
         &self,
@@ -108,15 +86,8 @@ impl ServerState {
         self.leases.satellite_holder(host, terminal)
     }
 
-    /// Record `client` (with its outbound mailbox `out_tx`) as the
-    /// hub-side holder of the satellite lease, after the satellite acked
-    /// the relayed `ACQUIRE_INPUT`.
-    ///
-    /// Returns the **evicted** prior lease when this acquire preempted a
-    /// *different* hub consumer (a SEIZE takeover, phux-v45.13): the caller
-    /// notifies that holder it lost the wheel. A re-acquire by the same
-    /// holder (idempotent cooperative acquire) or a grant over a free lease
-    /// returns `None` — nobody was evicted.
+    /// Record `client` as the satellite lease holder after the satellite
+    /// acked, returning an evicted different holder to notify.
     pub(crate) fn set_satellite_lease(
         &mut self,
         host: phux_protocol::ids::SatelliteHost,
@@ -127,21 +98,9 @@ impl ServerState {
         self.leases.set_satellite(host, terminal, client, out_tx)
     }
 
-    /// Mirror one satellite-originated `terminal_control` transition for
-    /// `(host, terminal)` into the hub's own ledger (ADR-0033's `ttl_ms`,
-    /// this lane): the satellite owns the TTL timer and is the source of
-    /// truth for whether its lease is free, so — unlike
-    /// [`Self::release_satellite_lease`] — this does not check who the hub
-    /// thinks holds it. `is_end` is `true` for Released/Expired, `false`
-    /// for Acquired/Seized. Returns the evicted holder when a
-    /// Released/Expired was actually applied.
-    ///
-    /// Ignores a Released/Expired that races an in-flight
-    /// `ACQUIRE_INPUT` relay's reply, or that carries a `seq` no newer
-    /// than the last Acquired/Seized mirrored — see
-    /// `state::lease_table::LeaseTable::mirror_satellite_lease_event`'s
-    /// doc for the ordering hazard this closes and why it is bounded
-    /// rather than provably complete.
+    /// Mirror a satellite `terminal_control` into the hub ledger (the
+    /// satellite owns the timer). `is_end` is true for Released/Expired;
+    /// stale ends are ignored (see `LeaseTable::mirror_satellite_lease_event`).
     pub fn mirror_satellite_lease_event(
         &mut self,
         host: &phux_protocol::ids::SatelliteHost,
@@ -153,11 +112,8 @@ impl ServerState {
             .mirror_satellite_lease_event(host, terminal, is_end, seq)
     }
 
-    /// Mark `(host, terminal)`'s lease pending: an `ACQUIRE_INPUT` relay is
-    /// in flight for it. Call before awaiting the relay's reply. On
-    /// failure, pair with [`Self::clear_satellite_lease_acquire_pending`];
-    /// on success, leave it — [`Self::mirror_satellite_lease_event`]
-    /// clears it on the next event for this terminal instead.
+    /// Mark an `ACQUIRE_INPUT` relay in flight; clear on failure, and the
+    /// next mirrored event clears it on success.
     pub fn mark_satellite_lease_acquire_pending(
         &mut self,
         host: phux_protocol::ids::SatelliteHost,
@@ -187,9 +143,7 @@ impl ServerState {
         self.leases.release_satellite(host, terminal, client)
     }
 
-    /// Every satellite lease `client` currently holds. Read at disconnect
-    /// time so the runtime can relay a detached `RELEASE_INPUT` per entry
-    /// before [`Self::detach`] clears the ledger.
+    /// Every satellite lease `client` holds (for disconnect relays).
     #[must_use]
     pub fn satellite_leases_held_by(
         &self,
@@ -200,12 +154,8 @@ impl ServerState {
 
     // -- satellite proxy attach registrations -----------------------------
 
-    /// Whether `client` holds a proxied `ATTACH_RESOURCE` over `terminal` on
-    /// `host`.
-    ///
-    /// The hub relays opaque reply and input frames on a consumer's behalf and
-    /// cannot re-derive entitlement from the frame alone, so every relayed
-    /// frame is gated on an exact registration made here at attach time.
+    /// Whether `client` holds a proxied attach over `(host, terminal)`; every
+    /// relayed frame is gated on it.
     #[must_use]
     pub fn has_satellite_proxy_attach(
         &self,

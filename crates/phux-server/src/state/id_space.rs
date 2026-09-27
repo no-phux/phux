@@ -1,48 +1,11 @@
-//! The server's wire-id space: the interning tables that map `phux-core`
-//! slotmap keys to the `u32`-wide identifiers `phux-protocol` puts on the
-//! wire (ADR-0016).
+//! The server's wire-id space (ADR-0016): the sessions, terminals, and
+//! windows bridges between `phux-core` keys and `phux-protocol` `u32` ids,
+//! held here because those crates must not depend on each other.
 //!
-//! Three independent id spaces live here — sessions, terminals, and windows
-//! — because `phux-core` and `phux-protocol` must not depend on each other,
-//! so `phux-server` is the one place that holds both halves of every
-//! mapping. See [`crate::id_bridge`] for the allocation contract.
-//!
-//! # One bridge, one exhaustion semantic
-//!
-//! All three spaces are the same type — [`IdBridge`] at three
-//! instantiations. They did not used to be: the session space was the
-//! reusable bridge, the terminal space was that bridge open-coded, and the
-//! window space was *half* of it (forward map only, no reverse). The three
-//! also disagreed on `u32` exhaustion: sessions panicked, terminals and
-//! windows saturated. Collapsing them had to pick one semantic, and it
-//! picked **fail fast**, because saturating hands out `u32::MAX` and then
-//! keeps handing out that same id, aliasing distinct terminals onto one wire
-//! id and misrouting input and output — see [`crate::id_bridge`]'s
-//! "Exhaustion" section for the full argument. Every space now hands out
-//! `1..=u32::MAX - 1`.
-//!
-//! Two consequences worth naming rather than discovering:
-//!
-//! * The window space **gained** a reverse map it never had. That is a real
-//!   addition, not accidental bloat: it is what makes windows the same
-//!   structure as the other two. Nothing reads it yet
-//!   (there is no `window_from_wire`), so
-//!   [`Self::bind_window`] must keep binding distinct wire ids per window or
-//!   the reverse entry silently collapses.
-//! * The terminal and window spaces panic where they used to saturate, and
-//!   their last mintable id moved from `u32::MAX` to `u32::MAX - 1`.
-//!
-//! # Still asymmetric: `ResourceId` is an enum
-//!
-//! `phux_protocol::ids::ResourceId` is a tagged union, not a `u32` newtype.
-//! Only `ResourceId::Local` is ever minted here — a satellite terminal
-//! (`ResourceId::Satellite { .. }`) is addressed directly off the wire id by
-//! federation routing and never enters these tables, so
-//! [`Self::terminal_from_wire`] returns `None` for one by design. Unifying
-//! the three spaces did not lose that property; it gave it a name. Minting
-//! shape is the [`WireId`](crate::id_bridge::WireId) trait, and
-//! `impl WireId for phux_protocol::ids::ResourceId` is now the single place
-//! the Local-only invariant is enforced.
+//! All three are an [`IdBridge`] with one exhaustion rule: fail fast rather
+//! than alias (see [`crate::id_bridge`]), so ids run `1..=u32::MAX - 1`.
+//! Only `ResourceId::Local` is minted; satellite terminals never enter
+//! these tables, so [`Self::terminal_from_wire`] returns `None` for them.
 
 use phux_core::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::ids::{
@@ -51,34 +14,19 @@ use phux_protocol::ids::{
 
 use crate::id_bridge::IdBridge;
 
-/// Every core-id ↔ wire-id mapping the server owns, plus the monotonic
-/// allocators that mint fresh wire ids.
-///
-/// Held as a single field on [`ServerState`](crate::state::ServerState).
-/// Not thread-safe on its own; the surrounding `Mutex<ServerState>`
-/// provides synchronization.
-///
-/// Wire ids start at `1` (`0` is reserved as a sentinel) and are never
-/// reused: retiring an entity drops both directions of its mapping but
-/// leaves the allocator where it is.
+/// Every core-id ↔ wire-id mapping and the monotonic allocators. Wire ids
+/// start at 1 and are never reused.
 #[derive(Debug)]
 pub struct IdSpace {
-    /// Bridge between core slotmap [`SessionId`]s and wire-level
-    /// `phux_protocol::ids::SessionId` (u32).
+    /// Session bridge.
     sessions: IdBridge<SessionId, WireSessionId>,
-    /// Bridge between core [`ResourceId`]s and wire-level
-    /// `phux_protocol::ids::ResourceId`. Its reverse direction is
-    /// load-bearing: it is the existence oracle every Terminal-scoped
-    /// command validates against.
+    /// Terminal bridge; its reverse map is the existence check for every
+    /// Terminal-scoped command.
     terminals: IdBridge<ResourceId, WireResourceId>,
-    /// Bridge between core [`WindowId`]s and wire-level
-    /// `phux_protocol::ids::WindowId`; used to populate
-    /// [`phux_protocol::wire::info::WindowInfo::id`] in the `ATTACHED`
-    /// snapshot.
+    /// Window bridge.
     windows: IdBridge<WindowId, WireWindowId>,
-    /// The token naming the terminal id space (ADR-0109): minted with the
-    /// allocator, replaced only with it. A cold start mints a new one; a
-    /// graceful upgrade restores both from the handoff blob.
+    /// The terminal id space's instance token (ADR-0109), minted with the
+    /// allocator; an upgrade restores both.
     instance: phux_protocol::ids::ServerInstance,
 }
 
@@ -100,8 +48,7 @@ impl Default for IdSpace {
 }
 
 impl IdSpace {
-    /// Build an empty id space with all three allocators at `1` and a fresh
-    /// random instance token.
+    /// An empty id space with a fresh instance token.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -114,33 +61,29 @@ impl IdSpace {
 
     // -- instance token (ADR-0109) -------------------------------------
 
-    /// The token naming this id space. Every terminal id this space hands
-    /// out is meaningful only together with it.
+    /// The instance token naming this id space.
     #[must_use]
     pub const fn instance(&self) -> phux_protocol::ids::ServerInstance {
         self.instance
     }
 
-    /// Adopt `instance` after a graceful upgrade restored the allocators it
-    /// names.
+    /// Adopt `instance` after an upgrade restored its allocators.
     pub(super) const fn set_instance(&mut self, instance: phux_protocol::ids::ServerInstance) {
         self.instance = instance;
     }
 
     // -- sessions -----------------------------------------------------
 
-    /// Wire session id for `core`, allocating one if needed. Idempotent.
+    /// Wire session id for `core`, allocating if needed.
     ///
     /// # Panics
     ///
-    /// Panics if the session wire-id space is exhausted — see
-    /// [`IdBridge::intern`].
+    /// If the space is exhausted (see [`IdBridge::intern`]).
     pub fn intern_session(&mut self, core: SessionId) -> WireSessionId {
         self.sessions.intern(core)
     }
 
-    /// Forward lookup without allocating. `None` if `core` was never
-    /// interned.
+    /// Forward lookup without allocating.
     #[must_use]
     pub fn session_wire(&self, core: SessionId) -> Option<WireSessionId> {
         self.sessions.wire(core).copied()
@@ -152,15 +95,12 @@ impl IdSpace {
         self.sessions.resolve(&wire)
     }
 
-    /// Bind a specific `core → wire` session mapping recorded in a
-    /// graceful-upgrade state blob (ADR-0032) rather than allocating a
-    /// fresh id. Pair with [`Self::set_next_session_wire`].
+    /// Bind a session mapping from an upgrade blob (ADR-0032).
     pub fn bind_session(&mut self, core: SessionId, wire: WireSessionId) {
         self.sessions.bind(core, wire);
     }
 
-    /// Drop both directions of `core`'s session mapping. Idempotent; the
-    /// retired wire id is not reused.
+    /// Drop `core`'s session mapping (the id is not reused).
     pub fn forget_session(&mut self, core: SessionId) {
         let _ = self.sessions.forget(core);
     }
@@ -178,50 +118,36 @@ impl IdSpace {
 
     // -- terminals ----------------------------------------------------
 
-    /// Wire pane id for `terminal`, allocating one if needed.
-    ///
-    /// Idempotent: a second call for the same `terminal` returns the same
-    /// wire id. Several runtime call sites rely on that (they re-intern
-    /// rather than thread the id through), so it must stay so.
+    /// Wire terminal id, allocating if needed; idempotent (callers rely on
+    /// re-interning).
     ///
     /// # Panics
     ///
-    /// Panics if the terminal wire-id space is exhausted — see
-    /// [`IdBridge::intern`].
+    /// If the space is exhausted.
     pub(super) fn intern_terminal(&mut self, terminal: ResourceId) -> WireResourceId {
         self.terminals.intern(terminal)
     }
 
-    /// Reverse lookup: which core pane id (if any) does `wire` resolve to?
-    ///
-    /// `None` for a `ResourceId::Satellite` by design — see the module doc.
+    /// Reverse lookup; `None` for satellite ids by design.
     #[must_use]
     pub(super) fn terminal_from_wire(&self, wire: &WireResourceId) -> Option<ResourceId> {
         self.terminals.resolve(wire)
     }
 
-    /// Forward lookup without allocating. `None` if `terminal` was never
-    /// interned.
+    /// Forward lookup without allocating.
     #[must_use]
     pub(super) fn terminal_wire(&self, terminal: ResourceId) -> Option<&WireResourceId> {
         self.terminals.wire(terminal)
     }
 
-    /// Bind a specific `core → wire` pane mapping from a graceful-upgrade
-    /// state blob (ADR-0032). Pre-binding is what makes the subsequent
-    /// [`Self::intern_terminal`] a no-op instead of minting a fresh id that
-    /// would diverge from the blob.
+    /// Bind a terminal mapping from an upgrade blob so the later intern is a
+    /// no-op.
     pub(super) fn bind_terminal(&mut self, terminal: ResourceId, wire: WireResourceId) {
         self.terminals.bind(terminal, wire);
     }
 
-    /// Drop both directions of `terminal`'s mapping and hand the retired
-    /// wire id back.
-    ///
-    /// The caller needs it: the per-Terminal L3 metadata scope and the
-    /// agent-record arbiter are both keyed by wire id, and they are only
-    /// reachable while this mapping still exists. Returns `None` if
-    /// `terminal` was never interned. The wire id is not reused.
+    /// Drop `terminal`'s mapping and return the retired wire id (the
+    /// metadata scope and arbiter are keyed by it). Not reused.
     pub(super) fn retire_terminal(&mut self, terminal: ResourceId) -> Option<WireResourceId> {
         self.terminals.forget(terminal)
     }
@@ -239,32 +165,27 @@ impl IdSpace {
 
     // -- windows ------------------------------------------------------
 
-    /// Wire window id for `window`, allocating one if needed. Idempotent.
+    /// Wire window id, allocating if needed.
     ///
     /// # Panics
     ///
-    /// Panics if the window wire-id space is exhausted — see
-    /// [`IdBridge::intern`].
+    /// If the space is exhausted.
     pub(super) fn intern_window(&mut self, window: WindowId) -> WireWindowId {
         self.windows.intern(window)
     }
 
-    /// Forward lookup without allocating. `None` if `window` was never
-    /// interned.
+    /// Forward lookup without allocating.
     #[must_use]
     pub(super) fn window_wire(&self, window: WindowId) -> Option<WireWindowId> {
         self.windows.wire(window).copied()
     }
 
-    /// Bind a specific `core → wire` window mapping from a
-    /// graceful-upgrade state blob (ADR-0032). Pair with
-    /// [`Self::set_next_window_wire`].
+    /// Bind a window mapping from an upgrade blob.
     pub(super) fn bind_window(&mut self, window: WindowId, wire: WireWindowId) {
         self.windows.bind(window, wire);
     }
 
-    /// Drop `window`'s mapping. Idempotent; the retired wire id is not
-    /// reused.
+    /// Drop `window`'s mapping (not reused).
     pub(super) fn retire_window(&mut self, window: WindowId) {
         let _ = self.windows.forget(window);
     }
@@ -298,12 +219,7 @@ mod tests {
         (reg, [s0, s1], [w0, w1], [t0, t1])
     }
 
-    // -- the u32 boundary, pinned per space ---------------------------
-    //
-    // One semantic for all three: the call that would mint `u32::MAX`
-    // panics, so `u32::MAX - 1` is the last id any space hands out. The
-    // paired non-panicking tests exist because a `#[should_panic]` test
-    // cannot assert anything after the panic.
+    // --- the u32 boundary: `u32::MAX - 1` is the last id minted ---
 
     #[test]
     fn session_space_mints_up_to_u32_max_minus_one() {

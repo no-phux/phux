@@ -3,10 +3,8 @@ use phux_core::ids::ResourceId;
 use super::{ClientId, HEADLESS_TERMINAL_DIMS, ServerState};
 use crate::terminal_actor::ResizeRequest;
 
-/// Derive the per-cell pixel size implied by one client's viewport report:
-/// `pixel / cells`, floored. `None` when the report carries no pixel metrics
-/// or they are degenerate — zero cells, or a pixel field smaller than the
-/// cell count (a sub-pixel cell is a bogus report, not a tiny font).
+/// Cell pixel size implied by one viewport report (`pixel / cells`); `None`
+/// without metrics or for degenerate ones (sub-pixel cells).
 fn viewport_cell_px(v: &phux_protocol::wire::frame::ViewportInfo) -> Option<(u16, u16)> {
     if v.cols == 0 || v.rows == 0 {
         return None;
@@ -24,14 +22,8 @@ impl ServerState {
         client: ClientId,
         viewport: phux_protocol::wire::frame::ViewportInfo,
     ) {
-        // Direct field access, not an accessor: `clients` and
-        // `lifecycle` are disjoint fields, so the borrow checker splits
-        // them. A `&mut self` accessor for the clock would borrow all of
-        // `ServerState` and this would stop compiling.
-        //
-        // The stamp must tick inside the `if let`, not above it: an
-        // announcement from an unattached client is a no-op and must not
-        // burn a sequence number.
+        // Direct fields, so the borrow splits from `lifecycle`; stamp only an
+        // attached client's announcement.
         if let Some(c) = self.clients.attached.get_mut(&client) {
             self.lifecycle.viewport_clock += 1;
             c.viewport = Some(viewport);
@@ -39,19 +31,10 @@ impl ServerState {
         }
     }
 
-    /// Resolve the one authoritative `(cols, rows)` a Terminal's PTY should
-    /// take, given the viewports of every client subscribed to it and the
-    /// active `window-size` policy (`phux-nk07`).
-    ///
-    /// Returns `None` when the policy is `Manual` (geometry is fixed
-    /// externally, never derived from views) or when no subscriber has
-    /// announced a usable (non-zero) viewport yet — in both cases the caller
-    /// leaves the PTY size unchanged. `latest` is the viewport of the client
-    /// that just resized, used only by the `Latest` policy.
-    ///
-    /// Degenerate `0`-dimension viewports are ignored in the min/max so a
-    /// transient resize-to-zero (a detaching client, a probe) can't collapse
-    /// the shared grid.
+    /// The authoritative `(cols, rows)` for a Terminal from its subscribers'
+    /// viewports and the `window-size` policy. `None` under `Manual` or with
+    /// no usable viewport; zero dimensions are ignored. `latest` serves the
+    /// `Latest` policy.
     #[must_use]
     pub fn resolve_terminal_geometry(
         &self,
@@ -83,22 +66,10 @@ impl ServerState {
         }
     }
 
-    /// Resolve the per-cell pixel size a Terminal should report — via the
-    /// PTY `winsize` pixel fields and XTWINOPS size replies — from the most
-    /// recent usable pixel report among the Terminal's subscribers.
-    ///
-    /// The resolved unit is *cell* size, not total pixels: the authoritative
-    /// grid from [`Self::resolve_terminal_geometry`] may match no single
-    /// client's viewport, so the Terminal's pixel size is `cells x cell size`
-    /// computed at the point of use. That keeps the kernel-reported geometry
-    /// self-consistent (`ws_xpixel / ws_col` is exactly the cell width —
-    /// the division `kitten icat`-style preflights perform).
-    ///
-    /// Recency — not the `window-size` policy — picks the donor viewport:
-    /// cell pixel size is a property of one physical display, and min/max
-    /// over mixed-DPI viewports would synthesize a cell belonging to no real
-    /// screen. `None` until some subscriber announces a viewport with usable
-    /// pixel metrics; callers then leave the Terminal's pixel state alone.
+    /// The cell pixel size a Terminal should report, from the most recent
+    /// usable report among its subscribers (recency, not policy: a cell size
+    /// belongs to one display). Pixels are then `cells x cell size`, keeping
+    /// `ws_xpixel / ws_col` exact. `None` until some report has metrics.
     #[must_use]
     pub fn resolve_terminal_cell_px(&self, terminal: ResourceId) -> Option<(u16, u16)> {
         self.subscribers_for_terminal(terminal)
@@ -109,12 +80,9 @@ impl ServerState {
             .map(|(_, cell)| cell)
     }
 
-    /// Recompute every Terminal in `session` after one attached view left.
-    ///
-    /// Remaining usable viewports still decide automatic policies. When none
-    /// remain, the Terminal returns to the documented headless geometry rather
-    /// than preserving a tiny sacrificial viewport forever. `Manual` returns
-    /// early so an explicit `phux resize` remains authoritative.
+    /// Recompute `session`'s Terminals after a view left; with no usable
+    /// viewport left they return to the headless size. `Manual` is left
+    /// alone.
     pub(super) fn restore_session_geometry_after_detach(
         &mut self,
         session: phux_core::ids::SessionId,
