@@ -8,20 +8,10 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, parse_selector, report_no_server, resolve_target_for_input};
 
-/// `phux paste TARGET [TEXT]` — paste a payload into a pane via the
-/// side-effect-free `ROUTE_INPUT` route.
-///
-/// `TARGET` is the full selector grammar (`docs/consumers/tui.md` §3),
-/// resolved client-side to a single pane exactly like `send-keys`
-/// (phux-n95). The payload is `TEXT`, or all of stdin when `TEXT` is
-/// omitted; it rides as ONE `InputEvent::Paste`, so the pane is neither
-/// attached nor resized and the server picks bracketed vs raw delivery
-/// from the pane's DEC mode 2004 state.
-///
-/// Trust: pastes are trusted by default — the caller vouches for content
-/// it composed, the same ungated authority `send-keys` has. `--untrusted`
-/// opts into the server-side safety gate, under which the pane's policy
-/// (reject by default) may silently drop an unsafe payload.
+/// `phux paste TARGET [TEXT]` — paste `TEXT` (or all of stdin) into one pane
+/// as a single `InputEvent::Paste` over `ROUTE_INPUT`, without attaching; the
+/// server picks bracketed or raw delivery from DEC mode 2004. Trusted by
+/// default like `send-keys`; `--untrusted` opts into the server's paste gate.
 pub(crate) fn run_paste(
     target: &str,
     text: Option<String>,
@@ -70,11 +60,8 @@ pub(crate) fn run_paste(
     })
 }
 
-/// Resolve the paste payload: the `TEXT` argument when given, else every
-/// byte of `stdin` (the pipe form: `git diff | phux paste review`).
-///
-/// The stdin path reads raw bytes, not lines — a paste payload need not
-/// be UTF-8, and trailing newlines are part of what the user piped.
+/// The paste payload: `TEXT`, else every raw byte of stdin (not necessarily
+/// UTF-8, trailing newlines included).
 fn payload_from(text: Option<String>, stdin: &mut impl Read) -> std::io::Result<Vec<u8>> {
     if let Some(text) = text {
         Ok(text.into_bytes())

@@ -1,31 +1,14 @@
-//! `phux stdio-bridge` — splice stdin/stdout to the local server socket.
+//! `phux stdio-bridge` — splice stdin/stdout to the local server socket: the
+//! remote end of the SSH-stdio transport (ADR-0007), run as
+//! `ssh HOST phux stdio-bridge`.
 //!
-//! The remote end of the SSH-stdio transport (ADR-0007, phux-v45.9): a
-//! federation hub (or any remote consumer) runs
-//! `ssh HOST phux stdio-bridge` and the wire protocol flows over the ssh
-//! channel, through this process, into the phux server's Unix socket on
-//! HOST. After the client's opening HELLO the bridge is byte-transparent:
-//! it never parses, frames, or injects anything, so the peer on stdin/stdout
-//! talks to the server exactly as a local UDS client would.
-//!
-//! The one exception is that HELLO. sshd tells the remote command which
-//! connection it serves (`SSH_CONNECTION`). The bridge stamps those endpoints
-//! on the HELLO as its `ssh_origin` field, always removing whatever the
-//! remote client put there, so the server can report the connection as
-//! `ssh-stdio` rather than as a local `uds` client (`docs/spec/L3.md` §3.9).
-//! The stamp is a label, not a verified fact: the ssh client chooses the
-//! remote command and can set this process's `SSH_CONNECTION`, unless ssh
-//! forces the command. The server accepts it only because this process is a
-//! same-uid Unix-socket peer, and grants nothing for it.
-//!
-//! Trust: connecting to the UDS makes this process an ordinary local
-//! client, guarded by the socket's owner-only permissions
-//! (docs/operations.md). The SSH channel above supplies remote
-//! authentication and encryption, so no bearer preamble is expected or
-//! consumed here (ADR-0038 addendum).
-//!
-//! stdout carries protocol bytes ONLY. Diagnostics go to stderr, which
-//! ssh forwards out-of-band to the dialing side's logs.
+//! Byte-transparent except for the opening HELLO, which it stamps with the
+//! `SSH_CONNECTION` endpoints as `ssh_origin` (always replacing the client's
+//! own), so the server reports the connection as `ssh-stdio`
+//! (`docs/spec/L3.md` §3.9). The stamp is a label, not a verified fact, and
+//! grants nothing. Trust comes from the UDS's owner-only permissions; ssh
+//! supplies authentication, so no bearer preamble is consumed. stdout carries
+//! protocol bytes only.
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -39,11 +22,8 @@ use phux_protocol::wire::ssh_origin::{SshOrigin, restamp_hello};
 use phux_server::runtime::default_socket_path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// Run the bridge until either side closes.
-///
-/// Exit code 0 when the bridge ends because a side closed cleanly
-/// (server shut down, or the remote peer hung up stdin); 1 when the
-/// socket cannot be connected or the splice fails mid-stream.
+/// Run the bridge until either side closes: exit 0 on a clean close, 1 when
+/// the socket cannot be connected or the splice fails.
 pub(crate) fn run_stdio_bridge(socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     if let Err(refusal) = phux_config::socket::refuse_dev_on_production(&socket_path) {
@@ -71,20 +51,14 @@ pub(crate) fn run_stdio_bridge(socket: Option<PathBuf>) -> ExitCode {
         };
         bridge(stream, origin).await
     });
-    // `tokio::io::stdin` reads on the blocking pool, and a plain runtime
-    // drop would WAIT for that read — hanging the exit until the remote
-    // peer types another byte after the server side already closed.
-    // Abandon the pool instead: the process is exiting, the read has
-    // nowhere to deliver.
+    // A plain runtime drop would wait on the blocking-pool stdin read until
+    // the peer typed again; abandon it instead.
     runtime.shutdown_background();
     code
 }
 
-/// The ssh endpoints sshd exposed to this process: `SSH_CONNECTION`
-/// (`client_ip client_port server_ip server_port`) or, failing that, the
-/// older `SSH_CLIENT` (`client_ip client_port server_port`, no server
-/// address). `None` outside ssh or when neither value parses, and then the
-/// bridge announces nothing.
+/// The ssh endpoints from `SSH_CONNECTION`, or the older `SSH_CLIENT` (no
+/// server address). `None` outside ssh or when neither parses.
 fn ssh_origin_from_env(connection: Option<&str>, client: Option<&str>) -> Option<SshOrigin> {
     connection
         .and_then(parse_ssh_connection)
@@ -120,20 +94,10 @@ fn endpoint(ip: &str, port: &str) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, port.parse().ok()?))
 }
 
-/// Splice bytes both ways between (stdin, stdout) and the socket until
-/// one direction finishes, then stop.
-///
-/// The client-to-server direction first forwards the opening frames
-/// through [`forward_hello`]. The server-to-client direction runs from the
-/// start, so a `PONG` to a pre-HELLO `PING` is never held back.
-///
-/// One finished direction ends the bridge: if the server closes, there
-/// is nothing left to forward to stdout; if stdin reaches EOF, the
-/// remote peer is gone and holding the socket open would only pin a
-/// dead consumer on the server. The other direction's copy is dropped
-/// (not drained) — the transport is gone either way, and the dialer's
-/// reconnect logic owns recovery (hub link supervisor backoff, or the
-/// client attach loop).
+/// Splice both ways until one direction finishes. Client-to-server first
+/// goes through [`forward_hello`]; server-to-client runs from the start so a
+/// `PONG` is never held back. The other direction is dropped, not drained; the
+/// dialer owns reconnection.
 async fn bridge(stream: tokio::net::UnixStream, origin: Option<SshOrigin>) -> ExitCode {
     let (mut from_server, mut to_server) = stream.into_split();
     let mut stdin = tokio::io::stdin();
@@ -152,15 +116,8 @@ async fn bridge(stream: tokio::net::UnixStream, origin: Option<SshOrigin>) -> Ex
     let _ = stdout.flush().await;
     match result {
         Ok(_) => ExitCode::SUCCESS,
-        // A closed stdout is how this bridge normally ends: the ssh client
-        // on the other side hung up, which is the same event as stdin
-        // reaching EOF one line above — and that arm exits 0. Reporting it
-        // as a failure made every clean `ssh host phux stdio-bridge`
-        // teardown look like a transport fault in the caller's logs. Every
-        // other I/O error is still real. (This path never panicked: tokio's
-        // `copy` returns the error rather than unwrapping it, unlike the
-        // `println!` that motivated `crate::output` — same contract, a
-        // different way of honoring it.)
+        // A closed stdout is the normal end (the ssh client hung up), so it exits
+        // 0 like stdin EOF.
         Err(err) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("phux stdio-bridge: {err}");
@@ -169,15 +126,10 @@ async fn bridge(stream: tokio::net::UnixStream, origin: Option<SshOrigin>) -> Ex
     }
 }
 
-/// Forward the client's opening frames to the server, stamping its HELLO.
-///
-/// Before HELLO a client may send only `PING`, so the bridge reads whole
-/// frames, forwards each `PING` unchanged, and sends the first other frame
-/// through [`restamp_hello`]. A HELLO leaves carrying exactly the bridge's
-/// own `ssh_origin`, or none, whatever the remote client put in it. Any
-/// other frame, and any header that is not a valid frame length, is
-/// forwarded unchanged for the server to refuse. The caller then splices the
-/// rest byte for byte.
+/// Forward the client's opening frames, stamping its HELLO: each pre-HELLO
+/// `PING` passes unchanged, the first other frame goes through
+/// [`restamp_hello`] (leaving with exactly the bridge's `ssh_origin` or none),
+/// and anything invalid is forwarded for the server to refuse.
 async fn forward_hello<R, W>(
     input: &mut R,
     output: &mut W,
@@ -418,10 +370,7 @@ mod tests {
         );
     }
 
-    /// Without an ssh environment the bridge still removes a remote client's
-    /// own claim from the HELLO it relays. That protects the recorded value
-    /// only when ssh forces the bridge command; otherwise the client can set
-    /// the bridge's environment itself, which is why the value is a label.
+    /// Without an ssh environment the bridge still strips a client's own claim.
     #[tokio::test]
     async fn a_remote_clients_own_origin_is_removed() {
         let forged = hello(ClientCapabilities::new().with_ssh_origin(origin("10.0.0.1:1", None)));

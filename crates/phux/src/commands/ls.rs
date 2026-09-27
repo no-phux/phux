@@ -11,20 +11,10 @@ use crate::commands::partial;
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use phux_core::host_list::{HostJson, HostKind, HostListJson};
 
-/// `phux ls` — list sessions via `GET_STATE`. Does not auto-start a
-/// server. With `json`, emits the stable [`SessionListJson`] contract
-/// (ADR-0022); otherwise the human text from [`print_sessions`].
-///
-/// **A partial listing still succeeds.** A federation hub that could not
-/// reach a satellite answers with everything else (ADR-0007; see
-/// [`partial`]), and an enumeration is true about every row it contains, so
-/// the exit status stays 0 and the incompleteness is reported alongside: on
-/// stderr for a human, in the payload's `unreachable` list for `--json`.
-/// Making a dead satellite fail the listing would take the panes on this
-/// laptop down with it.
-///
-/// `server` is the local socket or a `--remote` host; the listing is the
-/// same either way (see `server_target`).
+/// `phux ls` — list sessions via `GET_STATE`; never auto-starts a server.
+/// `--json` emits the stable [`SessionListJson`] (ADR-0022). A partial listing
+/// from a degraded hub still exits 0, reporting the gap on stderr or in the
+/// `unreachable` list (see [`partial`]).
 pub(crate) fn run_ls(json: bool, server: ServerSpec) -> ExitCode {
     let (rt, target) = match server.prepare("ls", json) {
         Ok(prepared) => prepared,
@@ -269,20 +259,10 @@ pub(crate) fn print_sessions(snapshot: &SessionSnapshot) {
     }
 }
 
-/// The human `phux ls` body as pure data: name-sorted session lines, each
-/// followed by the panes of that session that carry agent sessions (the
-/// sessions nested under their pane), then satellite Terminals. Empty
-/// exactly when the server has nothing to list — the trigger for
-/// [`EMPTY_STATE`]. Split from [`print_sessions`] so the rendering is
-/// unit-testable without capturing stdout.
-///
-/// A pane with no agent session prints nothing under its session line, so a
-/// server that serves only Terminals renders exactly the pre-resource-model
-/// listing.
-///
-/// A federation hub that reports its host-session inventory (`hosts` is
-/// non-empty) renders grouped by host instead — see [`host_grouped_lines`].
-/// Every other server keeps the flat listing byte for byte.
+/// The human `phux ls` body: name-sorted session lines, each followed by its
+/// panes' agent sessions, then satellite Terminals. Empty exactly when there is
+/// nothing to list ([`EMPTY_STATE`]). A hub reporting a host inventory renders
+/// grouped by host ([`host_grouped_lines`]).
 fn session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
     if snapshot.hosts().is_empty() {
         return flat_session_lines(snapshot);
@@ -432,15 +412,9 @@ fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec
     lines
 }
 
-/// One session's `ls` line, rendering the real attached-client count the
-/// wire already carries (`(2 clients attached)`) rather than collapsing it
-/// to a boolean `(attached)`. Zero clients says nothing.
-///
-/// A session with no windows (ADR-0105) is marked `(empty)`, so a server
-/// that stays up with zero processes says why.
-///
-/// `pub(crate)` so `phux status` renders its per-session lines through the
-/// same formatter and the two views cannot drift.
+/// One session's `ls` line, with the real attached-client count (zero says
+/// nothing) and `(empty)` for a windowless session (ADR-0105). Shared with
+/// `phux status`.
 pub(crate) fn format_session_line(s: &SessionInfo) -> String {
     let windows = if s.window_count == 1 {
         "window"

@@ -12,17 +12,10 @@ use super::model::{
     WorkspacePane, WorkspaceSession, WorkspaceSplitDir, WorkspaceWindow,
 };
 
-/// Build the JSON-ready archive from a `GET_STATE` snapshot, each session's
-/// decoded L3 layout envelope when one was found (`layouts`, ADR-0129
-/// review item 9), and the resolved native agent records.
-///
-/// `GET_STATE`'s own `WindowInfo.layout` is never populated by the
-/// reference server, so `layouts` — read separately, over `SET_METADATA`'s
-/// sibling `GET_METADATA`, by the save driver — is the only source that can
-/// carry a session's real split tree; a session absent from it (never
-/// attached, or an undecodable value) falls back to the bare
-/// one-window-per-registry-window projection every session used before
-/// this lane.
+/// Build the archive from a `GET_STATE` snapshot, each session's decoded L3
+/// layout (`layouts`; `GET_STATE` itself never carries one), and the resolved
+/// agent records. A session without a layout falls back to the
+/// one-window-per-registry-window projection.
 pub(super) fn archive_from_snapshot(
     snapshot: &SessionSnapshot,
     agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
@@ -67,18 +60,10 @@ pub(super) fn archive_from_snapshot(
     )
 }
 
-/// One session's archived windows: from its decoded L3 layout envelope
-/// when `layout` names one (ADR-0129 review item 9), else the bare
-/// one-window-per-registry-window projection every session used before
-/// this lane.
-///
-/// A stored layout is reconciled against the session's actual live panes
-/// first (review items 1+2): [`reconcile_layout`] drops any leaf that is
-/// no longer live and collapses its parent split, and any live pane
-/// present in no window at all — a headless `phux spawn` never touches
-/// L3 layout, so this is the normal shape for an unplaced pane, not an
-/// edge case — is placed in one synthesized `"unplaced"` window, with a
-/// line pushed onto `warnings` naming it.
+/// One session's archived windows, from its L3 layout when present, else
+/// the registry projection. A stored layout is first reconciled with the live
+/// panes ([`reconcile_layout`]); live panes placed nowhere (a headless spawn,
+/// normally) go into a synthesized `"unplaced"` window, with a warning.
 fn archive_windows_for_session(
     session: &SessionInfo,
     layout: Option<&Workspace>,
@@ -129,16 +114,10 @@ fn archive_windows_for_session(
     windows
 }
 
-/// Drop every layout leaf that is not in `live_ids` (a closed pane's leaf
-/// otherwise lingers in a stored layout forever — the server never prunes
-/// it), collapsing each affected split so the sibling takes its place; a
-/// window whose every leaf dies this way is dropped entirely.
-///
-/// Returns the surviving windows, each paired with whether it was
-/// `layout`'s own active window, plus — in `live_ids`'s own (registry)
-/// order — every live pane that ended up in no surviving window, whether
-/// because it was never in the stored layout at all or because its window
-/// died out from under it.
+/// Drop every layout leaf not in `live_ids` (the server never prunes closed
+/// panes from stored layouts), collapsing each affected split and dropping a
+/// window that loses every leaf. Returns the surviving windows (with whether
+/// each was active) and, in registry order, the live panes left unplaced.
 fn reconcile_layout(
     layout: &Workspace,
     live_ids: &[ResourceId],
@@ -210,12 +189,9 @@ fn unplaced_window(
     }
 }
 
-/// Archive one window straight from its decoded L3 layout state: the pane
-/// order is the tree's own leaves in left-to-right DFS order (matching
-/// `phux-client-core`'s own `leaves()` walk, the same order `restore`
-/// expects a `WorkspaceLayoutNode::Pane` index to name), with `cwd`/`title`
-/// and any resolved agent session looked up per leaf from the snapshot's
-/// `ResourceInfo` list.
+/// Archive one window from its L3 layout: panes in the tree's left-to-right
+/// leaf order (what restore indexes), with cwd, title, and agent session looked
+/// up per leaf.
 fn archive_window_from_layout(
     window: &WindowState,
     active: bool,

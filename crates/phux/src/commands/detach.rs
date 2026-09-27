@@ -7,22 +7,10 @@ use crate::commands::confirm;
 use crate::commands::server_target::ServerSpec;
 use crate::commands::warn_interleaved_degradation;
 
-/// `phux detach [SESSION]` — force-detach clients from *outside* the attach UI.
-///
-/// With `SESSION`, detaches every client attached to that session; with no
-/// argument, detaches every attached client on the server. Each target
-/// client's TUI receives a `DETACHED` frame and exits cleanly — the CLI
-/// analogue of the `C-a d` keybinding, usable for scripting or reclaiming a
-/// session that's attached (or wedged) elsewhere. Distinct from
-/// `FrameKind::Detach`, which only detaches the sending connection.
-///
-/// Exit codes: 0 on success (including "nobody was attached"), 1 on no server,
-/// 2 on a server-side refusal. `server` is the local socket or a `--remote`
-/// host (see `server_target`).
-///
-/// Forced detach is dangerous (ADR-0128): without `yes` it asks on a
-/// terminal and refuses with exit 2 otherwise, after the target is validated
-/// and before anything is dialed.
+/// `phux detach [SESSION]` — force-detach every client of `SESSION` (or of
+/// the server) from outside the attach UI; each receives `DETACHED` and exits.
+/// Exit 0 (even when nobody was attached), 1 no server, 2 refusal. Dangerous
+/// (ADR-0128): needs `yes` or a terminal "y", checked before any dial.
 pub(crate) fn run_detach(session: Option<String>, yes: bool, server: ServerSpec) -> ExitCode {
     let (rt, target) = match server.prepare("detach", false) {
         Ok(prepared) => prepared,

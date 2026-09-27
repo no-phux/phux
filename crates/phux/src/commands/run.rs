@@ -21,15 +21,10 @@ const RUN_DEFAULT_TIMEOUT_SECS: u64 = 600;
 /// Canonical value in `crate::exit_codes` (phux-i0e8.11.4).
 const RUN_TIMEOUT_EXIT_CODE: u8 = crate::exit_codes::EXIT_RUN_TIMEOUT;
 
-/// `phux run TARGET CMD...` — run a command in a pane and report its exit
-/// code, output, and duration (ADR-0022 §3). The process exits with the
-/// command's own code, so `phux run … && next` composes like a shell.
-///
-/// `TARGET` is the full selector grammar (`docs/consumers/tui.md` §3):
-/// `session`, `session:window`, `session:window.pane`, `@id`, `.`. It
-/// is resolved client-side to a single pane (the selected one — the focused
-/// pane when the selector spans several), then the command runs in exactly
-/// that pane (phux-n95).
+/// `phux run TARGET CMD...` — run a command in one pane (the selected pane
+/// of the selector) and report its exit code, output, and duration (ADR-0022
+/// §3). The process exits with the command's code, so `phux run ... && next`
+/// composes like a shell.
 pub(crate) fn run_run(
     target: &str,
     command: &[String],
@@ -145,14 +140,9 @@ fn report_outcome(
     }
 }
 
-/// The refusal for a pane that is not an available shell, naming what IS in
-/// the foreground.
-///
-/// `run` types a shell command line, so it is only a command at all when a
-/// shell is what reads it; against `vim` or `less` the same bytes are
-/// keystrokes into that application. Same code and same `--force` remedy as
-/// `phux agent start`'s precondition, which is the same check
-/// ([`phux_client::agent_meta::pane_shell_availability`]).
+/// The refusal for a pane whose foreground is not a shell, naming what is:
+/// `run` types a command line, which would be keystrokes into `vim`. Same code
+/// and `--force` remedy as `phux agent start`.
 fn not_available_error(
     target: &str,
     command: &str,
@@ -233,15 +223,9 @@ pub(crate) fn print_run_result(result: &phux_client::run::RunResult) {
     );
 }
 
-/// A per-invocation sentinel nonce, unique across `run` calls.
-///
-/// Three components: the pid disambiguates concurrent processes; the
-/// epoch-nanos make a residual sentinel from an *earlier* process unable to
-/// collide with this one; and a process-global monotonic counter guarantees
-/// uniqueness between two calls in the same process even when they fall in a
-/// single clock tick (`SystemTime` resolution is coarser than nanoseconds, so
-/// back-to-back calls — or an MCP host firing rapid `phux_run`s — could
-/// otherwise share a timestamp).
+/// A per-invocation sentinel nonce: pid, epoch nanos, and a process-global
+/// counter, so concurrent processes, residual sentinels, and same-tick calls
+/// never collide.
 pub(crate) fn run_nonce() -> String {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -315,11 +299,7 @@ mod deadline_tests {
                     PANE_SELECTOR,
                     &["true".to_owned()],
                     Some(BUDGET_SECS),
-                    // `--force`: these fixtures bound the submit/poll
-                    // budget, and a stalled peer cannot answer the
-                    // precondition's reads either — leaving it on would
-                    // make every case here a precondition timeout instead
-                    // of the one being exercised.
+                    // `--force`: a stalled peer cannot answer the precondition's reads either.
                     true,
                     false,
                     Some(socket),

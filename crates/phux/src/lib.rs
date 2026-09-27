@@ -52,22 +52,15 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
     version = env!("PHUX_VERSION_LABEL"),
     unknown_flags = "error",
     completion,
-    // `--rec` and `--remote` belong to the naked attach. usage globals parse
-    // on either side of a verb, so the scope rule stays a post-parse check
-    // (`root_rec_before_verb` / `root_remote_before_verb`) rather than
-    // `args_conflicts_with_subcommands`, which would also refuse
-    // `phux --socket X ls`.
+    // `--rec` and `--remote` belong to the naked attach; their scope is a
+    // post-parse check because globals parse on either side of a verb.
     about = "A terminal multiplexer you can drive by hand or script.",
     long_about = "A terminal multiplexer you can drive by hand or script.\n\n\
         Run `phux` alone to attach to your session; every other verb is headless.",
     // The root page is laid out for 80 columns whatever the terminal is:
     // the groups read as one table, and the width test on it is exact.
     term_width = 80,
-    // `phux help ...` is answered before the parser runs (see `help_verb`):
-    // the bare word prints the root page, a topic name prints that topic,
-    // and a verb path is rewritten to `phux <verb> --help`. Leaving the
-    // synthesized subcommand in place would put a lone `help` row under a
-    // `Commands:` heading above the grouped inventory.
+    // `phux help ...` is answered before the parser runs (see `help_request`).
     disable_help_subcommand,
     // The renderer prints its default command group first, under this
     // title, so the first group of the inventory is declared as the
@@ -98,10 +91,7 @@ struct Cli {
     skill: Option<skill::SkillScope>,
 
     /// Attach to a phux server on another machine
-    // The naked attach's copy alone: `phux attach --remote` carries the
-    // full form with `--code` / `--no-enroll`, and `ls`, `new`, `kill`,
-    // `rename`, and `detach` take their own after the verb
-    // (`root_remote_before_verb` teaches that placement).
+    // The naked attach's copy; verbs that take `--remote` carry their own.
     #[usage(long, value_name = "[USER@]HOST")]
     remote: Option<String>,
 
@@ -114,15 +104,9 @@ struct Cli {
     command: Option<Command>,
 }
 
-/// The footer appended to the root long page, after usage-argv has laid
-/// out the grouped inventory and the flags.
-///
-/// Appended by [`render_help_page`] rather than declared as `after_help`:
-/// the renderer reflows any prose it is handed unless a line starts with
-/// four spaces, and this block is a two-column table that has to line up
-/// with the sections above it. The topics it names are answered by
-/// [`help_topic`], and the same function renders the generated reference
-/// pages, so the footer, the topics, and the docs cannot drift apart.
+/// The footer appended to the root long page by [`render_help_page`] (not
+/// `after_help`, which would reflow its two columns). Its topics are answered
+/// by [`help_topic`].
 const ROOT_LEARN_MORE: &str = "\
 Learn more:
   phux <command> --help    Flags and examples for one command
@@ -245,11 +229,8 @@ const fn root_remote_before_verb(cli: &Cli) -> Option<&'static str> {
     }
 }
 
-/// The parse error for whichever `--remote` this invocation carries, root
-/// or verb-scoped.
-///
-/// Runs ahead of the TTY preflight so a bad target is reported as the usage
-/// error it is, rather than as a missing terminal.
+/// The parse error for this invocation's `--remote`, root or verb-scoped;
+/// checked before the TTY preflight.
 fn malformed_remote_target(cli: &Cli) -> Option<String> {
     commands::remote_target::RemoteTarget::parse(invocation_remote(cli)?).err()
 }
@@ -481,11 +462,8 @@ fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_, '_>) -> E
     }
 }
 
-/// Resolve `--rec` into a full recording plan, or report why it cannot be.
-///
-/// Called on the cooked terminal, before the attach path raises the alt
-/// screen, so a bad path or an unrecognized extension is a plain stderr line
-/// and a failing exit code rather than a surprise after the TUI is up.
+/// Resolve `--rec` into a recording plan on the cooked terminal, before the
+/// alt screen is up.
 fn plan_rec(opts: &commands::RecOpts) -> Result<Option<commands::rec::RecordSpec>, ExitCode> {
     opts.rec
         .as_deref()
@@ -504,13 +482,9 @@ pub(crate) fn print_banner() {
 /// The banner line: `phux <version>`, nothing else.
 pub(crate) const BANNER: &str = concat!("phux ", env!("PHUX_VERSION_LABEL"));
 
-/// Whether this invocation will enter the interactive TUI (raw mode +
-/// alt screen) and therefore MUST keep logs off stderr.
-///
-/// The alt-screen-entering paths are: `phux attach` and `phux host attach`,
-/// naked `phux` (attach fallback), `phux new` *without* `--json`, and worktree
-/// new/open with `--attach`. Headless creation stays on the stderr path like
-/// every other one-shot verb.
+/// Whether this invocation enters the TUI (raw mode + alt screen) and must
+/// keep logs off stderr: `attach`, `host attach`, naked `phux`, `new` without
+/// `--json`, and `worktree new|open --attach`.
 const fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
         Some(
@@ -592,11 +566,9 @@ pub(crate) fn help_topic(word: &str) -> Option<String> {
     })
 }
 
-/// Answer `phux help` and `phux help <topic>` from argv, before the parser
-/// runs. `phux help <verb>` is not answered here: `rewrite_help_verb`
-/// turns it into `phux <verb> --help` so the parser renders the verb's own
-/// page, and a word that is neither a topic nor a verb is refused with
-/// both lists named.
+/// Answer `phux help` and `phux help <topic>` before the parser runs;
+/// `phux help <verb>` is rewritten by `rewrite_help_verb`, and anything else is
+/// refused naming the topics.
 fn help_request(args: &[std::ffi::OsString]) -> Option<ExitCode> {
     let at = help_word_index(args)?;
     let Some(word) = args.get(at + 1) else {
@@ -713,15 +685,10 @@ pub(crate) fn render_help_page(
     Some(page)
 }
 
-/// The usage refusals clap's own grammar cannot express, reported once the
-/// CLI has parsed and before any process-global setup runs.
-///
-/// Covers the `--capabilities` spelling that needs `--json`, the `--rec` and
-/// `--remote` scope rules (see `root_rec_before_verb` and
-/// `root_remote_before_verb`), a malformed `--remote` target, the
-/// `--socket`/`--remote` collision, and a `--socket` handed to a verb that
-/// never dials a server. Each is a refusal with the remedy named, and each
-/// uses clap's usage-error exit code.
+/// The usage refusals the grammar cannot express, checked after parsing and
+/// before any global setup: `--capabilities` without `--json`, the root
+/// `--rec`/`--remote` scope rules, a malformed `--remote`, `--socket` with
+/// `--remote`, and `--socket` on a verb that never dials. Each exits 2.
 fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
     if cli.capabilities {
         eprintln!("phux: --capabilities requires --json");
@@ -776,22 +743,11 @@ fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
     None
 }
 
-/// Install the process-global tracing subscriber once, before any
-/// runtime spins up. Without this, every `tracing::{info,debug,...}`
-/// call site is a no-op.
-///
-/// The choice of sink depends on whether this invocation will enter
-/// the TUI (raw mode + alt screen). An interactive client owns the
-/// alt screen, so it MUST log to a file only — a stray stderr line
-/// corrupts the display. Every other command (foreground server,
-/// one-shot control verbs, `--json` paths) keeps the historical
-/// stderr layer (plus an optional `PHUX_LOG` file tee).
-///
-/// The returned `WorkerGuard` (when a file sink is involved) keeps
-/// the non-blocking writer's background thread alive; bind it for the
-/// lifetime of `main` so logs flush on exit. An init failure is
-/// non-fatal: the binary should keep working even if a future test
-/// harness or library already installed its own subscriber.
+/// Install the process-global tracing subscriber before any runtime starts.
+/// An interactive client logs to a file only (a stderr line would corrupt the
+/// alt screen); everything else logs to stderr plus an optional `PHUX_LOG`
+/// tee. Bind the returned guard for `main`'s lifetime so logs flush. Init
+/// failure is non-fatal.
 fn init_tracing(cli: &Cli) -> Option<phux_server::telemetry::WorkerGuard> {
     if is_interactive_client(cli) {
         // The client uses a synchronous file writer (no guard) so its trace
@@ -888,13 +844,8 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         Err(code) => return code,
     };
     let rec_spec = rec_spec.as_ref();
-    // `--socket` is a local UDS path; the remote transports do not
-    // read it. The old per-verb clap conflict could not survive the
-    // move to a root global (clap validates conflicts per parser, so
-    // `phux --socket X attach --quic Y` would slip through), so the
-    // refusal is explicit here and covers both flag positions.
-    // The `--remote` half of this rule is enforced post-parse (see
-    // `socket_and_remote_collide`), ahead of the TTY preflight.
+    // `--socket` is a local UDS path and cannot combine with the remote
+    // transports; checked here because it is a root global.
     if socket.is_some() && (quic.is_some() || ws.is_some() || ssh.is_some()) {
         eprintln!(
             "phux: --socket dials a local UDS and cannot combine with --quic/--ws/--ssh; drop one"
@@ -1004,13 +955,9 @@ fn run_naked_invocation(
     commands::attach::run_naked(socket, rec_spec.as_ref())
 }
 
-/// The verb table: one arm per CLI subcommand, each delegating to the
-/// command module that owns it.
-///
-/// `command` is moved into the match; `socket` is the root global every
-/// arm shares (each arm consumes it at most once, and only one arm runs).
-/// `root_rec` and `root_remote` are the naked-invocation halves of their
-/// root flags, and the `None` arm alone reads them.
+/// The verb table: one arm per subcommand. `socket` is the shared root
+/// global; `root_rec` and `root_remote` are read only by the naked (`None`)
+/// arm.
 #[allow(
     clippy::too_many_lines,
     reason = "one match arm per CLI subcommand; the dispatch is a flat verb table, clearer whole than split."
@@ -1490,11 +1437,9 @@ pub fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    // Key material never belongs on a `phux workload` command line, and argv
-    // is echoed in too many places (parse errors, paths in messages) to scrub
-    // each one, so that verb is refused before anything parses or dispatches
-    // (`workload-auth.md` §8). Other verbs keep their text: a pane's input or
-    // a secret scanner's pattern may legitimately look like key material.
+    // Key material never belongs on a `phux workload` command line, and argv is
+    // echoed in too many places to scrub, so that verb is refused before parsing
+    // (`workload-auth.md` §8).
     if workload_argv_carries_key_material(&raw[1..]) {
         eprintln!(
             "phux: the command line was refused and is not echoed, because it appears to contain key material"
@@ -1913,11 +1858,7 @@ mod tests {
         );
     }
 
-    /// `--rec` is scoped by declaration, not by a runtime check: it parses on
-    /// the root command (naked `phux`) and on `attach`, and nowhere else. The
-    /// in-front-of-a-verb form is refused too — as a global flag it used to
-    /// parse on every verb and then be rejected by hand, which made
-    /// `phux ls --help` advertise a flag `ls` could never honour.
+    /// `--rec` parses only on the root (naked `phux`) and on `attach`.
     #[test]
     fn rec_is_scoped_to_the_two_attaching_paths() {
         let cli = crate::parse_cli(["phux", "--rec", "demo.gif"]).expect("naked `phux --rec`");
@@ -1950,11 +1891,8 @@ mod tests {
         }
     }
 
-    /// Regression pin for the `args_conflicts_with_subcommands` replacement
-    /// (ADR-0065): a root `--rec` in front of any verb — `phux rec` is the
-    /// headless capture, so this is always a mistake — now PARSES (the root
-    /// setting had to go so the global `--socket` could precede a verb) and
-    /// is refused by the explicit post-parse check instead.
+    /// A root `--rec` before a verb parses (so the global `--socket` can precede
+    /// a verb) and is refused post-parse.
     #[test]
     fn root_rec_before_a_verb_is_refused_post_parse() {
         for argv in [
@@ -2171,12 +2109,8 @@ mod tests {
             .unwrap_or_else(|| panic!("{argv:?} names a verb"))
     }
 
-    /// Alias parity, list half (phux-i0e8.8.3): every list-shaped registry
-    /// verb answers to both `list` and `ls`, and each alias parses to the
-    /// CANONICAL variant — an alias is a second name, never a second code
-    /// path. `launch --list` deliberately stays a flag (considered and
-    /// kept: launch lists integrations, it is not a registry with its own
-    /// subcommand tree).
+    /// Every list-shaped registry verb answers to both `list` and `ls`, parsing
+    /// to the canonical variant.
     #[test]
     fn list_aliases_map_to_the_canonical_variants() {
         use crate::commands::{PluginAction, TagAction};
@@ -2301,11 +2235,8 @@ mod tests {
         }
     }
 
-    /// Review round 2's low finding: `phux take --ttl` above
-    /// `u32::MAX / 1000` seconds used to be silently clamped to
-    /// `u32::MAX` milliseconds, so the success line printed a different
-    /// value than what was asked for. It is now a usage error at parse
-    /// time, like `--ratio` above, instead of a silent runtime clamp.
+    /// `take --ttl` beyond the u32 millisecond range is a usage error, not a
+    /// silent clamp.
     #[test]
     fn take_ttl_above_u32_ms_range_validates_at_parse_time() {
         assert!(

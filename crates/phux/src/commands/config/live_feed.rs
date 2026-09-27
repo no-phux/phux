@@ -1,21 +1,8 @@
-//! Live agent-state feed for the `phux config agents` projection
-//! (phux-r82.10).
-//!
-//! Manifest `[[agents]]` entries are declarative templates (ADR-0040): a
-//! plugin says "this agent exists and here is its declared baseline". The
-//! runtime truth lives elsewhere — in the per-pane `phux.agent/v1` L3
-//! record (ADR-0040) and the ADR-0035 asked machinery. This module reads
-//! both from a running server, best-effort, and merges them into the rows
-//! the projection prints: runtime values override the manifest baseline,
-//! and the manifest stays as the declared fallback when no runtime record
-//! matches (or no server is running at all).
-//!
-//! Precedence inside a matched pane follows ADR-0040: the record outranks
-//! the `phux-ask` title sentinel, so an active ask elevates a binding to
-//! `blocked` only when the record declares no state of its own. This is
-//! projection-side composition of existing reads (ADR-0030): one
-//! `GET_STATE` plus the pipelined per-pane `GET_METADATA` index — no wire
-//! change.
+//! Live agent-state feed for `phux config agents`. Manifest `[[agents]]`
+//! entries are declared baselines (ADR-0040); this reads the per-pane
+//! `phux.agent/v1` records and asks from a running server, best-effort, and
+//! overlays them (the record outranks the `phux-ask` title sentinel). One
+//! `GET_STATE` plus pipelined `GET_METADATA`; no wire change.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -36,20 +23,11 @@ pub(super) struct LiveAgentFeed {
     pub(super) asked: HashSet<ResourceId>,
 }
 
-/// Best-effort fetch of the live feed from the server at `socket_path`.
-///
-/// Returns `None` when no server answers — `phux config agents` must keep
-/// working offline, reporting declared manifest values — and never
-/// surfaces transport errors: a partially readable server degrades to
-/// whatever was collected.
+/// Best-effort fetch of the live feed; `None` when no server answers, and
+/// transport errors degrade to whatever was collected.
 pub(super) async fn fetch_live_feed(socket_path: &Path) -> Option<LiveAgentFeed> {
-    // `into_snapshot_ignoring_degradation`: this feed *overlays* live evidence
-    // onto the config-declared agent list and never claims a pane is absent —
-    // a satellite the hub could not reach simply contributes no records, which
-    // is the same outcome this function already documents for "no server" and
-    // for a pane with no `phux.agent/v1` value. Nothing downstream turns a
-    // missing record into a negative assertion, so there is no false statement
-    // to prevent here. (The audit-trail `warn!` inside still fires.)
+    // The feed only overlays evidence and never claims absence, so a degraded
+    // view needs no special handling.
     let Ok(view) = phux_client::state::get_state(socket_path).await else {
         return None;
     };

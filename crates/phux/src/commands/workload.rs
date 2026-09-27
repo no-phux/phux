@@ -1,19 +1,10 @@
 //! `phux workload` — the mTLS workload authority (ADR-0116,
-//! `docs/spec/workload-auth.md` §8).
-//!
-//! `authority` fingerprints the workload CA and, with `--init`, creates it.
-//! `add-key` enrolls a client certificate this CA issued, or signs a
-//! certificate signing request into one; the material is read from stdin or
-//! from the file `--file` names, never from the command line. `list` and
-//! `revoke` show and retire credentials. Like `phux pair`, these write the
-//! state directory directly and never contact a server: a running server
-//! observes each new registry generation on its next connection.
-//!
-//! Output is limited to credential ids, scope ceilings, expiries, revocation
-//! state, public keys on request, and the CA fingerprint. Nothing here
-//! accepts, reads, or prints a private key; the CA key's path is never
-//! printed, and neither is any path the user supplied (a value pasted into
-//! the wrong flag could be key material).
+//! `docs/spec/workload-auth.md` §8): `authority [--init]`, `add-key` (enroll a
+//! certificate or sign a CSR, read from stdin or `--file`, never argv), `list`,
+//! and `revoke`. Like `phux pair` these write the state directory directly;
+//! a running server sees the new registry generation on its next connection.
+//! Nothing here reads or prints a private key, the CA key's path, or any
+//! user-supplied path (a mis-pasted value could be key material).
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};

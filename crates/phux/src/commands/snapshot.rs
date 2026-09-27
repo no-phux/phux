@@ -12,10 +12,6 @@ use phux_tui::attach::run_headless_rendered;
 use crate::commands::{SnapshotFormat, cli_runtime, json_err, parse_selector, resolve_target};
 
 /// Options for the structured pane read (ADR-0022 §2, ADR-0077).
-///
-/// Bundled so `run_snapshot` keeps a readable arg list as the read surface
-/// grows orthogonal modifiers rather than a named source vocabulary
-/// (ADR-0077 §1).
 pub(crate) struct ReadOpts {
     /// History window: `None` viewport only, `Some(0)` all retained
     /// history, `Some(n)` the most-recent `n` rows (`phux-o1v`).
@@ -44,28 +40,13 @@ pub(crate) struct RenderedOpts {
     pub rows: u16,
 }
 
-/// `phux snapshot [TARGET]` — read a pane as structured data (ADR-0022).
+/// `phux snapshot [TARGET]` — read a pane as structured data (ADR-0022) via
+/// the side-effect-free `GET_SCREEN`, emitting JSON or a boxed text view.
 ///
-/// Resolves `TARGET` (a selector; default: the focused session) to a pane
-/// client-side, then issues the side-effect-free `GET_SCREEN` command —
-/// the server walks its own grid, so this neither attaches nor resizes the
-/// pane (unlike the old attach-walk path; ADR-0022 §5, `phux-oki`). Emits
-/// JSON or a boxed text view, then exits.
-///
-/// `--rendered` ([`RenderedOpts`]) instead drives the headless client render
-/// path and emits the assembled multi-pane composite (`phux-l5xa`); that
-/// branch ATTACHES rather than reading side-effect-free.
-///
-/// `--tail` / `--unwrap` ([`ReadOpts`], ADR-0077) are **client-side
-/// projections** of the plain `lines`/`scrollback` reply: there is no new
-/// wire field for `--tail`, and the server's own read stays exactly the
-/// side-effect-free `GET_SCREEN` it already was. With `--format`
-/// (D9), the server omits `lines`/`scrollback` from the reply (review
-/// item 2(c)), so those projections have nothing to act on; `--tail N`
-/// still reaches the server as `request_scrollback` (bounding what the
-/// *rendered* capture covers, same as `--scrollback N`), and `--unwrap`
-/// rides `format`'s high bit so the engine's own Formatter joins
-/// soft-wrapped capture rows instead.
+/// `--rendered` instead drives the headless client render (and ATTACHES).
+/// `--tail` / `--unwrap` (ADR-0077) are client-side projections of the reply;
+/// with `--format` (D9) the reply has no lines, so `--tail N` becomes the
+/// request's scrollback bound and `--unwrap` rides `format`'s high bit.
 pub(crate) fn run_snapshot(
     session: Option<&str>,
     json: bool,
@@ -100,11 +81,8 @@ pub(crate) fn run_snapshot(
             Err(code) => return code,
         };
 
-        // Read the screen — side-effect-free, safe to poll. `scrollback`
-        // maps straight onto the wire request: None/Some(0=all)/Some(n);
-        // `cells` requests the per-cell semantic/style projection; `format`
-        // additionally asks the server to render through libghostty-vt's
-        // Formatter (D9), with `--unwrap` riding its high bit.
+        // `scrollback` maps onto the wire request; `format` asks the server to
+        // render through libghostty's Formatter, `--unwrap` on its high bit.
         let format_byte = format.map_or(0, |f| {
             let mut byte = f.wire_byte();
             if unwrap {
@@ -166,11 +144,8 @@ pub(crate) fn run_snapshot(
     })
 }
 
-/// `--format html|vt`: write the server's rendered capture straight to
-/// stdout — HTML as UTF-8 text, VT as the raw decoded byte stream — rather
-/// than through `outln!`, which would insert a newline the capture does
-/// not own. `--json` bypasses this entirely and emits the whole
-/// `ScreenState` document instead, `rendered` field included.
+/// `--format html|vt`: write the rendered capture straight to stdout (no
+/// newline added). `--json` emits the whole `ScreenState` instead.
 fn print_rendered_capture(screen: &ScreenState) -> ExitCode {
     let Some(rendered) = screen.rendered.as_ref() else {
         eprintln!("phux: snapshot: server returned no rendered capture");
@@ -240,12 +215,8 @@ fn run_rendered(
     })
 }
 
-/// Boxed text view of a composited [`RenderedFrame`].
-///
-/// Each row's graphemes are joined left-to-right. A wide glyph's empty tail
-/// (`""`) contributes nothing and its base glyph occupies two display
-/// columns, so a joined row's display width already equals `cols` — no
-/// padding needed. The composited cursor is reported below the box.
+/// Boxed text view of a composited [`RenderedFrame`]; wide-glyph tails are
+/// empty, so a joined row is already `cols` wide.
 pub(crate) fn print_rendered_box(frame: &RenderedFrame) {
     let bar = "─".repeat(usize::from(frame.cols));
     outln!("┌{bar}┐");
@@ -269,11 +240,8 @@ pub(crate) fn print_rendered_box(frame: &RenderedFrame) {
     outln!("{}x{} cursor={cursor}", frame.cols, frame.rows);
 }
 
-/// Human-readable boxed rendering of a captured screen (no tmux, no TTY).
-///
-/// Scrollback history, when present (`--scrollback`), is printed above the
-/// viewport, dimmed and separated by a `╌` rule so it reads as "older
-/// content above the live screen" (`phux-o1v`).
+/// Boxed rendering of a captured screen, with any scrollback dimmed above a
+/// `╌` rule.
 pub(crate) fn print_screen_box(screen: &ScreenState) {
     let bar = "─".repeat(usize::from(screen.cols));
     let pad_line = |line: &str| {
@@ -297,12 +265,8 @@ pub(crate) fn print_screen_box(screen: &ScreenState) {
     outln!("{}", footer(screen));
 }
 
-/// Plain row-per-line rendering, used by `--unwrap`.
-///
-/// The box view pads every row to `cols`, which a joined logical line
-/// exceeds by construction — so unwrapped output drops the box rather than
-/// draw a broken one. History rows come first, then the viewport, matching
-/// the JSON arrays.
+/// Plain row-per-line rendering for `--unwrap` (joined lines exceed the box):
+/// history rows, then the viewport.
 pub(crate) fn print_screen_rows(screen: &ScreenState) {
     for line in screen.rendered_rows() {
         outln!("{line}");

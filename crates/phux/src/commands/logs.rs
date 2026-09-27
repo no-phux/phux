@@ -1,20 +1,9 @@
-//! `phux logs` — where phux's logs live, and a tail over any of them.
-//!
-//! phux writes two log families nobody used to be able to discover from
-//! the CLI: the canonical server log (one file, every spawn path) and the
-//! per-pid client logs. A crash was durable but unreachable — the file
-//! existed, and no command would name it. Bare `phux logs` prints the
-//! inventory: every path, whether it exists yet, its size and age, and
-//! what to run next. `--server` / `--client` tail one of them (`-f`
-//! follows, `-n` sizes the tail, `--pid` picks a specific client), and
-//! `--json` emits a stable document for machines.
-//!
-//! The path knowledge deliberately does not live here: the server log
-//! resolves through `phux_server::telemetry::server_log_path` and the
-//! client naming convention through the same module, so the writers and
-//! this reader can never disagree. What does live here is shared reading
-//! machinery: [`tail_file`] (which `phux service logs` delegates to) and
-//! the `client-<pid>.log` scan (which `phux service prune-logs` borrows).
+//! `phux logs` — where phux's logs live, and a tail over any of them. Bare
+//! `phux logs` prints the inventory (every path, whether it exists, size, age,
+//! next steps); `--server` / `--client` tail one (`-f`, `-n`, `--pid`); `--json`
+//! emits a stable document. Paths resolve through `phux_server::telemetry`, so
+//! writers and reader agree. [`tail_file`] and the `client-<pid>.log` scan are
+//! shared with `phux service logs` / `prune-logs`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -142,14 +131,9 @@ pub(crate) fn run_logs(
     ExitCode::SUCCESS
 }
 
-/// Tail `path` with the system `tail`, showing the last `lines` lines and
-/// following when asked.
-///
-/// The one tail implementation: `phux logs --server`, `phux logs --client`,
-/// and `phux service logs` all come through here, so a log is always shown
-/// the same way. A missing file prints `missing` — a caller-composed,
-/// explanatory message, because "which command creates this file" differs
-/// per log — and fails.
+/// Tail `path` with the system `tail`: the one tail implementation for
+/// `phux logs` and `phux service logs`. A missing file prints the caller's
+/// `missing` message and fails.
 pub(crate) fn tail_file(path: &Path, follow: bool, lines: u32, missing: &str) -> ExitCode {
     if !path.exists() {
         eprintln!("{missing}");
@@ -172,12 +156,8 @@ pub(crate) fn tail_file(path: &Path, follow: bool, lines: u32, missing: &str) ->
     }
 }
 
-/// Which client log `--client [--pid PID]` should tail.
-///
-/// `--pid` is an exact file the caller asked for, so a missing one is left
-/// to [`tail_file`]'s missing-file report. Without a pid the newest log is
-/// the answer — that is the client most recently alive — and having none at
-/// all is its own error, since there is no path to even name.
+/// Which client log `--client [--pid PID]` tails: the exact pid's file, else
+/// the newest log; none at all is an error.
 fn client_log_target(dir: &Path, pid: Option<u32>) -> Result<PathBuf, String> {
     if let Some(pid) = pid {
         return Ok(dir.join(format!("client-{pid}.log")));
@@ -486,11 +466,8 @@ mod tests {
         file.set_modified(SystemTime::now() - age).unwrap();
     }
 
-    /// The acceptance case for a fresh machine: no server has ever run and
-    /// the state dir is empty (or absent). The inventory must still print
-    /// every path — as "not created yet" — plus the state dir and the
-    /// doctor hint, because the moment of need is exactly when nothing
-    /// exists yet.
+    /// A fresh machine with no state dir still gets the full inventory, marked
+    /// "not created yet", plus the doctor hint.
     #[test]
     fn bare_inventory_reports_missing_files_as_not_created_yet() {
         let dir = tempfile::tempdir().unwrap();

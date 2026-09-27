@@ -1,21 +1,8 @@
-//! The canonical exit-code table for the `phux` binary (phux-i0e8.11.4).
-//!
-//! This module is the single source both exit-status surfaces render
-//! from: the `phux help exit-codes` topic (`help_topic` in `lib.rs`
-//! prints [`exit_status_section`]) and the generated
-//! `docs/reference/exit-codes.md` page (`refdocs::exit_codes`). Adding or
-//! changing a code here updates both; using a code the table does not
-//! carry is what the audit below exists to prevent.
-//!
-//! Audit of the `ExitCode` sites (2026-08-02): every verb exits 0
-//! ([`EXIT_SUCCESS`]), 1 ([`EXIT_FAILURE`] — `ExitCode::FAILURE`
-//! everywhere), or 2 ([`EXIT_USAGE`]); the selector paths add 3
-//! ([`EXIT_PARTIAL_VIEW`], `commands::partial`); `phux wait` adds 124
-//! ([`EXIT_WAIT_TIMEOUT`], `commands::wait`); `phux run` and the plugin
-//! action runner add 125 ([`EXIT_RUN_TIMEOUT`], `commands::run` and
-//! `commands::config`) — `run` otherwise mirrors the child's own code,
-//! which is why its timeout is 125 and not 124. Those non-clap sites
-//! consume the consts here, so the table and the behavior cannot drift.
+//! The canonical exit-code table, rendered by `phux help exit-codes` and
+//! `docs/reference/exit-codes.md`. Verbs exit 0, 1, or 2; selector paths add 3
+//! (partial view); `wait` adds 124; `run` and plugin actions add 125 (`run`
+//! otherwise mirrors the child's code). Call sites use these consts so the
+//! table and the behavior cannot drift.
 
 /// Success.
 pub(crate) const EXIT_SUCCESS: u8 = 0;

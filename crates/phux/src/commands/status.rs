@@ -1,34 +1,15 @@
 //! `phux status` — one glance at the server behind the socket.
+//! [`collect`] gathers a [`StatusReport`]; [`render_human`] and
+//! [`status_document`] are pure renderers, pinned by unit tests.
 //!
-//! Collect-then-render: [`collect`] gathers every fact into a
-//! [`StatusReport`], and the two pure renderers ([`render_human`],
-//! [`status_document`]) turn it into the human report or the stable JSON
-//! shape — so both formats are pinned by unit tests on a fabricated report,
-//! without a server.
+//! Sources, with no wire change: pid from the UDS peer credentials; since from
+//! the socket file's mtime (survives graceful upgrade); protocol from a real
+//! HELLO; clients, sessions, and degradation from `GET_STATE`; log paths from
+//! `phux_server::telemetry`.
 //!
-//! Every fact is sourced without a wire change:
-//!
-//! - **pid** — the UDS peer credentials, read at connect time
-//!   ([`Connection::peer_pid`]). An OS fact about the socket; the server
-//!   does not participate.
-//! - **since** — the socket file's mtime, i.e. the moment the listener
-//!   bound it. Honest across a graceful upgrade, where the listener (and
-//!   the socket inode) is inherited rather than re-bound.
-//! - **protocol** — a real `HELLO`/`HELLO_OK` exchange
-//!   ([`phux_client::state::probe_hello`]); the one-shot verbs otherwise
-//!   skip the handshake, so the negotiated version is invisible to them.
-//! - **clients / sessions / satellite split / degradation** — `GET_STATE`,
-//!   the same snapshot `phux ls` renders.
-//! - **log paths** — the canonical `phux_server::telemetry` helpers, so
-//!   status and `phux logs` can never disagree about where the logs live.
-//!
-//! With no server running: the human path prints the same multi-line
-//! no-server diagnostic every other verb prints (exit 1); `--json` answers
-//! with `{"running": false, ...}` **on stdout** (exit 1) — a status question
-//! about a stopped server has an answer, not an error — embedding the same
-//! `code` / `message` / `remedy` vocabulary as the shared JSON error
-//! contract. Failures after the connect (the server hangs up mid-probe) are
-//! errors and go through the shared contract emitter.
+//! With no server: the human path prints the shared no-server diagnostic;
+//! `--json` answers `{"running": false, ...}` on stdout (exit 1) using the
+//! error-contract vocabulary. Failures after connect use the shared emitter.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -186,11 +167,9 @@ fn total_clients(sessions: &[SessionInfo]) -> u32 {
         .sum()
 }
 
-/// The human report: six labeled lines (server, since, protocol, clients,
-/// sessions, logs), with one indented line per session and per satellite
-/// Terminal under `sessions:`, and — when the fleet view is partial — one
-/// indented `partial view:` line per unreachable satellite. Pure, so tests
-/// pin the exact render on a fabricated report.
+/// The human report: six labeled lines, indented per-session and
+/// per-satellite lines under `sessions:`, and one `partial view:` line per
+/// unreachable satellite.
 fn render_human(report: &StatusReport, now_unix_secs: i64) -> Vec<String> {
     let mut lines = Vec::new();
     let pid = report
@@ -314,11 +293,8 @@ fn print_json(report: &StatusReport) -> ExitCode {
     }
 }
 
-/// The `--json` answer for a socket nobody is listening on: `running: false`
-/// **on stdout**, exit 1. A status question about a stopped server has an
-/// answer, not an error — but the embedded `error` / `remedy` fields use the
-/// shared contract vocabulary so a consumer branches on the same
-/// `code` strings everywhere. Pure for tests.
+/// The `--json` answer when nothing listens: `running: false` on stdout,
+/// exit 1, with contract-vocabulary `error` / `remedy` fields.
 fn not_running_document(err: &AttachError, socket_path: &Path) -> serde_json::Value {
     let cli_err = json_err::no_server_error(err, socket_path, "status");
     serde_json::json!({
@@ -342,14 +318,9 @@ fn is_no_server(err: &AttachError) -> bool {
     )
 }
 
-/// Route a collection failure to its report:
-///
-/// - no server + `--json`: the `running: false` answer document on stdout,
-///   exit 1;
-/// - no server, human: the same multi-line no-server diagnostic every other
-///   verb prints (start commands, server log, doctor pointer), exit 1;
-/// - anything else (the server hung up mid-probe, a refusal): the shared
-///   JSON error contract / prose remedy, exit 1.
+/// Route a collection failure: no server under `--json` is the
+/// `running: false` document, no server otherwise is the shared diagnostic, and
+/// anything else goes through the error contract. Exit 1 in all cases.
 fn report_failure(json: bool, err: &AttachError, socket_path: &Path) -> ExitCode {
     if json && is_no_server(err) {
         let doc = not_running_document(err, socket_path);

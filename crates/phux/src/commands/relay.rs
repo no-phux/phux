@@ -1,11 +1,6 @@
-//! `phux relay` — run the reference relay or enroll a route with it
-//! (ADR-0051/ADR-0052).
-//!
-//! Two verbs front `phux_relay`'s library surface: `run` serves the relay
-//! in the foreground (mirroring how `phux server` fronts `ServerRuntime`),
-//! and `pair` enrolls a route name into the route-token store, minting —
-//! or rotating — the route's tunnel token. Both operate on fixed paths
-//! under the phux state directory; neither reads environment overrides.
+//! `phux relay` (ADR-0051/ADR-0052): `run` serves the reference relay in the
+//! foreground; `pair` enrolls a route and mints or rotates its tunnel token.
+//! Both use fixed paths under the state directory.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -103,11 +98,8 @@ fn banner_line(listen: SocketAddr, routes: usize, fingerprint: &str) -> String {
 /// current-thread runtime until Ctrl-C — the same wiring shape as
 /// `phux server`.
 fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
-    // Hand-started long-running foreground process, like `phux server` —
-    // and like it, it arms the durable panic hook itself. `telemetry::init`
-    // stopped doing that for every process, because a one-shot verb's panic
-    // logged as `server panic` is a triage hazard (phux-h5hj.8); a relay
-    // that dies under a service manager still needs the record.
+    // A long-running foreground process arms the durable panic hook itself,
+    // like `phux server`.
     phux_server::telemetry::install_server_panic_hook();
 
     crate::print_banner();
@@ -115,11 +107,8 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
     let mut config = phux_relay::RelayConfig::new(listen);
     config.max_conns = max_conns;
 
-    // Pre-flight the banner's ingredients before the runtime spins up:
-    // `run` would fail-fast on the same problems, but only after the
-    // human has been told "listening". A malformed token store, broken
-    // certificate material, or an unwritable state dir fails here with a
-    // clean one-line diagnostic instead.
+    // Pre-flight the banner's ingredients so a bad token store, certificate,
+    // or state dir fails before "listening" is printed.
     let routes = match phux_relay::RouteTokenStore::load(&config.tokens_path) {
         Ok(store) => store.len(),
         Err(err) => {
@@ -139,11 +128,8 @@ fn run_relay_run(listen: SocketAddr, max_conns: usize) -> ExitCode {
         }
     };
 
-    // Bind before printing the banner so it can carry the RESOLVED
-    // address: `--listen 127.0.0.1:0` shows the OS-assigned port, not the
-    // literal 0. The bind needs a runtime context (quinn attaches its I/O
-    // driver), so the current-thread runtime is built here — the same
-    // shape `RelayRuntime::run` would use.
+    // Bind before the banner so it shows the resolved address (`:0` becomes the
+    // real port).
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

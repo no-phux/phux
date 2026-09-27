@@ -9,12 +9,8 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
-/// Row count a bare `--tail` requests.
-///
-/// clap needs a `&'static str` in the attribute, so the flag's
-/// `default_missing_value` is spelled as a literal there; this const is the
-/// typed value and [`tests::bare_tail_matches_the_documented_constant`] pins
-/// the two together, along with the `phux-core` constant both mirror.
+/// Row count a bare `--tail` requests; pinned to the attribute literal and
+/// the `phux-core` constant by [`tests::bare_tail_matches_the_documented_constant`].
 #[cfg(test)]
 const BARE_TAIL_ROWS: u32 = phux_core::screen::ROW_WINDOW_DEFAULT;
 
@@ -41,11 +37,8 @@ pub(crate) struct WaitArgs<'a> {
     pub(crate) socket: Option<PathBuf>,
 }
 
-/// The condition `args` asks for.
-///
-/// A text condition takes precedence over `--idle`; `--until` and `--regex`
-/// are mutually exclusive at the clap layer, so the order between them here
-/// is unreachable rather than a policy.
+/// The condition `args` asks for: text beats `--idle`; `--until` and
+/// `--regex` are exclusive at the parser.
 fn condition_for(args: &mut WaitArgs<'_>) -> Condition {
     use phux_client::wait::DEFAULT_IDLE_DWELL;
 
@@ -58,26 +51,16 @@ fn condition_for(args: &mut WaitArgs<'_>) -> Condition {
     Condition::Idle(args.idle.map_or(DEFAULT_IDLE_DWELL, Duration::from_millis))
 }
 
-/// The stderr note printed when `--output-only` has nothing to filter on.
-///
-/// Not a refusal: refusing would fail a wait that is otherwise perfectly
-/// good, and a hung wait is the exact failure this verb exists to remove.
-/// Fail open, and say so.
+/// The note when `--output-only` has no shell marks to filter on: fail open
+/// rather than hang or refuse.
 const NO_MARKS_NOTE: &str = "phux: wait --output-only: this pane reports no OSC-133 shell marks, \
      so no line can be identified as your typed input; matching every line. \
      Enable shell integration, or match on text that appears only in output.";
 
-/// `phux wait [TARGET]` — poll until a pane meets a condition (ADR-0022 §4).
-///
-/// `--until TEXT` waits for a line to contain `TEXT`, `--regex PATTERN` for
-/// one to match `PATTERN`, `--idle MS` for the screen to settle; with none
-/// of them, defaults to idle. Exits 0 when met, 124 on `--timeout`. The poll
-/// floor of the event surface: it reads via the side-effect-free
-/// `GET_SCREEN`, so it never disturbs the pane.
-///
-/// Matching is against the lines as **written** — soft-wrapped rows joined
-/// (`phux_client::wait::match_lines`) — so a needle that straddles the
-/// terminal's right edge is found instead of running the wait to timeout.
+/// `phux wait [TARGET]` — poll until a pane meets a condition (ADR-0022 §4):
+/// `--until TEXT`, `--regex PATTERN`, or `--idle MS` (the default). Exits 0 when
+/// met, 124 on `--timeout`. Reads via side-effect-free `GET_SCREEN`, matching
+/// against soft-wrap-joined lines so a needle across the right edge is found.
 pub(crate) fn run_wait(mut args: WaitArgs<'_>) -> ExitCode {
     use phux_client::wait::{DEFAULT_POLL_INTERVAL, WaitOutcome, WaitResult};
 
@@ -297,11 +280,8 @@ mod tests {
         assert_eq!(BARE_TAIL_ROWS, 80, "the flag help spells this literally");
     }
 
-    /// An optional-value flag reads the next word as its value, so a bare
-    /// `--tail` directly before TARGET swallows it. That is inherent to the
-    /// same `num_args = 0..=1` shape `--scrollback` has always had; pinned
-    /// here because the flag help promises the workaround (spell N out) and
-    /// a loud usage error is the behavior we want, not a silent misparse.
+    /// A bare `--tail` before TARGET swallows it (as `--scrollback` always has);
+    /// it must be a loud usage error, not a silent misparse.
     #[test]
     fn a_bare_tail_before_target_is_a_loud_usage_error() {
         crate::parse_cli(["phux", "wait", "--tail", "build"])

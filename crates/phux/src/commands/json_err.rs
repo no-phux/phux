@@ -1,26 +1,15 @@
-//! The stable JSON error contract shared by every `--json` verb
-//! (ADR-0065 §4, phux-i0e8.8.2).
-//!
-//! A `--json` consumer's stdout is the document, so failures may not leak
-//! into it — but "read stderr as prose" is no contract for a machine either.
-//! Every converted verb therefore reports a failure as **one line of JSON on
-//! stderr**, leaving stdout empty, with the established exit codes unchanged
-//! (`0` success, `1` miss / no server, `2` refusal / usage, `3` partial
-//! view, `124`/`125` timeouts):
+//! The stable JSON error contract shared by every `--json` verb (ADR-0065
+//! §4): a failure is one JSON line on stderr, stdout stays empty, and exit
+//! codes are unchanged (`0` success, `1` miss / no server, `2` refusal / usage,
+//! `3` partial view, `124`/`125` timeouts):
 //!
 //! ```json
 //! {"schema_version":1,"error":{"code":"no_server","message":"..."},"remedy":"...","exit_code":1}
 //! ```
 //!
-//! Without `--json` the same failure prints prose (message, then the remedy
-//! indented) — or, for the no-server family, the exact multi-line diagnostic
-//! [`crate::commands::report_no_server`] has always printed, so scripts that
-//! grep for it keep working.
-//!
-//! The `code` vocabulary is closed and lives in [`codes`], exported from this
-//! one place so every stream that needs it (CLI, MCP adapter, docs) reads the
-//! same list. The shape is documented for consumers in
-//! `docs/consumers/agents.md` §5.3.
+//! Without `--json` the same failure prints prose (the no-server family keeps
+//! its exact historical diagnostic). The closed `code` vocabulary lives in
+//! [`codes`]; consumers read `docs/consumers/agents.md` §5.3.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -30,11 +19,8 @@ use phux_client::attach::AttachError;
 /// Version of the JSON error document. Additive fields do not bump it.
 pub(crate) const ERROR_SCHEMA_VERSION: u8 = 1;
 
-/// The closed vocabulary of stable error codes.
-///
-/// Consumers branch on these strings, so they are contract: renaming one is
-/// a breaking change to `docs/consumers/agents.md` §5.3. Add new codes here
-/// (with a doc line) rather than inventing strings at call sites.
+/// The closed vocabulary of stable error codes. Consumers branch on these,
+/// so renaming one is a breaking change; add new codes here.
 pub(crate) mod codes {
     /// No server is listening at the socket (connection refused / not found).
     pub(crate) const NO_SERVER: &str = "no_server";
@@ -57,10 +43,7 @@ pub(crate) mod codes {
     pub(crate) const PARTIAL_VIEW: &str = "partial_view";
     /// A selector that does not parse under the target grammar.
     pub(crate) const INVALID_SELECTOR: &str = "invalid_selector";
-    // The spatial edits' refusal codes (`invalid_ratio`, `selector_miss`,
-    // `same_pane`, `cross_session`, `layout_missing`, `projection_arity`,
-    // ...) live beside their one implementation in
-    // `phux_client::spatial::codes`, shared with the MCP spatial tools.
+    // The spatial edits' refusal codes live in `phux_client::spatial::codes`.
     /// A selector matched several panes where exactly one is required.
     pub(crate) const SELECTOR_NOT_SINGLE: &str = "selector_not_single";
     /// A spatial edit selector resolved to a satellite pane (local-only).
@@ -318,12 +301,8 @@ impl CliError {
     }
 }
 
-/// The JSON error document for `err`, as emitted (one line) on stderr.
-///
-/// Pure, so the shape is unit-testable without capturing stderr. `exit_code`
-/// is embedded because a `--json` consumer reading a pipeline's stderr may
-/// not see the process status; the number in the document and the number the
-/// process exits with are always the same.
+/// The JSON error document for `err`. `exit_code` is embedded because a
+/// consumer reading stderr may not see the process status.
 pub(crate) fn error_document(err: &CliError, exit_code: u8) -> serde_json::Value {
     serde_json::json!({
         "schema_version": ERROR_SCHEMA_VERSION,
@@ -333,11 +312,8 @@ pub(crate) fn error_document(err: &CliError, exit_code: u8) -> serde_json::Value
     })
 }
 
-/// Report `err` on stderr — one JSON line under `json`, prose plus the
-/// indented remedy otherwise — and return `ExitCode::from(exit_code)`.
-///
-/// stdout is never touched: under `--json` it stays the document (empty on
-/// failure), per the pinned output-hygiene discipline.
+/// Report `err` on stderr (one JSON line under `json`, prose plus indented
+/// remedy otherwise) and return the exit code. stdout is never touched.
 pub(crate) fn emit(json: bool, err: &CliError, exit_code: u8) -> ExitCode {
     if json {
         match serde_json::to_string(&error_document(err, exit_code)) {
@@ -357,14 +333,9 @@ pub(crate) fn emit(json: bool, err: &CliError, exit_code: u8) -> ExitCode {
     ExitCode::from(exit_code)
 }
 
-/// Json-aware sibling of [`crate::commands::report_no_server`].
-///
-/// Without `json` it defers to that function, so the multi-line prose
-/// diagnostic (start commands, server log, doctor pointer) stays
-/// byte-identical to what scripts already grep for. With `json` it emits the
-/// contract line — code [`codes::NO_SERVER`] for a connect-time failure,
-/// [`codes::SERVER_DISCONNECTED`] / [`codes::TRANSPORT`] otherwise — always
-/// with exit code 1, matching the prose path.
+/// Json-aware [`crate::commands::report_no_server`]: prose stays
+/// byte-identical; under `json`, `no_server` for a connect failure or
+/// `server_disconnected` / `transport` otherwise, always exit 1.
 pub(crate) fn report_no_server(
     json: bool,
     err: &AttachError,
@@ -377,11 +348,8 @@ pub(crate) fn report_no_server(
     emit(true, &no_server_error(err, socket_path, verb), 1)
 }
 
-/// The [`CliError`] behind [`report_no_server`]'s JSON path, pure for tests.
-///
-/// `pub(crate)` so `phux status --json` can embed the same code / message /
-/// remedy vocabulary inside its `{"running": false, ...}` answer document
-/// instead of inventing a parallel no-server shape.
+/// The [`CliError`] behind [`report_no_server`]'s JSON path, also embedded
+/// by `phux status --json`.
 pub(crate) fn no_server_error(err: &AttachError, socket_path: &Path, verb: &str) -> CliError {
     let server_log = phux_server::telemetry::server_log_path();
     let doctor = format!(
@@ -465,20 +433,15 @@ mod tests {
         assert!(!err.remedy.is_empty());
     }
 
-    /// phux-w7z2.35 / ADR-0071 point 7(a): the agent verbs' codes are part of
-    /// the one closed vocabulary, spelled exactly as ADR-0071 point 6 froze
-    /// them. A consumer branches on these strings, so the spellings are
-    /// pinned here rather than only at the call sites that emit them.
+    /// The agent verbs' codes are part of the closed vocabulary frozen by
+    /// ADR-0071 point 6.
     #[test]
     fn the_agent_verb_codes_live_in_the_single_closed_vocabulary() {
         assert_eq!(codes::NO_AGENT_RECORD, "no_agent_record");
         assert_eq!(codes::AGENT_DEPARTED, "agent_departed");
         assert_eq!(codes::AGENT_MISMATCH, "agent_mismatch");
         assert_eq!(codes::INVALID_KEY_SPEC, "invalid_key_spec");
-        // phux-w7z2.42, added after ADR-0071 point 6 was written: it needs
-        // carving into that enumeration in the PR that ships it.
-        // phux-w7z2.60, added after ADR-0071 point 6 was written: it too
-        // needs carving into that enumeration in the PR that ships it.
+        // Added after ADR-0071 point 6 was written.
         assert_eq!(codes::INPUT_NOT_WRITTEN, "input_not_written");
         assert_eq!(codes::DELIVERY_UNKNOWN, "delivery_unknown");
     }

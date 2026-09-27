@@ -8,25 +8,15 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
-/// A `COLSxROWS` geometry argument, parsed and range-checked.
-///
-/// Both axes are [`NonZeroU16`] so the "a grid has at least one cell" rule
-/// is carried by the type all the way down into
-/// [`phux_client::resize::resize_to`], instead of being a check each caller
-/// has to remember. `x` and `X` are both accepted as the separator because
-/// `120X40` is what a shell autocompletion or a copy-paste from a `stty`
-/// transcript will occasionally produce, and rejecting it teaches nothing.
+/// A `COLSxROWS` geometry, both axes [`NonZeroU16`]. `x` and `X` are both
+/// accepted as the separator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Geometry {
     pub(crate) cols: NonZeroU16,
     pub(crate) rows: NonZeroU16,
 }
 
-/// Parse `COLSxROWS` for clap's `value_parser`.
-///
-/// Diagnostics name the offending half rather than re-printing the whole
-/// argument, because the overwhelmingly common mistakes are a transposed
-/// separator (`120,40`) and a zero (`0x40`), and both are one word to fix.
+/// Parse `COLSxROWS`, naming the offending half in diagnostics.
 impl std::str::FromStr for Geometry {
     type Err = String;
 
@@ -56,23 +46,11 @@ fn parse_axis(value: &str, axis: &str) -> Result<NonZeroU16, String> {
         .ok_or_else(|| format!("{axis} must be at least 1; a 0-cell grid does not exist"))
 }
 
-/// `phux resize TARGET COLSxROWS` — set a pane's grid without a TTY.
-///
-/// Resolves `TARGET` client-side to exactly one pane, then sends the
-/// `RESIZE_TERMINAL` frame the wire has always carried and reads the
-/// server's own post-resize geometry back. This neither attaches nor
-/// subscribes, so the caller never becomes a view whose 80x24 no-TTY
-/// viewport would fight the size it just asked for.
-///
-/// The resize applies immediately whether or not a human is attached. What
-/// it does not do is *win* against the `defaults.window-size` policy
-/// forever: under `smallest` / `largest` / `latest` the next attach,
-/// detach, or `SIGWINCH` recomputes the Terminal's geometry from the
-/// attached views and supersedes it, and under `manual` nothing ever does.
-/// That is why the exit code is derived from the read-back and not from the
-/// send — a script that resizes a pane a human is looking at gets a nonzero
-/// exit and a diagnostic naming the policy, never a confident success and an
-/// 80x24 pane.
+/// `phux resize TARGET COLSxROWS` — set a pane's grid without a TTY: resolve
+/// one pane, send `RESIZE_TERMINAL`, and read the server's geometry back
+/// without attaching. Under a `window-size` policy other than `manual`, an
+/// attached view may supersede the size, so the exit code comes from the
+/// read-back and a mismatch exits nonzero naming the policy.
 pub(crate) fn run_resize(
     target: &str,
     geometry: Geometry,
@@ -111,13 +89,9 @@ pub(crate) fn run_resize(
     })
 }
 
-/// Emit the outcome and pick the exit code from it.
-///
-/// The report is printed on *both* paths, unlike the verbs whose `--json`
-/// failures leave stdout empty. Those failures mean "the command did not
-/// run"; this one means "the command ran and the server holds a different
-/// size than you asked for", and the size it holds is precisely the thing a
-/// caller needs in order to react.
+/// Emit the outcome and pick the exit code. The report prints on both paths:
+/// a mismatch means the command ran and the held size is what the caller
+/// needs.
 fn report(pane: &phux_protocol::ids::ResourceId, outcome: ResizeOutcome, json: bool) -> ExitCode {
     let (cols, rows) = outcome.applied;
     if json {
