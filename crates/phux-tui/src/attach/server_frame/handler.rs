@@ -1979,14 +1979,29 @@ fn open_adopted_window<W: crate::attach::RenderSink>(
     pending: &PendingWindow,
     pane: ResourceId,
 ) -> Result<FrameOutcome, AttachError> {
-    ctx.workspace.add_window(pending.name.clone(), pane.clone());
-    if let std::collections::hash_map::Entry::Vacant(slot) = ctx.panes.entry(pane) {
+    open_window(
+        ctx.workspace,
+        ctx.focused_resource,
+        ctx.panes,
+        &pending.name,
+        pane,
+    )
+}
+
+/// Append an active window named `name` on `pane`, seed its slot, focus it,
+/// and request repaint, broadcast, and reflow.
+fn open_window(
+    workspace: &mut Workspace,
+    focused_resource: &mut Option<ResourceId>,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    name: &str,
+    pane: ResourceId,
+) -> Result<FrameOutcome, AttachError> {
+    workspace.add_window(name.to_owned(), pane.clone());
+    if let std::collections::hash_map::Entry::Vacant(slot) = panes.entry(pane) {
         slot.insert(PaneSlot::new()?);
     }
-    *ctx.focused_resource = ctx
-        .workspace
-        .active_window()
-        .and_then(|ls| ls.focus.clone());
+    *focused_resource = workspace.active_window().and_then(|ls| ls.focus.clone());
     Ok(FrameOutcome {
         layout_replaced: true,
         emit_set_metadata: true,
@@ -2023,17 +2038,7 @@ pub(super) fn handle_window_spawned<W: crate::attach::RenderSink>(
             })
         }
         SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } => {
-            workspace.add_window(pending.name.clone(), new_id.clone());
-            if let std::collections::hash_map::Entry::Vacant(v) = panes.entry(new_id) {
-                v.insert(PaneSlot::new()?);
-            }
-            *focused_resource = workspace.active_window().and_then(|ls| ls.focus.clone());
-            Ok(FrameOutcome {
-                layout_replaced: true,
-                emit_set_metadata: true,
-                reflow_panes: true,
-                ..FrameOutcome::default()
-            })
+            open_window(workspace, focused_resource, panes, &pending.name, new_id)
         }
         SpawnResult::Err(err) => {
             tracing::warn!(error = ?err, "new-window: server-side spawn failed");

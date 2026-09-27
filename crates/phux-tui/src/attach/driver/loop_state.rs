@@ -855,16 +855,17 @@ impl SessionLoop {
         )
     }
 
+    /// The row the status bar reserves, if any.
+    fn bar(&self) -> Option<crate::render::chrome::status_bar::Position> {
+        self.settings
+            .status_bar
+            .as_ref()
+            .map(StatusBarPainter::position)
+    }
+
     /// The residual rect panes tile into once the bar and strip are folded off.
     fn content(&self, sidebar: Option<SidebarReservation>) -> crate::layout::Rect {
-        content_rect(
-            self.viewport_dims,
-            self.settings
-                .status_bar
-                .as_ref()
-                .map(StatusBarPainter::position),
-            sidebar,
-        )
+        content_rect(self.viewport_dims, self.bar(), sidebar)
     }
 
     /// The single chrome-refresh chokepoint, with this driver's inputs bound.
@@ -3565,12 +3566,7 @@ impl SessionLoop {
         if ls.tree.is_none() {
             return Ok(());
         }
-        let bar = self
-            .settings
-            .status_bar
-            .as_ref()
-            .map(StatusBarPainter::position);
-        let prev_content = content_rect(prev_dims, bar, sidebar);
+        let prev_content = content_rect(prev_dims, self.bar(), sidebar);
         let new_content = self.content(sidebar);
         let prev_rects =
             crate::attach::multi_pane::compute_layout_in(ls.as_ref(), prev_content, prev_dims)
@@ -3596,16 +3592,14 @@ impl SessionLoop {
 
     /// Hand every surviving overlay the focused pane's current rect.
     fn sync_overlays(&mut self, sidebar: Option<SidebarReservation>) {
+        let bar = self.bar();
         sync_overlays_to_focused_pane(
             &mut self.overlays,
             &self.workspace,
             self.zoomed.as_ref(),
             self.focused_resource.as_ref(),
             self.viewport_dims,
-            self.settings
-                .status_bar
-                .as_ref()
-                .map(StatusBarPainter::position),
+            bar,
             sidebar,
         );
     }
