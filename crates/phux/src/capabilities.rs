@@ -71,7 +71,7 @@ fn carrier_json(carrier: Carrier) -> Value {
 /// `HELLO_OK.server_caps.features` (a mask, not a bit index).
 fn gate_json(feature: ServerFeature) -> Value {
     json!({
-        "feature": crate::feature_names::feature_name(feature),
+        "feature": feature.snake_name(),
         "mask": feature as u32,
     })
 }

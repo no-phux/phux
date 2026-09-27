@@ -32,7 +32,6 @@ mod companion;
 mod deprecations;
 mod environment;
 mod exit_codes;
-mod feature_names;
 mod refdocs;
 mod skill;
 

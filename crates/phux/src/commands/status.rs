@@ -17,14 +17,13 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::state::Degradation;
-use phux_protocol::caps::ServerFeatureSet;
+use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, ls};
 // Feature bits by their `snake_case` name (the `docs/spec/proto.md` constant
 // lower-cased), from the table `--capabilities --json` shares.
-use crate::feature_names::feature_names;
 
 /// Version of the `phux status --json` document. Additive fields do not
 /// bump it.
@@ -131,7 +130,7 @@ fn build_report(
         pid,
         since_unix_secs,
         protocol,
-        features: feature_names(features),
+        features: features.iter().map(ServerFeature::snake_name).collect(),
         sessions,
         satellite_terminals,
         unreachable: degradation.notices().to_vec(),
@@ -334,8 +333,8 @@ mod tests {
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
     use super::{
-        StatusReport, build_report, feature_names, format_uptime, not_running_document,
-        render_human, status_document,
+        StatusReport, build_report, format_uptime, not_running_document, render_human,
+        status_document,
     };
 
     fn session(name: &str, windows: u16, clients: u16) -> SessionInfo {
@@ -516,62 +515,6 @@ mod tests {
         assert_eq!(
             report.unreachable,
             ["satellite build-box is unreachable".to_owned()]
-        );
-    }
-
-    /// Every known bit has a `snake_case` name, an empty set names nothing,
-    /// and the names are the spec constants lower-cased — the contract the
-    /// Claude shim's `resource_kinds` probe relies on.
-    #[test]
-    fn feature_names_are_the_wire_constants_in_snake_case() {
-        assert!(feature_names(ServerFeatureSet::new()).is_empty());
-        let all = ServerFeatureSet::from_wire(u32::MAX);
-        let names = feature_names(all);
-        assert_eq!(
-            names.len(),
-            ServerFeature::ALL.len(),
-            "one name per known bit: {names:?}"
-        );
-        let mut unique = names.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(
-            unique.len(),
-            names.len(),
-            "each ServerFeature must have exactly one name: {names:?}"
-        );
-        assert!(names.contains(&"approvals"));
-        assert!(names.contains(&"attach_roles"));
-        assert!(names.contains(&"keyed_signal"));
-        assert!(names.contains(&"event_journal"));
-        assert!(names.contains(&"retain_on_exit"));
-        assert!(names.contains(&"spawn_idempotency"));
-        assert!(names.contains(&"close_tab_resources"));
-        assert!(names.contains(&"move_resource"));
-        assert!(names.contains(&"quic_streams"));
-        assert!(names.contains(&"conditional_kill"));
-        assert!(names.contains(&"host_sessions"));
-        assert!(names.contains(&"keep_empty_sessions"));
-        assert!(names.contains(&"whoami"));
-        assert!(names.contains(&"ssh_origin"));
-        assert!(names.contains(&"open_listener"));
-        assert!(
-            names.contains(&"resource_kinds"),
-            "the agent session verbs' probe bit must be nameable: {names:?}"
-        );
-        assert!(
-            names.contains(&"list_directory_host"),
-            "the host-aware listing bit must be nameable: {names:?}"
-        );
-        for name in &names {
-            assert!(
-                name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
-                "{name} is not snake_case"
-            );
-        }
-        assert_eq!(
-            feature_names(ServerFeatureSet::with(&[ServerFeature::ReportAgentState])),
-            ["report_agent_state"]
         );
     }
 
