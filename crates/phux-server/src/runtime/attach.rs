@@ -2642,14 +2642,19 @@ fn spawn_terminal_output_pump(
                 | PumpFault::ReplayAbandoned
                 | PumpFault::PaneGone => {}
                 PumpFault::GenerationLost => {
-                    warn!(
-                        ?core_terminal_id,
-                        "spawn pump lost its generation; reaping the pane and closing the client"
-                    );
-                    pump_state.with_mut(|s| {
-                        let _ = super::client::reap_pane_journaling_close(s, core_terminal_id);
+                    let reaped = pump_state.with_mut(|s| {
+                        super::client::reap_pane_journaling_close(s, core_terminal_id)
                     });
-                    pump_connection_token.cancel();
+                    // A pane that already closed ended with RESOURCE_CLOSED:
+                    // its fenced pump losing the generation on the way out
+                    // is no reason to drop the client.
+                    if reaped {
+                        warn!(
+                            ?core_terminal_id,
+                            "spawn pump lost its generation; reaped the pane, closing the client"
+                        );
+                        pump_connection_token.cancel();
+                    }
                 }
                 PumpFault::PublicationNotActivated => {
                     warn!(
