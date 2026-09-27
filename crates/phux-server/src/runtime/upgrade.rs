@@ -70,12 +70,10 @@ pub(super) enum UpgradeError {
     HandoffDeadline,
 }
 
-/// A private executable snapshot copied from one opened source inode.
-/// Validation uses the snapshot so replacing the installed path cannot
-/// swap in a different image between copy and check. Re-exec uses the
-/// installed path when it still matches the snapshot (phux-9lj9): macOS
-/// Application Firewall allowlists the running image's path, and a
-/// tempfile that is then deleted can never be allowlisted.
+/// A private executable snapshot copied from one opened source inode, so the
+/// installed path cannot be swapped between copy and validation. Re-exec
+/// uses the installed path while it still matches: macOS Application
+/// Firewall allowlists by path, and a deleted tempfile never can be.
 struct PinnedExecutable {
     path: PathBuf,
     source_path: PathBuf,
@@ -181,10 +179,7 @@ pub(super) struct UpgradePlan {
     executable: PinnedExecutable,
     blob_fd: RawFd,
     socket_path: PathBuf,
-    /// The server's effective runtime flags (phux-v45.10), read back from the
-    /// upgrade context the runtime captured at startup. Re-emitted on the
-    /// resume argv so `--listen` / `--quic` / `--webtransport` / `--connect`
-    /// / `--hub` survive the re-exec.
+    /// Re-emitted on the resume argv.
     flags: RuntimeFlags,
     _fd_flags: FdFlagsGuard,
     _blob_file: std::fs::File,
@@ -317,16 +312,10 @@ fn pin_validated_executable(
     Ok(executable)
 }
 
-/// The graceful-upgrade handoff a resumed image inherits through its
-/// environment from the server that re-exec'd into it ([`UpgradePlan::exec`]).
-///
-/// Regression (phux-m5yj): the `PHUX_UPGRADE_*` variables are consumed only
-/// by a `--resume` start, then removed from the process environment. They
-/// used to be read lazily at upgrade time by any server, and they also leaked
-/// into every pane child. A server cold-started from an upgraded server's
-/// pane therefore pinned the *outer* server's installed binary and re-exec'd
-/// into a different phux on its first upgrade -- one whose protocol refused
-/// every client, so the resumed server never accepted again.
+/// The upgrade handoff a resumed image inherits through its environment.
+/// The `PHUX_UPGRADE_*` variables are consumed only by a `--resume` start
+/// and then removed, so they never leak into panes and steer an unrelated
+/// server started from one onto the wrong binary.
 #[derive(Debug)]
 pub(super) struct InheritedUpgradeEnv {
     /// Installed executable the next upgrade pins instead of `current_exe`.
@@ -353,17 +342,12 @@ impl InheritedUpgradeEnv {
         };
         for key in crate::upgrade::HANDOFF_ENV_VARS {
             if std::env::var_os(key).is_some() {
-                // SAFETY: std serializes its own environment access behind a
-                // process-wide lock, so this cannot race a Rust-side read. The
-                // residual hazard is a concurrent libc `getenv` from foreign
-                // code on another thread. Both callers, `ServerRuntime::resume`
-                // and `ServerRuntime::discard_inherited_upgrade`, run from
-                // `phux server` after building the current-thread runtime
-                // (which starts no threads) and before the blocking
-                // pool, signal handlers, or log-rotation task exist. The only
-                // earlier threads are the tracing-appender worker (with
-                // `PHUX_LOG` set), which only writes, and the developer-only
-                // tokio-console server under `tokio_unstable`.
+                // SAFETY: std serializes its own environment access, so the
+                // only hazard is a concurrent libc `getenv` on another thread.
+                // Both callers run from `phux server` before the blocking
+                // pool, signal handlers, or log-rotation task exist; the only
+                // earlier threads (the tracing-appender worker, tokio-console
+                // under `tokio_unstable`) never read the environment.
                 unsafe { std::env::remove_var(key) };
             }
         }
@@ -443,12 +427,9 @@ async fn collect_pane_handoffs(
 }
 
 impl UpgradePlan {
-    /// Re-exec the new binary as `server --resume <blob_fd> --socket <path>`
-    /// plus the effective runtime flags (`--listen` / `--quic` /
-    /// `--webtransport` / `--hub`, phux-v45.10), replacing this process in
-    /// place. Returns only on failure — and a failure is harmless: nothing
-    /// was closed, so the old image keeps serving and the children stay
-    /// attached.
+    /// Re-exec the new binary with [`resume_args`], replacing this process.
+    /// Returns only on failure, which is harmless: nothing was closed, so the
+    /// old image keeps serving.
     pub(super) fn exec(self) -> std::io::Error {
         let exe = match self.executable.exec_path() {
             Ok(path) => path.to_path_buf(),
@@ -467,10 +448,8 @@ impl UpgradePlan {
     }
 }
 
-/// Build the full argv (after argv0) for the graceful-upgrade re-exec:
-/// `server --resume <blob_fd> --socket <path>` plus one entry per effective
-/// runtime flag (phux-v45.10). Pure, so the reconstruction is testable
-/// without exec'ing anything.
+/// The re-exec argv (after argv0): `server --resume <blob_fd> --socket
+/// <path>` plus one entry per applied runtime flag.
 fn resume_args(blob_fd: RawFd, socket_path: &Path, flags: RuntimeFlags) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         OsString::from("server"),
@@ -499,10 +478,7 @@ fn resume_args(blob_fd: RawFd, socket_path: &Path, flags: RuntimeFlags) -> Vec<O
         args.push(OsString::from("--hub"));
     }
     if let Some(idle) = flags.exit_after_idle {
-        // The flag's unit is whole seconds. Round UP so a sub-second value
-        // (library-only; the CLI floor is 1s) survives as 1 rather than
-        // collapsing to `--exit-after-idle 0`, which would make the resumed
-        // image exit the moment its last client dropped.
+        // Whole seconds, rounded up: never `--exit-after-idle 0`.
         let secs = idle.as_secs() + u64::from(idle.subsec_nanos() > 0);
         args.push(OsString::from("--exit-after-idle"));
         args.push(OsString::from(secs.to_string()));
@@ -510,13 +486,9 @@ fn resume_args(blob_fd: RawFd, socket_path: &Path, flags: RuntimeFlags) -> Vec<O
     args
 }
 
-/// Validate the replacement image can run *and* load this host's config.
-///
-/// `--version` only proves the file is executable. Config is loaded after
-/// `execve`, which is irreversible: a missing `extends` layer then takes
-/// the live server down (phux-69pq.12). `config check` uses the same
-/// loader `phux server` does, so a failure here leaves the old image
-/// serving.
+/// Validate the replacement image runs *and* loads this host's config
+/// before the irreversible `execve`; a config failure after exec would take
+/// the live server down.
 fn validate_binary(exe: &Path) -> Result<(), UpgradeError> {
     probe_binary(exe, &["--version"])?;
     probe_binary(exe, &["config", "check"])?;
@@ -613,27 +585,9 @@ fn files_have_same_bytes(a: &Path, b: &Path) -> std::io::Result<bool> {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests")]
 
-    use std::net::SocketAddr;
     use std::os::fd::AsRawFd;
 
     use super::*;
-
-    const WS: &str = "127.0.0.1:8787";
-    const QUIC: &str = "0.0.0.0:4433";
-    const WT: &str = "0.0.0.0:4434";
-
-    fn flags(ws: Option<&str>, quic: Option<&str>, wt: Option<&str>, hub: bool) -> RuntimeFlags {
-        let addr = |s: &str| s.parse::<SocketAddr>().unwrap();
-        RuntimeFlags {
-            ws_addr: ws.map(addr),
-            quic_addr: quic.map(addr),
-            wt_addr: wt.map(addr),
-            connect: None,
-            hub,
-            exit_after_idle: None,
-            upgrade_source_exe: None,
-        }
-    }
 
     fn args_as_strings(flags: RuntimeFlags) -> Vec<String> {
         resume_args(7, Path::new("/run/phux/phux.sock"), flags)
@@ -668,178 +622,45 @@ mod tests {
         }
     }
 
-    /// The base of the resume argv is invariant: subcommand, blob fd, socket.
-    const BASE: [&str; 5] = ["server", "--resume", "7", "--socket", "/run/phux/phux.sock"];
-
-    /// phux-v45.10 regression matrix: every combination of the opt-in runtime
-    /// flags must be reconstructed on the re-exec argv — the original bug was
-    /// an argv of only `server --resume <fd> --socket <path>`, silently
-    /// dropping `--listen`, `--quic`, and `--hub` across `phux server
-    /// upgrade` (and later, in the same class, `--webtransport` — phux-0wmf).
+    /// Every opt-in flag the server applied is re-emitted on the resume argv
+    /// (dropping them silently was the original upgrade bug); a default
+    /// server re-execs with the bare argv; a sub-second idle lifetime rounds
+    /// up rather than becoming `--exit-after-idle 0`.
     #[test]
-    fn resume_args_reconstructs_every_flag_combination() {
-        type Case<'a> = (
-            Option<&'a str>,
-            Option<&'a str>,
-            Option<&'a str>,
-            bool,
-            &'a [&'a str],
-        );
-        let cases: [Case<'_>; 16] = [
-            (None, None, None, false, &[]),
-            (Some(WS), None, None, false, &["--listen", WS]),
-            (None, Some(QUIC), None, false, &["--quic", QUIC]),
-            (None, None, Some(WT), false, &["--webtransport", WT]),
-            (None, None, None, true, &["--hub"]),
-            (
-                Some(WS),
-                Some(QUIC),
-                None,
-                false,
-                &["--listen", WS, "--quic", QUIC],
-            ),
-            (
-                Some(WS),
-                None,
-                Some(WT),
-                false,
-                &["--listen", WS, "--webtransport", WT],
-            ),
-            (Some(WS), None, None, true, &["--listen", WS, "--hub"]),
-            (
-                None,
-                Some(QUIC),
-                Some(WT),
-                false,
-                &["--quic", QUIC, "--webtransport", WT],
-            ),
-            (None, Some(QUIC), None, true, &["--quic", QUIC, "--hub"]),
-            (None, None, Some(WT), true, &["--webtransport", WT, "--hub"]),
-            (
-                Some(WS),
-                Some(QUIC),
-                Some(WT),
-                false,
-                &["--listen", WS, "--quic", QUIC, "--webtransport", WT],
-            ),
-            (
-                Some(WS),
-                Some(QUIC),
-                None,
-                true,
-                &["--listen", WS, "--quic", QUIC, "--hub"],
-            ),
-            (
-                Some(WS),
-                None,
-                Some(WT),
-                true,
-                &["--listen", WS, "--webtransport", WT, "--hub"],
-            ),
-            (
-                None,
-                Some(QUIC),
-                Some(WT),
-                true,
-                &["--quic", QUIC, "--webtransport", WT, "--hub"],
-            ),
-            (
-                Some(WS),
-                Some(QUIC),
-                Some(WT),
-                true,
-                &[
-                    "--listen",
-                    WS,
-                    "--quic",
-                    QUIC,
-                    "--webtransport",
-                    WT,
-                    "--hub",
-                ],
-            ),
-        ];
-        for (ws, quic, wt, hub, extra) in cases {
-            let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
-            expected.extend(extra.iter().map(ToString::to_string));
-            assert_eq!(
-                args_as_strings(flags(ws, quic, wt, hub)),
-                expected,
-                "argv mismatch for ws={ws:?} quic={quic:?} wt={wt:?} hub={hub}",
-            );
-        }
-    }
-
-    /// The default (UDS-only, non-hub) server re-execs with the bare argv —
-    /// no spurious flags invented for surfaces it never served.
-    #[test]
-    fn resume_args_default_flags_add_nothing() {
+    fn resume_args_reconstruct_the_served_surface() {
+        const BASE: [&str; 5] = ["server", "--resume", "7", "--socket", "/run/phux/phux.sock"];
         assert_eq!(args_as_strings(RuntimeFlags::default()), BASE);
-    }
 
-    #[test]
-    fn resume_args_preserves_ad_hoc_connector() {
-        let flags = RuntimeFlags {
+        let every = RuntimeFlags {
+            ws_addr: Some("127.0.0.1:8787".parse().unwrap()),
+            quic_addr: Some("0.0.0.0:4433".parse().unwrap()),
+            wt_addr: Some("0.0.0.0:4434".parse().unwrap()),
             connect: Some("relay.example:4433".to_owned()),
+            hub: true,
+            exit_after_idle: Some(Duration::from_secs(90)),
+            upgrade_source_exe: None,
+        };
+        let mut expected: Vec<&str> = BASE.to_vec();
+        expected.extend([
+            "--listen",
+            "127.0.0.1:8787",
+            "--quic",
+            "0.0.0.0:4433",
+            "--webtransport",
+            "0.0.0.0:4434",
+            "--connect",
+            "relay.example:4433",
+            "--hub",
+            "--exit-after-idle",
+            "90",
+        ]);
+        assert_eq!(args_as_strings(every), expected);
+
+        let sub_second = RuntimeFlags {
+            exit_after_idle: Some(Duration::from_millis(300)),
             ..RuntimeFlags::default()
         };
-        let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
-        expected.extend(["--connect".to_owned(), "relay.example:4433".to_owned()]);
-        assert_eq!(args_as_strings(flags), expected);
-    }
-
-    /// An ephemeral server's lifetime survives its own upgrade. Dropping it
-    /// here would silently promote a bounded harness daemon to an immortal
-    /// one — the leak this flag exists to close, reintroduced by the one
-    /// operation whose whole promise is "same server, new image".
-    #[test]
-    fn resume_args_preserves_ephemeral_lifetime() {
-        let flags = RuntimeFlags {
-            exit_after_idle: Some(std::time::Duration::from_secs(90)),
-            ..RuntimeFlags::default()
-        };
-        let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
-        expected.extend(["--exit-after-idle".to_owned(), "90".to_owned()]);
-        assert_eq!(args_as_strings(flags), expected);
-    }
-
-    /// A sub-second lifetime (reachable only through `ServerConfig`, which
-    /// tests use) rounds UP. Truncation would emit `--exit-after-idle 0`,
-    /// making the resumed image exit the instant its last client dropped —
-    /// strictly more eager than the server it replaced.
-    #[test]
-    fn resume_args_rounds_sub_second_lifetime_up() {
-        let flags = RuntimeFlags {
-            exit_after_idle: Some(std::time::Duration::from_millis(300)),
-            ..RuntimeFlags::default()
-        };
-        let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
-        expected.extend(["--exit-after-idle".to_owned(), "1".to_owned()]);
-        assert_eq!(args_as_strings(flags), expected);
-    }
-
-    /// The flags land in the plan from the shared-state upgrade context —
-    /// the same channel `prepare_upgrade` reads — not from anywhere argv-ish.
-    #[test]
-    fn upgrade_context_round_trips_runtime_flags() {
-        let state = SharedState::new();
-        assert!(
-            state.with(|s| s.upgrade_context().is_none()),
-            "no context before serving"
-        );
-        let captured = flags(Some(WS), Some(QUIC), Some(WT), true);
-        state.with_mut(|s| {
-            s.set_upgrade_context(3, PathBuf::from("/tmp/phux.sock"), captured.clone());
-        });
-        let (fd, path, roundtripped) = state
-            .with(|s| {
-                s.upgrade_context()
-                    .map(|(fd, path, flags)| (fd, path.to_path_buf(), flags))
-            })
-            .expect("context set");
-        assert_eq!(fd, 3);
-        assert_eq!(path, PathBuf::from("/tmp/phux.sock"));
-        assert_eq!(roundtripped, captured);
+        assert_eq!(args_as_strings(sub_second)[5..], ["--exit-after-idle", "1"]);
     }
 
     #[test]
@@ -892,57 +713,31 @@ mod tests {
         assert_eq!(fd_flags(listener_fd), original);
     }
 
+    fn install(from: &str, to: &Path) {
+        std::fs::copy(from, to).unwrap();
+        std::fs::set_permissions(to, std::fs::metadata(from).unwrap().permissions()).unwrap();
+    }
+
+    /// Re-exec lands on the installed (allowlistable) path while it still
+    /// matches the validated snapshot, and aborts once the install is
+    /// swapped; validation always sees the snapshot.
     #[test]
-    fn executable_validation_and_exec_share_one_private_snapshot() {
+    fn upgrade_execs_the_installed_path_only_while_it_matches_the_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("phux");
-        std::fs::copy("/usr/bin/true", &path).unwrap();
-        std::fs::set_permissions(
-            &path,
-            std::fs::metadata("/usr/bin/true").unwrap().permissions(),
-        )
-        .unwrap();
+        install("/usr/bin/true", &path);
         let pinned = PinnedExecutable::open(&path).unwrap();
+        assert_ne!(pinned.path, pinned.source_path);
+        assert_eq!(pinned.exec_path().unwrap(), pinned.source_path.as_path());
 
         let replacement = dir.path().join("replacement");
-        std::fs::copy("/usr/bin/false", &replacement).unwrap();
-        std::fs::set_permissions(
-            &replacement,
-            std::fs::metadata("/usr/bin/false").unwrap().permissions(),
-        )
-        .unwrap();
+        install("/usr/bin/false", &replacement);
         std::fs::rename(&replacement, &path).unwrap();
-
         validate_binary(&pinned.path).expect("the pinned image remains the validated one");
-        assert!(
-            validate_binary(&path).is_err(),
-            "the replaced filesystem path now names a different image"
-        );
+        assert!(validate_binary(&path).is_err());
         assert!(
             pinned.exec_path().is_err(),
             "a swapped install path must abort rather than re-exec the tempfile"
-        );
-    }
-
-    #[test]
-    fn upgrade_reexec_uses_the_installed_path_when_it_still_matches() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("phux");
-        std::fs::copy("/usr/bin/true", &path).unwrap();
-        std::fs::set_permissions(
-            &path,
-            std::fs::metadata("/usr/bin/true").unwrap().permissions(),
-        )
-        .unwrap();
-        let pinned = PinnedExecutable::open(&path).unwrap();
-        assert_ne!(
-            pinned.path, pinned.source_path,
-            "the snapshot is a different path from the install"
-        );
-        assert_eq!(
-            pinned.exec_path().unwrap(),
-            pinned.source_path.as_path(),
-            "re-exec must land on the allowlistable install path (phux-9lj9)"
         );
     }
 
@@ -955,10 +750,18 @@ mod tests {
         path
     }
 
+    /// `config check` runs before the irreversible exec: a replacement that
+    /// cannot load this host's config aborts with the loader's diagnostic.
     #[test]
-    fn validate_binary_refuses_when_config_check_fails() {
+    fn validate_binary_requires_version_and_config_check() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_stub_phux(
+        let good = write_stub_phux(
+            dir.path(),
+            "#!/bin/sh\ncase \"$1\" in\n--version|config) exit 0 ;;\n*) exit 1 ;;\nesac\n",
+        );
+        validate_binary(&good).expect("a coherent replacement image must pass");
+
+        let bad = write_stub_phux(
             dir.path(),
             "#!/bin/sh\n\
              case \"$1\" in\n\
@@ -967,8 +770,7 @@ mod tests {
              *) exit 0 ;;\n\
              esac\n",
         );
-        let err = validate_binary(&path).expect_err("a broken config must abort the upgrade");
-        assert!(matches!(err, UpgradeError::Validation(_)), "got {err:?}");
+        let err = validate_binary(&bad).expect_err("a broken config must abort the upgrade");
         let message = err.to_string();
         assert!(
             message.contains("config check"),

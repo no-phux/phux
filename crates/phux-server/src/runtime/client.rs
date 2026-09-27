@@ -32,8 +32,8 @@ use tracing::{debug, error, info, trace, warn};
 use super::input_lane::{InputLaneHandle, RoutedInput};
 use super::{
     STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, bootstrap_attach_terminal, handle_attach,
-    handle_command, handle_detach_terminal, handle_frame_ack, handle_move_terminal,
-    handle_terminal_input, handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
+    handle_detach_terminal, handle_frame_ack, handle_move_terminal, handle_terminal_input,
+    handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
     subscribe_attach_terminal,
 };
 use crate::auth::Standing;
@@ -298,21 +298,7 @@ async fn run_handler(
     command: Command,
     started: std::time::Instant,
 ) {
-    handle_command(
-        &ctx.state,
-        ctx.client_id,
-        request_id,
-        command,
-        &ctx.out_tx,
-        ctx.client_caps,
-        ctx.profile,
-        ctx.limits,
-        ctx.input_lane.as_ref(),
-        &ctx.token,
-        &ctx.root_token,
-        ctx.defer_subscription,
-    )
-    .await;
+    ctx.run(request_id, command).await;
     crate::perf::CMD_HANDLE.record_elapsed(started);
 }
 
