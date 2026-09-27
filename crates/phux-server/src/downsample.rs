@@ -569,349 +569,126 @@ mod tests {
     use super::*;
     use phux_protocol::caps::{ImageProtocolSet, KeyboardProtocolSet};
 
-    fn caps_color(c: ColorSupport) -> ClientCapabilities {
-        ClientCapabilities::new().with_color_support(c)
-    }
-
-    fn caps_strip_images() -> ClientCapabilities {
-        ClientCapabilities::new().with_image_protocols(ImageProtocolSet::new())
-    }
-
     #[test]
-    fn truecolor_path_is_byte_identical() {
-        let input = b"\x1b[38;2;255;0;0mhello\x1b[0m world";
-        let out = rewrite_bytes(input, ColorSupport::TrueColor);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn ascii_passthrough_under_any_tier() {
-        let input = b"hello world\nplain ASCII\r\n";
-        for tier in [
-            ColorSupport::TrueColor,
-            ColorSupport::Indexed256,
-            ColorSupport::Indexed16,
-        ] {
-            assert_eq!(rewrite_bytes(input, tier), input);
+    fn color_tier_rewrites() {
+        use ColorSupport::{Indexed16 as I16, Indexed256 as I256, TrueColor as TC};
+        let cases: &[(&[u8], ColorSupport, &[u8])] = &[
+            (
+                b"\x1b[38;2;255;0;0mhello\x1b[0m world",
+                TC,
+                b"\x1b[38;2;255;0;0mhello\x1b[0m world",
+            ),
+            (
+                b"hello world\nplain ASCII\r\n",
+                I16,
+                b"hello world\nplain ASCII\r\n",
+            ),
+            (
+                b"hello world\nplain ASCII\r\n",
+                I256,
+                b"hello world\nplain ASCII\r\n",
+            ),
+            (b"\x1b[38;2;255;0;0mX", I256, b"\x1b[38;5;196mX"),
+            (b"\x1b[48;2;0;0;255mZ", I256, b"\x1b[48;5;21mZ"),
+            (b"\x1b[38;2;255;0;0mX", I16, b"\x1b[91mX"),
+            (b"\x1b[48;2;255;0;0mY", I16, b"\x1b[101mY"),
+            (b"\x1b[38;2;128;0;0mX", I16, b"\x1b[31mX"),
+            // Lab, not RGB distance: dark cyan is not black, dim blue is dim.
+            (b"\x1b[38;2;0;64;64mX", I16, b"\x1b[36mX"),
+            (b"\x1b[48;2;0;40;192mX", I16, b"\x1b[44mX"),
+            (b"\x1b[1;38;2;255;0;0;4mX", I256, b"\x1b[1;38;5;196;4mX"),
+            (
+                b"\x1b[2J\x1b[Hhello\x1b[31m!",
+                I16,
+                b"\x1b[2J\x1b[Hhello\x1b[31m!",
+            ),
+            (
+                b"\x1b]0;hello world\x1b\\rest",
+                I16,
+                b"\x1b]0;hello world\x1b\\rest",
+            ),
+            (b"\x1b]2;title\x07rest", I256, b"\x1b]2;title\x07rest"),
+            (b"\x1b[mX", I256, b"\x1b[mX"),
+            (b"abc\x1b", I256, b"abc\x1b"),
+            (b"abc\x1b[38;2;1", I256, b"abc\x1b[38;2;1"),
+            (b"\x1b=foo", I256, b"\x1b=foo"),
+            // ITU colon forms: empty, explicit, and absent colour-space slot.
+            (b"\x1b[38:2::255:0:0mX", I256, b"\x1b[38;5;196mX"),
+            (b"\x1b[48:2::255:0:0mY", I16, b"\x1b[101mY"),
+            (b"\x1b[38:2:0:255:0:0mX", I256, b"\x1b[38;5;196mX"),
+            (b"\x1b[38:2:255:0:0mX", I256, b"\x1b[38;5;196mX"),
+            (b"\x1b[38:2::255:0:0mX", TC, b"\x1b[38:2::255:0:0mX"),
+            // Curly underline is not a color.
+            (b"\x1b[4:3mX", I256, b"\x1b[4:3mX"),
+        ];
+        for (input, tier, want) in cases {
+            assert_eq!(rewrite_bytes(input, *tier), *want, "{input:?} at {tier:?}");
         }
     }
 
     #[test]
-    fn truecolor_fg_to_256_red() {
-        let input = b"\x1b[38;2;255;0;0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[38;5;196mX");
+    fn capability_gated_escapes() {
+        let all = ClientCapabilities::new();
+        let no_links = ClientCapabilities::new().with_hyperlinks(false);
+        let no_images = ClientCapabilities::new().with_image_protocols(ImageProtocolSet::new());
+        let no_kbd = ClientCapabilities::new().with_kbd_protocols(KeyboardProtocolSet::new());
+        let no_kitty_graphics =
+            ClientCapabilities::new().with_image_protocols(ImageProtocolSet::with(&[
+                ImageProtocol::Sixel,
+                ImageProtocol::Iterm2,
+            ]));
+        let osc8: &[u8] = b"\x1b]8;;https://example.com\x1b\\hello\x1b]8;;\x1b\\";
+        let sixel: &[u8] = b"prefix\x1bP0;0;0q#0;2;100;0;0~~~\x1b\\suffix";
+        let kitty_gfx: &[u8] = b"start\x1b_Ga=T,f=24;payload\x1b\\end";
+        let iterm2: &[u8] = b"a\x1b]1337;File=name=test:AAAA\x1b\\b";
+        let kbd: &[u8] = b"head\x1b_13;2u\x1b\\tail";
+        let cases: &[(&[u8], ClientCapabilities, &[u8])] = &[
+            (osc8, all, osc8),
+            (osc8, no_links, b"hello"),
+            (
+                b"\x1b]8;;https://x.example\x07link text\x1b]8;;\x07trailing",
+                no_links,
+                b"link texttrailing",
+            ),
+            (
+                b"\x1b]0;window title\x1b\\rest",
+                no_links,
+                b"\x1b]0;window title\x1b\\rest",
+            ),
+            (sixel, all, sixel),
+            (sixel, no_images, b"prefixsuffix"),
+            // DECRQSS (`$ q`) is not sixel.
+            (b"\x1bP$q\"p\x1b\\", no_images, b"\x1bP$q\"p\x1b\\"),
+            (kitty_gfx, all, kitty_gfx),
+            (kitty_gfx, no_images, b"startend"),
+            (iterm2, all, iterm2),
+            (iterm2, no_images, b"ab"),
+            (kbd, all, kbd),
+            (kbd, no_kbd, b"headtail"),
+            (b"x\x1b_Ga=T;abc\x1b\\y", no_kbd, b"x\x1b_Ga=T;abc\x1b\\y"),
+            (
+                b"x\x1b_13;2u\x1b\\y",
+                no_kitty_graphics,
+                b"x\x1b_13;2u\x1b\\y",
+            ),
+        ];
+        for (i, (input, caps, want)) in cases.iter().enumerate() {
+            assert_eq!(rewrite_bytes_with_caps(input, *caps), *want, "case {i}");
+        }
     }
 
     #[test]
-    fn truecolor_bg_to_256_blue() {
-        let input = b"\x1b[48;2;0;0;255mZ";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[48;5;21mZ");
-    }
-
-    #[test]
-    fn truecolor_fg_to_16_red_is_bright_red() {
-        let input = b"\x1b[38;2;255;0;0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[91mX");
-    }
-
-    #[test]
-    fn truecolor_bg_to_16_red_is_bright_red_bg() {
-        let input = b"\x1b[48;2;255;0;0mY";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[101mY");
-    }
-
-    #[test]
-    fn truecolor_fg_to_16_dark_red_is_dark_red() {
-        let input = b"\x1b[38;2;128;0;0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[31mX");
-    }
-
-    #[test]
-    fn indexed16_uses_lab_for_dark_cyan_instead_of_black() {
-        // RGB squared distance ties this with black; Lab keeps the visible hue.
-        let input = b"\x1b[38;2;0;64;64mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[36mX");
-    }
-
-    #[test]
-    fn indexed16_uses_lab_lightness_for_dim_blue() {
-        // RGB squared distance prefers bright blue; Lab picks the dim ANSI blue.
-        let input = b"\x1b[48;2;0;40;192mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[44mX");
-    }
-
-    #[test]
-    fn mixed_sgr_parameters_partial_rewrite() {
-        let input = b"\x1b[1;38;2;255;0;0;4mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[1;38;5;196;4mX");
-    }
-
-    #[test]
-    fn non_sgr_csi_passes_through() {
-        let input = b"\x1b[2J\x1b[Hhello\x1b[31m!";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn osc_sequences_pass_through() {
-        let input = b"\x1b]0;hello world\x1b\\rest";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn osc_bell_terminated_passes_through() {
-        let input = b"\x1b]2;title\x07rest";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn empty_sgr_is_preserved() {
-        let input = b"\x1b[mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[mX");
-    }
-
-    #[test]
-    fn lone_esc_at_eof_passes_through() {
-        let input = b"abc\x1b";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn truncated_csi_at_eof_passes_through() {
-        let input = b"abc\x1b[38;2;1";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn two_byte_escape_passes_through() {
-        let input = b"\x1b=foo";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    // --- ITU colon SGR (phux-9gz) -----------------------------------------
-
-    #[test]
-    fn itu_colon_truecolor_fg_downgrades_to_256() {
-        // CSI 38:2::255:0:0 m → indexed256 red 196.
-        // The empty middle field is the ECMA-48 colourspace slot.
-        let input = b"\x1b[38:2::255:0:0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[38;5;196mX");
-    }
-
-    #[test]
-    fn itu_colon_truecolor_bg_downgrades_to_16() {
-        let input = b"\x1b[48:2::255:0:0mY";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[101mY");
-    }
-
-    #[test]
-    fn itu_colon_truecolor_with_explicit_colourspace_is_tolerated() {
-        // Some emitters fill the colourspace slot with `0` rather than
-        // leaving it empty. Tolerate per ECMA-48 §8.3.117.
-        let input = b"\x1b[38:2:0:255:0:0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[38;5;196mX");
-    }
-
-    #[test]
-    fn itu_colon_5field_form_also_works() {
-        // Some implementations emit 38:2:R:G:B (no colourspace slot).
-        let input = b"\x1b[38:2:255:0:0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[38;5;196mX");
-    }
-
-    #[test]
-    fn itu_colon_truecolor_passthrough_under_truecolor_client() {
-        // Under TrueColor + everything-permissive, the fast path returns
-        // the input bytewise — including the ITU form intact.
-        let input = b"\x1b[38:2::255:0:0mX";
-        let out = rewrite_bytes(input, ColorSupport::TrueColor);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn non_color_colon_sgr_passes_through_verbatim() {
-        // `4:3` is the curly-underline SGR. Must survive verbatim — the
-        // rewriter only recognises color sub-sequences.
-        let input = b"\x1b[4:3mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    // --- OSC 8 hyperlinks (phux-9gz) --------------------------------------
-
-    #[test]
-    fn osc8_open_close_passthrough_when_hyperlinks_allowed() {
-        // OSC 8 ; ; https://example.com ST  hello  OSC 8 ; ; ST
-        let input = b"\x1b]8;;https://example.com\x1b\\hello\x1b]8;;\x1b\\";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn osc8_stripped_when_hyperlinks_disabled() {
-        let input = b"\x1b]8;;https://example.com\x1b\\hello\x1b]8;;\x1b\\";
-        let caps = ClientCapabilities::new().with_hyperlinks(false);
-        let out = rewrite_bytes_with_caps(input, caps);
-        // Only the inner `hello` survives.
-        assert_eq!(out, b"hello");
-    }
-
-    #[test]
-    fn osc8_with_bel_terminator_also_stripped() {
-        // Some emitters use BEL instead of ST.
-        let input = b"\x1b]8;;https://x.example\x07link text\x1b]8;;\x07trailing";
-        let caps = ClientCapabilities::new().with_hyperlinks(false);
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, b"link texttrailing");
-    }
-
-    #[test]
-    fn osc_non_8_unaffected_by_hyperlink_strip() {
-        // Window title (OSC 0) must NOT be stripped when hyperlinks=false.
-        let input = b"\x1b]0;window title\x1b\\rest";
-        let caps = ClientCapabilities::new().with_hyperlinks(false);
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, input);
-    }
-
-    // --- Image protocols (phux-9gz) ---------------------------------------
-
-    #[test]
-    fn sixel_passthrough_when_bit_set() {
-        // DCS 0 ; 0 ; 0 q ... ST — minimal sixel body.
-        let input = b"prefix\x1bP0;0;0q#0;2;100;0;0~~~\x1b\\suffix";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn sixel_dropped_when_bit_unset() {
-        let input = b"prefix\x1bP0;0;0q#0;2;100;0;0~~~\x1b\\suffix";
-        let out = rewrite_bytes_with_caps(input, caps_strip_images());
-        assert_eq!(out, b"prefixsuffix");
-    }
-
-    #[test]
-    fn non_sixel_dcs_survives_image_strip() {
-        // DECRQSS-style DCS (final `|`, not `q`) must not be dropped
-        // when only sixel is disabled.
-        let input = b"\x1bP$q\"p\x1b\\";
-        let out = rewrite_bytes_with_caps(input, caps_strip_images());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn kitty_graphics_passthrough_when_bit_set() {
-        // APC G a=T,f=24;<payload> ST
-        let input = b"start\x1b_Ga=T,f=24;payload\x1b\\end";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn kitty_graphics_dropped_when_bit_unset() {
-        let input = b"start\x1b_Ga=T,f=24;payload\x1b\\end";
-        let out = rewrite_bytes_with_caps(input, caps_strip_images());
-        assert_eq!(out, b"startend");
-    }
-
-    #[test]
-    fn iterm2_image_dropped_when_bit_unset() {
-        // OSC 1337 ; File=name=...:base64 ST
-        let input = b"a\x1b]1337;File=name=test:AAAA\x1b\\b";
-        let out = rewrite_bytes_with_caps(input, caps_strip_images());
-        assert_eq!(out, b"ab");
-    }
-
-    #[test]
-    fn iterm2_image_passthrough_when_bit_set() {
-        let input = b"a\x1b]1337;File=name=test:AAAA\x1b\\b";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    // --- Kitty keyboard protocol APC (phux-9gz) ---------------------------
-
-    #[test]
-    fn kitty_kbd_reply_stripped_when_disabled() {
-        // APC without leading `G` — kitty kbd protocol payload.
-        let input = b"head\x1b_13;2u\x1b\\tail";
-        let caps = ClientCapabilities::new().with_kbd_protocols(KeyboardProtocolSet::new());
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, b"headtail");
-    }
-
-    #[test]
-    fn kitty_kbd_reply_survives_when_enabled() {
-        let input = b"head\x1b_13;2u\x1b\\tail";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn kitty_graphics_not_stripped_by_kbd_disable() {
-        // Disabling kbd_protocols must not affect APC `G` graphics
-        // payloads (they are gated independently).
-        let input = b"x\x1b_Ga=T;abc\x1b\\y";
-        let caps = ClientCapabilities::new().with_kbd_protocols(KeyboardProtocolSet::new());
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn kitty_kbd_not_stripped_by_graphics_disable() {
-        // Conversely, disabling kitty_graphics must not eat kbd replies.
-        let input = b"x\x1b_13;2u\x1b\\y";
-        let caps = ClientCapabilities::new().with_image_protocols(ImageProtocolSet::with(&[
-            ImageProtocol::Sixel,
-            ImageProtocol::Iterm2,
-        ]));
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, input);
-    }
-
-    // --- Composition ------------------------------------------------------
-
-    #[test]
-    fn caps_with_color_downgrade_and_image_strip_compose() {
-        // Truecolor SGR + sixel inside the same stream; client wants
-        // Indexed256 and refuses sixel.
+    fn color_downgrade_and_image_strip_compose() {
         let input = b"\x1b[38;2;255;0;0mhi\x1bP0;0;0qsixel\x1b\\done";
-        let caps =
-            caps_color(ColorSupport::Indexed256).with_image_protocols(ImageProtocolSet::with(&[
+        let caps = ClientCapabilities::new()
+            .with_color_support(ColorSupport::Indexed256)
+            .with_image_protocols(ImageProtocolSet::with(&[
                 ImageProtocol::KittyGraphics,
                 ImageProtocol::Iterm2,
             ]));
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, b"\x1b[38;5;196mhidone");
-    }
-
-    #[test]
-    fn caps_color_function_smoke() {
-        // Smoke-check that the convenience helper produces a permissive
-        // base with just color toggled.
-        let c = caps_color(ColorSupport::Indexed16);
-        assert!(c.image_protocols.contains(ImageProtocol::Sixel));
-        assert!(c.hyperlinks);
-        assert!(matches!(c.color_support, ColorSupport::Indexed16));
+        assert_eq!(
+            rewrite_bytes_with_caps(input, caps),
+            b"\x1b[38;5;196mhidone"
+        );
     }
 }

@@ -357,32 +357,14 @@ mod tests {
         }
     }
 
-    // --- endpoint parsing matrix -------------------------------------
-
     #[test]
-    fn parses_quic_host_port() {
-        assert_eq!(
-            parse_endpoint("quic://devbox:8788"),
-            Ok(SatelliteTarget::Quic {
-                host: "devbox".to_owned(),
-                port: 8788,
-            })
-        );
-    }
-
-    #[test]
-    fn parses_quic_ipv6_literal() {
-        assert_eq!(
-            parse_endpoint("quic://[::1]:8788"),
-            Ok(SatelliteTarget::Quic {
-                host: "[::1]".to_owned(),
-                port: 8788,
-            })
-        );
-    }
-
-    #[test]
-    fn parses_ws_and_wss_urls() {
+    fn parses_quic_and_ws_endpoints() {
+        let quic = |host: &str| SatelliteTarget::Quic {
+            host: host.to_owned(),
+            port: 8788,
+        };
+        assert_eq!(parse_endpoint("quic://devbox:8788"), Ok(quic("devbox")));
+        assert_eq!(parse_endpoint("quic://[::1]:8788"), Ok(quic("[::1]")));
         assert_eq!(
             parse_endpoint("ws://127.0.0.1:8787"),
             Ok(SatelliteTarget::Ws {
@@ -396,8 +378,6 @@ mod tests {
             })
         );
     }
-
-    // --- ssh endpoint matrix (phux-v45.9) ------------------------------
 
     #[test]
     fn parses_ssh_host_user_port_matrix() {
@@ -436,9 +416,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_ssh_endpoints() {
-        // (endpoint, expected reason fragment)
+    fn rejects_malformed_endpoints() {
+        // (endpoint, expected reason fragment; "" = any error)
         let cases: &[(&str, &str)] = &[
+            ("devbox:8788", "missing '<scheme>://'"),
+            ("://devbox", "empty scheme"),
+            ("http://devbox", "unsupported scheme \"http\""),
+            ("quic://", ""),
+            ("quic://:8788", ""),
+            ("ws:///path", ""),
+            ("wss://", ""),
+            ("quic://devbox", "explicit port"),
+            ("quic://devbox:phux", ""),
+            ("quic://devbox:0", ""),
+            ("quic://devbox:70000", ""),
+            ("quic://devbox:8788/route", "no path"),
             ("ssh://devbox/path", "no path"),
             ("ssh://@devbox", "empty user"),
             ("ssh://me@", "empty host"),
@@ -451,10 +443,9 @@ mod tests {
             ("ssh://[::1]junk", "trailing garbage"),
             // Unbracketed IPv6 is ambiguous with `host:port`.
             ("ssh://::1", "invalid character"),
-            // Option injection: a host or user readable as an ssh flag.
+            // Option injection and shell metacharacters never reach argv.
             ("ssh://-oProxyCommand=evil", "must not start with '-'"),
             ("ssh://-fool@devbox", "must not start with '-'"),
-            // Shell metacharacters and whitespace never reach argv.
             ("ssh://dev box", "invalid character"),
             ("ssh://devbox;rm", "invalid character"),
             ("ssh://me$@devbox", "invalid character"),
@@ -464,51 +455,6 @@ mod tests {
             let err = parse_endpoint(endpoint).unwrap_err();
             assert!(err.contains(fragment), "{endpoint}: {err}");
         }
-    }
-
-    #[test]
-    fn rejects_missing_scheme() {
-        let err = parse_endpoint("devbox:8788").unwrap_err();
-        assert!(err.contains("missing '<scheme>://'"), "{err}");
-    }
-
-    #[test]
-    fn rejects_empty_scheme() {
-        let err = parse_endpoint("://devbox").unwrap_err();
-        assert!(err.contains("empty scheme"), "{err}");
-    }
-
-    #[test]
-    fn rejects_unknown_scheme() {
-        let err = parse_endpoint("http://devbox").unwrap_err();
-        assert!(err.contains("unsupported scheme \"http\""), "{err}");
-    }
-
-    #[test]
-    fn rejects_empty_host() {
-        assert!(parse_endpoint("quic://").is_err());
-        assert!(parse_endpoint("quic://:8788").is_err());
-        assert!(parse_endpoint("ws:///path").is_err());
-        assert!(parse_endpoint("wss://").is_err());
-    }
-
-    #[test]
-    fn rejects_quic_without_port() {
-        let err = parse_endpoint("quic://devbox").unwrap_err();
-        assert!(err.contains("explicit port"), "{err}");
-    }
-
-    #[test]
-    fn rejects_quic_bad_port() {
-        assert!(parse_endpoint("quic://devbox:phux").is_err());
-        assert!(parse_endpoint("quic://devbox:0").is_err());
-        assert!(parse_endpoint("quic://devbox:70000").is_err());
-    }
-
-    #[test]
-    fn rejects_quic_with_path() {
-        let err = parse_endpoint("quic://devbox:8788/route").unwrap_err();
-        assert!(err.contains("no path"), "{err}");
     }
 
     // --- table construction ------------------------------------------
@@ -562,28 +508,20 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_names_rejected() {
-        let err = HubTable::from_registry(&[
-            entry("devbox", "quic://a:1", true),
-            entry("devbox", "quic://b:2", true),
-        ])
-        .unwrap_err();
-        assert_eq!(
-            err,
-            HubTableError::DuplicateName {
-                name: "devbox".to_owned(),
-            }
-        );
-    }
-
-    #[test]
     fn duplicate_names_rejected_even_when_one_is_disabled() {
-        let err = HubTable::from_registry(&[
-            entry("devbox", "quic://a:1", false),
-            entry("devbox", "quic://b:2", true),
-        ])
-        .unwrap_err();
-        assert!(matches!(err, HubTableError::DuplicateName { .. }));
+        for first_enabled in [true, false] {
+            let err = HubTable::from_registry(&[
+                entry("devbox", "quic://a:1", first_enabled),
+                entry("devbox", "quic://b:2", true),
+            ])
+            .unwrap_err();
+            assert_eq!(
+                err,
+                HubTableError::DuplicateName {
+                    name: "devbox".to_owned(),
+                }
+            );
+        }
     }
 
     #[test]
@@ -624,12 +562,7 @@ mod tests {
             .unwrap();
         assert_eq!(table.len(), 1);
         assert!(resolve_hub_table(true, &[entry("devbox", "nope", true)]).is_err());
-    }
-
-    #[test]
-    fn hub_mode_with_empty_registry_is_an_empty_table() {
-        let table = resolve_hub_table(true, &[]).unwrap().unwrap();
-        assert!(table.is_empty());
+        assert!(resolve_hub_table(true, &[]).unwrap().unwrap().is_empty());
     }
 
     #[test]

@@ -344,30 +344,23 @@ mod tests {
         arb.identity_ownership(&t)
     }
 
+    /// Only an explicit write with a real `state` declares; identity-only,
+    /// `unknown`, and malformed writes leave the detector running.
     #[test]
-    fn a_declared_state_stands_the_detector_down() {
-        let mut arb = AgentRecordArbiter::default();
-        let t = terminal(1);
-        assert!(!arb.is_declared(&t), "nothing declared yet");
-        arb.note_explicit_set(&t, br#"{"name":"me","state":"blocked"}"#);
-        assert!(arb.is_declared(&t));
-    }
-
-    /// A human names the agent; the detector keeps tracking its state.
-    #[test]
-    fn an_identity_only_declaration_leaves_the_detector_running() {
-        let mut arb = AgentRecordArbiter::default();
-        let t = terminal(1);
-        arb.note_explicit_set(&t, br#"{"name":"reviewer","kind":"claude"}"#);
-        assert!(!arb.is_declared(&t));
-    }
-
-    #[test]
-    fn an_explicit_unknown_state_is_not_a_declaration() {
-        let mut arb = AgentRecordArbiter::default();
-        let t = terminal(1);
-        arb.note_explicit_set(&t, br#"{"name":"x","state":"unknown"}"#);
-        assert!(!arb.is_declared(&t), "`unknown` declares nothing");
+    fn only_a_real_state_declares() {
+        let cases: &[(&[u8], bool)] = &[
+            (br#"{"name":"me","state":"blocked"}"#, true),
+            (br#"{"name":"reviewer","kind":"claude"}"#, false),
+            (br#"{"name":"x","state":"unknown"}"#, false),
+            (b"not json at all", false),
+        ];
+        for (value, declared) in cases {
+            let mut arb = AgentRecordArbiter::default();
+            let t = terminal(1);
+            assert!(!arb.is_declared(&t));
+            arb.note_explicit_set(&t, value);
+            assert_eq!(arb.is_declared(&t), *declared, "{value:?}");
+        }
     }
 
     #[test]
@@ -458,14 +451,6 @@ mod tests {
             !arb.has_explicit_identity(&t),
             "the record is gone from the store, and the identity with it",
         );
-    }
-
-    #[test]
-    fn malformed_bytes_declare_nothing() {
-        let mut arb = AgentRecordArbiter::default();
-        let t = terminal(1);
-        arb.note_explicit_set(&t, b"not json at all");
-        assert!(!arb.is_declared(&t));
     }
 
     #[test]
