@@ -38,6 +38,7 @@ use phux_dial::{CertTrust, QuicDial, WsDial, WsTarget};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities,
+    ServerFeatureExtSet,
 };
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::FrameKind;
@@ -497,6 +498,7 @@ pub(crate) struct NegotiatedBootstrap {
     limits: BootstrapLimits,
     /// Features the satellite advertised in `HELLO_OK`.
     server_features: phux_protocol::caps::ServerFeatureSet,
+    server_features_ext: ServerFeatureExtSet,
     /// The satellite's `HELLO_OK.server_id`, for the incarnation fence.
     server_id: Option<[u8; 16]>,
 }
@@ -515,6 +517,11 @@ pub(crate) trait LinkConn {
 
     /// Features the satellite advertised in its `HELLO_OK`.
     fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String>;
+
+    /// Missing from older peers' `HELLO_OK`; treat absence as no support.
+    fn server_features_ext(&self) -> Result<ServerFeatureExtSet, String> {
+        Ok(ServerFeatureExtSet::new())
+    }
 
     /// The satellite's `HELLO_OK.server_id` (L1 §9.1); `None` fences as one
     /// incarnation.
@@ -800,9 +807,11 @@ fn negotiated_relay_session<C: LinkConn>(
     let profile = conn.bootstrap_profile()?;
     let limits = conn.bootstrap_limits()?;
     let features = conn.server_features()?;
+    let features_ext = conn.server_features_ext()?;
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
     let mut session =
         super::relay::RelaySession::new_negotiated(host.clone(), limits, profile, features);
+    session.set_satellite_features_ext(features_ext);
     session.set_incarnation(conn.satellite_incarnation());
     Ok(session)
 }
@@ -1063,6 +1072,7 @@ async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
                 profile: selected_profile,
                 limits: bootstrap_limits,
                 server_features: server_caps.features,
+                server_features_ext: server_caps.features_ext,
                 server_id: <[u8; 16]>::try_from(server_id.as_slice()).ok(),
             })
         }
@@ -1452,6 +1462,11 @@ impl LinkConn for NetLinkConn {
 
     fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String> {
         self.negotiated().map(|selection| selection.server_features)
+    }
+
+    fn server_features_ext(&self) -> Result<ServerFeatureExtSet, String> {
+        self.negotiated()
+            .map(|selection| selection.server_features_ext)
     }
 
     fn satellite_incarnation(&self) -> Option<[u8; 16]> {
@@ -2976,6 +2991,57 @@ mod tests {
     }
 
     // --- loopback integration: the real transport over a real socket -----
+
+    #[tokio::test]
+    async fn net_link_preserves_satellite_extended_features_from_hello_ok() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let _hello = futures_util::StreamExt::next(&mut ws)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut caps = phux_protocol::caps::ServerCapabilities::default();
+            caps.features_ext =
+                ServerFeatureExtSet::with(&[phux_protocol::caps::ServerFeatureExt::PathQuery]);
+            let mut encoded = bytes::BytesMut::new();
+            FrameKind::HelloOk {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                server_caps: caps,
+                server_id: vec![0; 16],
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: BootstrapLimits::default(),
+            }
+            .encode(&mut encoded);
+            futures_util::SinkExt::send(
+                &mut ws,
+                tokio_tungstenite::tungstenite::Message::Binary(encoded.to_vec().into()),
+            )
+            .await
+            .unwrap();
+        });
+        let spec = DialSpec::Ws {
+            url: format!("ws://127.0.0.1:{port}"),
+            trust: CertTrust::SkipVerify,
+            token_file: None,
+        };
+        let conn = NetLinkTransport::new("ssh".into())
+            .connect(&spec, None)
+            .await
+            .unwrap();
+        assert!(
+            conn.server_features_ext()
+                .unwrap()
+                .contains(phux_protocol::caps::ServerFeatureExt::PathQuery)
+        );
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn net_transport_connects_to_a_loopback_ws_listener_and_notices_the_drop() {
