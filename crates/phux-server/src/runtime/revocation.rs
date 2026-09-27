@@ -1,42 +1,20 @@
 //! Live revocation (`docs/spec/workload-auth.md` §7, ADR-0116).
 //!
-//! A connection's authority is not a snapshot of its HELLO. The `Watcher`
-//! here re-judges every live connection whose authority someone else can
-//! withdraw (a scoped workload grant, or any grant a pairing-store bearer
-//! admitted) whenever the workload registry or a token store changes, and
-//! at each grant's expiry. When the authority is gone, `revoke_connection`
-//! performs §7's steps in one critical section of the state lock:
+//! The `Watcher` re-judges every connection whose authority someone else can
+//! withdraw (a scoped workload grant, or a grant a pairing-store bearer
+//! admitted) whenever the registry or a token store changes and at each
+//! expiry. `revoke_connection` then runs §7's steps under one state lock:
+//! mark the grant revoked (every guard denies from then on), release its
+//! leases, subscriptions, relay proxies, and queued input, have its writer
+//! drop its queue and send `ERROR { PERMISSION_DENIED }` plus `DETACHED`,
+//! and cancel the connection. Terminals and processes are never killed, and
+//! the owner socket's grant is never watched.
 //!
-//! 1. the grant is marked revoked, so every guard denies everything the
-//!    connection sends from then on;
-//! 2. its input leases (each journaled as `terminal_control { RELEASED }`
-//!    with no actor), subscriptions, relay proxies, and queued input are
-//!    released;
-//! 3. its writer is told to drop everything queued and send
-//!    `ERROR { PERMISSION_DENIED }` and `DETACHED { AUTHORIZATION_REVOKED |
-//!    AUTHORIZATION_EXPIRED }` (the writer owns the goodbye, so a mailbox
-//!    that is full, or a read loop parked on one, cannot delay it); and
-//! 4. the connection token is cancelled, which closes the transport and
-//!    aborts its bulk work and pending input receipts.
-//!
-//! Revocation never kills the connection's Terminals or processes.
-//!
-//! The owner socket's grant is never watched: only the kernel uid stands
-//! behind it. With no scoped and no bearer-admitted connection, the watcher
-//! parks on its wake handle and does nothing.
-//!
-//! What counts as a verdict differs by source, because a revocation cut is
-//! final for a phone (it treats the refusal as fatal):
-//!
-//! - A pairing-token store gives a verdict only when it loaded cleanly and
-//!   holds credentials: the admitting generation is revoked, expired, or
-//!   absent from it. A missing, empty, insecure, unparseable, or unreadable
-//!   store is never a verdict for live sessions; it only refuses new ones.
-//! - The workload registry's verdicts (a revoked, expired, or removed
-//!   credential, or a narrowed ceiling) apply at once. A missing, insecure,
-//!   or malformed registry applies §7's empty snapshot only after the same
-//!   broken state has persisted for `REGISTRY_GRACE` (five seconds), so a write caught
-//!   mid-way cannot revoke every workload. A transient read is no verdict.
+//! A revocation is final for a phone, so only real verdicts count: a token
+//! store only when it loaded cleanly and holds credentials, and a broken
+//! (missing, insecure, malformed) registry only after the same broken state
+//! persists for `REGISTRY_GRACE`, so a half-written file cannot revoke every
+//! workload. A transient read is no verdict.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -57,14 +35,12 @@ use crate::workload::{BrokenRegistry, RegistryObservation, WorkloadCredential, W
 #[cfg(test)]
 mod tests;
 
-/// How often the watcher re-reads the registry and the token stores while a
-/// watched connection is live. Each poll costs one `stat` per store; a file
-/// is re-read only when it changed.
+/// Re-read interval while a watched connection is live; each poll costs one
+/// `stat` per store.
 pub(crate) const POLL: Duration = Duration::from_millis(250);
 
-/// How long the workload registry must stay in one broken state (missing,
-/// insecure, or malformed) before its empty snapshot revokes the workload
-/// connections it stood behind: twenty polls.
+/// How long one broken registry state must persist before its empty
+/// snapshot revokes the workload connections it stood behind.
 pub(crate) const REGISTRY_GRACE: Duration = Duration::from_secs(5);
 
 /// Spawn the watcher on the current `LocalSet`. It runs until `root` fires.
@@ -424,10 +400,7 @@ fn covers(outer: &Selector, inner: &Selector) -> bool {
 }
 
 fn earliest(a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
+    a.into_iter().chain(b).min()
 }
 
 fn until(when: DateTime<Utc>, now: DateTime<Utc>) -> Duration {

@@ -1,18 +1,12 @@
 //! Idempotent creates (ADR-0126, SPEC L1 §3.1, L3 §3.1): a keyed
-//! `SPAWN_RESOURCE` and a token-bearing `phux.session.create/v1`, both on the
-//! server's shared dedupe record ([`super::operation_dedupe`]).
+//! `SPAWN_RESOURCE` and a token-bearing `phux.session.create/v1`, on the
+//! shared dedupe record.
 //!
-//! A keyed spawn is admitted before it runs. The first admission owns the
-//! key and spawns; the spawn binds the key to the resource in the step that
-//! registers it, before anything can await, so no repeat ever observes the
-//! resource without its binding. A repeat with the same payload answers the
-//! bound resource marked replayed and runs nothing: no placement, no
-//! agent-session record, no second `pane_spawned`. A repeat with another
-//! payload is `IDEMPOTENCY_CONFLICT`. A spawn that failed binds nothing, and
-//! the next repeat spawns.
-//!
-//! A satellite-addressed spawn is not evaluated here: the hub forwards the
-//! key and the satellite that creates the resource owns its dedupe.
+//! The spawn binds its key in the step that registers the resource, before
+//! any await, so no repeat sees the resource unbound. A same-payload repeat
+//! answers the resource marked replayed and runs nothing; another payload is
+//! `IDEMPOTENCY_CONFLICT`; a failed spawn binds nothing. Satellite-addressed
+//! spawns are deduped by the satellite.
 
 use std::time::{Duration, Instant};
 
@@ -113,8 +107,8 @@ fn spawned_outcome(s: &ServerState, id: &WireResourceId) -> CachedOutcome {
     }
 }
 
-/// How long a repeat waits for the same key's unresolved spawn before it is
-/// refused. The wait runs in the repeating connection's read loop.
+/// How long a repeat (in its connection's read loop) waits for an unresolved
+/// owner before it is refused.
 const REPEAT_WAIT: Duration = Duration::from_secs(10);
 
 enum SpawnAdmission {

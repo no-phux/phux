@@ -1,26 +1,16 @@
-//! The shared operation dedupe record (ADR-0053, generalized by ADR-0126).
+//! The shared operation dedupe record (ADR-0053, ADR-0126).
 //!
-//! A client that loses a reply cannot tell whether its operation ran, so the
-//! operations that must be safe to repeat carry a client-drawn 16-byte id.
-//! This store binds each id to a digest of the request and, once known, to
-//! the outcome, so a repeat with the same id and payload answers the original
-//! outcome instead of running again, and a repeat with a different payload is
-//! refused.
+//! Operations that must be safe to repeat carry a client-drawn 16-byte id,
+//! bound here to a digest of the request and then to its outcome: a same-id,
+//! same-payload repeat answers the original outcome, and a different payload
+//! is refused. Bounds: ten minutes from admission, at most 65,536 live ids,
+//! scoped to this server incarnation. A full store refuses new ids rather
+//! than evicting live ones, so one verb's storm can never make another's
+//! retry run twice. Ids are namespaced per verb by `OperationDomain`.
 //!
-//! One store serves every such operation, with one set of bounds: a
-//! ten-minute horizon measured from admission, at most 65,536 live ids, and
-//! the server incarnation as scope (it lives in memory and dies with the
-//! process, which is what `HELLO_OK.server_id` tells a client). When the
-//! store is full it refuses new ids rather than evicting live ones, so a
-//! storm of one verb can never make another verb's retry run twice.
-//!
-//! Ids are namespaced by `OperationDomain`: the same 16 bytes used as an
-//! `APPLY_INPUT` operation id and as a spawn key name two operations, not one.
-//!
-//! The record is shared between the async runtime, the input lane thread,
-//! and the input completion waiter, so it is a `Mutex`, and a waiter is a
-//! callback: each verb joins a pending operation with its own reply type
-//! without the store knowing it.
+//! The store is shared across threads (runtime, input lane, completion
+//! waiter), and a waiter is a callback so each verb joins with its own reply
+//! type.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

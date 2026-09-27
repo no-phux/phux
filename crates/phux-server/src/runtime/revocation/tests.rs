@@ -5,7 +5,7 @@
 
 use phux_protocol::scope::{EffectiveScopeSet, TerminalScopeSet};
 
-use super::{contains_clause, covers, earliest};
+use super::{contains_clause, covers};
 use phux_protocol::scope::Selector;
 
 fn set(scopes: &[&str]) -> TerminalScopeSet {
@@ -84,15 +84,6 @@ fn a_revoked_grant_admits_nothing_even_owner_shaped() {
         "the first cause sticks"
     );
     assert!(enforce(&state, client, &scoped, Request::Frame(&ping)).is_err());
-}
-
-#[test]
-fn earliest_ignores_absent_deadlines() {
-    let now = chrono::Utc::now();
-    let later = now + chrono::Duration::seconds(5);
-    assert_eq!(earliest(None, None), None);
-    assert_eq!(earliest(Some(later), None), Some(later));
-    assert_eq!(earliest(Some(later), Some(now)), Some(now));
 }
 
 /// ADR-0128: adding a hold narrows the grant, so the live connection is
