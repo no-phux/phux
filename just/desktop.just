@@ -18,6 +18,18 @@ desktop-install:
 desktop-check:
     cd clients/desktop && bun run check:tooling
     python3 clients/desktop/scripts/test-bootstrap-source.py
+    python3 scripts/check-desktop-host-lock.py
+    python3 scripts/test-check-desktop-host-lock.py
+
+[group('desktop')]
+[doc('Repair repairable desktop host lock drift without bootstrapped GPUIX')]
+desktop-lock-fix:
+    python3 scripts/check-desktop-host-lock.py --fix
+
+[group('desktop')]
+[doc('Re-resolve the desktop host lock against the pinned GPUIX source')]
+desktop-lock-refresh: desktop-source
+    cargo metadata --manifest-path clients/desktop/native/Cargo.toml --format-version 1 >/dev/null
 
 [group('desktop')]
 [doc('Run the pinned upstream Solid native GPU and consumer suite')]

@@ -25,6 +25,11 @@ its `init()` creates the view. The test renderer creates its view immediately.
 
 The host manifest is a package-local Cargo workspace with its own lockfile.
 This keeps the desktop-only GPUI/Zed graph out of other phux consumers. Its
+path dependencies are the root phux crates, so a root dependency bump can
+strand that lock and break a `--locked` build. `just desktop-check` runs
+`scripts/check-desktop-host-lock.py` to catch that before CI; use
+`just desktop-lock-fix` for repairable drift, or `just desktop-lock-refresh`
+to re-resolve against the pinned GPUIX source. Its
 runtime and NAPI-only FFI path dependencies use the existing engine pin. The
 FFI dependency keeps its C ABI disabled here and owns the sole Client registry.
 `napi`/`napi-derive` match
