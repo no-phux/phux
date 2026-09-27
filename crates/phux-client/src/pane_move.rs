@@ -23,18 +23,12 @@ use crate::layout_ops::{
 /// A confirmed pane move and the destination topology that won publication.
 #[derive(Debug, Clone)]
 pub struct PaneMoveOutcome {
-    /// Session that owned the pane before the move.
-    pub source_session: SessionId,
-    /// Session that owns the pane after the move.
-    pub destination_session: SessionId,
     /// Fresh server-reported name of the destination session.
     pub destination_session_name: String,
     /// Confirmed destination workspace, suitable for immediate TUI adoption.
     pub destination_workspace: Workspace,
     /// Whether L1 ownership crossed a session boundary.
     pub cross_session: bool,
-    /// Whether moving the pane reaped its source session.
-    pub source_session_reaped: bool,
 }
 
 /// Failures from the canonical move transaction.
@@ -176,12 +170,9 @@ pub async fn move_pane(
             .await?;
         drop(layout);
         return Ok(PaneMoveOutcome {
-            source_session,
-            destination_session,
             destination_session_name,
             destination_workspace: workspace,
             cross_session: false,
-            source_session_reaped: false,
         });
     }
 
@@ -340,12 +331,9 @@ async fn execute_cross_move(
     }
 
     Ok(PaneMoveOutcome {
-        source_session: plan.source_session,
-        destination_session: plan.destination_session,
         destination_session_name: plan.destination_session_name.clone(),
         destination_workspace,
         cross_session: true,
-        source_session_reaped,
     })
 }
 
@@ -787,10 +775,9 @@ mod tests {
             LayoutNode::Leaf(tid(1)),
         );
         let (_dir, mut conn, server) = serve(spec).await;
-        let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
+        move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
             .unwrap();
-        assert!(outcome.source_session_reaped);
         drop(conn);
         let seen = server.await.unwrap();
         assert!(seen.iter().any(
