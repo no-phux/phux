@@ -1360,7 +1360,7 @@ fn decode_snapshot_extension(
         match id {
             field::snapshot_extension::RESOURCE_STATE => apply_resource_state(value, resources)?,
             field::snapshot_extension::JOURNAL_HEAD => {
-                journal_head = Some(Decoder::new(value).read_u64_be()?);
+                journal_head = Some(Decoder::new(value).read_u64_be()?)
             }
             _ => {}
         }
@@ -1384,7 +1384,7 @@ fn apply_resource_state(value: &[u8], resources: &mut [ResourceInfo]) -> Result<
         match field_id {
             field::resource_state::VIEWER => viewers.push(decode_client_id(&mut v)?),
             field::resource_state::LIFECYCLE => {
-                lifecycle = ResourceLifecycle::from_u8(v.read_u8()?).unwrap_or_default();
+                lifecycle = ResourceLifecycle::from_u8(v.read_u8()?).unwrap_or_default()
             }
             field::resource_state::EXIT => exit = Some(decode_exit_facet(&mut v)?),
             field::resource_state::INPUT_HOLDER => input_holder = Some(decode_client_id(&mut v)?),

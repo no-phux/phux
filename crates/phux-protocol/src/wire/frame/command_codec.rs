@@ -1340,10 +1340,10 @@ fn decode_pane_spawned_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, Decode
     while let Some((field_id, value)) = dec.read_field()? {
         match field_id {
             field::event_pane_spawned::KIND => {
-                kind = ResourceKind::from_wire(Decoder::new(value).read_u8()?);
+                kind = ResourceKind::from_wire(Decoder::new(value).read_u8()?)
             }
             field::event_pane_spawned::PARENT => {
-                parent = Some(decode_terminal_id(&mut Decoder::new(value))?);
+                parent = Some(decode_terminal_id(&mut Decoder::new(value))?)
             }
             _ => {}
         }
@@ -1366,17 +1366,13 @@ fn decode_asked_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> 
     let mut elapsed_seconds = None;
     while let Some((field_id, value)) = dec.read_field()? {
         match field_id {
-            field::event_asked::ID => {
-                id = utf8_value(value)?;
-            }
-            field::event_asked::QUESTION => {
-                question = utf8_value(value)?;
-            }
+            field::event_asked::ID => id = utf8_value(value)?,
+            field::event_asked::QUESTION => question = utf8_value(value)?,
             field::event_asked::SUGGESTION => {
                 suggestions.push(utf8_value(value)?);
             }
             field::event_asked::ELAPSED_SECONDS => {
-                elapsed_seconds = Some(Decoder::new(value).read_u64_be()?);
+                elapsed_seconds = Some(Decoder::new(value).read_u64_be()?)
             }
             // Unknown field id: skip by length (already consumed by
             // `read_field`) — the forward-compat additive-field path.
