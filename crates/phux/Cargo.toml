@@ -135,11 +135,9 @@ bytes.workspace = true
 # connection, rather than substituting a transport-only readiness probe.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
-# Raw-PTY black-box harnesses (examples/) that spawn the real `phux attach`
-# binary in a pseudoterminal, drive it, resize the PTY, and inspect what the
-# client paints via a libghostty oracle. Used to reproduce/verify
-# host-terminal rendering bugs (e.g. phux-8v1 resize duplication) that the
-# tmux probe masks because tmux reflows + reinterprets the byte stream itself.
+# Raw-PTY harnesses (the PTY e2e suites and examples/pty_screen.rs) that run
+# the real `phux attach` in a pseudoterminal and read what it paints through a
+# libghostty oracle, with no tmux reinterpreting the byte stream.
 portable-pty.workspace = true
 libghostty-vt.workspace = true
 # Unique per-test socket directories for the `phux run`/`phux wait`
