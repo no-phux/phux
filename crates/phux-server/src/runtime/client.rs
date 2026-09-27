@@ -16,7 +16,8 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, Compression, LayerSet, QUIC_STREAMS,
-    ServerCapabilities, ServerFeature, ServerFeatureSet, select_bootstrap_profile,
+    ServerCapabilities, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
+    select_bootstrap_profile,
 };
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
 use phux_protocol::policy::TransportType;
@@ -2676,6 +2677,7 @@ async fn negotiate_hello(
         server_caps: ServerCapabilities::new()
             .with_layers(LayerSet::all())
             .with_features(server_features)
+            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
         selected_profile,

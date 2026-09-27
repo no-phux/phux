@@ -8,7 +8,7 @@
 )]
 
 use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeatureExt};
 use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{
     FrameKind, PathErrorCode, PathKind, PathQueryResult, PathStatus, TYPE_ATTACH_READY,
@@ -83,7 +83,16 @@ fn paths_are_host_absolute_typed_and_refused_without_rerouting() {
             },
         )
         .await;
-        assert_eq!(recv_typed(&mut stream).await.0, TYPE_HELLO_OK);
+        let (kind, hello) = recv_typed(&mut stream).await;
+        assert_eq!(kind, TYPE_HELLO_OK);
+        let FrameKind::HelloOk { server_caps, .. } = hello else {
+            panic!("expected HELLO_OK")
+        };
+        assert!(
+            server_caps
+                .features_ext
+                .contains(ServerFeatureExt::PathQuery)
+        );
         send_frame(&mut stream, &attach_by_name("paths")).await;
         recv_until(&mut stream, |kind, _| {
             (kind == TYPE_ATTACH_READY).then_some(())

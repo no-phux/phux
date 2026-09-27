@@ -591,7 +591,8 @@ fn insert_path(
         effects.bell = true;
         return;
     };
-    if path.chars().any(char::is_control)
+    if !path.starts_with('/')
+        || path.chars().any(char::is_control)
         || !crate::attach::path_picker::may_insert(&pending, focused, ctx.own_client_id, panes)
     {
         effects.bell = true;
