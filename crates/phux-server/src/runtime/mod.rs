@@ -413,7 +413,7 @@ impl ServerRuntime {
 
     /// Override the overlay-address source for the auto-bound listener
     /// (ADR-0081), so tests control detection timing
-    /// (`tests/overlay_startup.rs`).
+    /// (`tests/lifecycle/overlay_startup.rs`).
     #[must_use]
     pub const fn overlay_detect(mut self, detect: fn() -> Vec<std::net::IpAddr>) -> Self {
         self.overlay_detect = detect;
@@ -1264,7 +1264,7 @@ impl AutoOverlayPorts {
 /// as a peer of the other accept loops. Detection shells out to `tailscale`
 /// (a wedged daemon costs ~2s), so it runs on a blocking thread after the
 /// accept loops are live: a slow overlay delays this listener, never the
-/// server (`tests/overlay_startup.rs`).
+/// server (`tests/lifecycle/overlay_startup.rs`).
 ///
 /// With nothing to bind it parks on cancellation, so the enclosing
 /// `select_all` still reads a first completion as "an accept loop ended".

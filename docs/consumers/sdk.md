@@ -65,8 +65,7 @@ module functions directly:
   with its captured `RunResult` or timeout state.
 - `wait::poll_until` polls screen state for a `Condition` and returns a
   `WaitResult`.
-- `watch::{watch_events, collect_events}` consumes the pushed
-  `AgentEvent` stream continuously or with finite bounds.
+- `watch::watch_events` consumes the pushed `AgentEvent` stream.
 - `ask::report` reports an `AskedPayload` to the existing event stream.
 
 The async operation functions open the connections they need and return

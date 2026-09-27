@@ -95,8 +95,7 @@ src/
   policy.rs, policy/ — per-connection grant and the dispatch guard
   workload.rs, workload/ — mTLS workload authority and registry (ADR-0116)
   auth.rs, connector.rs, cwd_query.rs, proc_query.rs, id_bridge.rs,
-  search.rs, extract.rs, telemetry.rs, health.rs, perf.rs, history_merge.rs,
-  mailbox.rs
+  telemetry.rs, health.rs, perf.rs, mailbox.rs
 ```
 
 Runtime code holds a `ResourceHandle` and reaches kind-only channels through
@@ -241,4 +240,4 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Alternate-screen history harvest driver | `history_merge.rs` is a tested pure function; nothing calls it. ADR-0078 is Proposed. | [ADR-0078](../adr/0078-alternate-screen-history.md) | not scheduled |
+| Alternate-screen history harvest driver | Not implemented; the unwired merge helper was removed. ADR-0078 is Proposed. | [ADR-0078](../adr/0078-alternate-screen-history.md) | not scheduled |

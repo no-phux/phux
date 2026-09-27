@@ -126,7 +126,6 @@ libghostty-vt.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
-insta.workspace = true
 # `test-util`: paused time for tick and deadline tests.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true

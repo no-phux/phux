@@ -2628,7 +2628,6 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "httlib-huffman",
- "insta",
  "libc",
  "libghostty-vt",
  "memchr",
