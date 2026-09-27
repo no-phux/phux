@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-27
 ---
 
 # Operations
@@ -454,6 +454,32 @@ reports a non-default profile as a warning so it is never a mystery:
 ```
 warn instance  profile dev (this is a development build …); state …/phux-dev
 ```
+
+### Hard guards: a dev build never reaches production
+
+A profile only sets *default* paths, and `--socket`, `PHUX_SOCKET`,
+`PHUX_PROFILE=default`, or copying a dev binary over the installed one all
+walk past a default. So the boundary is also enforced, with no override:
+
+- **Connect and bind.** A development build refuses to connect to, bridge
+  to, or bind the production socket (the `default` profile's
+  `…/phux.sock`, compared after resolving symlinked directories). Every
+  local client connection, `phux stdio-bridge`, and the server's bind go
+  through `phux_config::socket::refuse_dev_on_production`.
+- **Hot swap.** `phux upgrade` re-execs whatever binary sits at the
+  server's installed path. Before it does, the server asks that binary what
+  it is (`PHUX_PROBE_BUILD_KIND=1 phux` prints `release`, `local`, or
+  `dev`). A non-dev server refuses to become a dev build, and a stamped
+  release server refuses anything but another stamped release. Release
+  artifacts are stamped by `scripts/build-release-binaries.sh`
+  (`PHUX_RELEASE_ARTIFACT=1`), the only script the release workflows
+  build with. Switching builds on purpose is a restart, not an upgrade.
+
+For contributors and agents: test a fix against a dev server (`just
+rebuild` hot-swaps the dev-profile server only). Never copy a build into an
+install location such as `~/.local/bin`, and never point a build at the
+production socket. The guards refuse both, and trying to route around them
+is the failure they exist to prevent.
 
 ## Restart policy and crash-loop visibility
 

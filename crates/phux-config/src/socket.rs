@@ -29,6 +29,63 @@ pub fn default_socket_path() -> PathBuf {
     instance::runtime_dir().join("phux.sock")
 }
 
+/// The day-to-day installation's socket in this environment.
+#[must_use]
+pub fn production_socket_path() -> PathBuf {
+    instance::default_profile_runtime_dir().join("phux.sock")
+}
+
+/// Refuse to let a development build touch the day-to-day server.
+///
+/// Every local connection and every server bind passes through this. A
+/// [`instance::BuildKind::Dev`] process aimed at the production socket, by
+/// `--socket`, `PHUX_SOCKET`, `PHUX_PROFILE=default`, or a symlink, gets an
+/// error naming the dev server to use instead. There is deliberately no
+/// override: a dev build that could reach production is how a day of panes
+/// gets replaced by a debug image.
+///
+/// # Errors
+///
+/// The refusal, as a message for the caller to surface.
+pub fn refuse_dev_on_production(socket: &Path) -> Result<(), String> {
+    if instance::build_kind() != instance::BuildKind::Dev {
+        return Ok(());
+    }
+    refuse_if_same_socket(socket, &production_socket_path())
+}
+
+fn refuse_if_same_socket(socket: &Path, production: &Path) -> Result<(), String> {
+    if !same_socket(socket, production) {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to use the production phux socket {} from a development build; \
+         dev builds run their own server under the `{}` profile. Use `phux` from \
+         the installed release for the production server, and never copy a dev \
+         build over the installed binary",
+        production.display(),
+        instance::DEV_PROFILE,
+    ))
+}
+
+/// Whether two socket paths name the same file, resolving symlinked
+/// directories (`/tmp` is `/private/tmp` on macOS). The socket itself may
+/// not exist yet, so only its directory is canonicalised.
+fn same_socket(a: &Path, b: &Path) -> bool {
+    fn resolved(path: &Path) -> PathBuf {
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            return path.to_path_buf();
+        };
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        std::fs::canonicalize(dir).map_or_else(|_| path.to_path_buf(), |dir| dir.join(name))
+    }
+    a == b || resolved(a) == resolved(b)
+}
+
 /// The advisory lock serialising server auto-spawn within one profile.
 ///
 /// A sibling of the socket rather than the socket itself: the socket is
@@ -142,6 +199,30 @@ pub fn reap_stale(path: &Path) -> io::Result<bool> {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn production_socket_is_refused_through_a_symlinked_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let production = real.join("phux.sock");
+
+        let refusal = refuse_if_same_socket(&link.join("phux.sock"), &production)
+            .expect_err("the same socket through a symlink is still production");
+        assert!(refusal.contains("development build"), "{refusal}");
+        assert!(refuse_if_same_socket(&real.join("other.sock"), &production).is_ok());
+        assert!(refuse_if_same_socket(&dir.path().join("phux.sock"), &production).is_ok());
+    }
+
+    #[test]
+    fn test_binaries_may_not_use_the_production_socket() {
+        // Tests are dev builds, so the live guard applies to them too.
+        assert!(refuse_dev_on_production(&production_socket_path()).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        assert!(refuse_dev_on_production(&dir.path().join("phux.sock")).is_ok());
+    }
 
     #[test]
     fn absent_path_probes_absent() {

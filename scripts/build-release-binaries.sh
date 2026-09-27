@@ -24,6 +24,10 @@ esac
 
 export RUSTFLAGS="$rustflags"
 export LIBGHOSTTY_VT_SYS_CPU=baseline
+# Marks a distributed artifact (phux_config::instance::BuildKind::Release). A
+# stamped server only hot-swaps into another stamped build, so a dev or
+# local build copied over the installed binary can never replace it.
+export PHUX_RELEASE_ARTIFACT=1
 printf 'release CPU baseline: target=%s rust=%s libghostty=baseline\n' "$target" "$rust_cpu"
 receipt=target/release/.phux-cpu-baseline
 rm -f -- "$receipt"

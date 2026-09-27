@@ -1140,6 +1140,13 @@ async fn adopt_or_bind_listener(
     // opaque `SUN_LEN` error. The resume branch above adopts an
     // already-bound listener, so only a fresh bind needs the gate.
     validate_socket_path_len(socket_path)?;
+    // Before anything that could unlink a stale production socket.
+    phux_config::socket::refuse_dev_on_production(socket_path).map_err(|refusal| {
+        ServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            refusal,
+        ))
+    })?;
     prepare_socket_dir(socket_path)?;
     handle_existing_socket(socket_path).await?;
     let listener = UnixListener::bind(socket_path).map_err(ServerError::Bind)?;

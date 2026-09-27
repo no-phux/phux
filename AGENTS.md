@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: stable
-last-reviewed: 2026-09-08
+last-reviewed: 2026-09-27
 ---
 # Agent Instructions
 
@@ -38,6 +38,17 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
 - If the primary worktree is dirty or another agent is using it, do not stash,
   reset, clean, or overwrite those changes. Leave them untouched and isolate
   your work in a new worktree.
+
+## Never touch the installed phux
+
+- The user's installed `phux` and its server are production. Never copy a
+  build over an installed binary (`~/.local/bin/phux`, Homebrew, and so on),
+  never aim a build at the production socket (`--socket`, `PHUX_SOCKET`,
+  `PHUX_PROFILE=default`), and never `phux upgrade` the production server.
+- Verify fixes against the dev-profile server (`just rebuild`), or an
+  explicit temp socket. Shipping a fix to the user's machine means a release
+  they install, not a hand-deployed build. See
+  [`docs/operations.md`](./docs/operations.md) "Hard guards".
 
 ## Finish the work
 
