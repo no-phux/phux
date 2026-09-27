@@ -640,50 +640,48 @@ mod tests {
     }
 
     #[test]
-    fn when_empty_matches_everything() {
-        assert!(when_matches(&BTreeMap::new(), &ctx(&[])));
-        assert!(when_matches(&BTreeMap::new(), &ctx(&[("exit-code", "1")])));
-    }
-
-    #[test]
-    fn when_exact_string_and_integer_match_context() {
-        let w = when("exit-code = 0");
-        assert!(when_matches(&w, &ctx(&[("exit-code", "0")])));
-        assert!(!when_matches(&w, &ctx(&[("exit-code", "1")])));
-        // Missing key never matches an exact clause.
-        assert!(!when_matches(&w, &ctx(&[])));
-        let w = when("session = \"work\"");
-        assert!(when_matches(&w, &ctx(&[("session", "work")])));
-        assert!(!when_matches(&w, &ctx(&[("session", "home")])));
-    }
-
-    #[test]
-    fn when_star_matches_even_absent_keys() {
-        let w = when("exit-code = \"*\"");
-        assert!(when_matches(&w, &ctx(&[("exit-code", "137")])));
-        // Signal-killed child: no exit code in context. `"*"` still fires.
-        assert!(when_matches(&w, &ctx(&[])));
-    }
-
-    #[test]
-    fn when_startswith_prefix_matches_base_key() {
-        let w = when("cwd-startswith = \"/Users/x/work\"");
-        assert!(when_matches(&w, &ctx(&[("cwd", "/Users/x/work/repo")])));
-        assert!(!when_matches(&w, &ctx(&[("cwd", "/tmp")])));
-        assert!(!when_matches(&w, &ctx(&[])));
-    }
-
-    #[test]
-    fn when_multiple_clauses_are_anded() {
-        let w = when("exit-code = 0\nsession = \"work\"");
-        assert!(when_matches(
-            &w,
-            &ctx(&[("exit-code", "0"), ("session", "work")])
-        ));
-        assert!(!when_matches(
-            &w,
-            &ctx(&[("exit-code", "0"), ("session", "home")])
-        ));
+    fn when_clauses_match_context() {
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], bool);
+        let cases: &[Case<'_>] = &[
+            ("", &[], true),
+            ("", &[("exit-code", "1")], true),
+            ("exit-code = 0", &[("exit-code", "0")], true),
+            ("exit-code = 0", &[("exit-code", "1")], false),
+            ("exit-code = 0", &[], false),
+            ("session = \"work\"", &[("session", "work")], true),
+            ("session = \"work\"", &[("session", "home")], false),
+            // `"*"` fires even without the key (a signal-killed child).
+            ("exit-code = \"*\"", &[("exit-code", "137")], true),
+            ("exit-code = \"*\"", &[], true),
+            (
+                "cwd-startswith = \"/Users/x/work\"",
+                &[("cwd", "/Users/x/work/repo")],
+                true,
+            ),
+            (
+                "cwd-startswith = \"/Users/x/work\"",
+                &[("cwd", "/tmp")],
+                false,
+            ),
+            ("cwd-startswith = \"/Users/x/work\"", &[], false),
+            (
+                "exit-code = 0\nsession = \"work\"",
+                &[("exit-code", "0"), ("session", "work")],
+                true,
+            ),
+            (
+                "exit-code = 0\nsession = \"work\"",
+                &[("exit-code", "0"), ("session", "home")],
+                false,
+            ),
+        ];
+        for (clauses, context, want) in cases {
+            assert_eq!(
+                when_matches(&when(clauses), &ctx(context)),
+                *want,
+                "{clauses:?} vs {context:?}"
+            );
+        }
     }
 
     fn action(toml_inline: &str) -> Action {
