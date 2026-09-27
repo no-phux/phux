@@ -1,13 +1,10 @@
-//! Typed schema for `config.toml`.
+//! Typed schema for `config.toml` (`docs/consumers/tui.md` §4).
 //!
-//! Field and section names track `docs/consumers/tui.md` §4 verbatim. The TOML side
-//! uses kebab-case (`history-limit`); the Rust side uses `snake_case`
-//! and `#[serde(rename = ...)]` bridges the two.
-//!
-//! `Eq` is intentionally not derived: several structs carry
-//! `toml::Value` (which is not `Eq` because of `f64`).
+//! TOML keys are kebab-case; serde renames bridge them to `snake_case`.
+//! Every table is `#[serde(default)]`, so a missing key takes the value from
+//! the table's `Default` impl, and an empty file parses to [`Config::default`].
 
-#![allow(clippy::derive_partial_eq_without_eq)]
+#![allow(clippy::derive_partial_eq_without_eq)] // `toml::Value` is not `Eq`
 
 use std::collections::BTreeMap;
 
@@ -18,77 +15,41 @@ use crate::{
     satellite::SatelliteConfigEntry,
 };
 
-/// Top-level config. See `docs/consumers/tui.md` §4.2.
-///
-/// Sections are all optional; an empty config file parses to
-/// [`Config::default`].
+/// Top-level config (`docs/consumers/tui.md` §4.2).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Server-wide defaults — shell, `TERM`, scrollback, spawn policy.
-    #[serde(default)]
+    /// Server-wide defaults: shell, `TERM`, scrollback, spawn policy.
     pub defaults: DefaultsCfg,
-
-    /// Prefix + prefix-table + global keybindings.
-    #[serde(default)]
+    /// Prefix, prefix-table, and global keybindings.
     pub keybindings: KeybindingsCfg,
-
     /// Status-bar slot composition.
-    #[serde(default)]
     pub status: StatusCfg,
-
-    /// Window sidebar (`[sidebar]`). Off by default.
-    #[serde(default)]
+    /// Window sidebar (`[sidebar]`).
     pub sidebar: SidebarCfg,
-
     /// Responsive-chrome breakpoints (`[chrome]`).
-    #[serde(default)]
     pub chrome: ChromeCfg,
-
-    /// Event hooks (`[[hooks.<name>]]`).
-    ///
-    /// Keyed by hook name (e.g. `pane-exit`, `after-new-pane`); each
-    /// entry is the array-of-tables under that name.
-    #[serde(default)]
+    /// Event hooks (`[[hooks.<event>]]`), keyed by event name.
     pub hooks: BTreeMap<String, Vec<HookEntry>>,
-
     /// Declarative plugin manifests composed into this config.
-    #[serde(default)]
     pub plugins: Vec<PluginConfigEntry>,
-
     /// Hub-and-spoke federation satellites declared for this host.
-    #[serde(default)]
     pub satellites: Vec<SatelliteConfigEntry>,
-
     /// Outbound relay links this server supervises (ADR-0052).
-    #[serde(default)]
     pub connector: Vec<ConnectorConfigEntry>,
-
-    /// Remote phux servers this machine attaches to (ADR-0055). Written by
-    /// `phux host add`; read by `phux attach <name>`.
-    #[serde(default)]
+    /// Remote servers this machine attaches to (ADR-0055), written by
+    /// `phux host add`.
     pub remote: Vec<RemoteConfigEntry>,
-
-    /// Color slots (theme). Free-form key/value of color strings.
-    #[serde(default)]
+    /// Color slots: free-form `slot -> color` strings.
     pub theme: ThemeCfg,
-
-    /// Experimental knobs gated behind `[experimental]`.
-    ///
-    /// Everything under this section is subject to change without notice.
-    /// See `docs/consumers/tui.md` §4.2 for the user-facing caveat.
-    #[serde(default)]
+    /// Opt-in unstable features; may change without notice.
     pub experimental: ExperimentalCfg,
     /// `[policy]`: the server's authorization posture
     /// (`docs/spec/workload-auth.md` §8).
-    #[serde(default)]
     pub policy: PolicyCfg,
     /// `[voice]`: the server-side transcriber behind `TRANSCRIBE`.
-    #[serde(default)]
     pub voice: VoiceCfg,
-
     /// `[limits]`: server-enforced ceilings that are not per-pane defaults.
-    #[serde(default)]
     pub limits: LimitsCfg,
 }
 
@@ -97,269 +58,101 @@ pub struct Config {
 // ---------------------------------------------------------------------------
 
 /// `[defaults]` table. See `docs/consumers/tui.md` §12 for shipped values.
-///
-/// This struct is intentionally NOT `#[non_exhaustive]`: it is constructed
-/// only via `Default` + struct-update syntax (`..DefaultsCfg::default()`)
-/// in tests and via serde everywhere else, so adding fields is
-/// source-compatible for all in-tree consumers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct DefaultsCfg {
-    /// Shell to spawn in new panes. `None` ⇒ honor `$SHELL` (fallback
-    /// `/bin/sh`) at runtime.
-    ///
-    /// Consumed by the server at startup (phux-i0e8.4.1): the binary
-    /// resolves `configured → $SHELL → /bin/sh` once from its single
-    /// config load and threads the result into every server-owned spawn
-    /// path — the pre-seeded session, `--seed-command`,
-    /// attach-time `CreateIfMissing`, `SESSION_CREATE_KEY`, and a
-    /// `SPAWN_RESOURCE` whose wire frame carries no `command`. A wire
-    /// `command` always wins over this default, mirroring the
-    /// `defaults.term` precedent.
-    #[serde(default)]
+    /// Shell for new panes. `None` resolves `$SHELL`, then `/bin/sh`, once at
+    /// server start; a wire `command` always wins.
     pub shell: Option<String>,
 
-    /// `TERM` advertised to the inner program of every server-spawned pane
-    /// (the seed session, attach-time `CreateIfMissing`, and a
-    /// `SPAWN_RESOURCE` whose wire `env` does not itself carry `TERM`).
-    ///
-    /// Default: `xterm-256color`. The baseline is the
-    /// universally-recognised safe value — 256 colours and the standard
-    /// xterm key vocabulary, no kitty-keyboard advertisement (phux-7vx /
-    /// phux-ign). Set explicitly to e.g. `"ghostty"` to opt into ghostty's
-    /// extended terminfo (sixel, kitty-graphics advertisement, the ghostty
-    /// SGR extensions) once the host's apps are known to round-trip the
-    /// kitty keyboard protocol. The phux-0o8 harness
-    /// (`crates/phux-server/tests/terminal/kip_roundtrip.rs`) records the evidence
-    /// per app: nvim's CSI-u opt-in round-trips end-to-end and
-    /// fzf/less/vim/btop are regression-free under `TERM=ghostty`, but
-    /// htop — the phux-7vx regression app — is unproven, so the shipped
-    /// default stays conservative.
-    ///
-    /// A per-spawn `SPAWN_RESOURCE.env` entry for `TERM` always wins over
-    /// this default — the wire frame is authoritative for the Terminal it
-    /// creates; this is only the fallback when the frame is silent.
-    #[serde(default = "default_term")]
+    /// `TERM` for server-spawned panes when the spawn's own env has none.
+    /// Default `xterm-256color`: `ghostty` is opt-in because not every app
+    /// (htop) is proven to round-trip the kitty keyboard protocol.
     pub term: String,
 
-    /// Lines of scrollback retained per pane.
-    ///
-    /// The TOML key is `history-limit` — the tmux-shaped name kept since
-    /// `phux-config` first shipped. `scrollback-lines` was proposed in
-    /// phux-4li.1 but consciously folded into this field rather than
-    /// duplicated: they describe the same per-Terminal scrollback cap.
-    ///
-    /// This is an upper bound, not a reservation, and it is not the only
-    /// one: libghostty enforces a byte limit beside the line limit and
-    /// prunes on whichever is reached first. [`Self::history_bytes`] is
-    /// that byte limit (ADR-0094). On a wide grid the byte limit is
-    /// usually what binds, so raising this alone buys no depth.
-    #[serde(default = "default_history_limit", rename = "history-limit")]
+    /// Lines of scrollback per pane. libghostty prunes on this or
+    /// [`Self::history_bytes`], whichever is reached first.
+    #[serde(rename = "history-limit")]
     pub history_limit: u32,
 
-    /// Bytes of scrollback retained per pane.
-    ///
-    /// The second half of the pair libghostty prunes on, and the one that
-    /// actually bounds a pane's memory: a row's cost depends on width,
-    /// styles, graphemes, and hyperlinks, so [`Self::history_limit`]
-    /// bounds memory only for one particular kind of content. Pruning is
-    /// page-granular, so real usage lands within one standard libghostty
-    /// page (a few hundred KiB) of this number, and the engine will not
-    /// prune below one standard page of history however small this is set.
-    ///
-    /// Raising it buys depth and costs resident memory, roughly this number
-    /// per pane for the life of the session. It costs nothing at attach: the
-    /// native bootstrap takes a lease on the retained history instead of
-    /// encoding it, and each page is encoded from the live scrollback only
-    /// when a client asks for it, one per actor turn (ADR-0119). Measured at
-    /// 200x50:
-    ///
-    /// | `history-bytes` | rows kept @80 cols | @200 cols |
-    /// |---|---|---|
-    /// | 2 MiB (default) | ~2669 | ~943 |
-    /// | 10 MiB | ~14403 | ~5703 |
-    /// | 32 MiB | ~47500 | ~19031 |
-    ///
-    /// What a client that scrolls back pays afterwards is off the attach
-    /// path and interleaved with live output. The accepted ceiling is
-    /// [`MAX_HISTORY_BYTES`].
-    #[serde(default = "default_history_bytes", rename = "history-bytes")]
+    /// Bytes of scrollback per pane (ADR-0094): the bound that actually caps
+    /// a pane's resident memory, and usually the one that binds on wide
+    /// grids. Pruning is page-granular. Ceiling: [`MAX_HISTORY_BYTES`].
+    #[serde(rename = "history-bytes")]
     pub history_bytes: u32,
 
-    /// Bytes of agent-session records retained per `AgentSession` resource.
-    ///
-    /// An `AgentSession` (ADR-0103) keeps a bounded ring of the
-    /// `AgentEventsJsonlV1` records its producer appends, and replays that
-    /// ring as the stream's bootstrap. This is the ring's ceiling, counted
-    /// over the retained records' own bytes; when an append would carry the
-    /// ring past it the oldest records are evicted and a tombstone counter
-    /// records how many were lost, which the bootstrap surfaces.
-    ///
-    /// The same ADR-0094 shape as [`Self::history_bytes`], and the same
-    /// tradeoff: the retained window is what a late `phux agent log`
-    /// observer gets to see, and it is re-sent per attach. Records are
-    /// small (a `tool_start` is a few hundred bytes), so 4 MiB is tens of
-    /// thousands of them. The accepted ceiling is [`MAX_AGENT_LOG_BYTES`].
-    #[serde(default = "default_agent_log_bytes", rename = "agent-log-bytes")]
+    /// Bytes of records an `AgentSession` retains and replays as its
+    /// bootstrap (ADR-0103); older records are evicted with a tombstone
+    /// count. Ceiling: [`MAX_AGENT_LOG_BYTES`].
+    #[serde(rename = "agent-log-bytes")]
     pub agent_log_bytes: u32,
 
-    /// Events the server's event journal retains for cursor replay.
-    ///
-    /// The server stamps every event it emits with one sequence and keeps
-    /// the most recent ones in a bounded ring (ADR-0123), so a watcher or a
-    /// waiter that reconnects with a cursor is replayed what it missed. A
-    /// cursor older than the ring is told so (a journal gap) and re-reads
-    /// state; nothing is lost silently. Whichever of this and
-    /// [`Self::event_journal_bytes`] is reached first evicts the oldest
-    /// events. The accepted ceiling is [`MAX_EVENT_JOURNAL_ENTRIES`].
-    #[serde(
-        default = "default_event_journal_entries",
-        rename = "event-journal-entries"
-    )]
+    /// Events the server's event journal retains for cursor replay
+    /// (ADR-0123). A cursor older than the ring gets a journal gap.
+    /// Ceiling: [`MAX_EVENT_JOURNAL_ENTRIES`].
+    #[serde(rename = "event-journal-entries")]
     pub event_journal_entries: u32,
 
-    /// Estimated encoded bytes the server's event journal retains.
-    ///
-    /// The memory bound beside [`Self::event_journal_entries`]: events are
-    /// small, except titles, working directories, and agent questions,
-    /// which this bound keeps from crowding the ring. The accepted ceiling
-    /// is [`MAX_EVENT_JOURNAL_BYTES`].
-    #[serde(
-        default = "default_event_journal_bytes",
-        rename = "event-journal-bytes"
-    )]
+    /// Estimated encoded bytes the event journal retains, beside
+    /// [`Self::event_journal_entries`]. Ceiling: [`MAX_EVENT_JOURNAL_BYTES`].
+    #[serde(rename = "event-journal-bytes")]
     pub event_journal_bytes: u32,
 
-    /// Whether a Terminal spawned without `retain_secs` is retained after
-    /// its process exits (ADR-0124).
-    ///
-    /// A retained Terminal stays in the inventory as exited, with its exit
-    /// status and last screen, until [`Self::retain_on_exit_secs`] pass, the
-    /// [`Self::retain_on_exit_max`] bound evicts it, or someone kills it.
-    /// `false` (default) closes a pane when its process exits unless the
-    /// spawner asked for retention.
-    #[serde(default, rename = "retain-on-exit")]
+    /// Whether a Terminal spawned without `retain_secs` stays in the
+    /// inventory, exited, after its process exits (ADR-0124).
+    #[serde(rename = "retain-on-exit")]
     pub retain_on_exit: bool,
 
-    /// Seconds a retained Terminal stays after its process exits when the
-    /// spawner asked for the server default (`retain_secs = 0`) or
-    /// [`Self::retain_on_exit`] retained it. Capped by
-    /// [`Self::retain_on_exit_max_secs`].
-    #[serde(
-        default = "default_retain_on_exit_secs",
-        rename = "retain-on-exit-secs"
-    )]
+    /// Seconds a retained Terminal stays after exit when the server default
+    /// applies. Capped by [`Self::retain_on_exit_max_secs`].
+    #[serde(rename = "retain-on-exit-secs")]
     pub retain_on_exit_secs: u32,
 
-    /// The longest any Terminal is retained after its process exits,
-    /// whatever the spawner asked for.
-    #[serde(
-        default = "default_retain_on_exit_max_secs",
-        rename = "retain-on-exit-max-secs"
-    )]
+    /// The longest any Terminal is retained after exit.
+    #[serde(rename = "retain-on-exit-max-secs")]
     pub retain_on_exit_max_secs: u32,
 
-    /// How many exited Terminals the server retains at once. Retaining one
-    /// more closes the oldest. `0` retains none.
-    #[serde(default = "default_retain_on_exit_max", rename = "retain-on-exit-max")]
+    /// How many exited Terminals are retained at once; one more closes the
+    /// oldest. `0` retains none.
+    #[serde(rename = "retain-on-exit-max")]
     pub retain_on_exit_max: u32,
 
-    /// Seconds a held `SIGNAL` action waits for a decision before it
-    /// expires and its requester gets `PERMISSION_DENIED { "approval
-    /// expired" }` (ADR-0128). Only a workload grant spelled `?signal`
-    /// holds anything, so this is inert until one exists. Read at server
-    /// start.
-    #[serde(default = "default_approval_ttl_secs", rename = "approval-ttl-secs")]
+    /// Seconds a held `SIGNAL` action waits for a decision before its
+    /// requester is denied (ADR-0128). Read at server start.
+    #[serde(rename = "approval-ttl-secs")]
     pub approval_ttl_secs: u32,
 
-    /// How many actions one connection may hold for approval at once; one
-    /// more is refused `RESOURCE_EXHAUSTED` (ADR-0128). Read at server start.
-    #[serde(
-        default = "default_approval_max_pending",
-        rename = "approval-max-pending"
-    )]
+    /// Actions one connection may hold for approval at once (ADR-0128).
+    #[serde(rename = "approval-max-pending")]
     pub approval_max_pending: u32,
 
-    /// How many actions the whole server may hold for approval at once; one
-    /// more is refused `RESOURCE_EXHAUSTED` (ADR-0128). Read at server start.
-    #[serde(
-        default = "default_approval_max_pending_total",
-        rename = "approval-max-pending-total"
-    )]
+    /// Actions the whole server may hold for approval at once (ADR-0128).
+    #[serde(rename = "approval-max-pending-total")]
     pub approval_max_pending_total: u32,
 
-    /// Whether the client enables its own outer-terminal mouse tracking
-    /// on attach (ADR-0048). `true` (default) emits DECSET
-    /// `?1002h?1006h` so divider drag-to-resize and click-to-focus work
-    /// without an inner program turning mouse mode on, and restores the
-    /// host terminal's mouse state on detach. `false` is the
-    /// pass-through-only escape hatch: no DECSET, the host's native
-    /// click-drag selection is left untouched.
-    #[serde(default = "default_true")]
+    /// Whether the client enables outer-terminal mouse tracking on attach
+    /// (ADR-0048). `false` leaves the host's native selection untouched.
     pub mouse: bool,
 
     /// How a freshly-spawned pane chooses its working directory.
-    ///
-    /// Default: [`CwdInheritance::InheritFocused`], matching tmux. See
-    /// the enum docs for the full set.
-    ///
-    /// Wired server-side in `phux-server` (phux-cs6): `SPAWN_RESOURCE`
-    /// reads this policy when the wire frame leaves `cwd` unset.
-    /// `inherit-focused` resolves the focused pane's live PTY working
-    /// directory via a kernel query on the PTY child; `home` uses
-    /// `$HOME`. `session-root` and `last-cwd-per-window` are accepted but
-    /// not yet resolved server-side (follow-ups).
-    #[serde(default, rename = "cwd-inheritance")]
+    #[serde(rename = "cwd-inheritance")]
     pub cwd_inheritance: CwdInheritance,
 
     /// Command to spawn when `phux` auto-creates a session on attach.
-    ///
-    /// `None` (default) ⇒ honor [`DefaultsCfg::shell`] (which in turn
-    /// honors `$SHELL`). Set explicitly to launch e.g. a TUI dashboard
-    /// or a specific REPL as the initial program.
-    #[serde(default, rename = "spawn-on-attach")]
+    /// `None` uses [`Self::shell`].
+    #[serde(rename = "spawn-on-attach")]
     pub spawn_on_attach: Option<String>,
 
-    /// Naming template for auto-created sessions.
-    ///
-    /// Default: `"${cwd-basename}"` — the basename of the client's
-    /// working directory, resolved at session-creation time. A bench of
-    /// project checkouts then reads as its directories in the session
-    /// picker, which is the only thing that makes the picker useful with
-    /// more than one session open. Set `"default"` for a fixed name, or
-    /// `"${random-name}"` for a generated adjective-noun name such as
-    /// `drifting-cedar` (phux-c2td.6). Unknown placeholders are passed
+    /// Naming template for auto-created sessions. Placeholders:
+    /// `${cwd-basename}` (default) and `${random-name}`; unknown ones pass
     /// through verbatim.
-    #[serde(
-        default = "default_session_name_template",
-        rename = "session-name-template"
-    )]
+    #[serde(rename = "session-name-template")]
     pub session_name_template: String,
 
-    /// Policy for choosing one geometry when concurrent views of a single
-    /// Terminal disagree on size.
-    ///
-    /// A Terminal is one PTY + one libghostty grid, so it has exactly one
-    /// authoritative `(cols, rows)`; concurrent views (mirrored panes,
-    /// multiple attached clients) share it. When they disagree, this key
-    /// picks which size wins; a view larger than the chosen size
-    /// letterboxes rather than reflowing the shared grid. The vocabulary
-    /// mirrors tmux's `window-size` option.
-    ///
-    /// Default: [`WindowSize::Smallest`] — nothing is ever cropped. See
-    /// [ADR-0027](../../../docs/adr/0027-terminal-references-and-l3-links.md) and
-    /// [`WindowSize`].
-    ///
-    /// Consumed at the size-decision point: the server resolves a
-    /// Terminal's geometry by folding this policy across every subscriber's
-    /// viewport, on ATTACH and on every `VIEWPORT_RESIZE` (phux-nk07).
-    ///
-    /// It governs *views* only. An explicit `RESIZE_TERMINAL` — the frame
-    /// `phux resize` sends — names a size no viewport reported and applies
-    /// regardless; under the three view-derived values the next view event
-    /// recomputes over it, and under [`WindowSize::Manual`] nothing ever
-    /// does. See ADR-0062.
-    #[serde(default, rename = "window-size")]
+    /// Which size wins when concurrent views of one Terminal disagree
+    /// (ADR-0027). Governs views only: an explicit `RESIZE_TERMINAL` always
+    /// applies (ADR-0062).
+    #[serde(rename = "window-size")]
     pub window_size: WindowSize,
 }
 
@@ -367,50 +160,43 @@ impl Default for DefaultsCfg {
     fn default() -> Self {
         Self {
             shell: None,
-            term: default_term(),
-            history_limit: default_history_limit(),
-            history_bytes: default_history_bytes(),
-            agent_log_bytes: default_agent_log_bytes(),
-            event_journal_entries: default_event_journal_entries(),
-            event_journal_bytes: default_event_journal_bytes(),
+            term: "xterm-256color".to_owned(),
+            history_limit: DEFAULT_HISTORY_LINES,
+            history_bytes: DEFAULT_HISTORY_BYTES,
+            agent_log_bytes: DEFAULT_AGENT_LOG_BYTES,
+            event_journal_entries: DEFAULT_EVENT_JOURNAL_ENTRIES,
+            event_journal_bytes: DEFAULT_EVENT_JOURNAL_BYTES,
             retain_on_exit: false,
-            retain_on_exit_secs: default_retain_on_exit_secs(),
-            retain_on_exit_max_secs: default_retain_on_exit_max_secs(),
-            retain_on_exit_max: default_retain_on_exit_max(),
-            approval_ttl_secs: default_approval_ttl_secs(),
-            approval_max_pending: default_approval_max_pending(),
-            approval_max_pending_total: default_approval_max_pending_total(),
+            retain_on_exit_secs: DEFAULT_RETAIN_ON_EXIT_SECS,
+            retain_on_exit_max_secs: DEFAULT_RETAIN_ON_EXIT_MAX_SECS,
+            retain_on_exit_max: DEFAULT_RETAIN_ON_EXIT_MAX,
+            approval_ttl_secs: DEFAULT_APPROVAL_TTL_SECS,
+            approval_max_pending: DEFAULT_APPROVAL_MAX_PENDING,
+            approval_max_pending_total: DEFAULT_APPROVAL_MAX_PENDING_TOTAL,
             mouse: true,
             cwd_inheritance: CwdInheritance::default(),
             spawn_on_attach: None,
-            session_name_template: default_session_name_template(),
+            session_name_template: "${cwd-basename}".to_owned(),
             window_size: WindowSize::default(),
         }
     }
 }
 
-/// Default `TERM` for server-spawned panes: the safe xterm baseline
-/// (phux-7vx / phux-ign). See [`DefaultsCfg::term`].
-fn default_term() -> String {
-    "xterm-256color".to_owned()
-}
-const fn default_history_limit() -> u32 {
-    50_000
+impl DefaultsCfg {
+    /// The configured scrollback bounds as one value.
+    #[must_use]
+    pub const fn scrollback_limits(&self) -> ScrollbackLimits {
+        ScrollbackLimits::new(self.history_limit, self.history_bytes)
+    }
 }
 
-/// The pair of per-pane scrollback bounds libghostty prunes on.
-///
-/// libghostty applies a line limit and a byte limit together and prunes on
-/// whichever is reached first, so neither number means anything without the
-/// other. Carrying them as one value keeps every plumbing site — server
-/// config, shared state, pane construction — from growing a second parameter
-/// that can be threaded independently and get out of step.
+/// The pair of per-pane scrollback bounds libghostty prunes on together;
+/// carried as one value so no plumbing site threads them independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollbackLimits {
-    /// Rows of history, from `defaults.history-limit`.
+    /// Rows of history (`defaults.history-limit`).
     pub lines: u32,
-    /// Bytes of history, from `defaults.history-bytes`. Usually the binding
-    /// one; see [`DefaultsCfg::history_bytes`] for what raising it costs.
+    /// Bytes of history (`defaults.history-bytes`).
     pub bytes: u32,
 }
 
@@ -424,231 +210,106 @@ impl ScrollbackLimits {
 
 impl Default for ScrollbackLimits {
     fn default() -> Self {
-        Self::new(default_history_limit(), default_history_bytes())
+        Self::new(DEFAULT_HISTORY_LINES, DEFAULT_HISTORY_BYTES)
     }
 }
 
-impl DefaultsCfg {
-    /// The configured scrollback bounds as one value.
-    #[must_use]
-    pub const fn scrollback_limits(&self) -> ScrollbackLimits {
-        ScrollbackLimits::new(self.history_limit, self.history_bytes)
-    }
-}
-
-/// Largest accepted `defaults.history-bytes`, in bytes (64 MiB).
-///
-/// A resident-memory bound, not a safety or latency one. Attach does not
-/// scale with retained history, because the bootstrap leases it rather than
-/// encoding it (ADR-0119), so what a very deep pane costs is memory the
-/// server holds for the life of the session: 64 MiB per pane over a dozen
-/// panes is most of a gigabyte. A value above this is rejected by
-/// `phux config check` rather than silently accepted.
-pub const MAX_HISTORY_BYTES: u32 = 64 * 1024 * 1024;
+const DEFAULT_HISTORY_LINES: u32 = 50_000;
 
 /// Shipped `defaults.history-bytes`: 2 MiB per pane.
-///
-/// See [`DefaultsCfg::history_bytes`] for the depth-versus-memory curve this
-/// value sits on.
 pub const DEFAULT_HISTORY_BYTES: u32 = 2 * 1024 * 1024;
-
-const fn default_history_bytes() -> u32 {
-    DEFAULT_HISTORY_BYTES
-}
-
-/// Largest accepted `defaults.agent-log-bytes`, in bytes (64 MiB).
-///
-/// A latency bound, unlike [`MAX_HISTORY_BYTES`]: the retained ring is
-/// replayed in full on every attach to the session's stream, so a value
-/// above this trades a longer transcript for an attach nobody waits out.
-/// Rejected by `phux config check` rather than silently accepted.
-pub const MAX_AGENT_LOG_BYTES: u32 = 64 * 1024 * 1024;
+/// Largest accepted `defaults.history-bytes` (64 MiB): a resident-memory
+/// bound, held for the life of the session.
+pub const MAX_HISTORY_BYTES: u32 = 64 * 1024 * 1024;
 
 /// Shipped `defaults.agent-log-bytes`: 4 MiB per agent session.
-///
-/// See [`DefaultsCfg::agent_log_bytes`] for what the window buys.
 pub const DEFAULT_AGENT_LOG_BYTES: u32 = 4 * 1024 * 1024;
+/// Largest accepted `defaults.agent-log-bytes` (64 MiB): the ring is
+/// replayed on every attach, so this is a latency bound.
+pub const MAX_AGENT_LOG_BYTES: u32 = 64 * 1024 * 1024;
 
-const fn default_agent_log_bytes() -> u32 {
-    DEFAULT_AGENT_LOG_BYTES
-}
+/// Shipped `defaults.event-journal-entries` (ADR-0123).
+pub const DEFAULT_EVENT_JOURNAL_ENTRIES: u32 = 4096;
+/// Largest accepted `defaults.event-journal-entries`.
+pub const MAX_EVENT_JOURNAL_ENTRIES: u32 = 1024 * 1024;
 
-/// `[limits]` table: server-enforced ceilings on shared resources that are
-/// not a per-pane spawn default (those live in `[defaults]`).
+/// Shipped `defaults.event-journal-bytes`: 1 MiB (ADR-0123).
+pub const DEFAULT_EVENT_JOURNAL_BYTES: u32 = 1024 * 1024;
+/// Largest accepted `defaults.event-journal-bytes` (64 MiB).
+pub const MAX_EVENT_JOURNAL_BYTES: u32 = 64 * 1024 * 1024;
+
+/// Shipped `defaults.retain-on-exit-secs`: ten minutes (ADR-0124).
+pub const DEFAULT_RETAIN_ON_EXIT_SECS: u32 = 600;
+/// Shipped `defaults.retain-on-exit-max-secs`: one day (ADR-0124).
+pub const DEFAULT_RETAIN_ON_EXIT_MAX_SECS: u32 = 86_400;
+/// Shipped `defaults.retain-on-exit-max` (ADR-0124).
+pub const DEFAULT_RETAIN_ON_EXIT_MAX: u32 = 256;
+/// Largest accepted `defaults.retain-on-exit-max` (a memory bound).
+pub const MAX_RETAIN_ON_EXIT_MAX: u32 = 4096;
+
+/// Shipped `defaults.approval-ttl-secs`: two minutes (ADR-0128).
+pub const DEFAULT_APPROVAL_TTL_SECS: u32 = 120;
+/// Largest accepted `defaults.approval-ttl-secs`: one day.
+pub const MAX_APPROVAL_TTL_SECS: u32 = 86_400;
+/// Shipped `defaults.approval-max-pending` per connection.
+pub const DEFAULT_APPROVAL_MAX_PENDING: u32 = 64;
+/// Largest accepted `defaults.approval-max-pending`.
+pub const MAX_APPROVAL_MAX_PENDING: u32 = 1024;
+/// Shipped `defaults.approval-max-pending-total` server-wide.
+pub const DEFAULT_APPROVAL_MAX_PENDING_TOTAL: u32 = 1024;
+/// Largest accepted `defaults.approval-max-pending-total`.
+pub const MAX_APPROVAL_MAX_PENDING_TOTAL: u32 = 65_536;
+
+/// `[limits]` table: server-enforced ceilings on shared resources.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct LimitsCfg {
-    /// Largest L3 metadata value the server stores at one key
-    /// (`SET_METADATA`, `docs/spec/L3.md` §2), in bytes. A write over the
-    /// cap is refused and nothing is stored (ADR-0129) — this closes the
-    /// gap `docs/spec/L3.md` §2 always allowed ("implementations MAY
-    /// enforce a per-key size limit, recommended 256 KiB"): the reference
-    /// server now does. The one shared metadata store backs every
-    /// consumer's convention (session names, tags, and any
-    /// `<prefix>.layout/v1/<session>` named projection alike), so the cap
-    /// is global rather than per-key-family.
-    #[serde(
-        default = "default_metadata_value_bytes",
-        rename = "metadata-value-bytes"
-    )]
+    /// Largest L3 metadata value stored at one key (`docs/spec/L3.md` §2),
+    /// in bytes; a larger write is refused (ADR-0129).
     pub metadata_value_bytes: u32,
 }
 
 impl Default for LimitsCfg {
     fn default() -> Self {
         Self {
-            metadata_value_bytes: default_metadata_value_bytes(),
+            metadata_value_bytes: DEFAULT_METADATA_VALUE_BYTES,
         }
     }
 }
 
 /// Shipped `limits.metadata-value-bytes`: 256 KiB, `docs/spec/L3.md` §2's
-/// long-recommended cap.
+/// recommended cap.
 pub const DEFAULT_METADATA_VALUE_BYTES: u32 = 256 * 1024;
 
-const fn default_metadata_value_bytes() -> u32 {
-    DEFAULT_METADATA_VALUE_BYTES
-}
-
-/// Largest accepted `defaults.event-journal-entries`.
-///
-/// A memory bound: a million small events is a few hundred MiB before the
-/// byte bound applies. Rejected by `phux config check` rather than silently
-/// accepted.
-pub const MAX_EVENT_JOURNAL_ENTRIES: u32 = 1024 * 1024;
-
-/// Shipped `defaults.event-journal-entries`: 4,096 events (ADR-0123).
-pub const DEFAULT_EVENT_JOURNAL_ENTRIES: u32 = 4096;
-
-const fn default_event_journal_entries() -> u32 {
-    DEFAULT_EVENT_JOURNAL_ENTRIES
-}
-
-/// Largest accepted `defaults.event-journal-bytes` (64 MiB), the same
-/// resident-memory ceiling as [`MAX_HISTORY_BYTES`].
-pub const MAX_EVENT_JOURNAL_BYTES: u32 = 64 * 1024 * 1024;
-
-/// Shipped `defaults.event-journal-bytes`: 1 MiB (ADR-0123).
-pub const DEFAULT_EVENT_JOURNAL_BYTES: u32 = 1024 * 1024;
-
-const fn default_event_journal_bytes() -> u32 {
-    DEFAULT_EVENT_JOURNAL_BYTES
-}
-
-/// Shipped `defaults.retain-on-exit-secs`: ten minutes (ADR-0124).
-pub const DEFAULT_RETAIN_ON_EXIT_SECS: u32 = 600;
-
-const fn default_retain_on_exit_secs() -> u32 {
-    DEFAULT_RETAIN_ON_EXIT_SECS
-}
-
-/// Shipped `defaults.retain-on-exit-max-secs`: one day (ADR-0124).
-pub const DEFAULT_RETAIN_ON_EXIT_MAX_SECS: u32 = 86_400;
-
-const fn default_retain_on_exit_max_secs() -> u32 {
-    DEFAULT_RETAIN_ON_EXIT_MAX_SECS
-}
-
-/// Shipped `defaults.retain-on-exit-max`: 256 retained Terminals (ADR-0124).
-pub const DEFAULT_RETAIN_ON_EXIT_MAX: u32 = 256;
-
-const fn default_retain_on_exit_max() -> u32 {
-    DEFAULT_RETAIN_ON_EXIT_MAX
-}
-
-/// Largest accepted `defaults.retain-on-exit-max`. Each retained Terminal
-/// holds its grid and history, so the bound is a memory bound.
-pub const MAX_RETAIN_ON_EXIT_MAX: u32 = 4096;
-
-/// Shipped `defaults.approval-ttl-secs`: a held action waits two minutes
-/// for a decision (ADR-0128).
-pub const DEFAULT_APPROVAL_TTL_SECS: u32 = 120;
-
-/// Largest accepted `defaults.approval-ttl-secs`: one day. An approval is a
-/// decision about one action instance, never a standing grant.
-pub const MAX_APPROVAL_TTL_SECS: u32 = 86_400;
-
-/// Shipped `defaults.approval-max-pending`: 64 held actions per connection.
-pub const DEFAULT_APPROVAL_MAX_PENDING: u32 = 64;
-
-/// Largest accepted `defaults.approval-max-pending`. Each pending approval
-/// keeps its command and a record in the metadata store.
-pub const MAX_APPROVAL_MAX_PENDING: u32 = 1024;
-
-const fn default_approval_ttl_secs() -> u32 {
-    DEFAULT_APPROVAL_TTL_SECS
-}
-
-const fn default_approval_max_pending() -> u32 {
-    DEFAULT_APPROVAL_MAX_PENDING
-}
-
-/// Shipped `defaults.approval-max-pending-total`: 1024 held actions server-wide.
-pub const DEFAULT_APPROVAL_MAX_PENDING_TOTAL: u32 = 1024;
-
-/// Largest accepted `defaults.approval-max-pending-total`.
-pub const MAX_APPROVAL_MAX_PENDING_TOTAL: u32 = 65_536;
-
-const fn default_approval_max_pending_total() -> u32 {
-    DEFAULT_APPROVAL_MAX_PENDING_TOTAL
-}
-
-const fn default_true() -> bool {
-    true
-}
-fn default_session_name_template() -> String {
-    "${cwd-basename}".to_owned()
-}
-
-/// How a newly-spawned pane chooses its working directory.
-///
-/// Selected by the `defaults.cwd-inheritance` TOML key. Values use
-/// kebab-case on the wire and `PascalCase` in Rust.
+/// How a newly-spawned pane chooses its working directory
+/// (`defaults.cwd-inheritance`).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum CwdInheritance {
-    /// Inherit the focused pane's current working directory. Default —
-    /// matches tmux's default split behavior. Resolved server-side from
-    /// the focused pane's live PTY working directory via a kernel query;
-    /// see [`DefaultsCfg::cwd_inheritance`].
+    /// The focused pane's live working directory (default, as tmux).
     #[default]
     InheritFocused,
-    /// Always spawn in `$HOME`.
+    /// Always `$HOME`.
     Home,
-    /// Spawn in the directory the session was created in.
+    /// The directory the session was created in.
     SessionRoot,
-    /// Remember the last CWD per window and reuse it for new panes in
-    /// that window.
+    /// The last working directory used in the window.
     LastCwdPerWindow,
 }
 
-/// Policy for picking one Terminal geometry when concurrent views
-/// disagree on size (ADR-0027).
-///
-/// Selected by the `defaults.window-size` TOML key. Values use kebab-case
-/// on the wire and `PascalCase` in Rust. The vocabulary tracks tmux's
-/// `window-size` option, since the one-PTY-one-grid constraint is the same
-/// one tmux faces: a Terminal cannot render two sizes at once, so a view
-/// that wants a different size letterboxes (larger) or clamps (smaller)
-/// rather than reflowing the shared grid.
+/// Which geometry wins when concurrent views of one Terminal disagree on
+/// size (`defaults.window-size`, ADR-0027). Mirrors tmux's `window-size`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum WindowSize {
-    /// Use the smallest view's size. Default — nothing is ever cropped;
-    /// larger views letterbox. Matches tmux's default.
+    /// The smallest view's size; larger views letterbox (default).
     #[default]
     Smallest,
-    /// Use the largest view's size. Smaller views clamp (the grid may
-    /// exceed their viewport, so content can be cut off).
+    /// The largest view's size; smaller views clamp.
     Largest,
-    /// Track the most recently resized view's size.
+    /// The most recently resized view's size.
     Latest,
-    /// Hold a fixed size, ignoring view geometry. The size is set by an
-    /// explicit `RESIZE_TERMINAL` (`phux resize TARGET COLSxROWS`), which
-    /// is the only thing that moves a Terminal's grid under this value —
-    /// attaches, detaches, and window resizes never recompute over it.
-    /// This is the setting under which a scripted geometry holds
-    /// (ADR-0027 named the value; ADR-0062 shipped the verb).
+    /// A fixed size set only by an explicit `RESIZE_TERMINAL` (ADR-0062).
     Manual,
 }
 
@@ -658,161 +319,98 @@ pub enum WindowSize {
 
 /// `[keybindings]` table: prefix key, prefix-table, and global table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct KeybindingsCfg {
-    /// Prefix key chord (e.g. `"C-a"`). Defaults to `C-a` — chosen for
-    /// portability across host terminals (some emulators silently
-    /// swallow `C-Space` before it reaches the client). Chord syntax
-    /// per `crate::keybind`: modifier letters (`C` / `M` / `A` / `S`)
-    /// joined to the key by `-`.
-    #[serde(default = "default_prefix")]
+    /// Prefix chord (default `C-a`; some emulators swallow `C-Space`).
     pub prefix: String,
-
     /// Bindings that fire after the prefix.
-    #[serde(default, rename = "prefix-table")]
+    #[serde(rename = "prefix-table")]
     pub prefix_table: BTreeMap<String, Action>,
-
-    /// Bindings that fire any time (typically `super`/`hyper` chords).
-    #[serde(default)]
+    /// Bindings that fire any time.
     pub global: BTreeMap<String, Action>,
-
-    /// Show the which-key popup: after the prefix is pressed, if no
-    /// continuation chord arrives within [`Self::which_key_delay_ms`],
-    /// the client pops a panel listing the available prefix-table
-    /// bindings. Any key dismisses it and executes normally; Esc
-    /// cancels the prefix. Default `true`.
-    #[serde(default = "default_true", rename = "which-key")]
+    /// Show the which-key popup when no chord follows the prefix within
+    /// [`Self::which_key_delay_ms`].
+    #[serde(rename = "which-key")]
     pub which_key: bool,
-
-    /// Milliseconds to wait after the prefix before showing the
-    /// which-key popup. Default `600`. A fast continuation chord always
-    /// suppresses the popup entirely.
-    #[serde(default = "default_which_key_delay_ms", rename = "which-key-delay-ms")]
+    /// Milliseconds after the prefix before the which-key popup shows.
+    #[serde(rename = "which-key-delay-ms")]
     pub which_key_delay_ms: u64,
 }
 
 impl Default for KeybindingsCfg {
     fn default() -> Self {
         Self {
-            prefix: default_prefix(),
+            prefix: "C-a".to_owned(),
             prefix_table: BTreeMap::new(),
             global: BTreeMap::new(),
             which_key: true,
-            which_key_delay_ms: default_which_key_delay_ms(),
+            which_key_delay_ms: 400,
         }
     }
 }
 
-fn default_prefix() -> String {
-    "C-a".to_owned()
-}
-
-/// Serde default for [`KeybindingsCfg::which_key_delay_ms`].
-///
-/// Deliberately snappier than tmux-ish 600: the popup is phux's primary
-/// discovery surface, so it should feel like a hint that arrives while
-/// you hesitate, not a timeout you wait out.
-const fn default_which_key_delay_ms() -> u64 {
-    400
-}
-
-/// An action attached to a binding, hook, or status slot.
-///
-/// Per `docs/consumers/tui.md` §4.2, this is either a bare string (no parameters,
-/// e.g. `"kill-pane"`) or an inline table whose `action` field names
-/// the action and whose remaining fields supply parameters.
+/// An action attached to a binding, hook, or status slot: a bare name or an
+/// inline table (`docs/consumers/tui.md` §4.2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Action {
-    /// `"detach"` — bare action name, no parameters.
+    /// `"detach"`.
     Bare(String),
-    /// `{ action = "new-pane", direction = "vertical" }` — parameterized.
+    /// `{ action = "new-pane", direction = "vertical" }`.
     Parameterized(ParamAction),
 }
 
-/// Parameterized action: `action` plus arbitrary `kind`-specific args.
-///
-/// `args` collects every remaining key in the inline table. This mirrors
-/// the design's "we don't centrally enumerate action parameters in the
-/// loader" stance — schema validation per action lives in the
+/// Parameterized action. Per-action argument validation lives in the
 /// dispatcher, not here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ParamAction {
-    /// The action name (e.g. `new-pane`, `run`, `focus-pane`).
-    ///
-    /// `docs/consumers/tui.md` uses both `action = "..."` (in keybindings, §4.2)
-    /// and `kind = "..."` (in hooks, §9) to name the action. We accept
-    /// either spelling on input and canonicalize to `action` on output.
+    /// The action name. Hooks spell it `kind`; both are accepted.
     #[serde(alias = "kind")]
     pub action: String,
-    /// Remaining inline-table fields, passed through as TOML values.
+    /// Remaining inline-table fields.
     #[serde(flatten)]
     pub args: BTreeMap<String, toml::Value>,
 }
 
 // ---------------------------------------------------------------------------
-// [status]
+// [status] / [sidebar] / [chrome]
 // ---------------------------------------------------------------------------
 
-/// `[status]` table: three slots, each a list of widgets, plus the row
-/// the bar reserves (`position`, phux-foz.8).
+/// `[status]` table: three widget slots plus the row the bar reserves.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct StatusCfg {
-    /// Left slot. Default: empty (callers may substitute defaults).
-    #[serde(default)]
+    /// Left slot.
     pub left: Vec<Widget>,
     /// Center slot.
-    #[serde(default)]
     pub center: Vec<Widget>,
     /// Right slot.
-    #[serde(default)]
     pub right: Vec<Widget>,
-    /// Which outer-terminal row the bar reserves. Default `top`
-    /// (per `docs/consumers/tui.md` section 8).
-    #[serde(default)]
+    /// Which outer-terminal row the bar reserves.
     pub position: StatusPosition,
 }
 
-/// Which row the [`StatusCfg`] bar occupies (phux-foz.8).
-///
-/// Consumed by the TUI's chrome layer, which maps it onto its own
-/// `Position` render enum; kept as plain config data here (ADR-0020:
-/// phux-config carries no render types).
+/// Which row the status bar occupies.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusPosition {
-    /// One row at the very bottom of the outer terminal.
+    /// The bottom row.
     Bottom,
-    /// One row at the very top of the outer terminal (default).
+    /// The top row (default).
     #[default]
     Top,
 }
 
-/// `[sidebar]` — the Warp-style window sidebar (phux-4h5a).
-///
-/// A vertical strip listing the session's windows as tabs, each labelled by
-/// its OSC title (falling back to the window name), the focused one
-/// highlighted. Enabled by default; it reserves a responsive strip on
-/// `position`, and the panes tile into the remaining area.
+/// `[sidebar]`: the vertical window list.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct SidebarCfg {
-    /// Show the sidebar. Default `true` (phux-k0cw).
-    ///
-    /// It ships on because the strip is the product's answer to "which of my
-    /// agents needs me?", and an answer nobody finds is not an answer. It
-    /// costs a calm user almost nothing: with nothing blocked and no peer
-    /// sessions the strip is just the window list it replaced.
-    #[serde(default = "default_sidebar_enabled")]
+    /// Show the sidebar (default `true`).
     pub enabled: bool,
-    /// Width in columns when shown. Default `0` selects automatic sizing:
-    /// one quarter of the viewport, bounded to 28–40 columns. A positive
-    /// value fixes the width, preserving explicit user sizing.
-    #[serde(default = "default_sidebar_width")]
+    /// Width in columns. `0` (default) sizes automatically to a quarter of
+    /// the viewport, bounded to 28-40 columns.
     pub width: u16,
-    /// Which edge the sidebar docks to. Default `left`.
-    #[serde(default)]
+    /// Which edge the sidebar docks to.
     pub position: SidebarPosition,
     /// Segment the Sessions area by machine (ADR-0140). Default `true`.
     ///
@@ -821,242 +419,116 @@ pub struct SidebarCfg {
     /// host) come from a *hosts provider*: a command that prints the
     /// `phux.hosts/v1` document, re-run every `hosts-refresh-secs`. `false`
     /// lists only the attached server's sessions and runs no provider.
-    #[serde(default = "default_sidebar_enabled")]
     pub hosts: bool,
     /// Hosts provider argv. Empty (the default) runs this binary's own
     /// `ls --all --json`; any command printing the same shape replaces it,
     /// which is the same seam a plugin uses.
-    #[serde(default, rename = "hosts-provider")]
+    #[serde(rename = "hosts-provider")]
     pub hosts_provider: Vec<String>,
     /// Seconds between hosts provider runs. Default `10`; at least 2.
-    #[serde(default = "default_hosts_refresh_secs", rename = "hosts-refresh-secs")]
+    #[serde(rename = "hosts-refresh-secs")]
     pub hosts_refresh_secs: u64,
 }
 
 impl Default for SidebarCfg {
     fn default() -> Self {
         Self {
-            enabled: default_sidebar_enabled(),
-            width: default_sidebar_width(),
+            enabled: true,
+            width: 0,
             position: SidebarPosition::default(),
-            hosts: default_sidebar_enabled(),
+            hosts: true,
             hosts_provider: Vec::new(),
-            hosts_refresh_secs: default_hosts_refresh_secs(),
+            hosts_refresh_secs: 10,
         }
     }
 }
 
-const fn default_hosts_refresh_secs() -> u64 {
-    10
-}
-
-const fn default_sidebar_enabled() -> bool {
-    true
-}
-
-/// Automatic sizing gives names room on wide terminals while leaving the
-/// classic 80-column layout compact. Positive values remain fixed widths.
-const fn default_sidebar_width() -> u16 {
-    0
-}
-
-/// Which edge the [`SidebarCfg`] docks to.
+/// Which edge the sidebar docks to.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarPosition {
-    /// Dock on the left (default).
+    /// Left (default).
     #[default]
     Left,
-    /// Dock on the right.
+    /// Right.
     Right,
 }
 
-// ---------------------------------------------------------------------------
-// [chrome]
-// ---------------------------------------------------------------------------
-
-/// `[chrome]` — the responsive-chrome breakpoints (phux-huhi).
-///
-/// The chrome adapts to small terminals around a handful of column and row
-/// thresholds (`docs/consumers/tui.md` §4.5). The shipped numbers are
-/// derived from content — the width at which a picker row stays legible,
-/// the height at which a modal still shows a page of list — but "legible"
-/// depends on the terminal, the font, and what the user is willing to
-/// trade. These keys move the thresholds without moving the behaviour.
-///
-/// All three are plain column/row counts with no reserved values: `0`
-/// disables a threshold (nothing is ever compact on that axis; the
-/// sidebar never yields) and a very large value pins the opposite
-/// (everything is compact). Both extremes are legitimate configurations,
-/// so none of them is an error.
-///
-/// Consumed by the TUI's chrome layer, which folds them into its own
-/// breakpoint value once per frame and threads it to every layout site;
-/// kept as plain config data here (ADR-0020: `phux-config` carries no
-/// render types).
+/// `[chrome]`: responsive-chrome breakpoints (`docs/consumers/tui.md` §4.5).
+/// `0` disables a threshold; a very large value pins the opposite.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct ChromeCfg {
-    /// Viewport width at or below which the chrome is *column-starved*:
-    /// overlays go full-bleed horizontally rather than floating. Default
-    /// `64`.
-    #[serde(default = "default_compact_cols")]
+    /// Width at or below which overlays go full-bleed horizontally.
     pub compact_cols: u16,
-
-    /// Viewport height at or below which the chrome is *row-starved*:
-    /// overlays go full-bleed vertically. Judged independently of
-    /// [`Self::compact_cols`], because a short wide terminal and a narrow
-    /// tall one want opposite things. Default `18`.
-    #[serde(default = "default_compact_rows")]
+    /// Height at or below which overlays go full-bleed vertically.
     pub compact_rows: u16,
-
-    /// The narrowest pane area worth tiling into, in columns. The
-    /// `[sidebar]` strip is not reserved at all below
-    /// `sidebar.width + min-pane-cols`, so the panes it exists to help you
-    /// move between keep the columns. Default `40`.
-    #[serde(default = "default_min_pane_cols")]
+    /// Narrowest pane area worth tiling into; the sidebar is not reserved
+    /// below `sidebar.width + min-pane-cols`.
     pub min_pane_cols: u16,
 }
 
 impl Default for ChromeCfg {
     fn default() -> Self {
         Self {
-            compact_cols: default_compact_cols(),
-            compact_rows: default_compact_rows(),
-            min_pane_cols: default_min_pane_cols(),
+            compact_cols: 64,
+            compact_rows: 18,
+            min_pane_cols: 40,
         }
     }
 }
 
-const fn default_compact_cols() -> u16 {
-    64
-}
-
-const fn default_compact_rows() -> u16 {
-    18
-}
-
-const fn default_min_pane_cols() -> u16 {
-    40
-}
-
-/// A status-bar widget.
-///
-/// Per `docs/consumers/tui.md` §8.1, this is either a bare string (`"session"` is
-/// shorthand for `{ kind = "session" }`) or an inline table with `kind`
-/// plus widget-specific options.
+/// A status-bar widget: a bare kind (`"session"`) or an inline table with
+/// `kind` plus options (`docs/consumers/tui.md` §8.1).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Widget {
-    /// `"session"` — shorthand for `{ kind = "session" }`.
+    /// Shorthand for `{ kind = "..." }`.
     Bare(String),
-    /// Full widget spec: `kind` plus arbitrary options.
+    /// `kind` plus options.
     Spec(WidgetSpec),
 }
 
-/// Long-form widget spec.
-///
-/// `opts` carries every field except `kind` so that future widget
-/// parameters don't require schema churn here; the renderer in
-/// `phux-client` validates per-`kind`.
+/// Long-form widget spec; options are validated per kind by the registry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WidgetSpec {
-    /// Widget kind (`clock`, `session`, `exec`, ...). See
-    /// `docs/reference/widgets.md` for the built-in catalog.
+    /// Widget kind (see `docs/reference/widgets.md`).
     pub kind: String,
     /// Remaining inline-table fields.
     #[serde(flatten)]
     pub opts: BTreeMap<String, toml::Value>,
 }
 
-// ---------------------------------------------------------------------------
-// [[hooks.<name>]]
-// ---------------------------------------------------------------------------
-
-/// One entry under `[[hooks.<name>]]`: a `when` predicate plus an
-/// `action` to run on match. See `docs/consumers/tui.md` §9.
+/// One `[[hooks.<event>]]` entry (`docs/consumers/tui.md` §9).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HookEntry {
-    /// Match clauses (`exit-code = 0`, `cwd-startswith = "..."`, etc.).
-    /// First-match-wins per hook event.
+    /// Match clauses; first match wins per event.
     #[serde(default)]
     pub when: BTreeMap<String, toml::Value>,
-    /// Action to fire on match — same shape as a keybind action.
+    /// Action to fire on match.
     pub action: Action,
 }
 
 // ---------------------------------------------------------------------------
-// [experimental]
+// [experimental] / [theme] / [policy] / [voice]
 // ---------------------------------------------------------------------------
 
-/// `[experimental]` table — opt-in flags for unstable features.
-///
-/// Anything here may be renamed, repurposed, or removed without a
-/// `SemVer` bump. Set explicitly only if you accept that contract.
+/// `[experimental]`: opt-in flags that may change without a `SemVer` bump.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExperimentalCfg {
-    /// Engage Mosh-class predictive local echo in `phux attach`.
-    ///
-    /// When `true`, the attach loop dispatches to
-    /// `phux_tui::attach::run_with_predict_dial` with a
-    /// `PredictiveConfig { enabled: true, .. }`. See `phux-9gw.1` for
-    /// the algorithm and `crates/phux-client-core/src/predict/` for the
-    /// implementation.
-    ///
-    /// On the alternate screen (vim/nvim, pagers, agent TUIs) the display
-    /// is confirmation-gated (ADR-0090): predictions queue and reconcile
-    /// but paint nothing until the app proves it echoes (vim insert mode,
-    /// an agent prompt), so non-echoing full-screen apps never show a
-    /// ghost while the ones people type into keep their echo. A display
-    /// timeout additionally expires any unconfirmed overlay after one
-    /// second, on either screen.
-    ///
-    /// Unset means **the transport decides** (see
-    /// [`Self::predictive_echo_for`]): on over a remote dial, off over the
-    /// local Unix socket. Two main-screen cases the client cannot detect are
-    /// why it is not simply on everywhere:
-    ///
-    /// 1. readline vi command-mode at the prompt (`set -o vi`) has no DEC
-    ///    mode bit to detect it, so normal-mode keys are mispredicted as
-    ///    inserts until the reactive tentative lock hides the overlay (a
-    ///    brief underlined flicker, then quiet);
-    /// 2. no-echo prompts (`sudo`/`ssh` password) suppress echo via the PTY's
-    ///    termios, which the client mirror never sees — so a predicted insert
-    ///    momentarily renders the typed characters locally, bounded by the
-    ///    display timeout.
-    ///
-    /// This key's own earlier note called for "an RTT-adaptive gate (predict
-    /// only when the round trip is worth hiding — over local UDS it is not)"
-    /// before prediction could be on by default. Whether the dial leaves the
-    /// machine is that gate's coarse form, and it has the advantage of being
-    /// known before the first keystroke rather than estimated from one: a
-    /// same-machine attach echoes in hundreds of microseconds, where a
-    /// prediction can only cost the two flicker cases above and buy nothing,
-    /// while a dial that crosses a network pays a full round trip per key,
-    /// which is exactly the latency the predictor exists to hide. A dial to
-    /// loopback over QUIC or WebSocket counts as same-machine: the transport
-    /// is a network transport but the round trip is not.
-    ///
-    /// See ADR-0090 for the display policy this rides on, and its Amendment
-    /// section for why default-on over a network is an acceptable trade.
-    ///
-    /// Set the key explicitly to override that in either direction — `true`
-    /// engages Mosh-class local echo everywhere including UDS, `false`
-    /// disables it everywhere including remote dials. An explicit value
-    /// always wins over the per-transport default.
-    #[serde(default, rename = "predictive-echo")]
+    /// Mosh-class predictive local echo (ADR-0090). Unset lets the transport
+    /// decide (see [`Self::predictive_echo_for`]); an explicit value wins.
+    #[serde(rename = "predictive-echo")]
     pub predictive_echo: Option<bool>,
 }
 
 impl ExperimentalCfg {
-    /// Resolve predictive echo for one attach, given whether its dial crosses
-    /// a network.
-    ///
-    /// An explicit `predictive-echo` in the config file wins in both
-    /// directions; with the key unset, a remote dial predicts and a local one
-    /// does not. See the field's docs for why the dial is the gate.
+    /// Resolve predictive echo for one attach: explicit config wins, else on
+    /// only when the dial crosses a network. Local echo is fast enough that
+    /// prediction could only cost its two undetectable flicker cases (vi
+    /// mode at a readline prompt, no-echo password prompts).
     #[must_use]
     pub const fn predictive_echo_for(&self, remote_dial: bool) -> bool {
         match self.predictive_echo {
@@ -1066,35 +538,21 @@ impl ExperimentalCfg {
     }
 }
 
-// ---------------------------------------------------------------------------
-// [theme]
-// ---------------------------------------------------------------------------
-
-/// `[theme]` table. Free-form `slot -> color-string` map; the renderer
-/// owns interpretation. We deliberately do not type-check colors here.
+/// `[theme]`: free-form `slot -> color` map; the renderer interprets it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(transparent)]
 pub struct ThemeCfg {
-    /// Slot → color string (e.g. `"fg" -> "#cdd6f4"`).
+    /// Slot to color string (e.g. `"fg" -> "#cdd6f4"`).
     pub slots: BTreeMap<String, String>,
 }
 
-// ---------------------------------------------------------------------------
-// [policy]
-// ---------------------------------------------------------------------------
-
-/// `[policy]` table — which authorization posture the server runs under
-/// (`docs/spec/workload-auth.md` §8, ADR-0116).
-///
-/// Read once at server start. There is no hot reload: a posture change is a
-/// restart, because it changes which connections the server admits at all.
+/// `[policy]`: the server's authorization posture
+/// (`docs/spec/workload-auth.md` §8, ADR-0116). Read once at start.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PolicyCfg {
-    /// The closed policy mode. Unset keeps the transitional posture: every
-    /// admitted connection holds the owner's full grant, and a remote
-    /// listener is logged as a warning at startup.
-    #[serde(default)]
+    /// Unset keeps the transitional posture: every admitted connection holds
+    /// the owner's grant, and a remote listener logs a warning.
     pub mode: Option<PolicyMode>,
 }
 
@@ -1102,47 +560,21 @@ pub struct PolicyCfg {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum PolicyMode {
-    /// The owner's Unix socket only, with all six verbs at Global. A
-    /// configured remote listener refuses to start the server.
+    /// Owner's Unix socket only; a configured remote listener refuses start.
     Local,
-    /// The owner's Unix socket keeps kernel-uid authority; every TLS
-    /// connection must present an enrolled workload certificate and holds
-    /// only its registry ceiling, enforced at dispatch.
+    /// Every TLS connection must present an enrolled workload certificate.
     Paired,
 }
 
-// ---------------------------------------------------------------------------
-// [voice]
-// ---------------------------------------------------------------------------
-
-/// `[voice]` table — the server-side transcriber behind `TRANSCRIBE`
-/// (bead phux-ypsa).
-///
-/// A client that cannot run a good speech model itself (the phone) uploads a
-/// clip with `PUT_FILE` and asks the server to turn it into text and paste it
-/// into a pane. The server does not embed a model; it runs the command
-/// configured here, which is how one line of config wraps whatever is already
-/// serving speech on the box: a `curl` against a whisper.cpp or speaches
-/// `/v1/audio/transcriptions` endpoint, a headless dictation CLI, or an ssh
-/// hop to a GPU host.
+/// `[voice]`: the server-side transcriber behind `TRANSCRIBE`. The server
+/// runs the configured command rather than embedding a model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct VoiceCfg {
-    /// The transcriber command, argv style. The token `{path}` is replaced
-    /// by the uploaded clip's absolute path (appended as a final argument
-    /// when no argument contains it); the command's stdout, trimmed, is the
-    /// transcript. Unset means `TRANSCRIBE` is refused with a remedy.
-    ///
-    /// ```toml
-    /// [voice]
-    /// transcriber = ["curl", "-sf", "-F", "file=@{path}", "-F", "response_format=text",
-    ///                "http://127.0.0.1:8000/v1/audio/transcriptions"]
-    /// ```
-    #[serde(default)]
+    /// Transcriber argv. `{path}` is replaced by the clip's path (appended
+    /// when absent); trimmed stdout is the transcript.
     pub transcriber: Option<Vec<String>>,
-    /// Seconds the server waits for the transcriber before refusing the
-    /// request; the process is killed on expiry. Unset means 30.
-    #[serde(default)]
+    /// Seconds before the transcriber is killed. Unset means 30.
     pub timeout_secs: Option<u64>,
 }
 
@@ -1165,7 +597,7 @@ impl VoiceCfg {
             .is_some_and(|argv| !argv.is_empty())
     }
 
-    /// The transcriber argv with `{path}` resolved to `clip`. `None` when
+    /// The transcriber argv with `{path}` resolved to `clip`, or `None` when
     /// nothing is configured.
     #[must_use]
     pub fn transcriber_argv(&self, clip: &std::path::Path) -> Option<Vec<String>> {
