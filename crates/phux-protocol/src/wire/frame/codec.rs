@@ -12,7 +12,7 @@ use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
 use crate::input::mouse::MouseEvent;
 use crate::input::paste::PasteEvent;
-use crate::wire::decode::Decoder;
+use crate::wire::decode::{Decoder, utf8_value};
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::field;
@@ -635,9 +635,7 @@ pub(in crate::wire) fn decode_metadata_scope_key(
             }
             field::get_metadata::KEY => {
                 key = Some(
-                    core::str::from_utf8(value)
-                        .map_err(|_| DecodeError::InvalidUtf8)?
-                        .to_owned(),
+                    utf8_value(value)?,
                 );
             }
             _ => {}

@@ -53,6 +53,13 @@ macro_rules! sub {
     }};
 }
 
+/// A field value as an owned UTF-8 string.
+pub(crate) fn utf8_value(value: &[u8]) -> Result<String, DecodeError> {
+    core::str::from_utf8(value)
+        .map(str::to_owned)
+        .map_err(|_| DecodeError::InvalidUtf8)
+}
+
 /// Cursor-style decoder over an immutable byte slice.
 ///
 /// The decoder borrows its input; `read_*` methods advance an internal
@@ -437,19 +444,17 @@ impl<'a> Decoder<'a> {
             match id {
                 field::hello::CLIENT_NAME => {
                     client_name = Some(
-                        core::str::from_utf8(value)
-                            .map_err(|_| DecodeError::InvalidUtf8)?
-                            .to_owned(),
+                        utf8_value(value)?,
                     );
                 }
                 field::hello::PROTOCOL_MAJOR => {
-                    protocol_major = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                    protocol_major = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello::PROTOCOL_MINOR => {
-                    protocol_minor = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                    protocol_minor = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello::PROTOCOL_PATCH => {
-                    protocol_patch = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                    protocol_patch = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello::CLIENT_CAPS => {
                     client_caps = Some(sub!(value, decode_client_capabilities));
@@ -457,14 +462,14 @@ impl<'a> Decoder<'a> {
                 field::hello::COMPRESSION => {
                     compression = Some(crate::caps::CompressionSet::from_bits(sub!(
                         value,
-                        |d: &mut Decoder<'_>| d.read_u8()
+                        Decoder::read_u8
                     )));
                 }
                 field::hello::SSH_ORIGIN => {
                     ssh_origin = super::ssh_origin::decode_ssh_origin(value);
                 }
                 field::hello::QUIC_STREAMS => {
-                    quic_streams = sub!(value, |d: &mut Decoder<'_>| d.read_u8()) != 0;
+                    quic_streams = sub!(value, Decoder::read_u8) != 0;
                 }
                 _ => {}
             }
@@ -505,13 +510,13 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::hello_ok::PROTOCOL_MAJOR => {
-                    protocol_major = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                    protocol_major = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello_ok::PROTOCOL_MINOR => {
-                    protocol_minor = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                    protocol_minor = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello_ok::PROTOCOL_PATCH => {
-                    protocol_patch = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                    protocol_patch = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello_ok::SERVER_CAPS => {
                     server_caps = Some(sub!(value, decode_server_capabilities));
@@ -521,16 +526,16 @@ impl<'a> Decoder<'a> {
                     selected_profile = Some(sub!(value, decode_bootstrap_profile));
                 }
                 field::hello_ok::MAX_CHUNK_BYTES => {
-                    max_chunk_bytes = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::hello_ok::MAX_HISTORY_PAGE_BYTES => {
                     max_history_page_bytes =
-                        Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                        Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::hello_ok::COMPRESSION => {
                     compression = Some(crate::caps::Compression::from_u8(sub!(
                         value,
-                        |d: &mut Decoder<'_>| d.read_u8()
+                        Decoder::read_u8
                     )));
                 }
                 _ => {}
@@ -607,11 +612,11 @@ impl<'a> Decoder<'a> {
                 field::frame_compressed::ALGORITHM => {
                     algorithm = Some(crate::caps::Compression::from_u8(sub!(
                         value,
-                        |d: &mut Decoder<'_>| d.read_u8()
+                        Decoder::read_u8
                     )));
                 }
                 field::frame_compressed::UNCOMPRESSED_LEN => {
-                    uncompressed_len = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    uncompressed_len = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::frame_compressed::PAYLOAD => payload = Some(value),
                 _ => {}
@@ -649,7 +654,7 @@ impl<'a> Decoder<'a> {
         let mut nonce: Option<u64> = None;
         while let Some((id, value)) = self.read_field()? {
             if id == field::ping::NONCE {
-                nonce = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                nonce = Some(sub!(value, Decoder::read_u64_be));
             }
         }
         Ok(FrameKind::Ping {
@@ -662,7 +667,7 @@ impl<'a> Decoder<'a> {
         let mut nonce: Option<u64> = None;
         while let Some((id, value)) = self.read_field()? {
             if id == field::ping::NONCE {
-                nonce = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                nonce = Some(sub!(value, Decoder::read_u64_be));
             }
         }
         Ok(FrameKind::Pong {
@@ -683,7 +688,7 @@ impl<'a> Decoder<'a> {
                     terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::terminal_output::SEQ => {
-                    seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                    seq = Some(sub!(value, Decoder::read_u64_be));
                 }
                 field::terminal_output::BYTES => {
                     bytes = Some(bytes::Bytes::copy_from_slice(value));
@@ -719,7 +724,7 @@ impl<'a> Decoder<'a> {
                 field::attach::ROLE_POLICY => {
                     role_policy = Some(crate::wire::frame::RolePolicy::from_u8(sub!(
                         value,
-                        |d: &mut Decoder<'_>| d.read_u8()
+                        Decoder::read_u8
                     )));
                 }
                 field::attach::TARGET => target = Some(sub!(value, decode_attach_target)),
@@ -727,13 +732,13 @@ impl<'a> Decoder<'a> {
                     viewport = Some(sub!(value, decode_viewport_info));
                 }
                 field::attach::REQUEST_SCROLLBACK => {
-                    request_scrollback = sub!(value, |d: &mut Decoder<'_>| d.read_u8()) != 0;
+                    request_scrollback = sub!(value, Decoder::read_u8) != 0;
                 }
                 field::attach::SCROLLBACK_LIMIT_LINES => {
-                    scrollback_limit_lines = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    scrollback_limit_lines = sub!(value, Decoder::read_u32_be);
                 }
                 field::attach::ATTACH_ID => {
-                    attach_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    attach_id = Some(sub!(value, Decoder::read_u32_be));
                 }
                 _ => {}
             }
@@ -802,7 +807,7 @@ impl<'a> Decoder<'a> {
                     terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::input_focus::EVENT => {
-                    let tag = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                    let tag = sub!(value, Decoder::read_u8);
                     event = Some(decode_focus_event(tag)?);
                 }
                 _ => {}
@@ -869,7 +874,7 @@ impl<'a> Decoder<'a> {
                     terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::frame_ack::SEQ => {
-                    seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                    seq = Some(sub!(value, Decoder::read_u64_be));
                 }
                 field::frame_ack::STREAM_ID => {
                     stream_id = Some(sub!(value, decode_stream_id));
@@ -915,7 +920,7 @@ impl<'a> Decoder<'a> {
                     initial_client_id = Some(sub!(value, decode_client_id));
                 }
                 field::attached::ATTACH_ID => {
-                    attach_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    attach_id = Some(sub!(value, Decoder::read_u32_be));
                 }
                 _ => {}
             }
@@ -932,7 +937,7 @@ impl<'a> Decoder<'a> {
         let mut attach_id = None;
         while let Some((id, value)) = self.read_field()? {
             if id == field::attach_ready::ATTACH_ID {
-                attach_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                attach_id = Some(sub!(value, Decoder::read_u32_be));
             }
         }
         Ok(FrameKind::AttachReady {
@@ -965,16 +970,16 @@ impl<'a> Decoder<'a> {
                     codec = Some(sub!(value, decode_bootstrap_codec));
                 }
                 field::bootstrap_begin::COLS => {
-                    cols = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                    cols = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::bootstrap_begin::ROWS => {
-                    rows = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u16_be()));
+                    rows = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::bootstrap_begin::OUTPUT_MODE => {
-                    output_mode = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
+                    output_mode = Some(sub!(value, Decoder::read_u8));
                 }
                 field::bootstrap_begin::BASE_SEQ => {
-                    base_seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                    base_seq = Some(sub!(value, Decoder::read_u64_be));
                 }
                 _ => {}
             }
@@ -1014,7 +1019,7 @@ impl<'a> Decoder<'a> {
                     bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::bootstrap_chunk::CHUNK_SEQ => {
-                    chunk_seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    chunk_seq = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::bootstrap_chunk::PAYLOAD => {
                     if value.len() > self.max_bootstrap_chunk_bytes as usize {
@@ -1088,10 +1093,10 @@ impl<'a> Decoder<'a> {
                     cursor = Some(checked_history_cursor(value)?);
                 }
                 field::history_request::MAX_BYTES => {
-                    max_bytes = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    max_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::history_request::MAX_ROWS => {
-                    max_rows = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    max_rows = Some(sub!(value, Decoder::read_u32_be));
                 }
                 _ => {}
             }
@@ -1195,7 +1200,7 @@ impl<'a> Decoder<'a> {
                     bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::bootstrap_tombstone::REASON => {
-                    let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                    let value = sub!(value, Decoder::read_u8);
                     reason = Some(TombstoneReason::from_wire(value).ok_or_else(|| {
                         DecodeError::UnknownEnumValue {
                             field: "TombstoneReason",
@@ -1204,7 +1209,7 @@ impl<'a> Decoder<'a> {
                     })?);
                 }
                 field::bootstrap_tombstone::LAST_VALID_SEQ => {
-                    last_valid_seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                    last_valid_seq = Some(sub!(value, Decoder::read_u64_be));
                 }
                 _ => {}
             }
@@ -1240,7 +1245,7 @@ impl<'a> Decoder<'a> {
                     cursor = Some(checked_history_cursor(value)?);
                 }
                 field::history_tombstone::REASON => {
-                    let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                    let value = sub!(value, Decoder::read_u8);
                     reason = Some(HistoryTombstoneReason::from_wire(value).ok_or_else(|| {
                         DecodeError::UnknownEnumValue {
                             field: "HistoryTombstoneReason",
@@ -1297,7 +1302,7 @@ impl<'a> Decoder<'a> {
                     cursor = Some(checked_history_cursor(value)?);
                 }
                 field::history_rejected::REASON => {
-                    let value = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                    let value = sub!(value, Decoder::read_u8);
                     reason = Some(HistoryRejectionReason::from_wire(value).ok_or_else(|| {
                         DecodeError::UnknownEnumValue {
                             field: "HistoryRejectionReason",
@@ -1306,10 +1311,10 @@ impl<'a> Decoder<'a> {
                     })?);
                 }
                 field::history_rejected::REQUIRED_BYTES => {
-                    required_bytes = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    required_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::history_rejected::REQUIRED_ROWS => {
-                    required_rows = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    required_rows = Some(sub!(value, Decoder::read_u32_be));
                 }
                 _ => {}
             }
@@ -1334,7 +1339,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::detached::REASON => {
-                    let raw = sub!(value, |d: &mut Decoder<'_>| d.read_u8());
+                    let raw = sub!(value, Decoder::read_u8);
                     // Deliberately tolerant: an unrecognised reason
                     // decodes as "unstated" rather than failing the
                     // frame. See `DetachReason::from_wire`.
@@ -1342,9 +1347,7 @@ impl<'a> Decoder<'a> {
                 }
                 field::detached::MESSAGE => {
                     message = Some(
-                        core::str::from_utf8(value)
-                            .map_err(|_| DecodeError::InvalidUtf8)?
-                            .to_owned(),
+                        utf8_value(value)?,
                     );
                 }
                 _ => {}
@@ -1378,10 +1381,10 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::error::REQUEST_ID => {
-                    request_id = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    request_id = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::error::CODE => {
-                    let raw = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                    let raw = sub!(value, Decoder::read_u16_be);
                     code = Some(ErrorCode::from_wire(raw).ok_or_else(|| {
                         DecodeError::UnknownEnumValue {
                             field: "ErrorCode",
@@ -1391,9 +1394,7 @@ impl<'a> Decoder<'a> {
                 }
                 field::error::MESSAGE => {
                     message = Some(
-                        core::str::from_utf8(value)
-                            .map_err(|_| DecodeError::InvalidUtf8)?
-                            .to_owned(),
+                        utf8_value(value)?,
                     );
                 }
                 _ => {}
@@ -1425,14 +1426,12 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::set_metadata::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::set_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
                 field::set_metadata::KEY => {
                     key = Some(
-                        core::str::from_utf8(value)
-                            .map_err(|_| DecodeError::InvalidUtf8)?
-                            .to_owned(),
+                        utf8_value(value)?,
                     );
                 }
                 field::set_metadata::VALUE => value_bytes = value.to_vec(),
@@ -1464,7 +1463,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::list_metadata::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::list_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
                 _ => {}
@@ -1485,9 +1484,7 @@ impl<'a> Decoder<'a> {
                 field::subscribe_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
                 field::subscribe_metadata::KEY => {
                     key = Some(
-                        core::str::from_utf8(value)
-                            .map_err(|_| DecodeError::InvalidUtf8)?
-                            .to_owned(),
+                        utf8_value(value)?,
                     );
                 }
                 _ => {}
@@ -1510,9 +1507,7 @@ impl<'a> Decoder<'a> {
                 field::metadata_changed::SCOPE => scope = Some(sub!(value, decode_scope)),
                 field::metadata_changed::KEY => {
                     key = Some(
-                        core::str::from_utf8(value)
-                            .map_err(|_| DecodeError::InvalidUtf8)?
-                            .to_owned(),
+                        utf8_value(value)?,
                     );
                 }
                 field::metadata_changed::VALUE => value_bytes = Some(value.to_vec()),
@@ -1535,7 +1530,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::metadata_value::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::metadata_value::VALUE => value_bytes = Some(value.to_vec()),
                 _ => {}
@@ -1554,7 +1549,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::metadata_keys::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::metadata_keys::KEYS => {
                     let mut d = Decoder::new(value);
@@ -1589,27 +1584,23 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::spawn_terminal::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::spawn_terminal::GROUP => {
-                    group = GroupId::new(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+                    group = GroupId::new(sub!(value, Decoder::read_u32_be));
                 }
                 field::spawn_terminal::COMMAND => {
                     command = Some(sub!(value, decode_string_list));
                 }
                 field::spawn_terminal::CWD => {
                     cwd = Some(
-                        core::str::from_utf8(value)
-                            .map_err(|_| DecodeError::InvalidUtf8)?
-                            .to_owned(),
+                        utf8_value(value)?,
                     );
                 }
                 field::spawn_terminal::ENV => env = Some(sub!(value, decode_env)),
                 field::spawn_terminal::TERM => {
                     term = Some(
-                        core::str::from_utf8(value)
-                            .map_err(|_| DecodeError::InvalidUtf8)?
-                            .to_owned(),
+                        utf8_value(value)?,
                     );
                 }
                 field::spawn_terminal::SATELLITE => {
@@ -1663,7 +1654,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_spawned::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::terminal_spawned::RESULT => {
                     result = Some(sub!(value, decode_spawn_result));
@@ -1692,7 +1683,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::move_terminal::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::move_terminal::TERMINAL => {
                     terminal = Some(sub!(value, decode_terminal_id));
@@ -1717,7 +1708,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_moved::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::terminal_moved::RESULT => {
                     result = Some(sub!(value, decode_move_result));
@@ -1744,7 +1735,7 @@ impl<'a> Decoder<'a> {
                 }
                 field::terminal_closed::EXIT_STATUS => exit_status = Some(read_i32_value(value)?),
                 field::terminal_closed::REASON => {
-                    reason = CloseReason::from_wire(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
+                    reason = CloseReason::from_wire(sub!(value, Decoder::read_u8));
                 }
                 field::terminal_closed::SIGNAL => signal = Some(read_i32_value(value)?),
                 _ => {}
@@ -1769,10 +1760,10 @@ impl<'a> Decoder<'a> {
                     terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::terminal_resize::COLS => {
-                    cols = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                    cols = sub!(value, Decoder::read_u16_be);
                 }
                 field::terminal_resize::ROWS => {
-                    rows = sub!(value, |d: &mut Decoder<'_>| d.read_u16_be());
+                    rows = sub!(value, Decoder::read_u16_be);
                 }
                 _ => {}
             }
@@ -1791,7 +1782,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::command::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::command::COMMAND => command = Some(sub!(value, decode_command)),
                 _ => {}
@@ -1810,7 +1801,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::command_result::REQUEST_ID => {
-                    request_id = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::command_result::RESULT => {
                     result = Some(sub!(value, decode_command_result));
@@ -1834,7 +1825,7 @@ impl<'a> Decoder<'a> {
                     terminal = Some(sub!(value, decode_terminal_id));
                 }
                 field::subscribe_events::AFTER_SEQ => {
-                    after_seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                    after_seq = Some(sub!(value, Decoder::read_u64_be));
                 }
                 _ => {}
             }
@@ -1881,9 +1872,9 @@ impl StampParts {
     fn absorb(&mut self, id: u32, value: &[u8]) -> Result<(), DecodeError> {
         match id {
             field::event::SEQ => {
-                self.seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                self.seq = Some(sub!(value, Decoder::read_u64_be));
             }
-            field::event::TS_MS => self.ts_ms = sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()),
+            field::event::TS_MS => self.ts_ms = sub!(value, Decoder::read_u64_be),
             field::event::ACTOR => self.actor = Some(sub!(value, decode_actor_ref)),
             field::event::OPERATION_ID => self.operation_id = Some(decode_idempotency_key(value)?),
             _ => {}
@@ -1928,7 +1919,7 @@ fn absorb_spawn_resource_field(
 ) -> Result<(), DecodeError> {
     match id {
         field::spawn_terminal::KIND => {
-            resource.kind = ResourceKind::from_wire(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
+            resource.kind = ResourceKind::from_wire(sub!(value, Decoder::read_u8));
         }
         field::spawn_terminal::PARENT => resource.parent = Some(sub!(value, decode_terminal_id)),
         field::spawn_terminal::PROVIDER => {
@@ -1941,7 +1932,7 @@ fn absorb_spawn_resource_field(
             resource.bind_instance = sub!(value, decode_bind_instance);
         }
         field::spawn_terminal::RETAIN_SECS => {
-            resource.retain_secs = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+            resource.retain_secs = Some(sub!(value, Decoder::read_u32_be));
         }
         field::spawn_terminal::IDEMPOTENCY_KEY => {
             resource.idempotency_key = Some(decode_idempotency_key(value)?);
@@ -1980,9 +1971,7 @@ fn decode_agent_facet_str(value: &[u8], max_bytes: usize) -> Result<String, Deco
     if value.is_empty() || value.len() > max_bytes {
         return Err(DecodeError::AgentFacetLimitExceeded);
     }
-    Ok(core::str::from_utf8(value)
-        .map_err(|_| DecodeError::InvalidUtf8)?
-        .to_owned())
+    Ok(utf8_value(value)?)
 }
 
 /// Enforce `SPAWN_RESOURCE`'s per-kind field rules (`docs/spec/L1.md` §3.1).
@@ -2251,7 +2240,7 @@ fn checked_bootstrap_dimensions(
 fn checked_history_page_seq(value: Option<&[u8]>) -> Result<u64, DecodeError> {
     let page_seq = sub!(
         value.ok_or(DecodeError::UnexpectedEof)?,
-        |d: &mut Decoder<'_>| d.read_u64_be()
+        Decoder::read_u64_be
     );
     if page_seq == 0 {
         return Err(DecodeError::InvalidHistoryPageSequence);
@@ -2264,7 +2253,7 @@ fn checked_history_page_seq(value: Option<&[u8]>) -> Result<u64, DecodeError> {
 fn checked_history_page_rows(value: Option<&[u8]>) -> Result<u32, DecodeError> {
     let rows = sub!(
         value.ok_or(DecodeError::UnexpectedEof)?,
-        |d: &mut Decoder<'_>| d.read_u32_be()
+        Decoder::read_u32_be
     );
     if rows > MAX_HISTORY_PAGE_ROWS {
         return Err(DecodeError::HistoryRowLimitExceeded);

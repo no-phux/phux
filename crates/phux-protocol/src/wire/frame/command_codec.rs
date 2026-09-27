@@ -5,7 +5,7 @@ use bytes::BytesMut;
 
 use crate::ids::{ClientId, FileUploadId, GroupId, IdempotencyKey, InputOperationId, ResourceKind};
 use crate::input::InputEvent;
-use crate::wire::decode::Decoder;
+use crate::wire::decode::{Decoder, utf8_value};
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::field;
@@ -1367,20 +1367,14 @@ fn decode_asked_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> 
     while let Some((field_id, value)) = dec.read_field()? {
         match field_id {
             field::event_asked::ID => {
-                core::str::from_utf8(value)
-                    .map_err(|_| DecodeError::InvalidUtf8)?
-                    .clone_into(&mut id);
+                id = utf8_value(value)?;
             }
             field::event_asked::QUESTION => {
-                core::str::from_utf8(value)
-                    .map_err(|_| DecodeError::InvalidUtf8)?
-                    .clone_into(&mut question);
+                question = utf8_value(value)?;
             }
             field::event_asked::SUGGESTION => {
                 suggestions.push(
-                    core::str::from_utf8(value)
-                        .map_err(|_| DecodeError::InvalidUtf8)?
-                        .to_owned(),
+                    utf8_value(value)?,
                 );
             }
             field::event_asked::ELAPSED_SECONDS => {
