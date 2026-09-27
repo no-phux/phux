@@ -1,9 +1,7 @@
 use super::ServerState;
 
 impl ServerState {
-    /// Install the validated hub satellite table (phux-v45.1). Called once
-    /// at server startup, only in hub mode, after
-    /// [`crate::hub::resolve_hub_table`] succeeds.
+    /// Install the validated satellite table (hub mode, at startup).
     pub fn set_hub_table(&mut self, table: crate::hub::HubTable) {
         self.hub.set_table(table);
     }
@@ -15,9 +13,7 @@ impl ServerState {
         self.hub.table()
     }
 
-    /// Install the shared per-satellite link-status handle (phux-v45.3).
-    /// Called once at hub startup, alongside spawning the link
-    /// supervisors that publish into it.
+    /// Install the link-status handle (hub startup).
     pub fn set_hub_link_statuses(&mut self, statuses: crate::hub::link::HubLinkStatuses) {
         self.hub.set_link_statuses(statuses);
     }
@@ -29,16 +25,12 @@ impl ServerState {
         self.hub.link_statuses()
     }
 
-    /// Install the shared per-satellite frame-relay registry
-    /// (phux-v45.4). Called once at hub startup, alongside spawning the
-    /// link supervisors that drain its mailboxes.
+    /// Install the relay registry (hub startup).
     pub(crate) fn set_hub_relays(&mut self, relays: crate::hub::relay::HubRelays) {
         self.hub.set_relays(relays);
     }
 
-    /// The relay handle for satellite `host`, or `None` when this server
-    /// is not a hub or `host` is not in its table — the caller's
-    /// `UnsupportedSatelliteRoute` signal.
+    /// The relay for `host`; `None` off-hub or for an unknown host.
     #[must_use]
     pub(crate) fn hub_relay(
         &self,
@@ -97,9 +89,8 @@ impl ServerState {
         self.satellite_spawns.note_use(host, id, client);
     }
 
-    /// Whether this hub can vouch that it spawned `host`'s resource `id`
-    /// under `instance` and no consumer but the spawner attached or used it
-    /// through the hub since (ADR-0109).
+    /// Whether this hub can vouch that `host`'s `id` is unattached since
+    /// spawn under `instance` (ADR-0109).
     #[must_use]
     pub(crate) fn hub_vouches_unattached(
         &self,

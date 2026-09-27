@@ -13,16 +13,8 @@ impl ServerState {
         self.agent.report_asked(terminal, source, payload)
     }
 
-    /// Report a question an `AgentSession` child's stream carried
-    /// (ADR-0103 decision 5).
-    ///
-    /// A thin, NAMED entry rather than one more `report_agent_asked(...,
-    /// AskedSource::Stream, ...)` call site: the rung is the whole point, and
-    /// a caller that has to name the source is a caller that can pass the
-    /// wrong one. Retraction stays on the general
-    /// [`Self::retract_agent_asked`] with [`AskedSource::Stream`], because
-    /// per-source retraction is exactly the shipped rule and needs no variant
-    /// of its own.
+    /// Report a question from an `AgentSession` child's stream (ADR-0103 §5),
+    /// named so callers cannot pass the wrong source.
     #[allow(
         dead_code,
         reason = "called by the AgentSession engine's record-to-ask mapping, which lands with that engine"

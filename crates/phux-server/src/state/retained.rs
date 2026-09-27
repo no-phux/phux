@@ -1,27 +1,12 @@
 //! Retain on exit (ADR-0124): exit is a facet, close is a purge.
 //!
-//! A Terminal spawned with `SPAWN_RESOURCE.retain_secs` (or under the
-//! operator's `defaults.retain-on-exit`) is not reaped when its process
-//! exits. Its exit watcher reaps the child, records an [`ExitFacet`] here,
-//! and leaves the resource in the registry as `Exited`: the wire id stays
-//! valid, the engine keeps its grid and history, and `GET_STATE` reports the
-//! facet. The resource leaves through the ordinary close path, with the
-//! ordinary `RESOURCE_CLOSED`, when it is purged.
-//!
-//! Every purge is a cancellation of the resource's engine token, which the
-//! retained pane's exit watcher is waiting on:
-//!
-//! - **Expiry.** The watcher's own deadline, `retain_secs` after the exit.
-//! - **Count bound.** Retaining one more pane than
-//!   `defaults.retain-on-exit-max` evicts the oldest, here, in the lock that
-//!   retains the new one.
-//! - **Kill.** `KILL_RESOURCE(S)` records `Killed` and cancels the token,
-//!   exactly as it does for a live pane.
-//! - **Shutdown.** The root token cancels every engine token.
-//!
-//! There is no second table of exited resources: the facet lives beside the
-//! live descriptor, keyed by the same id, and is forgotten by the reap that
-//! retires that id. One id never has two lifecycles.
+//! A Terminal spawned with `retain_secs` (or under
+//! `defaults.retain-on-exit`) stays in the registry as `Exited` when its
+//! process exits: the wire id stays valid, the engine keeps its grid, and
+//! `GET_STATE` reports an [`ExitFacet`]. It is purged through the ordinary
+//! close path by expiry, the count bound (oldest evicted), a kill, or
+//! shutdown, each of which cancels its engine token. The facet lives beside
+//! the descriptor under the same id.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
@@ -61,11 +46,9 @@ impl Default for RetainPolicy {
 }
 
 impl RetainPolicy {
-    /// How long a Terminal spawned with `requested` (`SPAWN_RESOURCE` field
-    /// 16) is retained after its process exits, or `None` when it is not.
-    ///
-    /// An absent field is retained only when the operator made retention
-    /// the default; `0` asks for the server default; every value is capped.
+    /// How long a Terminal spawned with `requested` is retained after exit,
+    /// or `None`. Absent means the operator default; `0` asks for the server
+    /// default; all values are capped.
     #[must_use]
     pub fn resolve(self, requested: Option<u32>) -> Option<u32> {
         let requested = requested.or_else(|| self.by_default.then_some(0))?;
@@ -161,14 +144,9 @@ impl ServerState {
         self.retained.exited.get(&pane).copied()
     }
 
-    /// Keep `pane` as `Exited` instead of closing it, when it asked to be
-    /// retained and nothing is already closing it.
-    ///
-    /// A pane with a recorded close reason (a kill or shutdown that raced
-    /// its exit) is not retained: that closer asked for it to go, and the
-    /// watcher closes it at once, so the race yields exactly one
-    /// `RESOURCE_CLOSED`. Retaining one pane past the count bound evicts the
-    /// oldest in this same lock.
+    /// Keep `pane` as `Exited` unless something is already closing it (then
+    /// exactly one `RESOURCE_CLOSED` follows). Exceeding the count bound
+    /// evicts the oldest in the same lock.
     pub(crate) fn retain_exited(
         &mut self,
         pane: ResourceId,
@@ -207,9 +185,7 @@ impl ServerState {
         }
     }
 
-    /// The `process.exit` record `GET_TERMINAL_STATE` reports for `pane`,
-    /// when the state knows better than the engine: a retained pane's exit
-    /// facet, so both inspection surfaces report one record.
+    /// A retained pane's exit facet, for `GET_TERMINAL_STATE`.
     #[must_use]
     pub fn retained_process_exit(&self, pane: ResourceId) -> Option<ProcessExit> {
         self.retained_exit(pane).map(|facet| process_exit(&facet))

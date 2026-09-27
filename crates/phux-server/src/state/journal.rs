@@ -1,15 +1,9 @@
 //! The server-wide event journal (ADR-0123, `docs/spec/L1.md` §7.3).
 //!
-//! Every semantic event the server emits is stamped here exactly once, with
-//! one server-wide `seq`, and kept in a bounded ring so a subscription that
-//! names a cursor can be replayed from it. The ring bounds both the number
-//! of events and their estimated encoded size, evicting whole events oldest
-//! first. It is memory: a restart empties it, which the incarnation rule
-//! (`HELLO_OK.server_id`) makes visible to a consumer.
-//!
-//! The journal never delivers anything itself. [`super::events`] owns the
-//! subscription registry and fans each recorded entry out; this module only
-//! answers "what is the next stamp" and "what can be replayed after `n`".
+//! Every event is stamped here once with a server-wide `seq` and kept in a
+//! ring bounded by count and estimated size, oldest evicted first. A restart
+//! empties it (visible through `HELLO_OK.server_id`). Delivery is
+//! [`super::events`]'s job.
 
 use std::collections::VecDeque;
 
@@ -74,11 +68,8 @@ impl EventRecord {
     }
 }
 
-/// One stamped event held in the ring.
-///
-/// Holds the decoded event rather than an encoded frame: a subscriber that
-/// predates a value sees it rendered differently (`EXPIRED`, L1 §7.1), so the
-/// frame is built per delivery.
+/// One stamped event, kept decoded because older subscribers see some
+/// values rendered differently (L1 §7.1).
 #[derive(Debug, Clone)]
 pub(crate) struct JournalEntry {
     /// The resource the event concerns.
@@ -91,9 +82,7 @@ pub(crate) struct JournalEntry {
     pub(crate) stamp: EventStamp,
     /// Estimated encoded size, charged against the byte bound.
     bytes: usize,
-    /// A federation hub relayed this event from a satellite: it took a
-    /// `seq` here but is not retained, and only its satellite scope
-    /// receives it.
+    /// Relayed from a satellite: stamped here but not retained.
     relayed: bool,
 }
 
@@ -270,14 +259,10 @@ impl Journal {
         Some(entry)
     }
 
-    /// What a subscription whose cursor is `after` is owed, keeping only the
-    /// entries `admits` accepts.
-    ///
-    /// L1 §7.3: `2^64 - 1` asks for nothing; a cursor at the head is owed
-    /// nothing; a cursor below the head is owed every retained entry after
-    /// it, led by a gap when the ring no longer holds `after + 1`; and a
-    /// cursor ahead of the head was never issued by this journal, so it is
-    /// void and owed only a gap.
+    /// What a cursor at `after` is owed (L1 §7.3), filtered by `admits`:
+    /// nothing for `2^64 - 1` or the head; retained entries after it (led by
+    /// a gap if `after + 1` was evicted); only a gap for a never-issued
+    /// cursor.
     #[must_use]
     #[cfg(test)]
     pub(crate) fn replay_after(
@@ -302,10 +287,8 @@ impl Journal {
         }
     }
 
-    /// The next thing a pull-based replay positioned at `after` is owed:
-    /// the eviction gap when the ring no longer holds `after + 1`, else the
-    /// first retained entry after it that `admits` accepts, else nothing
-    /// (the replay has caught up with the head).
+    /// The next thing a pull replay at `after` is owed: an eviction gap, the
+    /// next admitted entry, or nothing.
     pub(crate) fn next_after(
         &self,
         after: u64,
@@ -324,9 +307,7 @@ impl Journal {
             })
     }
 
-    /// The gap a cursor is owed on a scope this journal does not retain
-    /// (a satellite scope on a hub): everything after it, or the void
-    /// cursor's gap.
+    /// The gap a cursor is owed on an unretained (satellite) scope.
     #[must_use]
     pub(crate) const fn gap_without_replay(&self, after: u64) -> Option<(u64, u64)> {
         if after < self.head {
@@ -335,13 +316,8 @@ impl Journal {
         self.void_cursor_gap(after)
     }
 
-    /// The gap a cursor at or past the head is owed: none for the head
-    /// itself or the no-replay sentinel, and `{ 1, head }` ("everything
-    /// this incarnation issued") for a cursor it never issued (L1 §7.3).
-    ///
-    /// `last_missing` is the head, so a consumer that resumes from it after
-    /// re-reading level state resumes correctly. Before anything was
-    /// journaled that is `{ 1, 0 }`, the empty range the spec names.
+    /// The gap for a cursor at or past the head: none for the head or the
+    /// sentinel, `{1, head}` for a never-issued cursor (L1 §7.3).
     const fn void_cursor_gap(&self, after: u64) -> Option<(u64, u64)> {
         if after == self.head || after == u64::MAX {
             return None;

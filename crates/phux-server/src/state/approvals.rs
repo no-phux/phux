@@ -116,9 +116,7 @@ impl Default for ApprovalTable {
 }
 
 impl ServerState {
-    /// Set the approval bounds (`defaults.approval-ttl-secs`,
-    /// `defaults.approval-max-pending`, `defaults.approval-max-pending-total`).
-    /// Called once at startup.
+    /// Set the approval bounds (TTL, per-connection and total pending).
     pub fn set_approval_limits(&mut self, ttl: Duration, max_pending: u32, max_total: u32) {
         self.approvals.ttl = ttl;
         self.approvals.max_pending = max_pending;
@@ -176,17 +174,10 @@ impl ServerState {
         Ok(OpenedApproval { id, decision, ttl })
     }
 
-    /// Join an identical keyed request to the pending hold it repeats
-    /// (ADR-0128): the same requester, the same command, the same
-    /// `operation_id`. One approval, one execution: the joined waiter hears
-    /// the same decision, and L20's dedupe answers it the first run's
-    /// result. `Ok(None)` for an unkeyed command or one no hold matches.
-    ///
-    /// A joined waiter counts against the requester's
-    /// `defaults.approval-max-pending` like a hold, so repeats cannot pile up
-    /// waiters; its count is released by [`Self::release_joined`] when the
-    /// waiter ends, however it ends.
-    ///
+    /// Join an identical keyed request (same requester, command, and
+    /// `operation_id`) to its pending hold: one approval, one execution
+    /// (ADR-0128). `Ok(None)` if unkeyed or unmatched. A joined waiter counts
+    /// against the pending bound until [`Self::release_joined`].
     /// # Errors
     ///
     /// [`HoldRefusal::TooManyPending`] at the per-connection bound.
@@ -281,11 +272,8 @@ impl ServerState {
         }
     }
 
-    /// Withdraw every action that names `terminal`, which is being reaped
-    /// (ADR-0128): each ends `withdrawn`, journaled before the Terminal's
-    /// close, and its requester is refused ("terminal gone"). A batch that
-    /// names it is withdrawn whole. The local reap path and a hub's relayed
-    /// `RESOURCE_CLOSED` both call this first.
+    /// Withdraw every action naming a reaped `terminal` (ADR-0128), whole
+    /// batches included, journaled before the close.
     pub fn withdraw_approvals_naming(&mut self, terminal: &WireResourceId) {
         let ids: Vec<ApprovalId> = self
             .approvals
@@ -303,9 +291,7 @@ impl ServerState {
         }
     }
 
-    /// A fresh id from the OS CSPRNG. The id is not an authority, but an
-    /// unguessable one keeps a refused decider from learning which ids
-    /// exist by probing.
+    /// A fresh unguessable id from the OS CSPRNG.
     fn mint_approval_id(&self) -> Result<ApprovalId, HoldRefusal> {
         for _ in 0..4 {
             let mut bytes = [0_u8; 16];
