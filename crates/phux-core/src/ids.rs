@@ -1,14 +1,5 @@
-//! Opaque, type-distinct identifiers for the multiplexer's domain entities.
-//!
-//! Each ID is a [`slotmap`] key newtype. They are `Copy`, `Eq`, `Hash`, and
-//! `Debug`, and the compiler rejects mixing one kind of ID for another — a
-//! [`SessionId`] cannot be passed where a [`WindowId`] is expected.
-//!
-//! IDs are *opaque*: callers should treat them as cookies and never inspect
-//! their bits. They are only meaningful relative to the [`Registry`] that
-//! issued them.
-//!
-//! [`Registry`]: crate::registry::Registry
+//! Opaque, type-distinct [`slotmap`] keys, meaningful only relative to the
+//! registry that issued them.
 
 use slotmap::new_key_type;
 

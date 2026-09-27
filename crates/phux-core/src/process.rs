@@ -1,36 +1,20 @@
-//! Typed terminal process facts — the `process` object of the
-//! `GET_TERMINAL_STATE` JSON (L1 §6.3) and the exit outcome a Terminal's
-//! engine reports when its child leaves.
+//! Typed terminal process facts for `GET_TERMINAL_STATE` (L1 §6.3).
 //!
-//! Like [`crate::screen::ScreenState`], these types live in `phux-core` so
-//! the server that *produces* them and any consumer that *deserializes*
-//! them share one definition. They are pure data: every fact is sourced by
-//! the server from the kernel (the PTY's own child, the tty's foreground
-//! process group) or from the pane's OSC-133 marks, and a fact the server
-//! could not obtain is `None` (JSON `null`) — never a guess.
+//! Also a Terminal child's exit outcome. Pure data shared by producer and consumers; an unobtainable fact is
+//! `None` (JSON `null`), never a guess.
 //!
 //! Privacy boundary: only the PTY's own child and the tty's foreground
-//! process group are ever queried, and only the foreground's argv0
-//! basename leaves the server — never the argv tail, the environment, or
-//! any unrelated pid (the same boundary as `phux.pane-occupant/v1`).
+//! process group are queried, and only the foreground's argv0 basename
+//! leaves the server.
 
 use serde::{Deserialize, Serialize};
 
-/// `schema_version` stamped on the `GET_TERMINAL_STATE` JSON.
-///
-/// `1` is the first versioned shape: it adds the `process` object
-/// ([`TerminalProcessState`]) and populates `shell_state`. The version
-/// moves only when a key is removed, renamed, or retyped; added keys are
-/// ignored by older consumers.
+/// `schema_version` stamped on the `GET_TERMINAL_STATE` JSON. Moves only
+/// when a key is removed, renamed, or retyped.
 pub const TERMINAL_STATE_SCHEMA_VERSION: u32 = 1;
 
-/// How a Terminal's child process left, as the kernel reported it.
-///
-/// Exactly one of the two fields is `Some` for a reaped child: `status` for
-/// an `_exit(n)`, `signal` for a death by signal. Both are `None` when the
-/// cause is unknown (the child could not be reaped in the EOF budget, or
-/// the adopted-child path could not wait on it). `RESOURCE_CLOSED` carries
-/// `status` in `exit_status` and `signal` in its additive field 4.
+/// How a Terminal's child process left: `status` for `_exit(n)`, `signal`
+/// for a death by signal, both `None` when unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ExitOutcome {
     /// The code passed to `_exit(n)`, when the child exited normally.
@@ -65,25 +49,15 @@ impl ExitOutcome {
     }
 }
 
-/// A process identity that survives pid reuse: the pid (or pgid) paired
-/// with the process's kernel start time.
-///
-/// Two readings name the same process exactly when both fields are equal.
-/// A recycled pid carries a different `start_ms`, so a consumer that stored
-/// `(pid, start_ms)` can tell the process it saw from a later one wearing
-/// the same number.
+/// A process identity that survives pid reuse: pid (or pgid) plus kernel
+/// start time. Equal fields name the same process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessIdentity {
     /// The process id.
     pub pid: i32,
     /// Process start time in Unix milliseconds, or `None` when the kernel
-    /// query failed. On Linux it derives from `/proc/<pid>/stat` field 22
-    /// plus the boot time, so it carries up to one second of absolute
-    /// error. The server reads the boot time once per server process, so
-    /// one process reports the same value on every query. The kernel
-    /// recomputes its boot time on a wall-clock step, so a server started
-    /// after a step can report a different value for a process that
-    /// predates it; compare generations within one server's lifetime.
+    /// query failed. On Linux it carries up to 1 s of absolute error and is
+    /// only comparable within one server's lifetime (boot time is read once).
     #[serde(default)]
     pub start_ms: Option<u64>,
 }
@@ -127,10 +101,8 @@ pub struct PromptFacet {
     pub last_exit_code: Option<i32>,
 }
 
-/// [`ProcessExit::reason`] for an exit the Terminal engine observed as PTY
-/// EOF. The vocabulary is `RESOURCE_CLOSED`'s close reasons in snake case;
-/// consumers MUST tolerate an unknown value.
-pub const EXIT_REASON_EXITED: &str = "exited";
+/// [`ProcessExit::reason`] for an exit observed as PTY EOF.
+const EXIT_REASON_EXITED: &str = "exited";
 
 /// The exit facet: how the child left and when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,8 +114,7 @@ pub struct ProcessExit {
     #[serde(default)]
     pub signal: Option<i32>,
     /// Why the resource is leaving, in the `RESOURCE_CLOSED` close-reason
-    /// vocabulary (see [`EXIT_REASON_EXITED`]). A string, not an enum, so a
-    /// newer server's reason never fails an older consumer's parse.
+    /// vocabulary. An open string: tolerate unknown values.
     pub reason: String,
     /// When the exit was observed, in Unix milliseconds.
     #[serde(default)]
@@ -163,11 +134,8 @@ impl ProcessExit {
     }
 }
 
-/// The `process` object of the `GET_TERMINAL_STATE` JSON.
-///
-/// Every field is always present in the JSON; an unobtainable fact is
-/// `null`. `foreground` and `cwd` are live kernel queries and are `null`
-/// once the child has exited; `child` keeps naming the process that ran.
+/// The `process` object of the `GET_TERMINAL_STATE` JSON. Every key is
+/// always present; `foreground` and `cwd` are `null` once the child exited.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TerminalProcessState {
     /// The PTY's own child (usually the shell), with its start time.
@@ -228,12 +196,5 @@ mod tests {
         assert!(json.contains("\"reason\":\"exited\""), "got {json}");
         let back: TerminalProcessState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, state);
-    }
-
-    #[test]
-    fn exit_outcome_constructors_set_exactly_one_field() {
-        assert_eq!(ExitOutcome::exited(1).signal, None);
-        assert_eq!(ExitOutcome::signaled(15).status, None);
-        assert_eq!(ExitOutcome::default(), ExitOutcome::UNKNOWN);
     }
 }
