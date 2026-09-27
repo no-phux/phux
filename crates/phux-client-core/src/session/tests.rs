@@ -3445,10 +3445,6 @@ fn gap_resync_replacement_generation_resets_the_live_sequence() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AgentSession resources: kind tracking and the typed record log.
-// ---------------------------------------------------------------------------
-
 const AGENT_PROFILE: BootstrapStreamProfile = BootstrapStreamProfile::AgentEventsJsonlV1;
 
 fn agent_line(seq: u64, kind: &str, data: &str) -> String {

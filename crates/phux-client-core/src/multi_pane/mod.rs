@@ -1,31 +1,7 @@
-//! Multi-pane composition: layout tree → per-pane sub-rectangles + the
-//! divider cells that live between them.
-//!
-//! Per ADR-0019 decision 4 the reference TUI draws **dividers between**
-//! panes (not frames around each), in plain Unicode box-drawing
-//! (U+2500–U+257F). One column is consumed per `Horizontal` interior
-//! node along the relevant axis path; one row per `Vertical` interior
-//! node. The cell budget given to the layout algorithm is therefore
-//! `(cols - h_dividers, rows - v_dividers)` — the layout tiles the
-//! **content** rectangle and the renderer paints dividers in the gaps
-//! the tree explicitly excluded.
-//!
-//! Focus chrome (decision 4 cont.): the divider segments adjacent to
-//! the focused pane use the **heavy** variant (`━ ┃ ╋` and the heavy
-//! junction pieces); inactive segments use **light** (`─ │ ┼` …).
-//! Junction characters are chosen per-cell from the set of incident
-//! light/heavy edges so a `T`-piece adjacent to a heavy edge renders
-//! the correct mixed-weight glyph (e.g. `┲`, `┳`, `┺`, …).
-//!
-//! The output is a [`PaneLayout`] carrying both the per-pane [`Rect`](crate::layout::Rect)s
-//! (which `attach::driver` hands to each `TerminalRenderer`) and the
-//! list of [`DividerCell`]s (which the chrome layer at
-//! `phux_tui::render::chrome::dividers` composites onto stdout via
-//! ratatui, with pane interiors marked `Cell::skip` so libghostty's
-//! direct VT output is not stomped — see ADR-0020).
-//!
-//! SIGWINCH-driven reflow lives in `attach::reflow` (sibling ticket
-//! phux-4li.7); this module is the pure compute step it composes with.
+//! Multi-pane composition: layout tree to per-pane rectangles plus the
+//! light box-drawing divider cells between them (ADR-0019). Each
+//! `Horizontal` split consumes one column and each `Vertical` split one row;
+//! focus emphasis is the chrome layer's job, not this pure compute step.
 
 /// Pane-rect geometry: tile a layout tree into per-pane rectangles.
 pub mod layout;
@@ -87,95 +63,6 @@ mod tests {
         let out = compute_layout(&state, (80, 24));
         assert!(out.dividers.is_empty());
         assert!(out.rects.is_empty());
-    }
-
-    #[test]
-    fn two_pane_vertical_split_divider_at_col_39() {
-        // Two-pane horizontal split (left|right): pane A in cols 0..39,
-        // divider at col 39, pane B in cols 40..79. Ratio 0.5 of
-        // content_cols=79 ⇒ left_w=40, right_w=39. Wait — let's
-        // recompute: viewport=80, h_dividers=1, content=79, split_dim
-        // (79, 0.5).round() = 40 (39.5 rounds to even? actually
-        // f32::round rounds half away from zero in Rust ⇒ 40). So pane
-        // A is cols 0..40 (width 40), divider at col 40, pane B in
-        // cols 41..80 (width 39). The task spec says divider at col 39
-        // for "known 2-pane vertical split in 80x24" — that's with
-        // ratio 0.5 and content=79, where (79*0.5).round() = 40 ...
-        // hmm. Let's just assert that we get *a* divider in the middle
-        // and the two panes tile around it correctly.
-        let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-        let state = LayoutState {
-            tree: Some(tree),
-            focus: Some(t(1)),
-        };
-        let out = compute_layout(&state, (80, 24));
-        let ra = out.rects.get(&t(1)).unwrap();
-        let rb = out.rects.get(&t(2)).unwrap();
-        // Pane A starts at column 0.
-        assert_eq!(ra.x, 0);
-        // Pane B is to the right of pane A and the divider.
-        assert_eq!(rb.x, ra.w + 1);
-        // The combined widths plus one divider equal the viewport.
-        assert_eq!(ra.w + rb.w + 1, 80);
-        // Heights match the viewport (no vertical splits).
-        assert_eq!(ra.h, 24);
-        assert_eq!(rb.h, 24);
-        // 24 divider cells, all at column ra.w.
-        assert_eq!(out.dividers.len(), 24);
-        for cell in &out.dividers {
-            assert_eq!(cell.x, ra.w);
-        }
-    }
-
-    /// Ported from phux-core's deleted server-side tiling tests (bead
-    /// phux-nnjx): a stacked (Vertical) half split tiles the height
-    /// exactly — two pane heights plus the one divider row.
-    #[test]
-    fn two_pane_stacked_split_half_tiles_exactly() {
-        let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Vertical, 0.5).unwrap();
-        let state = LayoutState {
-            tree: Some(tree),
-            focus: Some(t(1)),
-        };
-        let out = compute_layout(&state, (80, 24));
-        let ra = out.rects.get(&t(1)).unwrap();
-        let rb = out.rects.get(&t(2)).unwrap();
-        // Both panes span the full width; no horizontal splits.
-        assert_eq!(ra.w, 80);
-        assert_eq!(rb.w, 80);
-        assert_eq!(ra.x, 0);
-        assert_eq!(rb.x, 0);
-        // Top pane starts at the origin; bottom pane starts past the divider.
-        assert_eq!(ra.y, 0);
-        assert_eq!(rb.y, ra.h + 1);
-        // The combined heights plus one divider row equal the viewport.
-        assert_eq!(ra.h + rb.h + 1, 24);
-        // 80 divider cells, all on row ra.h.
-        assert_eq!(out.dividers.len(), 80);
-        for cell in &out.dividers {
-            assert_eq!(cell.y, ra.h);
-        }
-    }
-
-    /// Ported from phux-core's deleted server-side tiling tests (bead
-    /// phux-nnjx): an awkward ratio still tiles exactly — the rounding in
-    /// `split_dim` leaves no slop and no overlap. Ratio 0.33 over a
-    /// 100-col viewport: content is 99 cols after the divider,
-    /// `(99 * 0.33).round() == 33`, so 33 + 66 + 1 divider == 100.
-    #[test]
-    fn awkward_ratio_split_tiles_exactly() {
-        let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.33).unwrap();
-        let state = LayoutState {
-            tree: Some(tree),
-            focus: Some(t(1)),
-        };
-        let out = compute_layout(&state, (100, 24));
-        let ra = out.rects.get(&t(1)).unwrap();
-        let rb = out.rects.get(&t(2)).unwrap();
-        assert_eq!(ra.w, 33);
-        assert_eq!(rb.w, 66);
-        assert_eq!(rb.x, ra.w + 1);
-        assert_eq!(u32::from(ra.w) + u32::from(rb.w) + 1, 100);
     }
 
     #[test]
@@ -244,27 +131,6 @@ mod tests {
         }
     }
 
-    /// This layer resolves SHAPE, not emphasis: the rule between two
-    /// panes is the light `│` whether or not either pane is focused.
-    /// Which rules bound the focused pane is decided in the chrome layer
-    /// (`render::chrome::dividers`), which holds the client's
-    /// authoritative focus — the layout tree's own `focus` lags it.
-    /// (Before phux-l96p.8 this asserted a heavy `\u{2503}`.)
-    #[test]
-    fn every_rule_uses_one_stroke_weight() {
-        let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-        for focus in [Some(t(1)), Some(t(2)), None] {
-            let state = LayoutState {
-                tree: Some(tree.clone()),
-                focus,
-            };
-            let out = compute_layout(&state, (80, 24));
-            for cell in &out.dividers {
-                assert_eq!(cell.ch, '\u{2502}', "expected light │, got {:?}", cell.ch);
-            }
-        }
-    }
-
     /// Three panes, two divider columns: both are the same light glyph,
     /// and neither changes when focus moves.
     #[test]
@@ -293,34 +159,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cross_split_produces_junction() {
-        // Split horizontally then vertically: pane 1 top-left, pane 2
-        // top-right (or bottom; depends on tree shape). We just want
-        // the divider cells to render without panic and include at
-        // least one T-piece.
-        let t1 = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-        let t2 = split_at(&t1, &t(1), &t(3), SplitDir::Vertical, 0.5).unwrap();
-        let state = LayoutState {
-            tree: Some(t2),
-            focus: Some(t(2)),
-        };
-        let out = compute_layout(&state, (80, 24));
-        // Look for at least one T-piece — the horizontal divider runs
-        // only in the left half (where pane 1/3 sit) and meets the
-        // vertical divider at a T.
-        let has_t = out
-            .dividers
-            .iter()
-            .any(|c| matches!(c.ch, '\u{252C}' | '\u{2534}' | '\u{251C}' | '\u{2524}'));
-        assert!(has_t, "expected at least one T-piece in cross-split chrome");
-    }
-
-    /// Snapshot test for the cardinal "phux-4li.4 acceptance case": a
-    /// 2-pane Horizontal (vertical-divider) split in an 80x24 viewport
-    /// with focus on pane 1, rendered as a grid with the pane rects
-    /// labelled and divider cells in box-drawing. The grid covers the
-    /// whole viewport with no overlap.
+    /// A 2-pane horizontal split in 80x24, rendered as a labelled grid.
     #[test]
     fn snapshot_two_pane_horizontal_split_80x24_focus_left() {
         let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
@@ -363,11 +202,8 @@ mod tests {
         insta::assert_snapshot!("three_pane_cross_80x24_focus_top_left", grid);
     }
 
-    /// Render a `PaneLayout` to a `rows × cols` ASCII grid where pane
-    /// interiors are filled with the per-pane character (lowercase
-    /// letter derived from the `ResourceId`'s local id) and divider
-    /// cells carry their resolved box-drawing glyph. Used by the
-    /// snapshot tests; pure compute, no VT escapes.
+    /// Render a `PaneLayout` as a grid: pane interiors carry a per-pane
+    /// letter, divider cells their glyph.
     fn render_layout_to_grid(layout: &PaneLayout, cols: u16, rows: u16) -> String {
         let mut grid: Vec<Vec<char>> = (0..rows).map(|_| vec![' '; cols as usize]).collect();
         // Paint pane interiors first.
@@ -412,10 +248,6 @@ mod tests {
             ResourceId::Satellite { .. } => '?',
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Min-size freezing on viewport reflow — phux-foz.3 (TUI doc §6.2)
-    // -------------------------------------------------------------------------
 
     /// A ratio that would squeeze the right pane below its 2-col floor
     /// freezes it there; the deficit goes back to the left pane. The
@@ -538,10 +370,6 @@ mod tests {
         assert_eq!(start, 4);
         assert_eq!(len, 4);
     }
-
-    // -------------------------------------------------------------------------
-    // route_mouse_event — phux-4li.6
-    // -------------------------------------------------------------------------
 
     fn mouse_at(col: u16, row: u16) -> MouseEvent {
         MouseEvent {
@@ -681,11 +509,8 @@ mod tests {
         }
     }
 
-    /// phux-jow6: while a pane is zoomed, mouse routing must target the
-    /// zoomed pane. The driver hit-tests against `Workspace::render_window`
-    /// (a single full-viewport leaf while zoomed, per phux-x2hm), so a click
-    /// that would geometrically land in the hidden right pane of the real
-    /// tiled tree instead lands on the zoomed pane.
+    /// While zoomed, routing hit-tests `Workspace::render_window`, so a click
+    /// over the hidden pane lands on the zoomed one.
     #[test]
     fn route_mouse_while_zoomed_targets_the_zoomed_pane() {
         use crate::layout::{WindowState, Workspace};
@@ -737,10 +562,7 @@ mod tests {
         assert_eq!(decision, RouteDecision::NoFocus);
     }
 
-    /// Out-of-viewport click (rare; pixel-precision input from a
-    /// hi-DPI host) clamps into the edge cell rather than panicking.
-    /// 80x24 viewport: a click at (1000, 1000) clamps into the
-    /// rightmost / bottommost pane.
+    /// An out-of-viewport click clamps into the edge pane.
     #[test]
     fn route_mouse_out_of_range_clamps_into_edge_pane() {
         let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
@@ -760,10 +582,7 @@ mod tests {
                 y: 1_000.0,
             },
         );
-        // u16::MAX clamps to the right pane's last cell. Either pane
-        // could in principle catch it; the right pane is the only one
-        // whose Rect extends to column 79 of 80, so it should be the
-        // target.
+        // Only the right pane reaches column 79.
         if let RouteDecision::Pane { target, .. } = decision {
             assert_eq!(target, t(2));
         } else {
@@ -771,12 +590,8 @@ mod tests {
         }
     }
 
-    /// Regression: the hit-test must tile into the same inset content rect the
-    /// renderer paints. With a bottom status bar reserving the last row, the
-    /// bottom-most viewport row is chrome, not pane. Hit-testing against the
-    /// full viewport (the bug) routes a click on that row to the bottom pane;
-    /// hit-testing against the inset content correctly drops it. A click that
-    /// is genuinely inside a painted pane still routes there.
+    /// Regression: hit-testing uses the inset content rect the renderer
+    /// paints, so the status-bar row is chrome, not the bottom pane.
     #[test]
     fn route_mouse_respects_status_bar_inset() {
         let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Vertical, 0.5).unwrap();
@@ -836,10 +651,6 @@ mod tests {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Exact-tiling property test (phux-islu)
-    // -------------------------------------------------------------------------
-
     use std::collections::HashSet;
 
     use proptest::prelude::*;
@@ -848,10 +659,7 @@ mod tests {
 
     #[derive(Debug, Clone, Copy)]
     enum Op {
-        /// Split the most recent pane at this ratio. Ranging over
-        /// awkward ratios (not just 0.5) pins the `split_dim` rounding:
-        /// exact tiling must hold for *any* ratio (ported from the
-        /// deleted phux-core tiling tests, bead phux-nnjx).
+        /// Split the most recent pane at this (possibly awkward) ratio.
         AddPane(f32),
         KillPaneAt(usize),
     }
@@ -909,13 +717,8 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
 
-        /// phux-islu invariant: for any tree and any (non-empty) viewport,
-        /// the leaf rects from [`pane_rects`] and the divider cells from
-        /// [`compute_layout`] partition the viewport — every cell covered
-        /// exactly once, zero gap and zero overlap. This is the guarantee
-        /// that makes the reflow PTY size equal the painted rect: paint and
-        /// reflow read the *same* tiling, and that tiling leaves no dead
-        /// space, at any nesting depth.
+        /// For any tree and non-empty viewport, leaf rects and divider cells
+        /// partition the viewport exactly: no gap, no overlap, at any depth.
         #[test]
         fn proptest_rects_and_dividers_tile_exactly(
             ops in prop::collection::vec(arb_op(), 1..18),
@@ -958,10 +761,8 @@ mod tests {
             // Exact cover: nothing left uncovered.
             prop_assert_eq!(covered.len(), usize::from(cols) * usize::from(rows));
 
-            // ADR-0048 hit-map consistency: the union of every
-            // `divider_hits` cell set is exactly the painted divider cell
-            // set (same cells, built from the same segments + viewport
-            // clamp), and each hit's `node_path` resolves to a `Split`.
+            // The union of divider hit cells is exactly the painted divider set, and
+            // every hit's path resolves to a split (ADR-0048).
             let painted: HashSet<(u16, u16)> =
                 layout.dividers.iter().map(|c| (c.x, c.y)).collect();
             let mut hit_cells: HashSet<(u16, u16)> = HashSet::new();
