@@ -87,7 +87,7 @@ assert_app_stopped() {
 # before post-launch validation had succeeded. A failed process-name ownership
 # check therefore returned nonzero while leaking the launched process.
 if FIXTURE_WAIT_NAMED_RESULT=fail \
-    "${WORK}/fixture/scripts/dev-run.sh" --no-build --detach \
+    /bin/bash "${WORK}/fixture/scripts/dev-run.sh" --no-build --detach \
     >"${WORK}/wait-named-failure.output" 2>&1; then
     printf 'FAIL: dev-run succeeded after dev_app_wait_named failed\n' >&2
     exit 1
@@ -98,7 +98,7 @@ assert_app_stopped 'failed process-name validation'
 # still clean the process up rather than turning --detach into unconditional
 # permission to retain it.
 if PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS=invalid \
-    "${WORK}/fixture/scripts/dev-run.sh" --no-build --detach \
+    /bin/bash "${WORK}/fixture/scripts/dev-run.sh" --no-build --detach \
     >"${WORK}/invalid-timeout.output" 2>&1; then
     printf 'FAIL: dev-run accepted an invalid front timeout\n' >&2
     exit 1
@@ -111,7 +111,7 @@ assert_app_stopped 'invalid post-launch timeout'
 # so the launcher was still alive after this test's three-second ceiling even
 # though it had already printed a healthy app pid. The production 15-second
 # deadline surrounded a synchronous osascript call and could not interrupt it.
-"${WORK}/fixture/scripts/dev-run.sh" --no-build --detach >"${WORK}/output" 2>&1 &
+/bin/bash "${WORK}/fixture/scripts/dev-run.sh" --no-build --detach >"${WORK}/output" 2>&1 &
 RUNNER_PID=$!
 printf '%s\n' "$RUNNER_PID" >"${WORK}/runner.pid"
 

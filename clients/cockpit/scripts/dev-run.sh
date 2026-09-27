@@ -275,12 +275,10 @@ fi
 printf '\n'
 
 LOG="${DEV_HOME}/app.log"
-launch_env=()
 if [[ "$MEASURE_FIRST_FRAME" == "1" ]]; then
     automation_dir="${DEV_HOME}/.zig-cache/native-sdk-automation"
     rm -f -- "${automation_dir}/snapshot.txt"
     LAUNCH_STARTED_NS="$(wall_ns)"
-    launch_env+=(NATIVE_SDK_WINDOW_TIMING=1 NATIVE_SDK_GPU_DRAW_TRACE=1)
 fi
 cleanup() {
     # Preserve the status that triggered EXIT. Bare `|| true` cleanup lines would
@@ -302,7 +300,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-dev_app_launch "$EXECUTABLE" "$DEV_HOME" "$CONFIG" "$LOG" "${launch_env[@]}"
+if [[ "$MEASURE_FIRST_FRAME" == "1" ]]; then
+    dev_app_launch "$EXECUTABLE" "$DEV_HOME" "$CONFIG" "$LOG" \
+        NATIVE_SDK_WINDOW_TIMING=1 NATIVE_SDK_GPU_DRAW_TRACE=1
+else
+    # macOS /bin/bash 3.2 under nounset rejects an empty array expansion.
+    dev_app_launch "$EXECUTABLE" "$DEV_HOME" "$CONFIG" "$LOG"
+fi
 DEV_APP_OWNED=1
 printf 'pid %s, log %s\n' "$DEV_APP_PID" "$LOG"
 
