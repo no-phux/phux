@@ -1,75 +1,38 @@
-//! The responsive-chrome breakpoints, as one value threaded from the driver.
+//! The responsive-chrome breakpoints (`docs/consumers/tui.md` §4.5).
 //!
-//! The chrome adapts to small terminals around a handful of thresholds
-//! (`docs/consumers/tui.md` §4.5). They used to be `const`s read at the use
-//! sites, which made them correct-by-default and untunable: a user on an
-//! unusual geometry — a 100-column terminal who wants full-bleed pickers, a
-//! 55-column one who wants to keep the sidebar — had no knob.
-//!
-//! They are now a plain `Copy` value built once per attach from `[chrome]`
-//! and threaded to every layout site, exactly like the sidebar reservation
-//! and the [`Theme`]: one snapshot, taken where the config is loaded, so the
-//! status bar, the sidebar, and every overlay cannot disagree about what
-//! "compact" means on the same frame.
-//!
-//! [`Theme`]: crate::render::Theme
+//! One `Copy` value built per attach from `[chrome]` and threaded to every
+//! layout site, so the bar, sidebar, and overlays agree on "compact".
 
 use phux_config::ChromeCfg;
 
-/// Column and row thresholds the whole chrome shares.
-///
-/// [`Default`] reproduces the shipped constants exactly, so every
-/// construction site that has no config (tests, the pre-config bootstrap
-/// frame) keeps the historical behaviour byte-for-byte.
+/// Column and row thresholds the whole chrome shares. [`Default`] is the
+/// shipped values, for sites with no config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChromeBreakpoints {
-    /// Viewport width at or below which the chrome is *column-starved*: a
-    /// floating box's margins stop reading as composition and start reading
-    /// as columns you cannot use.
-    ///
-    /// The shipped 64 is chosen from the content, not from a round number:
-    /// a 60% box in 64 columns is 38 wide, and once its two border columns
-    /// and the two-column indent of a nested picker row are taken out, 34
-    /// remain — under the width at which a `session/window` pair plus its
-    /// branch stays legible. Wider than this and the margins are affordable.
+    /// Width at or below which the chrome is column-starved. 64: a 60% box
+    /// there leaves 34 columns of picker text, under a legible
+    /// `session/window` plus branch.
     pub compact_cols: u16,
 
-    /// Viewport height at or below which the chrome is *row-starved*.
-    ///
-    /// The shipped 18: a 60% box in 18 rows is 10 tall, and the shared modal
-    /// chrome (border, query line and its blank, footer and its blank)
-    /// spends 6 of them, so four rows of an actual list survive. Below that
-    /// a picker shows less than a page and scrolling replaces reading.
+    /// Height at or below which the chrome is row-starved. 18: a 60% box
+    /// there keeps four list rows after the shared modal chrome.
     pub compact_rows: u16,
 
-    /// The narrowest pane area worth tiling into.
-    ///
-    /// The shipped 40 is half a classic 80-column terminal, and about where
-    /// an editor, a diff, or an agent's output stops being readable rather
-    /// than merely cramped. The sidebar strip is not reserved at all below
-    /// `sidebar width + this`.
+    /// The narrowest pane area worth tiling into (40, half a classic
+    /// terminal); no sidebar is reserved below `sidebar width + this`.
     pub min_pane_cols: u16,
 }
 
 impl ChromeBreakpoints {
-    /// The shipped thresholds, as a `const` so `const fn` constructors
-    /// (notably [`OverlayState::new`]) can start from them.
-    ///
-    /// These are the numbers `[chrome]`'s serde defaults also carry; a unit
-    /// test below pins the two copies together.
-    ///
-    /// [`OverlayState::new`]: crate::render::overlay::OverlayState::new
+    /// The shipped thresholds as a `const` (a test pins them to `[chrome]`'s
+    /// serde defaults).
     pub const DEFAULT: Self = Self {
         compact_cols: 64,
         compact_rows: 18,
         min_pane_cols: 40,
     };
 
-    /// Snapshot `[chrome]` into the value the chrome threads around.
-    ///
-    /// Total: every field of [`ChromeCfg`] has a serde default, so an absent
-    /// section, a partial one, and no config file at all all land on
-    /// [`Self::default`].
+    /// Snapshot `[chrome]`; absent fields take their serde defaults.
     #[must_use]
     pub const fn from_cfg(cfg: &ChromeCfg) -> Self {
         Self {
@@ -103,10 +66,8 @@ mod tests {
     use super::ChromeBreakpoints;
     use phux_config::ChromeCfg;
 
-    /// The historical constants are the shipped defaults, and the schema
-    /// agrees with the render-side fallback. Two places name these numbers
-    /// (the serde defaults and [`ChromeBreakpoints::default`]); this is the
-    /// test that keeps them the same numbers.
+    /// The serde defaults and [`ChromeBreakpoints::default`] name the same
+    /// numbers.
     #[test]
     fn the_defaults_are_the_historical_constants() {
         let bp = ChromeBreakpoints::default();

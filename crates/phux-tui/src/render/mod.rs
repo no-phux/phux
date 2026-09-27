@@ -1,24 +1,10 @@
-//! Layered render: ratatui-driven chrome composited over libghostty pane
-//! interiors.
+//! Layered render: ratatui chrome ([`chrome`], overlays) composited over
+//! libghostty pane interiors, which write VT straight to stdout (see
+//! `attach::render`).
 //!
-//! phux-client uses two renderers with disjoint screen regions:
-//!
-//! - **Chrome** (this module, [`chrome`]) — ratatui paints the status bar,
-//!   pane dividers, borders, and overlays. Layout math, widget composition,
-//!   and modal stacking live here.
-//! - **Pane interior** (outside this module) — libghostty drives VT bytes
-//!   straight to stdout, preserving kitty graphics, sixel, OSC 8 hyperlinks,
-//!   and the Kitty key protocol on the hot path. See `attach::render`.
-//!
-//! The two layers are composited, not interleaved: chrome carves skip-cell
-//! rectangles for pane rects so libghostty owns those cells exclusively;
-//! cursor and SGR state are explicitly handed off at the boundary.
-//!
-//! `ratatui` is confined to this crate (`phux-client`); the pane-interior
-//! substrate lives in `phux-client-core`, which has no `ratatui`
-//! dependency, so the boundary is compiler-enforced rather than grep-checked
-//! (ADR-0020 replaced `scripts/check-ratatui-boundary.sh` with the crate
-//! split in phux-0fv). See epic `phux-5ke` and `ADR-0020`.
+//! Chrome carves skip cells for pane rects, so the layers
+//! never interleave; cursor and SGR are handed off at the boundary. `ratatui`
+//! lives only in this crate (ADR-0020).
 
 pub mod breakpoints;
 pub mod chrome;
@@ -33,47 +19,26 @@ pub use breakpoints::ChromeBreakpoints;
 pub use sgr::write_sgr_color;
 pub use theme::Theme;
 
-/// The single-cell mark that says "there is more here than fits".
-///
-/// Shared with the status-bar composer's [`phux_config::widget::ELLIPSIS`]
-/// so one glyph means one thing everywhere in the chrome: sidebar labels,
-/// list rows, and status widgets all cut the same way.
+/// The single-cell "there is more here than fits" mark, shared with the
+/// status-bar composer so every surface cuts the same way.
 pub const ELLIPSIS: char = phux_config::widget::ELLIPSIS;
 
-/// Clip `s` to at most `max` display CELLS, marking the cut with
-/// [`ELLIPSIS`].
+/// Clip `s` to at most `max` display cells, marking a cut with [`ELLIPSIS`]
+/// (which replaces the last cell, so the result never exceeds `max`).
 ///
-/// The ellipsis *replaces* the last surviving cell rather than being
-/// appended, so the result is at most `max` cells wide and callers can
-/// do width arithmetic on it. `max == 0` yields the empty string; a
-/// string that already fits is returned untouched.
-///
-/// Cells, not chars. Chrome text is arbitrary input — a window name, a
-/// branch, a pane's OSC-2 title — so a CJK or emoji label measured by
-/// `chars().count()` is clipped to roughly twice its budget and overruns
-/// whatever was supposed to sit beside it. A double-width character that
-/// would straddle the budget is dropped whole rather than half-drawn.
-///
-/// Zero-width characters (combining marks, variation selectors, ZWJ)
-/// ride along with the character they belong to and never consume
-/// budget; control characters are dropped, because chrome text reaches
-/// an emitter that writes escape sequences.
-///
-/// Every chrome surface that shortens text goes through here. A row that
-/// silently drops its tail is indistinguishable from a row whose content
-/// really is that short, which is how a truncated branch name reads as a
-/// different branch.
+/// Cells, not chars: chrome text is arbitrary input, and a CJK label
+/// measured by chars overruns its neighbours; a wide glyph straddling the
+/// budget is dropped whole. Zero-width marks ride with their base for free;
+/// controls and bidi overrides are dropped (see [`cell_width`]). Every chrome
+/// surface shortens text here, so a cut is always marked.
 #[must_use]
 pub fn clip_text(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
     if display_width(s) <= max {
-        // One filter for both paths: a character that cannot reach the
-        // wire cannot survive a clip either, whether or not the clip
-        // shortened anything. `cell_width` is that filter — controls and
-        // explicit bidi overrides return `None`, and a zero-width mark
-        // returns `Some(0)`, so marks ride along and formatting does not.
+        // The same filter as the clip path: unprintable characters never
+        // survive, marks do.
         return s.chars().filter(|c| cell_width(*c).is_some()).collect();
     }
     // The cut costs one cell for the ellipsis.
@@ -102,23 +67,13 @@ pub fn clip_text(s: &str, max: usize) -> String {
     out
 }
 
-/// The advance width of `ch` in terminal cells, or `None` for a
-/// character that must never reach a VT emitter.
+/// The advance width of `ch` in cells, or `None` for a character that must
+/// never reach a VT emitter.
 ///
-/// Control characters are refused explicitly rather than left to
-/// `unicode-width` happening to return `None` for them: chrome text is
-/// untrusted (a pane names itself via OSC 2), and an `\x1b` reaching the
-/// emitter would let that pane inject escape sequences into phux's own
-/// chrome.
-///
-/// Explicit BIDI FORMATTING characters are refused for the same reason.
-/// They are zero-width, so they cost no budget and no width check ever
-/// notices them, but they reorder everything drawn after them: a pane
-/// that titles itself `"\u{202e}..."` can make its own rail label — or its
-/// tab, or its sidebar row — read as another pane's. Real
-/// right-to-left text does not need them; the terminal derives direction
-/// from the letters themselves, so dropping the overrides costs nothing
-/// legitimate.
+/// Chrome text is untrusted (panes name themselves
+/// via OSC 2): controls would inject escapes, and zero-width bidi overrides
+/// would reorder later labels so a pane reads as another's. Real
+/// right-to-left text does not need them.
 #[must_use]
 pub fn cell_width(ch: char) -> Option<usize> {
     if ch.is_control() || is_bidi_control(ch) {
@@ -216,12 +171,7 @@ mod clip_text_tests {
         );
     }
 
-    /// Explicit bidi overrides never survive either. They are
-    /// zero-width, so they cost no budget and no width check notices
-    /// them, but they reorder everything drawn after them: a pane that
-    /// names itself with an override can make its sidebar row or its tab
-    /// read as another pane's. Real right-to-left text keeps working —
-    /// the terminal derives direction from the letters themselves.
+    /// Bidi overrides never survive a clip either (they reorder later text).
     #[test]
     fn bidi_overrides_are_dropped_but_rtl_letters_are_not() {
         assert_eq!(clip_text("run\u{202e}gpj.exe", 40), "rungpj.exe");

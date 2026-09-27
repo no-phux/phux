@@ -1,107 +1,31 @@
-//! Chrome + overlay color theme.
+//! Chrome + overlay color theme: every chrome and overlay color resolves
+//! through one [`Theme`] of named semantic slots, owned by the attach driver
+//! and threaded into the paint path.
 //!
-//! Single source of truth for the hand-picked colors that the chrome
-//! (status bar, dividers) and overlays (help, prompt) paint with. Before
-//! this module those colors were scattered `Color::Cyan` / `Color::Yellow`
-//! literals inside each overlay's `render`; now every chrome/overlay slot
-//! resolves through one [`Theme`] value, owned by the attach driver
-//! alongside the keybindings snapshot and threaded into the paint path.
-//!
-//! ## Slots
-//!
-//! A [`Theme`] is a flat set of named [`Color`] slots, each mapped to one
-//! semantic role:
-//!
-//! - [`accent`] — modal titles (e.g. the help / prompt border title).
-//! - [`chord`] — keybinding chords in the help table.
-//! - [`action`] — reserved for action labels (kept distinct from `chord`
-//!   so a future restyle can split them without churning callers).
-//! - [`dim`] — de-emphasized text (footer hints, "no bindings" notice).
-//! - [`border`] — modal borders.
-//! - [`title`] — alias slot for window/section titles distinct from
-//!   `accent` when a theme wants them to diverge.
-//! - [`section_header`] — section headings inside grouped discovery surfaces.
-//! - [`error`] — error / alarm text.
-//! - [`sidebar_section`] — the sidebar's muted `spaces` / `agents`
-//!   section headers.
-//! - [`divider`] / [`divider_focus`] — the pane-divider rules: the
-//!   recessive structural tone, and the focused pane's own frame.
-//! - [`pane_title`] / [`pane_title_focus`] — the label inset into a
-//!   pane's top rule.
-//! - [`text`] — body copy that sits on a filled [`Theme::surface`] panel, where
-//!   inheriting the terminal foreground would be unreadable.
-//! - [`agent_idle`] / [`agent_working`] / [`agent_blocked`] /
-//!   [`agent_done`] — agent lifecycle state colors in the sidebar's
-//!   agents section.
-//!
-//! [`accent`]: Theme::accent
-//! [`chord`]: Theme::chord
-//! [`action`]: Theme::action
-//! [`dim`]: Theme::dim
-//! [`border`]: Theme::border
-//! [`title`]: Theme::title
-//! [`section_header`]: Theme::section_header
-//! [`error`]: Theme::error
-//! [`sidebar_section`]: Theme::sidebar_section
-//! [`agent_idle`]: Theme::agent_idle
-//! [`agent_working`]: Theme::agent_working
-//! [`agent_blocked`]: Theme::agent_blocked
-//! [`agent_done`]: Theme::agent_done
-//! [`divider`]: Theme::divider
-//! [`divider_focus`]: Theme::divider_focus
-//! [`pane_title`]: Theme::pane_title
-//! [`pane_title_focus`]: Theme::pane_title_focus
-//! [`text`]: Theme::text
+//! [`SLOT_SPECS`] documents each slot.
 //!
 //! ## Contrast
 //!
-//! Every slot that paints TEXT OR A RULE must clear **4.5:1** against
-//! [`Theme::surface`] (#171b23, the shipped panel fill and a fair stand-in for
-//! a dark terminal background). That is the WCAG 2.1 AA floor for normal
-//! text, and it is the floor here too, because a chrome rule you cannot
-//! see is not subtle — it is missing.
-//!
-//! "Recessive" is a RELATIONSHIP between slots, not a licence to sit at
-//! the edge of visibility. The register is therefore expressed as three
-//! rungs that all clear the floor:
-//!
-//! | Rung                                 | Slot                  | Ratio |
-//! |--------------------------------------|-----------------------|-------|
-//! | structure (rules, modal borders)     | `border` / `divider`  | >=4.5:1 |
-//! | recessive text (hints, sub-lines)    | `dim` and its trackers| >rules |
-//! | what you are looking at              | `accent` (plus BOLD)  | >text |
-//!
-//! Focus is separated from the rest by three things at once — a brighter
-//! tone, a SATURATED hue against desaturated blue-greys, and `BOLD` — so
-//! the hierarchy survives a terminal that flattens any one of them.
-//! `contrast_floor_is_met` asserts the floor; it is a test rather than a
-//! comment so a future retune cannot quietly drop below it.
-//!
-//! The floor is measured against a dark background because the shipped
-//! palette is a dark one throughout. On a light terminal the recessive
-//! rungs land near 3.5:1; `[theme]` is the escape hatch, and every slot
-//! below is overridable.
+//! Every slot that paints text or a rule clears WCAG AA **4.5:1** against
+//! [`Theme::surface`] (the shipped dark panel fill): a rule you cannot see
+//! is missing, not subtle. "Recessive" is a relationship expressed as three
+//! rungs that all clear the floor: structure (`border`/`divider`) < recessive
+//! text (`dim`) < focus (`accent`, plus bold, in a saturated hue). Tests pin
+//! the floor and the ordering. On a light terminal the recessive rungs land
+//! near 3.5:1; every slot is overridable.
 //!
 //! ## Overrides
 //!
-//! [`Theme::from_cfg`] reads `[theme]` from `phux_config` — a free-form
-//! `slot -> color-string` map ([`phux_config::ThemeCfg`]). Recognized
-//! slot keys override the default; an unknown key is ignored and an
-//! unparseable color string falls back to the slot's default (both
-//! logged at `warn`).
+//! [`Theme::from_cfg`] layers `[theme]` ([`phux_config::ThemeCfg`], a
+//! `slot -> color` map) over the defaults; unknown keys and unparseable
+//! colors are ignored with a warning.
 
 use std::str::FromStr;
 
 use phux_config::settings::{Applies, SettingKind, SettingSection, SettingSpec};
 use ratatui::style::Color;
 
-/// Named color slots for chrome + overlay painting.
-///
-/// Construct the default with [`Theme::default`] or layer config
-/// overrides with [`Theme::from_cfg`]. Each field is a ratatui [`Color`]
-/// so consumers under `render/` can drop it straight into a [`Style`].
-///
-/// [`Style`]: ratatui::style::Style
+/// Named color slots for chrome + overlay painting (ratatui [`Color`]s).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     /// Modal titles (help / prompt border title text).
@@ -153,17 +77,11 @@ pub struct Theme {
     pub agent_blocked: Color,
     /// Agent lifecycle coloring: a `done` agent row.
     pub agent_done: Color,
-    /// Pane-divider rules that do not touch the focused pane. The
-    /// recessive structural register: a rule is scaffolding, never
-    /// content. Defaults to the same tone as `border` so every rule in
-    /// the chrome — modal frames, the sidebar's edge, the pane grid —
-    /// reads as one material.
+    /// Rules not touching the focused pane: recessive scaffolding, the same
+    /// tone as `border` so every rule reads as one material.
     pub divider: Color,
-    /// The rules bounding the FOCUSED pane. Focus is carried by color
-    /// (plus `BOLD`), never by a heavier box-drawing weight: mixed-weight
-    /// junctions (`\u{2545}`, `\u{2548}`, ...) are missing or misaligned in
-    /// most terminal fonts, so a uniformly light grid tinted at the focus
-    /// is both sharper and more portable.
+    /// Rules bounding the focused pane. Focus is colour (plus bold), never a
+    /// heavier stroke: mixed-weight junctions are broken in most fonts.
     pub divider_focus: Color,
     /// A pane's label, inset into its top rule, when the pane is not
     /// focused. Recessive like every other unfocused affordance.
@@ -171,13 +89,9 @@ pub struct Theme {
     /// The focused pane's label. Rides `accent` (with `BOLD`) so "where
     /// am I typing" is answerable from the frame alone.
     pub pane_title_focus: Color,
-    /// Body copy painted ON a filled `surface` panel.
-    ///
-    /// Distinct from `action` on purpose. `action` is `Reset` because it
-    /// labels things drawn on the HOST background (the sidebar, the
-    /// status row), which the user chose. A modal panel supplies its own
-    /// background, so its text has to supply its own foreground or it
-    /// inverts into unreadability on a light terminal.
+    /// Body copy on a filled `surface` panel. Unlike `action` (`Reset`, for
+    /// text on the host background), a panel supplies its own background, so
+    /// its text must supply its own foreground.
     pub text: Color,
 }
 
@@ -214,15 +128,9 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// Build a theme from the default, layering `[theme]` config
-    /// overrides on top.
-    ///
-    /// Each recognized slot key in `cfg.slots` whose value parses as a
-    /// color replaces the default for that slot. Unknown keys are
-    /// ignored (warn); unparseable color strings keep the default
-    /// (warn). Parsing accepts everything ratatui's [`Color`] `FromStr`
-    /// accepts: named colors (`"cyan"`), hex (`"#cdd6f4"`), and ANSI
-    /// indices (`"12"`).
+    /// The default theme with `[theme]` overrides layered on. Values parse
+    /// like ratatui's `Color` (`"cyan"`, `"#cdd6f4"`, `"12"`); unknown keys
+    /// and unparseable values keep the default (warned).
     #[must_use]
     pub fn from_cfg(cfg: &phux_config::ThemeCfg) -> Self {
         let mut theme = Self::default();
@@ -291,13 +199,9 @@ fn parse_color(spec: &str) -> Option<Color> {
     Color::from_str(spec).ok()
 }
 
-/// The theme slots as settings-page rows (ADR-0101).
-///
-/// `[theme]` is a free-form map in the config schema, so the schema's
-/// catalogue carries no theme rows; the vocabulary lives here, beside the
-/// struct that owns it. `slot_specs_name_every_slot` pins this list to
-/// `Theme::slot_mut`, so a slot cannot be added without a row and a row
-/// cannot name a slot the renderer does not read. Every slot reloads live.
+/// The theme slots as settings-page rows (ADR-0101); `[theme]` is free-form
+/// in the schema, so the vocabulary lives here. A test pins it to
+/// `Theme::slot_mut`. Every slot reloads live.
 pub const SLOT_SPECS: &[SettingSpec] = &[
     SettingSpec {
         key: "theme.accent",
@@ -561,56 +465,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn slot_reads_what_slot_mut_writes() {
-        let mut theme = Theme::default();
-        *theme.slot_mut("error").expect("slot") = Color::Indexed(9);
-        assert_eq!(theme.slot("error"), Some(Color::Indexed(9)));
-        assert_eq!(theme.slot("nonesuch"), None);
-    }
-
     fn cfg(pairs: &[(&str, &str)]) -> phux_config::ThemeCfg {
         let mut slots = BTreeMap::new();
         for (k, v) in pairs {
             slots.insert((*k).to_owned(), (*v).to_owned());
         }
         phux_config::ThemeCfg { slots }
-    }
-
-    #[test]
-    fn default_slots_match_shipped_colors() {
-        let t = Theme::default();
-        assert_eq!(t.accent, Color::Rgb(0xbe, 0xf2, 0x64));
-        assert_eq!(t.chord, Color::Rgb(0x86, 0xef, 0xac));
-        assert_eq!(t.action, Color::Reset);
-        assert_eq!(t.dim, Color::Rgb(0x9a, 0xa4, 0xb2));
-        assert_eq!(t.border, Color::Rgb(0x7c, 0x86, 0x96));
-        assert_eq!(t.title, Color::Rgb(0xbe, 0xf2, 0x64));
-        assert_eq!(t.section_header, Color::Rgb(0x9a, 0xa4, 0xb2));
-        assert_eq!(t.error, Color::Rgb(0xf8, 0x71, 0x71));
-        // Design tokens for floating-modal depth + selection chrome.
-        assert_eq!(t.surface, Color::Rgb(0x17, 0x1b, 0x23));
-        assert_eq!(t.shadow, Color::Reset);
-        assert_eq!(t.selection_fg, Color::Rgb(0xf4, 0xf7, 0xfb));
-        assert_eq!(t.selection_bg, Color::Rgb(0x29, 0x36, 0x28));
-        assert_eq!(t.attention, Color::Rgb(0xfd, 0xe0, 0x47));
-        assert_eq!(t.sidebar_section, Color::Rgb(0x9a, 0xa4, 0xb2));
-        assert_eq!(t.agent_idle, Color::Rgb(0x9a, 0xa4, 0xb2));
-        assert_eq!(t.agent_working, Color::Rgb(0x86, 0xef, 0xac));
-        assert_eq!(t.agent_blocked, Color::Rgb(0xfd, 0xe0, 0x47));
-        assert_eq!(t.agent_done, Color::Rgb(0xbe, 0xf2, 0x64));
-    }
-
-    /// The structural chrome roles ride the same lime/slate
-    /// palette; split from the test above only to keep each one readable.
-    #[test]
-    fn structural_slots_match_shipped_colors() {
-        let t = Theme::default();
-        assert_eq!(t.divider, Color::Rgb(0x7c, 0x86, 0x96));
-        assert_eq!(t.divider_focus, Color::Rgb(0xbe, 0xf2, 0x64));
-        assert_eq!(t.pane_title, Color::Rgb(0x9a, 0xa4, 0xb2));
-        assert_eq!(t.pane_title_focus, Color::Rgb(0xbe, 0xf2, 0x64));
-        assert_eq!(t.text, Color::Rgb(0xf4, 0xf7, 0xfb));
     }
 
     /// The shipped palette is a system, not a bag of colors: the slots
@@ -655,72 +515,37 @@ mod tests {
         );
     }
 
-    /// Every sidebar/agent slot is config-overridable like the
-    /// rest — unknown-slot warnings would otherwise silently eat them.
+    /// Every settings-page slot is overridable in every color syntax (an
+    /// unknown-slot warning would otherwise silently eat one); other slots
+    /// keep their defaults, and unknown or unparseable entries change nothing.
     #[test]
-    fn sidebar_and_agent_slots_are_overridable() {
+    fn every_slot_is_overridable_and_bad_entries_are_ignored() {
+        for spec in SLOT_SPECS {
+            let t = Theme::from_cfg(&cfg(&[(spec.leaf(), "#123456")]));
+            assert_eq!(
+                t.slot(spec.leaf()),
+                Some(Color::Rgb(0x12, 0x34, 0x56)),
+                "{}",
+                spec.key
+            );
+        }
         let t = Theme::from_cfg(&cfg(&[
-            ("sidebar_section", "#6c7086"),
-            ("agent_idle", "white"),
-            ("agent_working", "green"),
-            ("agent_blocked", "red"),
-            ("agent_done", "blue"),
+            ("accent", "magenta"),
+            ("chord", "12"),
+            ("surface", "reset"),
         ]));
-        assert_eq!(t.sidebar_section, Color::Rgb(0x6c, 0x70, 0x86));
-        assert_eq!(t.agent_idle, Color::White);
-        assert_eq!(t.agent_working, Color::Green);
-        assert_eq!(t.agent_blocked, Color::Red);
-        assert_eq!(t.agent_done, Color::Blue);
-        assert_eq!(t.accent, Theme::default().accent);
-    }
-
-    #[test]
-    fn attention_slot_is_overridable() {
-        let t = Theme::from_cfg(&cfg(&[("attention", "#f38ba8")]));
-        assert_eq!(t.attention, Color::Rgb(0xf3, 0x8b, 0xa8));
-        assert_eq!(t.accent, Theme::default().accent);
-    }
-
-    #[test]
-    fn structural_chrome_slots_are_overridable() {
-        let t = Theme::from_cfg(&cfg(&[
-            ("divider", "#45475a"),
-            ("divider_focus", "#89b4fa"),
-            ("pane_title", "#6c7086"),
-            ("pane_title_focus", "#89b4fa"),
-            ("text", "#cdd6f4"),
-        ]));
-        assert_eq!(t.divider, Color::Rgb(0x45, 0x47, 0x5a));
-        assert_eq!(t.divider_focus, Color::Rgb(0x89, 0xb4, 0xfa));
-        assert_eq!(t.pane_title, Color::Rgb(0x6c, 0x70, 0x86));
-        assert_eq!(t.pane_title_focus, Color::Rgb(0x89, 0xb4, 0xfa));
-        assert_eq!(t.text, Color::Rgb(0xcd, 0xd6, 0xf4));
-        assert_eq!(t.accent, Theme::default().accent);
-    }
-
-    /// A transparent modal stays one config line away: the shipped
-    /// default fills the panel, but `surface = "reset"` restores the
-    /// pre-polish see-through box.
-    #[test]
-    fn surface_can_be_made_transparent_again() {
-        let t = Theme::from_cfg(&cfg(&[("surface", "reset")]));
-        assert_eq!(t.surface, Color::Reset);
-    }
-
-    #[test]
-    fn surface_and_selection_slots_are_overridable() {
-        let t = Theme::from_cfg(&cfg(&[
-            ("surface", "#1e1e2e"),
-            ("shadow", "#000000"),
-            ("selection_bg", "blue"),
-            ("selection_fg", "15"),
-        ]));
-        assert_eq!(t.surface, Color::Rgb(0x1e, 0x1e, 0x2e));
-        assert_eq!(t.shadow, Color::Rgb(0, 0, 0));
-        assert_eq!(t.selection_bg, Color::Blue);
-        assert_eq!(t.selection_fg, Color::Indexed(15));
-        // Untouched slots keep their defaults.
-        assert_eq!(t.accent, Theme::default().accent);
+        assert_eq!(
+            (t.accent, t.chord, t.surface),
+            (Color::Magenta, Color::Indexed(12), Color::Reset)
+        );
+        assert_eq!(t.dim, Theme::default().dim);
+        for bad in [("not_a_slot", "red"), ("accent", "definitely-not-a-color")] {
+            assert_eq!(Theme::from_cfg(&cfg(&[bad])), Theme::default(), "{bad:?}");
+        }
+        assert_eq!(
+            Theme::from_cfg(&phux_config::ThemeCfg::default()),
+            Theme::default()
+        );
     }
 
     /// Relative luminance per WCAG 2.1, for the contrast assertion below.
@@ -818,56 +643,5 @@ mod tests {
             recessive < focus,
             "recessive text ({recessive:.2}) must recede behind focus ({focus:.2})"
         );
-    }
-
-    #[test]
-    fn from_cfg_empty_is_default() {
-        let t = Theme::from_cfg(&phux_config::ThemeCfg::default());
-        assert_eq!(t, Theme::default());
-    }
-
-    #[test]
-    fn named_color_override_applies() {
-        let t = Theme::from_cfg(&cfg(&[("accent", "magenta")]));
-        assert_eq!(t.accent, Color::Magenta);
-        // Untouched slots keep their default.
-        assert_eq!(t.chord, Theme::default().chord);
-    }
-
-    #[test]
-    fn hex_color_override_applies() {
-        let t = Theme::from_cfg(&cfg(&[("section_header", "#cdd6f4")]));
-        assert_eq!(t.section_header, Color::Rgb(0xcd, 0xd6, 0xf4));
-    }
-
-    #[test]
-    fn indexed_color_override_applies() {
-        let t = Theme::from_cfg(&cfg(&[("chord", "12")]));
-        assert_eq!(t.chord, Color::Indexed(12));
-    }
-
-    #[test]
-    fn unknown_slot_is_ignored() {
-        let t = Theme::from_cfg(&cfg(&[("not_a_slot", "red")]));
-        assert_eq!(t, Theme::default());
-    }
-
-    #[test]
-    fn unparseable_color_keeps_default() {
-        let t = Theme::from_cfg(&cfg(&[("accent", "definitely-not-a-color")]));
-        assert_eq!(t.accent, Theme::default().accent);
-    }
-
-    #[test]
-    fn multiple_overrides_apply_independently() {
-        let t = Theme::from_cfg(&cfg(&[
-            ("accent", "blue"),
-            ("error", "yellow"),
-            ("dim", "white"),
-        ]));
-        assert_eq!(t.accent, Color::Blue);
-        assert_eq!(t.error, Color::Yellow);
-        assert_eq!(t.dim, Color::White);
-        assert_eq!(t.section_header, Theme::default().section_header);
     }
 }

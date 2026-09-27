@@ -1,38 +1,11 @@
 //! Status-bar chrome layer.
 //!
-//! Replaces the hand-painted cell positioning from
-//! `attach::status_bar::StatusBarPainter` with a ratatui-based composer
-//! for the reserved bottom (or top) row of the outer terminal. The
-//! composer lives in the chrome layer, the only place that imports
-//! `ratatui`; the pane-interior substrate is in the `phux-client-core`
-//! crate, which has no `ratatui` dependency (ADR-0020).
-//!
-//! Pipeline:
-//!
-//! 1. Higher layer ([`phux_config::widget::StatusBar`]) composes the
-//!    widget row into a `Vec<WidgetCell>` of caller-supplied width.
-//! 2. [`StatusBarPainter`] copies those cells into a ratatui
-//!    [`ratatui::buffer::Buffer`] of shape `cols × 1`.
-//! 3. It emits raw VT bytes (CUP + per-cell SGR + grapheme) to the
-//!    writer. We do **not** route through crossterm;
-//!    the rest of `phux-client` writes raw VT to stdout and the
-//!    boundary stays clean.
-//!
-//! ### SGR + cursor invariants (per ADR-0020 §Decision)
-//!
-//! - The painter emits a hard SGR reset (`\x1b[0m`) after the row so
-//!   subsequent paints don't inherit our attributes.
-//! - The painter does **not** restore the cursor itself — the caller
-//!   (`crate::attach::paint::paint_bar_after_pane`) restores the
-//!   focused pane's logical cursor after the bar paints (this matches
-//!   the post-34bfc07 paint order).
-//!
-//! ### Placement
-//!
-//! Defaults to [`Position::Top`] per `docs/consumers/tui.md` §8.5.
-//! `[status] position = "bottom"` restores bottom placement;
-//! the pane content rect shifts down one row for top placement
-//! (see `crate::attach::paint::content_rect`).
+//! [`phux_config::widget::StatusBar`] composes the widget row;
+//! [`StatusBarPainter`] lays it into a `cols × 1` ratatui buffer and emits
+//! raw VT (CUP + per-cell SGR + grapheme), ending in an SGR reset.
+//! The caller restores the focused pane's cursor afterwards (ADR-0020). The
+//! bar defaults to [`Position::Top`] (`docs/consumers/tui.md` §8.5); the pane
+//! content rect shifts to match.
 
 use std::io::{self, Write};
 use std::time::{Duration, SystemTime};
@@ -70,12 +43,7 @@ impl From<phux_config::StatusPosition> for Position {
     }
 }
 
-/// Inputs the chrome composer needs to paint one frame of the bar.
-///
-/// Mirrors what `phux_config::widget::WidgetContext` carries today
-/// (clock + session name). Held as a struct here so the caller can
-/// pass one borrow across the ratatui boundary without juggling
-/// individual scalars.
+/// Inputs for one frame of the bar, borrowed across the ratatui boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct StatusBarContext<'a> {
     /// Wall-clock time the bar is rendering at.
@@ -116,13 +84,8 @@ impl<'a> StatusBarContext<'a> {
     }
 }
 
-/// Build a [`StatusBarContext`] for one render pass.
-///
-/// Kept so callers in `attach/` can construct one without depending on
-/// `phux-config`'s internals directly. Window data is injected by the
-/// painter (see `StatusBarPainter::paint_outcome`); standalone callers pass an
-/// empty slice. The focused-pane data feeds (`cwd`, `last_exit`) are
-/// painter-owned too and injected the same way.
+/// Build a [`StatusBarContext`] for one render pass. Window list, cwd, and
+/// last exit are injected by the painter.
 #[must_use]
 pub const fn make_context(session_name: &str, now: SystemTime) -> StatusBarContext<'_> {
     StatusBarContext {
@@ -135,10 +98,8 @@ pub const fn make_context(session_name: &str, now: SystemTime) -> StatusBarConte
     }
 }
 
-/// Translate a phux-config [`CellStyle`] (plain data) into a ratatui
-/// [`Style`]. Color strings are parsed at this boundary (ADR-0020); an
-/// unparseable color degrades to the terminal default with a warning
-/// rather than failing the paint.
+/// A config [`CellStyle`] as a ratatui [`Style`]; an unparseable color
+/// degrades to the terminal default with a warning.
 fn to_ratatui_style(style: &CellStyle) -> Style {
     let mut s = Style::default();
     if let Some(fg) = parse_color(style.fg.as_deref()) {
@@ -176,14 +137,9 @@ fn alarm_style() -> Style {
     Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
 }
 
-/// Compose `message` into a fresh 1-row [`Buffer`] of
-/// `cols` cells, every cell styled `style`, the message truncated to the
-/// span and the remainder padded with spaces so the strip covers the
-/// bar's full width.
-///
-/// Shared by the live full-row paint (`paint_full_row_message`) and the
-/// snapshot compose (`compose_buffer`) for both the persistent error line
-/// and the transient notice, so all four sites lay the row identically.
+/// `message` in a fresh `cols`-wide row buffer, styled `style`, truncated
+/// and space-padded to the full width. Shared by the error line and the
+/// notice toast, live and in the snapshot compose.
 fn full_row_buffer(message: &str, style: Style, cols: u16) -> Buffer {
     let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
     let mut tmp = [0u8; 4];
@@ -205,11 +161,8 @@ fn full_row_buffer(message: &str, style: Style, cols: u16) -> Buffer {
             }
             continue;
         }
-        // A character that would STRADDLE the last column is dropped
-        // whole. `write_buffer` advances by each symbol's display width,
-        // so a double-width glyph parked on the final column would make
-        // the row emit `cols + 1` columns and wrap into the pane grid
-        // below — libghostty's cells (ADR-0020).
+        // A glyph that would straddle the last column is dropped whole, or
+        // the row would emit `cols + 1` columns and wrap into the panes.
         if col.saturating_add(width) > cols {
             break;
         }
@@ -251,14 +204,9 @@ fn mark_window_drop(row: &mut [WidgetCell], drop_at: Option<usize>) {
     }
 }
 
-/// Copy a [`StatusBar`] composer row into a ratatui [`Buffer`].
-///
-/// Blank widget cells map to a literal ASCII space; non-blank cells
-/// concatenate their grapheme codepoints into the buffer cell's
-/// symbol. `fill` is the row's bed: every cell a widget left without a
-/// background of its own takes it, so the bar reads as one surface with
-/// the sidebar rather than text floating on the terminal. `Reset` leaves
-/// the host background showing.
+/// Copy a composed widget row into a ratatui [`Buffer`]. Cells a widget
+/// left without a background take `fill` (`Reset` shows the host's), so the
+/// bar reads as one surface with the sidebar.
 fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color) {
     if fill != Color::Reset {
         buffer.set_style(Rect::new(0, 0, cols, 1), Style::default().bg(fill));
@@ -274,10 +222,6 @@ fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color) 
         if cell.text.is_empty() {
             target.set_symbol(" ");
         } else {
-            // Base codepoint + any combining marks. We build the
-            // grapheme into a small stack string and hand it to
-            // set_symbol in one go (ratatui's Cell stores symbols as
-            // CompactString so the heap stays cold for ASCII).
             let mut s = String::with_capacity(cell.text.len());
             for ch in &cell.text {
                 s.push_str(ch.encode_utf8(&mut tmp));
@@ -292,14 +236,8 @@ fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color) 
     }
 }
 
-/// Walk a ratatui [`Buffer`] left-to-right at `y=0` and emit raw VT
-/// bytes for the row. Encoding: hide cursor, CUP to `(row_index, x + 1)`,
-/// SGR reset, per-cell symbol, SGR reset, flush. The painter does
-/// NOT show the cursor again — the caller restores it at the focused
-/// pane's logical position.
-///
-/// The buffer is composed at its own origin (`0..cols`); `x` places it on
-/// screen, so a sidebar-inset bar lands beside the strip.
+/// Emit row 0 of `buffer` at (`row_index`, `x`) as raw VT: CUP, SGR reset,
+/// per-cell symbols, SGR reset. The cursor is left for the caller.
 fn write_buffer<W: Write>(
     out: &mut W,
     buffer: &Buffer,
@@ -309,13 +247,8 @@ fn write_buffer<W: Write>(
 ) -> io::Result<()> {
     let one_based_row = row_index.saturating_add(1);
     let one_based_col = x.saturating_add(1);
-    // CUP to the bar row + SGR reset. We deliberately do NOT hide the
-    // cursor here: the bar paint completes in sub-ms on a modern
-    // terminal, and the old `?25l`-without-guaranteed-`?25h` pattern
-    // stranded the cursor invisible when the caller had no last_cursor
-    // to restore (fresh attach, libghostty snapshot before first PTY
-    // output). Caller still positions the cursor at the focused pane
-    // after this returns.
+    // No `?25l` here: a hide without a guaranteed show once stranded the
+    // cursor invisible when the caller had nothing to restore.
     write!(out, "\x1b[{one_based_row};{one_based_col}H\x1b[0m")?;
     let mut prev_styled = None;
     let mut x = 0;
@@ -324,14 +257,8 @@ fn write_buffer<W: Write>(
         // Per-cell SGR (shared with the overlay painter).
         crate::render::sgr::emit_cell_sgr(out, cell, &mut prev_styled)?;
         let sym = cell.symbol();
-        // The row is one uninterrupted run from a single CUP, so what it
-        // writes has to advance the terminal exactly `cols` columns. A
-        // DOUBLE-WIDTH character advances two and claims the cell after
-        // it (`WidgetCells::from_styled` reserves that cell); emitting
-        // anything into the claimed cell — a space, as this did before
-        // phux-l96p.8's fix pass — pushed the row one column too far per
-        // wide character, overflowed the bar and wrapped it into the
-        // pane grid.
+        // One run from one CUP must advance exactly `cols` columns, so the
+        // cell a wide glyph claims is skipped rather than written.
         let advance = if sym.is_empty() {
             out.write_all(b" ")?;
             1
@@ -348,12 +275,8 @@ fn write_buffer<W: Write>(
     out.flush()
 }
 
-/// ADR-0033: emit the supervisory badge right-aligned on `row_index`, as a
-/// reverse-video + bold chip atop the already-painted widget row. ASCII-only
-/// (no emojis, per repo convention), so the char count is the cell width.
-///
-/// `x` is the bar's origin column; the chip right-aligns to the bar's own right
-/// edge (`x + cols`), which a sidebar inset may pull in from the viewport's.
+/// ADR-0033: the supervisory badge's columns, right-aligned `right_offset`
+/// cells in from the bar's own right edge (ASCII-only, so chars are cells).
 fn badge_span(badge: &str, cols: u16, right_offset: u16) -> std::ops::Range<u16> {
     let end = cols.saturating_sub(right_offset);
     let width = u16::try_from(badge.chars().count())
@@ -384,11 +307,8 @@ fn paint_supervisory_overlay<W: Write>(
     out.flush()
 }
 
-/// Emit the agent-attention hint as a chip immediately left of
-/// the supervisory badge (`right_offset` cells in from the right edge; `0`
-/// when no badge is present). Same reverse+bold treatment as the ADR-0033
-/// badge, but the foreground rides the theme's `attention` slot — under
-/// reverse video it reads as the chip's fill color.
+/// Emit the attention chip just left of the supervisory badge, reverse and
+/// bold in the theme's `attention` color.
 fn paint_attention_overlay<W: Write>(
     out: &mut W,
     hint: &str,
@@ -486,14 +406,8 @@ fn overlay_badge_into_buffer(
     }
 }
 
-/// Columns the bar yields at each edge of the viewport.
-///
-/// A docked sidebar is a full-height strip, so the bar cannot span the full
-/// width without painting its window tabs underneath it. The caller
-/// (`attach::paint::bar_inset`) folds the strip's width into the matching side
-/// and the painter renders into the residual span — exactly the columns panes
-/// tile into. [`Self::NONE`] (no sidebar) is a full-width bar, byte-identical
-/// to the pre-sidebar paint.
+/// Columns the bar yields at each viewport edge to a docked sidebar, so its
+/// tabs never paint under the strip. [`Self::NONE`] is a full-width bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BarInset {
     /// Columns yielded at the left edge.
@@ -506,11 +420,8 @@ impl BarInset {
     /// The full-width bar: no sidebar docked, nothing yielded.
     pub const NONE: Self = Self { left: 0, right: 0 };
 
-    /// The bar's origin column and width within a `cols`-wide viewport.
-    ///
-    /// Saturating throughout: an inset wider than the viewport yields a
-    /// zero-width bar (which every paint path treats as a no-op) rather than
-    /// underflowing.
+    /// The bar's origin column and width in a `cols`-wide viewport
+    /// (saturating: an oversized inset is a zero-width, no-op bar).
     #[must_use]
     pub const fn span(self, cols: u16) -> (u16, u16) {
         // `Ord::min` is not const for u16.
@@ -520,18 +431,11 @@ impl BarInset {
     }
 }
 
-/// How long a transient [`Notice`] stays on the bar row.
-///
-/// After this elapses, [`StatusBarPainter::clear_expired_notice`] drops
-/// the notice. Expiry rides the driver's existing 1 s `status_tick`, so
-/// the effective lifetime is this value rounded up to the next tick.
+/// How long a transient [`Notice`] stays on the bar (expiry rides the 1 s
+/// status tick).
 pub const NOTICE_TTL: Duration = Duration::from_secs(7);
 
-/// Severity of a transient status-bar [`Notice`].
-///
-/// Picks the toast-chip style only; it carries no routing semantics. `Warn`
-/// renders bold (matching the persistent error strip's weight), `Info`
-/// renders plain reverse video.
+/// A [`Notice`]'s chip style: `Warn` bold, `Info` plain reverse video.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeSeverity {
     /// Informational lifecycle event (e.g. an input-lease handover).
@@ -551,15 +455,12 @@ impl NoticeSeverity {
     }
 }
 
-/// A transient, self-expiring status-bar message.
+/// A transient, self-expiring status-bar message (input handovers, degraded
+/// federation, pane exits).
 ///
-/// Produced by the server-frame dispatcher (`FrameOutcome::notices`) for
-/// lifecycle events that deserve a moment of visibility but no persistent
-/// chrome — input-authority handovers, degraded federation, pane exits.
-/// One slot, newest-wins: a fresh notice replaces the current one and
-/// restarts the [`NOTICE_TTL`] clock. It floats as a compact right-aligned
-/// chip over the normal bar instead of replacing the whole row. The persistent
-/// error line ([`StatusBarPainter::error_line`]) always outranks it.
+/// One newest-wins slot restarting the
+/// [`NOTICE_TTL`] clock, painted as a right-aligned chip over the bar; the
+/// persistent error line outranks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     /// Render severity; see [`NoticeSeverity`].
@@ -586,40 +487,28 @@ impl Notice {
     }
 }
 
-/// Whether a bar paint is allowed to reuse the strip it composed last time.
-///
-/// The painter can see every input it owns — the window list, prefix, cwd,
-/// exit code, notice, badge, attention hint, theme — because each arrives
-/// through a setter that invalidates the cache. It CANNOT see the wall clock
-/// the `time` widget reads, an `exec` widget's asynchronously-refreshed cache,
-/// or the session name the caller threads in. So the decision belongs to the
-/// caller, who knows what its paint was triggered by.
+/// Whether a bar paint may reuse its last composed strip. The painter sees
+/// its own inputs (each setter invalidates) but not the clock, `exec` caches,
+/// or the session name, so the caller decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ComposePolicy {
     /// Run the widget pipeline. Every trigger that can have moved an input the
     /// painter does not own uses this: the 1 s poll tick, a chrome repaint, a
     /// full-frame redraw, and every standalone caller.
     Always,
-    /// Reuse the cached strip unless a setter invalidated it. Only the
-    /// pane-output path, which by construction changes no bar input — so
-    /// recomposing on it produces bytes identical to the last frame's at the
-    /// cost of the whole pipeline.
+    /// Reuse the cached strip unless a setter invalidated it; for pane-output
+    /// paints, which change no bar input.
     WhenDirty,
 }
 
-/// VT painter for a composed [`StatusBar`].
-///
-/// Caches the last rendered widget row so repeated paints with unchanged
-/// inputs are no-ops, and tracks viewport dims so a resize invalidates the
-/// cache.
+/// VT painter for a composed [`StatusBar`], caching the last row so an
+/// unchanged repaint is a no-op.
 pub struct StatusBarPainter {
     bar: StatusBar,
     position: Position,
-    /// Last painted strip, keyed by the `(x, width)` span it was painted
-    /// into. `None` ⇒ never painted (or the span changed); next call paints
-    /// unconditionally. The origin is part of the key so a sidebar toggle
-    /// repaints an otherwise byte-identical row into its new columns — and so
-    /// [`Self::window_hit_at`] can map a screen column back onto the strip.
+    /// Last painted strip with its `(x, width)` span (a sidebar toggle moves
+    /// an otherwise identical row); also what hit tests read. `None` forces a
+    /// paint.
     last_row: Option<(u16, u16, Vec<WidgetCell>)>,
     /// Last (cols, rows) we painted into. Different dims invalidate
     /// `last_row` and force a fresh paint.
@@ -628,29 +517,14 @@ pub struct StatusBarPainter {
     /// by the driver from the `Workspace` and injected into the render
     /// context inside [`Self::paint`]; a change invalidates the cache.
     windows: Vec<WindowInfo>,
-    /// When `Some`, the painter ignores `bar`/`windows` and
-    /// paints this fixed error line instead. Set by the attach path when
-    /// the on-disk config fails to load or build, so the user sees a
-    /// visible reason the bar and keybindings are degraded rather than a
-    /// silently empty row.
+    /// A fixed config-error line painted instead of the widgets.
     error: Option<String>,
-    /// The transient notice slot and its expiry deadline.
-    /// One slot, newest-wins; painted as a compact right-aligned toast over
-    /// the normal bar until [`Self::clear_expired_notice`] drops it. Never set while `error`
-    /// is active (the persistent diagnostic outranks it) and never set on
-    /// an empty bar (no row is reserved to paint it on — see
-    /// [`Self::set_notice`]).
+    /// The notice slot and its expiry; never set under the error line or on
+    /// an empty bar.
     notice: Option<(Notice, std::time::Instant)>,
-    /// ADR-0033: when `Some`, a supervisory badge (e.g. ` frozen `,
-    /// `[ WHEEL:you ]`) is overlaid right-aligned on the bar row for the
-    /// focused pane. Set by the driver from inbound `TerminalControl` state; a
-    /// change invalidates the cache so the row repaints (and erases a cleared
-    /// badge). Painted over the composed widget row, not replacing it.
+    /// ADR-0033 supervisory badge overlaid right-aligned on the widget row.
     supervisory: Option<String>,
-    /// When `Some`, the agent-attention hint (e.g. ` ask `)
-    /// is overlaid immediately left of the supervisory badge. Set by the
-    /// driver whenever a pane's ADR-0035 asked flag flips; same cache
-    /// semantics as `supervisory`.
+    /// Agent-attention hint overlaid just left of the badge.
     attention: Option<String>,
     /// Chip foreground for the attention hint, from the theme's
     /// `attention` slot (the painter never hardcodes it). Under the chip's
@@ -660,10 +534,8 @@ pub struct StatusBarPainter {
     /// as the sidebar, so the two read as one frame around the panes.
     fill: Color,
     prefix: String,
-    /// The focused pane's live working directory, fed by the
-    /// driver from `cwd_changed` events (via the pane slots) and injected
-    /// into the render context like `windows`. `None` ⇒ unknown (the
-    /// `cwd` widget renders nothing).
+    /// The focused pane's live cwd for the `cwd` widget (`None` renders
+    /// nothing).
     focused_cwd: Option<String>,
     /// The focused pane's last known command exit code, fed
     /// by the driver from `command_finished` events. `None` ⇒ unknown.
@@ -721,16 +593,9 @@ impl StatusBarPainter {
         }
     }
 
-    /// Build a painter that shows a fixed error line instead of
-    /// the configured widgets.
-    ///
-    /// The attach path reaches for this when the on-disk config fails to
-    /// load or build: rather than silently dropping to an empty bar (and
-    /// no keybindings) with only a `tracing::warn` the user never sees,
-    /// the bar row shows the parse error and points at `phux config check`
-    /// for the full diagnostic. The painter built this way is never
-    /// "empty" and always reports a poll interval, so the error stays on
-    /// screen across repaints.
+    /// A painter showing a fixed error line instead of widgets, used when the
+    /// config fails to load: it is never empty and always polls, so the
+    /// diagnostic (pointing at `phux config check`) stays on screen.
     #[must_use]
     pub fn error_line(message: impl Into<String>) -> Self {
         Self {
@@ -752,11 +617,8 @@ impl StatusBarPainter {
         }
     }
 
-    /// `true` when this painter was built by [`Self::error_line`] and is
-    /// showing a fixed error strip instead of the configured widgets.
-    /// The attach path checks this before layering a lesser diagnostic
-    /// (e.g. a disabled keybinding, phux-i0e8.3.4) over a config-load
-    /// error that already owns the bar row.
+    /// Whether this painter shows the config-error line (a lesser diagnostic
+    /// must not replace it).
     #[must_use]
     pub const fn is_error_line(&self) -> bool {
         self.error.is_some()
@@ -779,11 +641,8 @@ impl StatusBarPainter {
         }
     }
 
-    /// Update the window list rendered by the `windows` widget. A change
-    /// forces the next paint to redraw (the list isn't part of the
-    /// widget-row cache key — the widget reads it from the context).
-    /// Returns `true` if the list actually changed (so a caller with no
-    /// other paint trigger can gate a repaint on it).
+    /// Update the `windows` widget's list; true when it changed. A change
+    /// invalidates the row cache.
     pub fn set_windows(&mut self, windows: Vec<WindowInfo>) -> bool {
         if self.windows == windows {
             return false;
@@ -793,10 +652,8 @@ impl StatusBarPainter {
         true
     }
 
-    /// Point (or clear) the live insertion marker at window `drop_at`.
-    /// Returns `true` if the marker actually changed; a change invalidates
-    /// the row cache. No-op on an error-line painter: the diagnostic owns
-    /// the row.
+    /// Point (or clear) the tab-drag insertion marker at window `drop_at`;
+    /// true when it changed. No-op on the error line.
     pub fn set_drop_index(&mut self, drop_at: Option<usize>) -> bool {
         if self.error.is_some() || self.drop_at == drop_at {
             return false;
@@ -830,21 +687,10 @@ impl StatusBarPainter {
         true
     }
 
-    /// Show a transient notice full-row on the bar for
-    /// [`NOTICE_TTL`] from `now`. Newest-wins: a fresh notice replaces the
-    /// current one (and restarts the clock). Returns `true` when the notice
-    /// was accepted (the caller should repaint the bar).
-    ///
-    /// Refused — degrading to a `tracing` line, so the event is never
-    /// entirely silent — in two cases:
-    ///
-    /// - the persistent error line is active: the fixed
-    ///   diagnostic outranks any transient message;
-    /// - the configured bar is empty: an empty-bar painter never reserves
-    ///   a row ([`Self::is_empty`] / [`Self::min_poll_interval`] stay
-    ///   unaffected by notices), so there is no row to paint the notice on
-    ///   and no tick to expire it. This is a documented limitation (see
-    ///   `docs/consumers/tui.md` §8.7).
+    /// Show `notice` for [`NOTICE_TTL`] from `now`, replacing any current
+    /// one; true when accepted. Refused (logged instead) under the error line,
+    /// or on an empty bar, which reserves no row to paint it on
+    /// (`docs/consumers/tui.md` §8.7).
     pub fn set_notice(&mut self, notice: Notice, now: std::time::Instant) -> bool {
         if self.error.is_some() {
             tracing::info!(
@@ -867,10 +713,8 @@ impl StatusBarPainter {
         true
     }
 
-    /// Drop the notice once its deadline passes. Called from
-    /// the driver's existing 1 s `status_tick`; returns `true` when the
-    /// notice was cleared (the cache is invalidated, so the next paint
-    /// restores the normal widget row).
+    /// Drop the notice once its deadline passes (from the status tick); true
+    /// when cleared.
     pub fn clear_expired_notice(&mut self, now: std::time::Instant) -> bool {
         match &self.notice {
             Some((_, deadline)) if now >= *deadline => {
@@ -889,15 +733,8 @@ impl StatusBarPainter {
             .is_some_and(|(notice, _)| notice.text == expected)
     }
 
-    /// ADR-0033: set (or clear, with `None`) the supervisory badge overlaid on
-    /// the bar for the focused pane. Returns `true` if the badge actually
-    /// changed (so the caller can gate a repaint on it). A change invalidates
-    /// the cache so the row repaints — which also erases a badge that just
-    /// cleared.
-    ///
-    /// No-op while an error line is showing: the badge rides the normal bar and
-    /// is suppressed under the error strip, so storing it (and invalidating the
-    /// error-line cache) would only force a spurious error-strip re-emit.
+    /// ADR-0033: set or clear the supervisory badge; true when it changed. A
+    /// no-op under the error line, where the badge cannot show.
     pub fn set_supervisory(&mut self, badge: Option<String>) -> bool {
         if self.error.is_some() || self.supervisory == badge {
             return false;
@@ -907,10 +744,7 @@ impl StatusBarPainter {
         true
     }
 
-    /// Set (or clear, with `None`) the agent-attention hint
-    /// overlaid left of the supervisory badge. Returns `true` if the hint
-    /// actually changed; same error-line suppression and cache semantics as
-    /// [`Self::set_supervisory`].
+    /// Set or clear the attention hint; same contract as the badge.
     pub fn set_attention(&mut self, hint: Option<String>) -> bool {
         if self.error.is_some() || self.attention == hint {
             return false;
@@ -940,10 +774,8 @@ impl StatusBarPainter {
         }
     }
 
-    /// Cells the attention chip is shifted in from the right edge: the
-    /// supervisory badge's width plus a 1-cell gap, or `0` when no badge is
-    /// showing. Shared by the live paint and the snapshot compose so both
-    /// place the chip identically.
+    /// Cells the attention chip sits in from the right edge: the badge width
+    /// plus a gap, or `0` with no badge.
     fn attention_offset(&self) -> u16 {
         self.supervisory.as_ref().map_or(0, |badge| {
             u16::try_from(badge.chars().count())
@@ -961,24 +793,14 @@ impl StatusBarPainter {
         (!attention.is_empty()).then(|| badge_span(badge, cols, 0).start.saturating_sub(1))
     }
 
-    /// True if the underlying bar has no widgets configured.
-    ///
-    /// An error-line painter is never empty — the fixed
-    /// diagnostic must always reserve and paint its row so the user sees
-    /// why their chrome is degraded.
+    /// True when no widgets are configured (never for the error line).
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.error.is_none() && self.bar.is_empty()
     }
 
-    /// Tightest poll interval among the bar's widgets. `None` ⇒ no
-    /// time-based repaint is needed. v0 returns a conservative
-    /// `Some(1s)` when the bar isn't empty so the `time` widget
-    /// refreshes at its declared cadence.
-    ///
-    /// An error-line painter reports the same `Some(1s)` so the
-    /// driver's `status_tick` arm keeps repainting it and the diagnostic
-    /// survives pane output stomping the bottom row.
+    /// The repaint cadence: `Some(1s)` for any non-empty bar (and the error
+    /// line, so it survives pane output), `None` otherwise.
     #[must_use]
     pub fn min_poll_interval(&self) -> Option<Duration> {
         if self.is_empty() {
@@ -988,13 +810,8 @@ impl StatusBarPainter {
         }
     }
 
-    /// Paint the bar onto `out` for a viewport of `cols × rows`, spanning the
-    /// columns `inset` leaves it ([`BarInset::NONE`] ⇒ the full width).
-    ///
-    /// Cheap to call repeatedly: identical widget output + unchanged
-    /// dims is a no-op (zero bytes written). Dimension changes force
-    /// a fresh paint.
-    ///
+    /// Paint the bar for a `cols × rows` viewport within `inset`; unchanged
+    /// output and dims write nothing.
     #[cfg(test)]
     pub fn paint<W: Write>(
         &mut self,
@@ -1032,19 +849,12 @@ impl StatusBarPainter {
         if let Some(outcome) = self.paint_error_takeover(out, x, cols, rows)? {
             return Ok(outcome);
         }
-        // The supervisory badge rides the normal bar row, so it only paints
-        // when there is a bar to host it. An empty configured bar with no
-        // windows stays a no-op (the badge is suppressed rather than ghosting
-        // over un-erased pane content on a row the bar never blanks).
+        // The badge rides the bar, so an empty bar with no windows paints
+        // nothing at all.
         if self.bar.is_empty() && self.windows.is_empty() {
             return Ok(false);
         }
-        // The widget pipeline is the expensive half of a bar paint, and on
-        // the client's hot path almost every call to it was wasted: a
-        // `RESOURCE_OUTPUT` frame changes pane cells, never the bar. Under a
-        // burst that meant composing the whole strip — every widget, into a
-        // fresh ratatui buffer — hundreds of times a second to produce bytes
-        // identical to last frame's.
+        // Pane-output paints never change the bar; skip the widget pipeline.
         if self.cached_compose_stands_in(compose, x, cols, rows) {
             return Ok(false);
         }
@@ -1065,12 +875,8 @@ impl StatusBarPainter {
         Ok(true)
     }
 
-    /// Paint the persistent full-row error that has taken the bar over, if
-    /// any, and report its outcome; `None` when the widget pipeline owns the row.
-    ///
-    /// An error-line painter bypasses the widget pipeline and
-    /// paints the fixed diagnostic. It takes priority over the normal
-    /// "empty bar with no windows is a no-op" short-circuit in the caller.
+    /// Paint the error line when it owns the row; `None` when the widget
+    /// pipeline does.
     fn paint_error_takeover<W: Write>(
         &mut self,
         out: &mut W,
@@ -1084,15 +890,8 @@ impl StatusBarPainter {
         Ok(None)
     }
 
-    /// Inject the painter-owned window list (and the rest of its own state)
-    /// into the caller's render context.
-    ///
-    /// The window list is owned by the painter (the driver sets it
-    /// from the Workspace); inject it into the render context so
-    /// callers don't have to thread it through every paint path.
-    /// Injected BEFORE the cache compose so `last_row`
-    /// holds the strip actually painted — window tabs included — and
-    /// [`Self::window_hit_at`] hit-tests against what is on screen.
+    /// The caller's context plus the painter-owned window list, cwd, and exit
+    /// code, injected before compose so `last_row` holds what is on screen.
     fn ctx_with_window_list<'a>(&'a self, ctx: &StatusBarContext<'a>) -> StatusBarContext<'a> {
         StatusBarContext {
             prefix: &self.prefix,
@@ -1103,13 +902,8 @@ impl StatusBarPainter {
         }
     }
 
-    /// Whether the cached strip can stand in for a fresh compose.
-    ///
-    /// True only when the caller declared this a pane-output paint AND a
-    /// cached row exists for exactly this span and viewport. Every setter the
-    /// painter owns calls [`Self::invalidate`], which clears `last_row`, so an
-    /// intact cache means nothing the painter owns has moved — and a pane
-    /// output frame cannot move anything else.
+    /// Whether the cached strip can stand in for a compose: a pane-output
+    /// paint with a cache for exactly this span and viewport.
     fn cached_compose_stands_in(
         &self,
         compose: ComposePolicy,
@@ -1126,11 +920,8 @@ impl StatusBarPainter {
         *prev_x == x && *prev_cols == cols && self.last_viewport == Some((cols, rows))
     }
 
-    /// Whether the freshly composed row differs from the cached paint, in
-    /// content, origin, or viewport.
-    ///
-    /// The origin is part of the key: toggling a sidebar can leave the
-    /// composed row byte-identical while moving the columns it belongs in.
+    /// Whether the fresh row differs from the cached paint in content,
+    /// origin, or viewport.
     fn needs_repaint(&self, x: u16, cols: u16, rows: u16, new_row: &[WidgetCell]) -> bool {
         let viewport_changed = self.last_viewport != Some((cols, rows));
         let row_changed = match &self.last_row {
@@ -1148,14 +939,8 @@ impl StatusBarPainter {
         }
     }
 
-    /// Overlay the badges and transient toast atop the freshly-painted row.
-    ///
-    /// ADR-0033: the supervisory badge overlays the widget row
-    /// (right-aligned). Emitted after the row so it wins; the full-row
-    /// repaint in the caller erases any stale/cleared badge first.
-    /// The attention hint chips in immediately left of the
-    /// badge (or at the right edge when no badge is up). Same repaint
-    /// discipline: the full-row repaint erased any cleared hint.
+    /// Overlay the badge, the attention chip, and the notice toast on the
+    /// freshly painted row (the full-row repaint already erased stale ones).
     fn paint_row_overlays<W: Write>(
         &self,
         out: &mut W,
@@ -1188,17 +973,9 @@ impl StatusBarPainter {
         Ok(())
     }
 
-    /// Compose the status row into a fresh ratatui [`Buffer`] the width of the
-    /// bar's `inset` span, without emitting VT or touching the paint cache
-    /// (`phux-l5xa`).
-    ///
-    /// Returns `(buffer, x, row_index)` — the buffer's origin column and row in
-    /// a `cols × rows` viewport — or `None` when nothing would paint (zero
-    /// dims, an inset that leaves no columns, or an empty bar with no windows
-    /// and no error). Mirrors the composition in [`Self::paint`] /
-    /// [`Self::paint_error_line`] so the `phux snapshot --rendered` frame shows
-    /// the same bar the live VT paint would — read as dense cells, with no
-    /// emulator re-parse.
+    /// Compose the bar row into an `inset`-wide buffer without emitting VT or
+    /// touching the cache, for `phux snapshot --rendered`. Returns
+    /// `(buffer, x, row_index)`, or `None` when nothing would paint.
     pub(crate) fn compose_buffer(
         &self,
         inset: BarInset,
@@ -1272,13 +1049,7 @@ impl StatusBarPainter {
         Some((buffer, x, row_index))
     }
 
-    /// Paint the fixed error diagnostic onto the bar row.
-    ///
-    /// Bypasses the widget composer entirely: the message is laid into a
-    /// reverse-video row (so it reads as an alarm strip rather than blending
-    /// into normal chrome) and truncated to `cols`. Delegates to the shared
-    /// [`Self::paint_full_row_message`], which the transient
-    /// notice path also rides.
+    /// Paint the error diagnostic as a reverse-video alarm strip.
     fn paint_error_line<W: Write>(
         &mut self,
         out: &mut W,
@@ -1293,14 +1064,8 @@ impl StatusBarPainter {
         self.paint_full_row_message(out, &message, alarm_style(), x, cols, rows)
     }
 
-    /// Paint `message` full-row onto the bar row in `style`,
-    /// truncated to `cols` and padded to the span's full width.
-    ///
-    /// Cached on `last_row` / `last_viewport` like the normal path so repeated
-    /// paints with unchanged dims are no-ops; the cache is keyed on the span
-    /// only — every message change goes through a setter that calls
-    /// [`Self::invalidate`] (the error message is fixed for the painter's
-    /// lifetime; a notice change replaces the slot via [`Self::set_notice`]).
+    /// Paint `message` full-row in `style`, cached like the widget path
+    /// (message changes always go through an invalidating setter).
     fn paint_full_row_message<W: Write>(
         &mut self,
         out: &mut W,
@@ -1347,19 +1112,9 @@ impl StatusBarPainter {
         self.last_viewport = None;
     }
 
-    /// Resolve a click column on the bar row to the window
-    /// tab painted there, reading the strip cached by the last
-    /// `paint_outcome` — so hit targets derive from exactly what is on
-    /// screen and cannot drift from the composed layout (slot placement,
-    /// separators, truncation, `Z`/`!` markers all included).
-    ///
-    /// `x` is a screen column; a sidebar-inset bar is painted from
-    /// its own origin, so the cached origin is subtracted to index the strip.
-    ///
-    /// `None` when the bar has never painted, `x` is off the strip (left of its
-    /// origin, or past its end), or the cell under `x` is not a window tab (a
-    /// separator, another widget, blank padding, or the error line — whose
-    /// cached row is empty).
+    /// The window tab under screen column `x`, read from the strip last
+    /// painted (so hits match the screen); `None` off the strip or on a
+    /// non-tab cell.
     #[must_use]
     pub fn window_hit_at(&self, x: u16) -> Option<usize> {
         match self.hit_at(x)? {
@@ -1368,13 +1123,8 @@ impl StatusBarPainter {
         }
     }
 
-    /// The interactive target under screen column `x` on the bar row, or
-    /// `None` when the cell is inert.
-    ///
-    /// Resolved against the cached strip `paint_outcome` last emitted, so
-    /// hit targets are exactly the cells on screen — slot placement,
-    /// separators, responsive tab dropping and widget visibility gating
-    /// all included. There is no second layout to keep in step.
+    /// The interactive target under screen column `x`, resolved against the
+    /// strip last painted.
     #[must_use]
     pub fn hit_at(&self, x: u16) -> Option<phux_config::widget::CellHit> {
         let (origin, cols, row) = self.last_row.as_ref()?;
@@ -1412,10 +1162,8 @@ mod tests {
         make_context(session, UNIX_EPOCH)
     }
 
-    /// Walk an emitted row the way `write_buffer` does — advancing by
-    /// each symbol's display width — and report the columns it moves the
-    /// terminal. The strip is one uninterrupted run from a single `CUP`,
-    /// so this number must be exactly the strip's width.
+    /// The columns an emitted row advances the terminal, walked the way
+    /// `write_buffer` does (by each symbol's display width).
     fn emitted_columns(buffer: &Buffer, cols: u16) -> u16 {
         let mut x = 0u16;
         let mut columns = 0u16;
@@ -1430,13 +1178,88 @@ mod tests {
         columns
     }
 
-    /// phux-l96p.8 fix pass II: the notice / error strip laid one CHAR
-    /// per cell while `write_buffer` advances by each symbol's display
-    /// width. A double-width character landing on the last column made
-    /// the row emit `cols + 1` columns, and the bar wrapped into the
-    /// pane grid below — libghostty's cells (ADR-0020).
-    ///
-    /// Swept across widths so the straddling case is hit exactly.
+    fn spec(kind: &str, opts: &[(&str, toml::Value)]) -> Widget {
+        Widget::Spec(WidgetSpec {
+            kind: kind.to_owned(),
+            opts: opts
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                .collect(),
+        })
+    }
+
+    fn build_bar(cfg: &StatusCfg) -> StatusBar {
+        StatusBar::build(cfg, &WidgetRegistry::with_builtins()).unwrap()
+    }
+
+    /// A painter with just the `session-name` widget on the left.
+    fn session_bar(position: Position) -> StatusBarPainter {
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..Default::default()
+        };
+        StatusBarPainter::new(build_bar(&cfg), position)
+    }
+
+    fn windows_bar() -> StatusBarPainter {
+        let cfg = StatusCfg {
+            left: vec![spec("windows", &[])],
+            ..StatusCfg::default()
+        };
+        StatusBarPainter::new(build_bar(&cfg), Position::Bottom)
+    }
+
+    fn wins(names: &[(&str, bool)]) -> Vec<WindowInfo> {
+        names
+            .iter()
+            .map(|(name, active)| WindowInfo {
+                name: (*name).to_owned(),
+                active: *active,
+                ..WindowInfo::default()
+            })
+            .collect()
+    }
+
+    /// One paint as raw VT.
+    fn paint(
+        p: &mut StatusBarPainter,
+        inset: BarInset,
+        cols: u16,
+        rows: u16,
+        session: &str,
+    ) -> String {
+        let mut buf = Vec::new();
+        p.paint(&mut buf, inset, cols, rows, &ctx_default(session))
+            .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    /// Strip CSI escapes (styled cells interleave SGR between glyphs).
+    fn strip_csi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.peek() == Some(&'[') {
+                chars.next();
+                for n in chars.by_ref() {
+                    if ('@'..='~').contains(&n) {
+                        break;
+                    }
+                }
+            } else if c != '\x1b' {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn visible(p: &mut StatusBarPainter, cols: u16, rows: u16, session: &str) -> String {
+        strip_csi(&paint(p, BarInset::NONE, cols, rows, session))
+    }
+
+    /// A notice strip laid by char would emit `cols + 1` columns when a wide
+    /// character hit the last column, wrapping the bar into the panes. A
+    /// straddling character is dropped whole.
     #[test]
     fn a_notice_strip_advances_exactly_its_own_width() {
         let style = Style::default();
@@ -1451,105 +1274,34 @@ mod tests {
                 assert_eq!(
                     emitted_columns(&buffer, cols),
                     cols,
-                    "message {message:?} at {cols} columns"
+                    "{message:?} at {cols}"
                 );
             }
         }
-    }
-
-    /// A character that would straddle the last column is dropped whole:
-    /// half a glyph is not a narrower glyph, and the half that spills is
-    /// the half that wraps.
-    #[test]
-    fn a_straddling_character_is_dropped_from_the_notice_strip() {
-        // "a" then a double-width character, in a two-column strip: the
-        // wide character needs columns 1 and 2, and only column 1 is
-        // left, so it is left out and the column is padded.
-        let buffer = full_row_buffer("a\u{65e5}", Style::default(), 2);
-        assert_eq!(buffer[(0, 0)].symbol(), "a");
-        assert_eq!(buffer[(1, 0)].symbol(), " ");
-        // With room for both, it is placed and claims its second column.
-        let buffer = full_row_buffer("a\u{65e5}", Style::default(), 3);
-        assert_eq!(buffer[(0, 0)].symbol(), "a");
+        let buffer = full_row_buffer("a\u{65e5}", style, 2);
+        assert_eq!(
+            (buffer[(0, 0)].symbol(), buffer[(1, 0)].symbol()),
+            ("a", " ")
+        );
+        let buffer = full_row_buffer("a\u{65e5}", style, 3);
         assert_eq!(buffer[(1, 0)].symbol(), "\u{65e5}");
     }
 
-    /// A notice quotes the user's own config on a reload error, and the
-    /// strip is emitted as raw VT. Neither a control character nor an
-    /// explicit bidi override may become a cell.
+    /// A notice may quote the user's config; neither a control character nor
+    /// a bidi override may become a cell of the raw-VT strip.
     #[test]
     fn a_notice_cannot_carry_controls_or_bidi_overrides() {
         let buffer = full_row_buffer("a\u{1b}[31m\u{202e}b", Style::default(), 10);
         let row: String = (0..10).map(|x| buffer[(x, 0)].symbol()).collect();
-        assert!(!row.contains('\u{1b}'), "an ESC reached the strip: {row:?}");
         assert!(
-            !row.contains('\u{202e}'),
-            "a bidi override reached the strip: {row:?}"
+            !row.contains('\u{1b}') && !row.contains('\u{202e}'),
+            "{row:?}"
         );
         assert!(row.starts_with("a[31mb"), "inert payload survives: {row:?}");
     }
 
-    fn spec(kind: &str, opts: &[(&str, toml::Value)]) -> Widget {
-        Widget::Spec(WidgetSpec {
-            kind: kind.to_owned(),
-            opts: opts
-                .iter()
-                .map(|(k, v)| ((*k).to_owned(), v.clone()))
-                .collect(),
-        })
-    }
-
-    fn build_bar(cfg: &StatusCfg) -> StatusBar {
-        let reg = WidgetRegistry::with_builtins();
-        StatusBar::build(cfg, &reg).unwrap()
-    }
-
     #[test]
-    fn empty_bar_writes_nothing() {
-        let cfg = StatusCfg::default();
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        assert!(p.is_empty());
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 80, 24, &ctx_default(""))
-            .unwrap();
-        assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn bottom_position_targets_last_row() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("hi"))
-            .unwrap();
-        let s = String::from_utf8_lossy(&buf);
-        // Row 24 (last of 24-row viewport).
-        assert!(s.contains("\x1b[24;1H"), "no CUP-to-row-24: {s:?}");
-        assert!(s.contains("hi"), "missing widget text: {s:?}");
-    }
-
-    #[test]
-    fn top_position_targets_row_1() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("hi"))
-            .unwrap();
-        let s = String::from_utf8_lossy(&buf);
-        assert!(s.contains("\x1b[1;1H"), "no CUP-to-row-1: {s:?}");
-    }
-
-    /// The `[status] position` config value maps 1:1 onto the
-    /// render enum, and the painter reports it back through `position()`
-    /// (the layout helpers key the content-rect shift off that getter).
-    #[test]
-    fn config_position_maps_onto_render_position() {
+    fn position_picks_the_bar_row() {
         assert_eq!(
             Position::from(phux_config::StatusPosition::Bottom),
             Position::Bottom
@@ -1558,82 +1310,40 @@ mod tests {
             Position::from(phux_config::StatusPosition::Top),
             Position::Top
         );
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
-        assert_eq!(p.position(), Position::Top);
+        for (position, cup) in [
+            (Position::Bottom, "\x1b[24;1H"),
+            (Position::Top, "\x1b[1;1H"),
+        ] {
+            let mut p = session_bar(position);
+            assert_eq!(p.position(), position);
+            let s = paint(&mut p, BarInset::NONE, 10, 24, "hi");
+            assert!(s.contains(cup) && s.contains("hi"), "{s:?}");
+        }
     }
 
+    /// Unchanged inputs paint nothing; a viewport, context, or invalidate
+    /// repaints; zero dims and an empty bar never paint.
     #[test]
-    fn paint_is_idempotent_on_unchanged_row() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("x"))
-            .unwrap();
-        let first_len = buf.len();
-        // Second paint with same dims + same ctx must add nothing.
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("x"))
-            .unwrap();
-        assert_eq!(buf.len(), first_len);
-    }
+    fn the_row_cache_repaints_only_on_change() {
+        let mut p = session_bar(Position::Bottom);
+        assert!(!paint(&mut p, BarInset::NONE, 10, 24, "x").is_empty());
+        assert!(paint(&mut p, BarInset::NONE, 10, 24, "x").is_empty());
+        assert!(!paint(&mut p, BarInset::NONE, 20, 24, "x").is_empty());
+        assert!(!paint(&mut p, BarInset::NONE, 20, 24, "y").is_empty());
+        p.invalidate();
+        assert!(!paint(&mut p, BarInset::NONE, 20, 24, "y").is_empty());
+        assert!(paint(&mut p, BarInset::NONE, 0, 24, "x").is_empty());
+        assert!(paint(&mut p, BarInset::NONE, 80, 0, "x").is_empty());
+        assert_eq!(p.min_poll_interval(), Some(Duration::from_secs(1)));
 
-    #[test]
-    fn paint_redraws_on_viewport_change() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("x"))
-            .unwrap();
-        let first_len = buf.len();
-        // Change width — must repaint.
-        p.paint(&mut buf, BarInset::NONE, 20, 24, &ctx_default("x"))
-            .unwrap();
-        assert!(buf.len() > first_len);
-    }
-
-    #[test]
-    fn paint_redraws_on_context_change() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("a"))
-            .unwrap();
-        let first_len = buf.len();
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("b"))
-            .unwrap();
-        assert!(buf.len() > first_len);
-    }
-
-    #[test]
-    fn zero_dims_skip_paint() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 0, 24, &ctx_default("x"))
-            .unwrap();
-        p.paint(&mut buf, BarInset::NONE, 80, 0, &ctx_default("x"))
-            .unwrap();
-        assert!(buf.is_empty());
+        let mut empty = StatusBarPainter::new(build_bar(&StatusCfg::default()), Position::Bottom);
+        assert!(empty.is_empty());
+        assert_eq!(empty.min_poll_interval(), None);
+        assert!(paint(&mut empty, BarInset::NONE, 80, 24, "").is_empty());
     }
 
     #[test]
     fn time_and_session_both_appear_when_configured() {
-        // Integration scenario from the nz4.5 acceptance criteria.
         let cfg = StatusCfg {
             left: vec![Widget::Bare("session-name".into())],
             right: vec![spec(
@@ -1643,300 +1353,95 @@ mod tests {
             ..Default::default()
         };
         let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 30, 24, &ctx_default("main"))
-            .unwrap();
-        let s = String::from_utf8_lossy(&buf);
-        assert!(s.contains("main"), "session widget missing: {s:?}");
-        assert!(s.contains("LITERAL"), "time widget missing: {s:?}");
+        let s = paint(&mut p, BarInset::NONE, 30, 24, "main");
+        assert!(s.contains("main") && s.contains("LITERAL"), "{s:?}");
     }
 
+    /// The config-error painter reserves the row and keeps repainting it
+    /// (polling, repainting after invalidate), with every column inert.
     #[test]
-    fn error_line_painter_is_not_empty_and_polls() {
-        // An error-line painter must report non-empty + a poll
-        // interval so the driver reserves the row and keeps repainting the
-        // diagnostic (otherwise pane output stomps it and it never returns).
-        let p = StatusBarPainter::error_line("config error: boom (run: phux config check)");
-        assert!(!p.is_empty(), "error-line painter must not be empty");
+    fn error_line_painter_holds_the_bar_row() {
+        let mut p = StatusBarPainter::error_line("config error: boom (run: phux config check)");
+        assert!(!p.is_empty());
         assert_eq!(p.min_poll_interval(), Some(Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn error_line_painter_renders_message_on_bar_row() {
-        // The fixed diagnostic paints onto the bar row even though
-        // no widgets are configured (the normal empty-bar short-circuit
-        // would otherwise emit nothing).
-        let mut p =
-            StatusBarPainter::error_line("config error: dup [status] (run: phux config check)");
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 80, 24, &ctx_default(""))
-            .unwrap();
-        let s = String::from_utf8_lossy(&buf);
-        assert!(s.contains("\x1b[1;1H"), "no CUP-to-top-bar-row: {s:?}");
-        // The painter emits one SGR-wrapped cell per glyph, so the message
-        // is not a contiguous substring of the raw VT. Strip the CSI escapes
-        // to recover the printable text and assert on that.
+        let s = paint(&mut p, BarInset::NONE, 80, 24, "");
+        assert!(s.contains("\x1b[1;1H"), "{s:?}");
         let printable = strip_csi(&s);
-        assert!(
-            printable.contains("config error"),
-            "missing error text: {printable:?} (raw {s:?})"
-        );
-        assert!(
-            printable.contains("phux config check"),
-            "missing call-to-action: {printable:?} (raw {s:?})"
-        );
+        assert!(printable.contains("config error") && printable.contains("phux config check"));
+        assert!(paint(&mut p, BarInset::NONE, 80, 24, "").is_empty());
+        p.invalidate();
+        assert!(!paint(&mut p, BarInset::NONE, 80, 24, "").is_empty());
+        assert!((0..80).all(|x| p.window_hit_at(x).is_none()));
     }
 
+    /// A notice floats over the bar as a compact right-aligned toast, the
+    /// newest wins, it masks covered hit targets, and it expires at the TTL.
     #[test]
-    fn error_line_painter_repaint_is_idempotent_on_unchanged_dims() {
-        let mut p = StatusBarPainter::error_line("config error: boom");
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        let first_len = buf.len();
-        assert!(first_len > 0, "first paint must emit the error row");
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        assert_eq!(buf.len(), first_len, "unchanged dims must be a no-op");
-    }
-
-    /// An accepted notice floats over the normal row as a
-    /// compact toast, and a newer notice replaces it (newest-wins single slot).
-    #[test]
-    fn notice_paints_compact_toast_without_covering_bar_and_newest_wins() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
+    fn notice_toast_lifecycle() {
+        let mut p = session_bar(Position::Bottom);
         let now = std::time::Instant::now();
         assert!(p.set_notice(Notice::info("first notice"), now));
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default("sess"))
-            .unwrap();
-        let printable = strip_csi(&String::from_utf8_lossy(&buf));
-        assert!(
-            printable.contains("first notice"),
-            "notice must paint the bar row: {printable:?}"
-        );
-        assert!(
-            printable.contains("sess"),
-            "the normal bar must remain visible under the toast: {printable:?}"
-        );
+        let v = visible(&mut p, 40, 24, "sess");
+        assert!(v.contains("first notice") && v.contains("sess"), "{v:?}");
         assert!(p.set_notice(Notice::warn("second notice"), now));
-        buf.clear();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default("sess"))
-            .unwrap();
-        let printable = strip_csi(&String::from_utf8_lossy(&buf));
+        let v = visible(&mut p, 40, 24, "sess");
         assert!(
-            printable.contains("second notice") && !printable.contains("first notice"),
-            "newest notice must win the slot: {printable:?}"
+            v.contains("second notice") && !v.contains("first notice"),
+            "{v:?}"
         );
-    }
+        assert!(!p.clear_expired_notice(now + Duration::from_secs(6)));
+        assert!(p.clear_expired_notice(now + NOTICE_TTL));
+        assert!(!p.clear_expired_notice(now + NOTICE_TTL));
+        let v = visible(&mut p, 40, 24, "sess");
+        assert!(v.contains("sess") && !v.contains("second notice"), "{v:?}");
 
-    #[test]
-    fn notice_snapshot_is_right_aligned_and_leaves_the_bar_visible() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
-        assert!(p.set_notice(
-            Notice::warn("pane 4: exited 127"),
-            std::time::Instant::now()
-        ));
+        let mut p = session_bar(Position::Top);
+        assert!(p.set_notice(Notice::warn("pane 4: exited 127"), now));
         let (buffer, _, _) = p
             .compose_buffer(BarInset::NONE, 40, 24, &ctx_default("main"))
-            .expect("configured bar composes");
+            .expect("composes");
         let row: String = (0..40).map(|x| buffer[(x, 0)].symbol()).collect();
-        assert!(row.starts_with("main"), "left-side bar survives: {row:?}");
         assert!(
-            row.ends_with(" pane 4: exited 127 "),
-            "toast is compact and right-aligned: {row:?}"
+            row.starts_with("main") && row.ends_with(" pane 4: exited 127 "),
+            "{row:?}"
         );
-    }
 
-    #[test]
-    fn notice_toast_does_not_expose_covered_bar_hit_targets() {
         let cfg = StatusCfg {
             right: vec![Widget::Bare("windows".into())],
             ..Default::default()
         };
         let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
-        p.set_windows(vec![WindowInfo {
-            name: "shell".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }]);
-        assert!(p.set_notice(
-            Notice::warn("pane 4: exited 127"),
-            std::time::Instant::now()
-        ));
-        let mut out = Vec::new();
-        p.paint(&mut out, BarInset::NONE, 40, 24, &ctx_default("main"))
-            .unwrap();
-        assert_eq!(
-            p.hit_at(39),
-            None,
-            "the toast must temporarily mask the window tab beneath it"
-        );
+        p.set_windows(wins(&[("shell", true)]));
+        assert!(p.set_notice(Notice::warn("pane 4: exited 127"), now));
+        paint(&mut p, BarInset::NONE, 40, 24, "main");
+        assert_eq!(p.hit_at(39), None, "the toast masks the tab beneath it");
     }
 
-    /// The persistent error line outranks a transient
-    /// notice — `set_notice` is refused and the diagnostic keeps the row.
+    /// The error line outranks a notice, and an empty bar never reserves a
+    /// row for one.
     #[test]
-    fn notice_is_suppressed_under_the_error_line() {
-        let mut p = StatusBarPainter::error_line("config error: boom");
-        assert!(
-            !p.set_notice(
-                Notice::warn("pane 3: exited 137"),
-                std::time::Instant::now()
-            ),
-            "a notice must be refused while the error line is active"
-        );
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        let printable = strip_csi(&String::from_utf8_lossy(&buf));
-        assert!(
-            printable.contains("config error") && !printable.contains("exited 137"),
-            "the error diagnostic must keep the row: {printable:?}"
-        );
-    }
-
-    /// A notice expires after [`NOTICE_TTL`]; the clear
-    /// invalidates the cache so the next paint restores the widget row.
-    #[test]
-    fn notice_expires_after_ttl_and_restores_the_widget_row() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
+    fn notices_are_refused_without_a_bar_row_of_their_own() {
         let now = std::time::Instant::now();
-        assert!(p.set_notice(Notice::info("input: wheel released"), now));
-        assert!(
-            !p.clear_expired_notice(now + Duration::from_secs(6)),
-            "a notice must survive until its TTL elapses"
-        );
-        assert!(
-            p.clear_expired_notice(now + NOTICE_TTL),
-            "the notice must clear once the TTL elapses"
-        );
-        assert!(
-            !p.clear_expired_notice(now + NOTICE_TTL),
-            "a second clear is a no-op (slot already empty)"
-        );
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default("sess"))
-            .unwrap();
-        let printable = strip_csi(&String::from_utf8_lossy(&buf));
-        assert!(
-            printable.contains("sess") && !printable.contains("wheel released"),
-            "the widget row must return after expiry: {printable:?}"
-        );
-    }
-
-    /// An empty-bar painter never reserves a row for a
-    /// notice — the notice is refused (degrading to tracing), the painter
-    /// stays empty (no row reservation), and no poll interval appears.
-    #[test]
-    fn notice_on_an_empty_bar_never_reserves_a_row() {
-        let mut p = StatusBarPainter::new(build_bar(&StatusCfg::default()), Position::Bottom);
-        assert!(p.is_empty(), "precondition: empty configured bar");
-        assert!(
-            !p.set_notice(
-                Notice::warn("federation degraded"),
-                std::time::Instant::now()
-            ),
-            "a notice on an empty bar must be refused"
-        );
-        assert!(p.is_empty(), "a refused notice must not un-empty the bar");
-        assert_eq!(
-            p.min_poll_interval(),
-            None,
-            "no poll interval may appear (no row is reserved, no tick to expire on)"
-        );
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 80, 24, &ctx_default(""))
-            .unwrap();
-        assert!(buf.is_empty(), "nothing may paint on an empty bar");
-    }
-
-    #[test]
-    fn error_line_painter_repaints_after_invalidate() {
-        // The driver invalidates the bar after pane output overwrites the
-        // bottom row; the diagnostic must then repaint.
         let mut p = StatusBarPainter::error_line("config error: boom");
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        let first_len = buf.len();
-        p.invalidate();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        assert!(buf.len() > first_len, "invalidate must force a repaint");
-    }
+        assert!(!p.set_notice(Notice::warn("pane 3: exited 137"), now));
+        let v = visible(&mut p, 40, 24, "");
+        assert!(
+            v.contains("config error") && !v.contains("exited 137"),
+            "{v:?}"
+        );
 
-    #[test]
-    fn min_poll_interval_some_when_non_empty() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        assert_eq!(p.min_poll_interval(), Some(Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn min_poll_interval_none_when_empty() {
-        let cfg = StatusCfg::default();
-        let p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
+        let mut p = StatusBarPainter::new(build_bar(&StatusCfg::default()), Position::Bottom);
+        assert!(!p.set_notice(Notice::warn("federation degraded"), now));
+        assert!(p.is_empty());
         assert_eq!(p.min_poll_interval(), None);
-    }
-
-    #[test]
-    fn invalidate_forces_repaint() {
-        let cfg = StatusCfg {
-            left: vec![Widget::Bare("session-name".into())],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("x"))
-            .unwrap();
-        let first_len = buf.len();
-        p.invalidate();
-        p.paint(&mut buf, BarInset::NONE, 10, 24, &ctx_default("x"))
-            .unwrap();
-        assert!(buf.len() > first_len);
-    }
-
-    #[test]
-    fn make_context_helper_exposes_session_and_now() {
-        let now = UNIX_EPOCH;
-        let c = make_context("alpha", now);
-        assert_eq!(c.session_name, "alpha");
-        assert_eq!(c.now, now);
-    }
-
-    fn windows_bar() -> StatusBar {
-        let cfg = StatusCfg {
-            left: vec![spec("windows", &[])],
-            ..StatusCfg::default()
-        };
-        build_bar(&cfg)
+        assert!(paint(&mut p, BarInset::NONE, 80, 24, "").is_empty());
     }
 
     #[test]
     fn badges_mask_underlying_click_targets_in_an_inset_bar() {
         use phux_config::widget::CellHit;
         for hit in [CellHit::Switch, CellHit::Window(2)] {
-            let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
+            let mut p = windows_bar();
             p.supervisory = Some("[ FROZEN ]".to_owned());
             p.attention = Some("[ ASK ]".to_owned());
             let row = vec![
@@ -1957,188 +1462,47 @@ mod tests {
         }
     }
 
-    /// Strip CSI escape sequences so a text assertion isn't defeated by
-    /// the per-cell SGR that styled tabs interleave between glyphs.
-    fn strip_csi(s: &str) -> String {
-        let mut out = String::new();
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' && chars.peek() == Some(&'[') {
-                chars.next();
-                for n in chars.by_ref() {
-                    if ('@'..='~').contains(&n) {
-                        break;
-                    }
-                }
-            } else if c != '\x1b' {
-                out.push(c);
-            }
-        }
-        out
-    }
-
+    /// The attention chip right-aligns in the theme color, shifts left of a
+    /// supervisory badge, and stops painting once cleared.
     #[test]
-    fn painter_set_windows_paints_tab_strip() {
-        // A painter whose bar has the `windows` widget renders the strip
-        // from its injected window list; a changed list forces a repaint.
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![WindowInfo {
-            name: "a".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }]);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        let s = strip_csi(&String::from_utf8(buf).unwrap());
-        assert!(
-            s.contains("0:a"),
-            "painter should render the strip; got {s:?}"
-        );
-    }
-
-    /// The attention hint paints as a right-aligned chip on the
-    /// bar row, colored by the theme-fed `attention_fg` (reverse video makes
-    /// the fg the chip fill).
-    #[test]
-    fn painter_paints_attention_hint_right_aligned() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![WindowInfo {
-            name: "a".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }]);
+    fn attention_hint_placement_and_clearing() {
+        let mut p = windows_bar();
+        p.set_windows(wins(&[("a", true)]));
+        assert!(visible(&mut p, 40, 10, "").contains("0:a"));
         p.set_attention_color(Color::Rgb(251, 191, 36));
         assert!(p.set_attention(Some("[ ASK ]".to_owned())));
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        let s = String::from_utf8(buf).unwrap();
-        // Right-aligned: "[ ASK ]" is 7 cells wide in a 40-col bar on the
-        // bottom row (row 10) => CUP col 34.
+        assert!(!p.set_attention(Some("[ ASK ]".to_owned())));
+        let s = paint(&mut p, BarInset::NONE, 40, 10, "");
         assert!(
-            s.contains("\x1b[10;34H"),
-            "attention chip must right-align; got {s:?}"
+            s.contains("\x1b[10;34H") && s.contains("\x1b[38;2;251;191;36m"),
+            "{s:?}"
         );
-        assert!(
-            s.contains("\x1b[38;2;251;191;36m"),
-            "chip must carry the themed attention color; got {s:?}"
-        );
-        assert!(strip_csi(&s).contains("[ ASK ]"), "chip text; got {s:?}");
-    }
+        assert!(strip_csi(&s).contains("[ ASK ]"));
 
-    /// With a supervisory badge up, the attention chip shifts
-    /// left of it (badge width + 1-cell gap) instead of overpainting it.
-    #[test]
-    fn attention_hint_sits_left_of_the_supervisory_badge() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![WindowInfo {
-            name: "a".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }]);
         assert!(p.set_supervisory(Some("[ FROZEN ]".to_owned())));
-        assert!(p.set_attention(Some("[ ASK ]".to_owned())));
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        let s = String::from_utf8(buf).unwrap();
-        // Badge: 10 cells at cols 31..40. Chip: offset 11 from the right
-        // edge => right-aligned at col 40-11-7+1 = 23.
+        let s = paint(&mut p, BarInset::NONE, 40, 10, "");
+        // Badge at cols 31..40; the chip right-aligns 11 cells further left.
         assert!(
-            s.contains("\x1b[10;31H"),
-            "badge keeps the right edge; got {s:?}"
+            s.contains("\x1b[10;31H") && s.contains("\x1b[10;23H"),
+            "{s:?}"
         );
-        assert!(
-            s.contains("\x1b[10;23H"),
-            "chip must shift left of the badge; got {s:?}"
-        );
-        let visible = strip_csi(&s);
-        assert!(visible.contains("[ ASK ]") && visible.contains("[ FROZEN ]"));
+
+        assert!(p.set_attention(None));
+        assert!(!visible(&mut p, 40, 10, "").contains("ASK"));
     }
 
-    /// Clearing the hint reports the change and the repainted
-    /// row no longer carries it.
+    /// Painter-owned focused-pane state feeds the `cwd` and `exit` widgets;
+    /// exec feed output lands on the next paint.
     #[test]
-    fn cleared_attention_hint_stops_painting() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![WindowInfo {
-            name: "a".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }]);
-        assert!(p.set_attention(Some("[ ASK ]".to_owned())));
-        assert!(
-            !p.set_attention(Some("[ ASK ]".to_owned())),
-            "unchanged hint must report no change"
-        );
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        assert!(p.set_attention(None), "clearing must report a change");
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        let visible = strip_csi(&String::from_utf8(buf).unwrap());
-        assert!(
-            !visible.contains("ASK"),
-            "cleared hint must not repaint; got {visible:?}"
-        );
-    }
-
-    /// The painter-owned focused-pane cwd feeds the `cwd`
-    /// widget; setting it invalidates the cache and the widget renders
-    /// the (home-uncollapsed here) directory.
-    #[test]
-    fn painter_renders_focused_cwd_through_cwd_widget() {
+    fn painter_state_feeds_cwd_exit_and_exec_widgets() {
         let cfg = StatusCfg {
-            left: vec![spec("cwd", &[])],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        assert!(
-            !strip_csi(&String::from_utf8_lossy(&buf)).contains("/tmp"),
-            "unknown cwd renders nothing"
-        );
-        assert!(p.set_focused_cwd(Some("/tmp/project".to_owned())));
-        assert!(
-            !p.set_focused_cwd(Some("/tmp/project".to_owned())),
-            "unchanged cwd reports no change"
-        );
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        let visible = strip_csi(&String::from_utf8_lossy(&buf));
-        assert!(
-            visible.contains("/tmp/project"),
-            "cwd must render; got {visible:?}"
-        );
-    }
-
-    /// The painter-owned last-exit feeds the `exit` widget.
-    /// Clearing it (a code-less `command_finished`) blanks the widget again.
-    #[test]
-    fn painter_renders_last_exit_through_exit_widget() {
-        let cfg = StatusCfg {
+            left: vec![
+                spec("cwd", &[]),
+                spec(
+                    "exec",
+                    &[("command", toml::Value::String("battery.sh".into()))],
+                ),
+            ],
             right: vec![spec(
                 "exit",
                 &[("format", toml::Value::String("rc={code}".into()))],
@@ -2146,358 +1510,101 @@ mod tests {
             ..Default::default()
         };
         let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
-        assert!(p.set_last_exit(Some(127)));
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        let visible = strip_csi(&String::from_utf8_lossy(&buf));
-        assert!(
-            visible.contains("rc=127"),
-            "exit code must render; got {visible:?}"
-        );
-        assert!(p.set_last_exit(None), "clearing reports a change");
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        let visible = strip_csi(&String::from_utf8_lossy(&buf));
-        assert!(
-            !visible.contains("rc="),
-            "cleared exit must blank the widget; got {visible:?}"
-        );
-    }
-
-    /// The painter exposes its bar's exec feeds so the driver
-    /// can spawn runners; pushing output through a feed shows up on the
-    /// next paint (the async-refresh-into-cached-state contract).
-    #[test]
-    fn painter_exec_feed_output_lands_on_the_bar() {
-        let cfg = StatusCfg {
-            left: vec![spec(
-                "exec",
-                &[("command", toml::Value::String("battery.sh".into()))],
-            )],
-            ..Default::default()
-        };
-        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
         let feeds = p.exec_feeds();
-        assert_eq!(feeds.len(), 1, "one exec widget => one feed");
-
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
+        assert_eq!(feeds.len(), 1);
+        let v = visible(&mut p, 60, 24, "");
         assert!(
-            !strip_csi(&String::from_utf8_lossy(&buf)).contains("BAT"),
-            "no output before the first run"
+            !v.contains("/tmp") && !v.contains("rc=") && !v.contains("BAT"),
+            "{v:?}"
         );
 
+        assert!(p.set_focused_cwd(Some("/tmp/project".to_owned())));
+        assert!(!p.set_focused_cwd(Some("/tmp/project".to_owned())));
+        assert!(p.set_last_exit(Some(127)));
         feeds[0].apply_output("BAT 87%\n");
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 24, &ctx_default(""))
-            .unwrap();
-        let visible = strip_csi(&String::from_utf8_lossy(&buf));
+        let v = visible(&mut p, 60, 24, "");
         assert!(
-            visible.contains("BAT 87%"),
-            "cached exec output must render; got {visible:?}"
+            v.contains("/tmp/project") && v.contains("rc=127") && v.contains("BAT 87%"),
+            "{v:?}"
         );
-    }
 
-    /// After a paint, the painter resolves click columns to
-    /// the window tabs of the strip it painted: "0:bash 1:vim" in the left
-    /// slot puts window 0 on columns 0..6, the separator on 6, window 1 on
-    /// 7..12, and blank padding after — hit, miss, hit, miss.
-    #[test]
-    fn window_hit_at_maps_painted_tab_columns() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![
-            WindowInfo {
-                name: "bash".to_owned(),
-                active: true,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-            WindowInfo {
-                name: "vim".to_owned(),
-                active: false,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-        ]);
-        // Before the first paint there is no strip to hit.
-        assert_eq!(p.window_hit_at(0), None);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        // "0:bash 1:vim": tabs at 0..=5 and 7..=11.
-        for x in 0..=5 {
-            assert_eq!(p.window_hit_at(x), Some(0), "col {x}");
-        }
-        assert_eq!(p.window_hit_at(6), None, "separator is inert");
-        for x in 7..=11 {
-            assert_eq!(p.window_hit_at(x), Some(1), "col {x}");
-        }
-        assert_eq!(p.window_hit_at(12), None, "padding is inert");
-        assert_eq!(p.window_hit_at(39), None, "right edge is inert");
-        assert_eq!(p.window_hit_at(40), None, "off-strip is inert");
-    }
-
-    /// A live tab drag underlines the pointed-at tab and
-    /// clears the marker when the drop index is dropped. Hit targets stay
-    /// on the original cells.
-    #[test]
-    fn window_drop_marker_underlines_the_target_tab_and_clears() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![
-            WindowInfo {
-                name: "bash".to_owned(),
-                active: true,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-            WindowInfo {
-                name: "vim".to_owned(),
-                active: false,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-        ]);
-        let ctx = ctx_default("");
-        let unmarked = p
-            .compose_buffer(BarInset::NONE, 40, 10, &ctx)
-            .expect("bar composes")
-            .0;
-        assert!(
-            !tab_underlined(&unmarked, 7, 11),
-            "no drag, inactive tab is not the marker"
-        );
-        assert!(p.set_drop_index(Some(1)));
-        assert!(!p.set_drop_index(Some(1)));
-        let marked = p
-            .compose_buffer(BarInset::NONE, 40, 10, &ctx)
-            .expect("bar composes")
-            .0;
-        assert!(
-            tab_underlined(&marked, 7, 11),
-            "drop index 1 must underline 1:vim"
-        );
-        assert!(
-            !tab_underlined(&marked, 0, 5),
-            "the other tab stays unmarked"
-        );
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx).unwrap();
-        for x in 7..=11 {
-            assert_eq!(p.window_hit_at(x), Some(1), "marker must not steal hits");
-        }
-        assert!(p.set_drop_index(None));
-        let cleared = p
-            .compose_buffer(BarInset::NONE, 40, 10, &ctx)
-            .expect("bar composes")
-            .0;
-        assert!(
-            !tab_underlined(&cleared, 7, 11),
-            "clearing the index must drop the marker"
-        );
+        assert!(p.set_last_exit(None));
+        assert!(!visible(&mut p, 60, 24, "").contains("rc="));
     }
 
     fn tab_underlined(buf: &Buffer, start: u16, end: u16) -> bool {
         (start..=end).all(|x| buf[(x, 0)].modifier.contains(Modifier::UNDERLINED))
     }
 
-    /// With a left sidebar docked the bar starts BESIDE the strip,
-    /// not under it — the window tabs the user reported reading as "under the
-    /// sidebar". The CUP lands on the strip's first free column and no cell is
-    /// emitted left of it.
+    /// "0:bash 1:vim" puts window 0 on columns 0..=5 and window 1 on
+    /// 7..=11; separator and padding are inert. The map follows repaints and
+    /// a live drag marker never steals hits.
     #[test]
-    fn left_sidebar_inset_shifts_the_bar_out_of_the_strip() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![WindowInfo {
-            name: "bash".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }]);
-        let inset = BarInset { left: 20, right: 0 };
-        let mut buf = Vec::new();
-        p.paint(&mut buf, inset, 40, 10, &ctx_default("")).unwrap();
-        let s = String::from_utf8(buf).expect("utf8");
-        // Bottom row of a 10-row viewport, column 21 (1-based) = x 20.
+    fn window_hit_at_maps_painted_tab_columns() {
+        let mut p = windows_bar();
+        p.set_windows(wins(&[("bash", true), ("vim", false)]));
+        assert_eq!(p.window_hit_at(0), None, "nothing painted yet");
+        paint(&mut p, BarInset::NONE, 40, 10, "");
+        let expect = |x: u16| match x {
+            0..=5 => Some(0),
+            7..=11 => Some(1),
+            _ => None,
+        };
+        for x in 0..=40 {
+            assert_eq!(p.window_hit_at(x), expect(x), "col {x}");
+        }
+
+        let ctx = ctx_default("");
+        let compose =
+            |p: &mut StatusBarPainter| p.compose_buffer(BarInset::NONE, 40, 10, &ctx).unwrap().0;
+        assert!(!tab_underlined(&compose(&mut p), 7, 11));
+        assert!(p.set_drop_index(Some(1)));
+        assert!(!p.set_drop_index(Some(1)));
+        let marked = compose(&mut p);
+        assert!(tab_underlined(&marked, 7, 11) && !tab_underlined(&marked, 0, 5));
+        paint(&mut p, BarInset::NONE, 40, 10, "");
+        assert!((7..=11).all(|x| p.window_hit_at(x) == Some(1)));
+        assert!(p.set_drop_index(None));
+        assert!(!tab_underlined(&compose(&mut p), 7, 11));
+
+        p.set_windows(wins(&[("a", false), ("b", true)]));
+        paint(&mut p, BarInset::NONE, 40, 10, "");
+        assert_eq!(p.window_hit_at(4), Some(1), "the fresh paint's tabs");
+    }
+
+    /// A left sidebar shifts the bar beside the strip (hits map through the
+    /// shifted origin); a right one narrows it in place, badge included.
+    #[test]
+    fn sidebar_insets_shift_or_narrow_the_bar() {
+        let mut p = windows_bar();
+        p.set_windows(wins(&[("bash", true), ("vim", false)]));
+        let s = paint(&mut p, BarInset { left: 20, right: 0 }, 40, 10, "");
         assert!(
-            s.contains("\x1b[10;21H"),
-            "bar must start at the strip's right edge: {s:?}"
+            s.contains("\x1b[10;21H") && !s.contains("\x1b[10;1H"),
+            "{s:?}"
         );
-        assert!(
-            !s.contains("\x1b[10;1H"),
-            "bar must not paint from column 0 (under the strip): {s:?}"
-        );
-        // Only the residual span is composed — 40 cols minus the 20-col strip.
         assert_eq!(
             p.last_row.as_ref().map(|(x, w, _)| (*x, *w)),
             Some((20, 20))
         );
-    }
+        for x in 0..40 {
+            let expect = match x {
+                20..=25 => Some(0),
+                27..=31 => Some(1),
+                _ => None,
+            };
+            assert_eq!(p.window_hit_at(x), expect, "col {x}");
+        }
 
-    /// A screen column is mapped back through the origin the bar
-    /// painted at, so a tab click with a sidebar docked selects the window
-    /// actually under the pointer rather than one 20 columns to its left.
-    #[test]
-    fn window_hit_at_is_relative_to_the_inset_origin() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![
-            WindowInfo {
-                name: "bash".to_owned(),
-                active: true,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-            WindowInfo {
-                name: "vim".to_owned(),
-                active: false,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-        ]);
-        let mut buf = Vec::new();
-        p.paint(
-            &mut buf,
-            BarInset { left: 20, right: 0 },
-            40,
-            10,
-            &ctx_default(""),
-        )
-        .unwrap();
-        // Same "0:bash 1:vim" strip as the full-width case, shifted right 20.
-        for x in 0..20 {
-            assert_eq!(
-                p.window_hit_at(x),
-                None,
-                "col {x} is the strip, not the bar"
-            );
-        }
-        for x in 20..=25 {
-            assert_eq!(p.window_hit_at(x), Some(0), "col {x}");
-        }
-        assert_eq!(p.window_hit_at(26), None, "separator is inert");
-        for x in 27..=31 {
-            assert_eq!(p.window_hit_at(x), Some(1), "col {x}");
-        }
-        assert_eq!(p.window_hit_at(32), None, "padding is inert");
-    }
-
-    /// A right-docked sidebar narrows the bar instead of moving it —
-    /// the origin stays at 0 and the right-aligned widgets (and the supervisory
-    /// badge) stop at the strip's left edge.
-    #[test]
-    fn right_sidebar_inset_narrows_the_bar_in_place() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![WindowInfo {
-            name: "bash".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }]);
+        let mut p = windows_bar();
+        p.set_windows(wins(&[("bash", true)]));
         p.set_supervisory(Some("[F]".to_owned()));
-        let mut buf = Vec::new();
-        p.paint(
-            &mut buf,
-            BarInset { left: 0, right: 20 },
-            40,
-            10,
-            &ctx_default(""),
-        )
-        .unwrap();
-        let s = String::from_utf8(buf).expect("utf8");
-        assert!(s.contains("\x1b[10;1H"), "bar keeps its origin: {s:?}");
-        // The badge right-aligns to the BAR's right edge (col 20, 0-based 17),
-        // not the viewport's — 1-based column 18.
+        let s = paint(&mut p, BarInset { left: 0, right: 20 }, 40, 10, "");
         assert!(
-            s.contains("\x1b[10;18H\x1b[7;1m[F]"),
-            "badge must right-align to the bar, not the viewport: {s:?}"
+            s.contains("\x1b[10;1H") && s.contains("\x1b[10;18H\x1b[7;1m[F]"),
+            "{s:?}"
         );
         assert_eq!(p.last_row.as_ref().map(|(x, w, _)| (*x, *w)), Some((0, 20)));
-    }
-
-    /// The hit map tracks the strip across a window-list
-    /// change + repaint — after a select the active marker moves but the
-    /// columns keep resolving against the fresh paint.
-    #[test]
-    fn window_hit_at_follows_repaints() {
-        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
-        p.set_windows(vec![WindowInfo {
-            name: "a".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }]);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        assert_eq!(p.window_hit_at(0), Some(0));
-        assert_eq!(p.window_hit_at(4), None, "only one 3-cell tab");
-        // Grow the list; the next paint extends the hit map.
-        p.set_windows(vec![
-            WindowInfo {
-                name: "a".to_owned(),
-                active: false,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-            WindowInfo {
-                name: "b".to_owned(),
-                active: true,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-        ]);
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        assert_eq!(p.window_hit_at(4), Some(1), "new tab is hittable");
-    }
-
-    /// The error-line painter paints a diagnostic strip, not
-    /// tabs — every column is inert.
-    #[test]
-    fn window_hit_at_is_inert_on_the_error_line() {
-        let mut p = StatusBarPainter::error_line("config error: boom");
-        let mut buf = Vec::new();
-        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
-            .unwrap();
-        for x in 0..40 {
-            assert_eq!(p.window_hit_at(x), None);
-        }
     }
 
     #[test]
@@ -2508,25 +1615,12 @@ mod tests {
         };
         let mut painter = StatusBarPainter::new(build_bar(&cfg), Position::Bottom);
         painter.set_prefix("C-b");
-
-        let mut buf = Vec::new();
-        painter
-            .paint(&mut buf, BarInset::NONE, 80, 24, &ctx_default(""))
-            .unwrap();
-        let visible = strip_csi(&String::from_utf8(buf).unwrap());
-
-        assert!(
-            visible.contains("C-b  s Sessions"),
-            "configured prefix should reach hints widget: {visible:?}"
-        );
-        assert!(
-            !visible.contains("C-a"),
-            "default prefix must not leak after rebind: {visible:?}"
-        );
+        let v = visible(&mut painter, 80, 24, "");
+        assert!(v.contains("C-b  s Sessions") && !v.contains("C-a"), "{v:?}");
     }
 
-    /// The bar is one bed with the sidebar: cells a widget leaves without a
-    /// background take the fill, and a tab that brings its own keeps it.
+    /// Cells a widget leaves without a background take the bar fill; a tab
+    /// with its own keeps it.
     #[test]
     fn the_bar_takes_its_fill_where_widgets_leave_no_background() {
         let bed = toml::Value::Table(toml::value::Table::from_iter([(
@@ -2539,24 +1633,13 @@ mod tests {
             ..StatusCfg::default()
         };
         let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
-        p.set_windows(vec![WindowInfo {
-            name: "zsh".to_owned(),
-            active: true,
-            ..WindowInfo::default()
-        }]);
+        p.set_windows(wins(&[("zsh", true)]));
         let fill = Color::Rgb(0x17, 0x1b, 0x23);
         p.set_fill(fill);
         let (buf, _, _) = p
             .compose_buffer(BarInset::NONE, 40, 10, &ctx_default("main"))
             .expect("composes");
-        assert_eq!(
-            buf[(0, 0)].bg,
-            Color::Rgb(0x29, 0x36, 0x28),
-            "the tab keeps its bed"
-        );
-        assert!(
-            (10..40).all(|x| buf[(x, 0)].bg == fill),
-            "the rest takes the fill"
-        );
+        assert_eq!(buf[(0, 0)].bg, Color::Rgb(0x29, 0x36, 0x28));
+        assert!((10..40).all(|x| buf[(x, 0)].bg == fill));
     }
 }

@@ -1,14 +1,6 @@
-//! Chrome layer — status bar, dividers, pane borders.
-//!
-//! Split into submodules so wave-2 work can land in disjoint files:
-//! - [`status_bar`] — bottom-row status widget
-//! - [`dividers`] — pane separators and borders
-//! - [`sidebar`] — window/tab sidebar strip
-//!
-//! The one thing that is NOT split is the badge vocabulary: a pane's
-//! state has to read the same in the sidebar row and on the pane's own
-//! title, or the two surfaces are describing different machines. See
-//! [`agent_badge`].
+//! Chrome layer: status bar, dividers, sidebar. The badge vocabulary is
+//! shared ([`agent_badge`]) so a pane reads the same on its title and its
+//! sidebar row.
 
 pub mod dividers;
 pub mod sidebar;
@@ -19,12 +11,8 @@ use ratatui::style::Color;
 use crate::render::theme::Theme;
 use phux_client::agent_meta::AgentMetaState;
 
-/// How one agent's state is drawn, wherever it is drawn.
-///
-/// Shape carries the state and colour reinforces it — deliberately not
-/// colour alone. Four states told apart only by hue are four states a
-/// colour-blind reader cannot tell apart at all, and a 1-cell glyph is
-/// the whole budget the sidebar and a pane title each have.
+/// How one agent's state is drawn anywhere: shape carries the state and
+/// colour reinforces it, so a colour-blind reader can still tell them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentBadge {
     /// The single-cell glyph.
@@ -80,12 +68,8 @@ pub fn agent_badge(
     }
 }
 
-/// The badge for a pane that is not running a declared agent but HAS
-/// asked for a human (ADR-0035 `AgentEvent::Asked`).
-///
-/// Same filled dot as `blocked`, in the same attention tone: "a person
-/// is being waited on" is one fact, and it must not read as two
-/// depending on whether an agent record happened to be declared.
+/// The badge for a non-agent pane that asked for a human (ADR-0035): the
+/// same filled dot as `blocked`.
 #[must_use]
 pub const fn attention_badge(theme: &Theme) -> AgentBadge {
     AgentBadge {
