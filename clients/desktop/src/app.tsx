@@ -26,6 +26,18 @@ import {
 } from "./shell/chrome";
 import { keyChord, shownChords, textFieldHasKeys, yieldsToTextField } from "./shell/keymap";
 import { CommandPalette, type PaletteItem } from "./shell/palette";
+import { PathPicker } from "./shell/path-picker";
+import {
+  acceptResult,
+  beginPicker,
+  canOfferPathPicker,
+  hostForTerminal,
+  preparedInsertion,
+  sameTarget,
+  startQuery,
+  type PathTarget,
+  type PickerState,
+} from "./path-picker";
 import { Sidebar, paneTitle, shortPath } from "./shell/sidebar";
 import { TabBar, type TabView } from "./shell/tabbar";
 import { FindBar } from "./terminal/find";
@@ -104,6 +116,7 @@ type Modal =
   | { kind: "commands"; query?: string }
   | { kind: "goto" }
   | { kind: "settings" }
+  | { kind: "path" }
   | { kind: "rename"; tabId: string; title: string }
   | { kind: "terminate"; terminalId: string; title: string };
 
@@ -172,6 +185,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   const colors = createMemo(() => palette(themeById(prefs().themeId, extraThemes())));
   const [modal, setModal] = createSignal<Modal>({ kind: "none" });
   const [find, setFind] = createSignal<FindState | undefined>();
+  const [picker, setPicker] = createSignal<PickerState | undefined>();
   const [toasts, setToasts] = createSignal<Toast[]>([]);
   const [now, setNow] = createSignal(Date.now());
   const [drag, setDrag] = createSignal<Drag | undefined>();
@@ -197,6 +211,9 @@ function DesktopApp(props: AppProps): JSX.Element {
   );
   workspace.restore(initial);
   bridge.onEvents(receive);
+  bridge.onPathAnswers((answers) => {
+    for (const answer of answers) setPicker((state) => acceptResult(state, answer));
+  });
 
   // ── Persistence ────────────────────────────────────────────────
 
@@ -620,6 +637,102 @@ function DesktopApp(props: AppProps): JSX.Element {
       safe(() => bridge.client().pasteView(focus.viewId, quotePaths([pane.cwd ?? ""])), "");
   }
 
+  // ── Insert Path (host PATH_QUERY) ──────────────────────────────
+
+  /** The pane a path would be typed into, pinned to this server incarnation. */
+  function pathTarget(): PathTarget | undefined {
+    const focus = workspace.focused();
+    const info = bridge.server();
+    if (!focus || !info) return undefined;
+    return {
+      terminalId: focus.terminalId,
+      placementId: focus.id,
+      serverId: info.serverId,
+      epoch: info.connectionEpoch,
+    };
+  }
+
+  function openPathPicker(): void {
+    const target = pathTarget();
+    const attached = bridge.status() === "Attached";
+    if (!target || !canOfferPathPicker(bridge.server()?.features, attached, target)) {
+      toast({
+        kind: "info",
+        title: "Insert Path is unavailable",
+        body: attached
+          ? "This server does not offer host path search. Update phux on the host."
+          : "Not attached to a terminal.",
+      });
+      return;
+    }
+    const root = paneOf(target.terminalId)?.cwd || "~";
+    setPicker(beginPicker(target, root));
+    setModal({ kind: "path" });
+    queryPaths(root, "");
+  }
+
+  /** Browse `root` (empty query) or search beneath it; a new query supersedes the last. */
+  function queryPaths(root: string, query: string): void {
+    const active = picker();
+    if (!active) return;
+    if (!sameTarget(active.target, pathTarget())) {
+      closePathPicker();
+      return;
+    }
+    const host = hostForTerminal(active.target.terminalId);
+    const id = safe(() => bridge.client().pathQuery(root, query, query.length > 0, host), 0);
+    setPicker(
+      id === 0
+        ? {
+            ...active,
+            root,
+            query,
+            pending: undefined,
+            rows: [],
+            message: "Host path search is unavailable right now.",
+          }
+        : startQuery({ ...active, root }, id, query),
+    );
+  }
+
+  /** Type one shell-quoted path into the pane the picker opened on; never Enter. */
+  function insertPath(path: string): void {
+    const active = picker();
+    const focus = workspace.focused();
+    if (!active || !focus) return;
+    const text = preparedInsertion(
+      active,
+      path,
+      pathTarget(),
+      bridge.ready(active.target.terminalId),
+    );
+    if (!text) {
+      setPicker({ ...active, message: "The pane changed or is not ready; nothing was inserted." });
+      return;
+    }
+    // pasteView is the acknowledged untrusted paste: text only, no Return.
+    const queued = safe(() => {
+      bridge.client().pasteView(focus.viewId, text);
+      return true;
+    }, false);
+    if (queued) closePathPicker();
+    else setPicker({ ...active, message: "The path was not queued; nothing was inserted." });
+  }
+
+  function closePathPicker(): void {
+    setPicker(undefined);
+    if (modal().kind === "path") setModal({ kind: "none" });
+  }
+
+  // A picker belongs to one pane on one connection: any change closes it.
+  createEffect(() => {
+    const kind = modal().kind;
+    const active = untrack(picker);
+    if (!active) return;
+    if (kind !== "path" || bridge.status() !== "Attached") closePathPicker();
+    else if (!sameTarget(active.target, pathTarget())) closePathPicker();
+  });
+
   function nextAttention(): void {
     const agents = bridge.agents();
     const order = ["blocked", "done", "working"];
@@ -684,6 +797,14 @@ function DesktopApp(props: AppProps): JSX.Element {
       chord: "cmd+o",
       icon: "folder",
       run: openFolder,
+    },
+    {
+      id: "insert-path",
+      title: "Insert Path…",
+      group: "Terminal",
+      chord: "cmd+shift+i",
+      icon: "folder",
+      run: openPathPicker,
     },
     {
       id: "split-right",
@@ -1606,6 +1727,9 @@ function DesktopApp(props: AppProps): JSX.Element {
           reconnect={reconnect}
           rename={(tabId, title) => workspace.renameTab(tabId, title)}
           terminate={(terminalId) => workspace.terminate(terminalId)}
+          picker={picker()}
+          queryPaths={queryPaths}
+          insertPath={insertPath}
         />
       </div>
     </PaletteContext.Provider>
@@ -1632,6 +1756,9 @@ function ModalLayer(props: {
   reconnect: () => void;
   rename: (tabId: string, title: string) => void;
   terminate: (terminalId: string) => void;
+  picker: PickerState | undefined;
+  queryPaths: (root: string, query: string) => void;
+  insertPath: (path: string) => void;
 }): JSX.Element {
   return (
     <>
@@ -1671,6 +1798,17 @@ function ModalLayer(props: {
           reconnect={props.reconnect}
           close={props.close}
         />
+      </Show>
+      <Show when={props.modal.kind === "path" ? props.picker : undefined}>
+        {(state: Accessor<PickerState>): JSX.Element => (
+          <PathPicker
+            state={state()}
+            search={(query) => props.queryPaths(state().root, query)}
+            open={(directory) => props.queryPaths(directory, "")}
+            insert={props.insertPath}
+            close={props.close}
+          />
+        )}
       </Show>
       <Show when={props.modal.kind === "rename" ? props.modal : undefined} keyed>
         {(modal: Extract<Modal, { kind: "rename" }>): JSX.Element => (

@@ -56,6 +56,7 @@ chords belong to the app; everything else reaches the terminal.
 | ⌘N               | New window, with its own connection and a fresh terminal                    |
 | ⌥⌘N              | Move the focused pane into a new window of its own                          |
 | ⌘K               | Clear the screen                                                            |
+| ⇧⌘I              | Insert Path: browse or search paths on the focused terminal's host          |
 | ⇧⌘R              | Reconnect, first restarting the server if it has stopped                    |
 | ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
 
@@ -93,7 +94,11 @@ another.
 
 Drag split dividers, the sidebar edge, or tabs to rearrange; double-click a tab
 to rename it and a pane header to zoom. Dropping files onto a terminal pastes
-their shell-quoted paths. **Terminate Terminal Process** (palette only) is the
+their shell-quoted paths. **Insert Path** lists paths on the host that runs
+the focused terminal (a satellite's own disk for a satellite pane), never this
+Mac's; it needs a server that advertises `PATH_QUERY`. Enter types the chosen
+path as one shell-quoted word and presses nothing else, and only into the pane
+it opened on. **Terminate Terminal Process** (palette only) is the
 one action that ends a process. Layout and display preferences persist per
 server incarnation under `$XDG_STATE_HOME/phux-desktop/`.
 
