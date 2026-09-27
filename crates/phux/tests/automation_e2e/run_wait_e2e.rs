@@ -1,30 +1,7 @@
-//! Binary-level end-to-end tests for `phux run` and `phux wait` (phux-3rq).
-//!
-//! Unlike the pure unit tests in `phux-client` (which exercise the
-//! sentinel parser and the wait condition in isolation), these drive the
-//! REAL `phux` binary — built and handed to us by cargo at
-//! `env!("CARGO_BIN_EXE_phux")` — against a REAL PTY-backed server. No
-//! tmux, no mocks: a `phux server` child binds a private UDS, and each
-//! verb runs as its own subprocess against that socket. They pin the
-//! load-bearing process-exit contracts a consumer (an agent, a shell
-//! `&&` chain) actually depends on:
-//!
-//!   * `run` mirrors the command's exit code into the process exit status
-//!     (0 for success, 1 for `false`, an arbitrary code for a subshell).
-//!   * `run --json` emits the stable `RunResult` contract.
-//!   * `wait --until` exits 0 when the marker appears, 124 on timeout.
-//!
-//! Robustness notes:
-//!   * The first server start can be slow (cold caches); we poll for the
-//!     socket file with a generous deadline before driving any verb.
-//!   * The server child is killed on guard drop, so a panicking assertion
-//!     never leaks a daemon.
-//!   * `--socket` is passed to EVERY verb so we never touch the user's
-//!     real default socket, and the server is never auto-spawned.
-//!   * The nonzero-mirror case uses `"(exit 7)"` — a POSIX subshell. This
-//!     was verified empirically NOT to kill the session (a bare `exit 7`
-//!     would terminate the shell and reap the pane); `phux ls` still
-//!     lists the session afterward, and a subsequent `run` succeeds.
+//! `phux run` / `phux wait` against a real PTY-backed server: `run` mirrors
+//! the command's exit code, `run --json` emits the `RunResult` contract, and
+//! `wait --until` exits 0 on the marker and 124 on timeout. The nonzero case
+//! uses a `(exit 7)` subshell so the pane's shell survives.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

@@ -1,15 +1,7 @@
-//! The session verbs over `--remote`, end to end (phux-c2td.2).
-//!
-//! Stands up a real `phux server` with a loopback QUIC listener, registers it
-//! as a `[[remote]]` entry, and drives `new`, `ls`, `rename`, `detach`, and
-//! `kill` against it from separate processes with `--remote`: the same
-//! registry lookup and QUIC dial a host across a network gets, with the
-//! network taken out. Loopback QUIC needs neither a token nor a certificate
-//! pin (the attach-side trust rule the verbs share), so nothing is minted.
-//!
-//! Hermetic: private config, state, and runtime dirs; no ssh (a path that
-//! does not exist) and no overlay detection, so a cold resolution could only
-//! ever fail loudly rather than reach a real host.
+//! The session verbs (`new`, `ls`, `rename`, `detach`, `kill`) over
+//! `--remote` against a real server registered as a `[[remote]]` with a
+//! loopback QUIC listener (no token or pin needed). Hermetic: private dirs,
+//! no ssh, no overlay detection.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

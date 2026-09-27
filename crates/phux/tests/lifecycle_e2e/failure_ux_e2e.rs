@@ -1,54 +1,13 @@
-//! Failure-UX dogfood: the epic's audited silent failures, replayed end to
-//! end against the real binary (phux-i0e8.13.5).
+//! Failure UX end to end against the real binary: each once-silent failure
+//! must stay loud.
 //!
-//! The 2026-08-01 UX audit (epic phux-i0e8) found that errors, dead keys,
-//! typos, and pane death all no-op'd invisibly. The never-silent wave fixed
-//! each surface; this file pins the FIXED behavior with the real `phux`
-//! binary on a private UDS (run_wait_e2e-style harness: real server,
-//! `ServerGuard` drop-kill, `--exit-after-idle` backstop), so the failure
-//! path stays CI-enforced product behavior rather than a release ritual.
-//! Original audit evidence (`file:line` as audited on 2026-08-01), per
-//! scenario:
-//!
-//! 1. Broken config, loud server start — audited: the server swallowed a
-//!    broken `config.toml` with zero output (`server.rs:113-148`). Fixed:
-//!    `phux server` refuses to start, naming the config path and
-//!    `phux config check` (phux-i0e8.1.1).
-//! 2. Typo'd action named at check — audited: a typo'd action name logged
-//!    at debug and the key died silently (`input_dispatch.rs:2560`).
-//!    Fixed: `phux config check` exits 1 naming the binding, the
-//!    `unknown name` fault, and a did-you-mean suggestion (phux-i0e8.3.2).
-//! 3. Malformed chord does not kill keybindings — audited: one malformed
-//!    chord disabled ALL keybindings including detach (`driver.rs:3709`).
-//!    Fixed: the attach path builds a lenient resolver, so only the
-//!    offending binding dies and `<prefix> d` still detaches
-//!    (phux-i0e8.3.4).
-//! 4. Pane death surfaces exit status — audited: a dying pane discarded
-//!    its exit status (`server_frame.rs:1169-1216`). Fixed:
-//!    `RESOURCE_CLOSED` carries it and the client prints
-//!    "session ended: the last pane ..." on teardown (phux-i0e8.2.2).
-//!    Natural last-shell `exit` now respawns in place (ADR-0131); this
-//!    scenario kills the last pane so the close still happens.
-//! 5. Server SIGKILL shows the reconnect indicator — audited: a server
-//!    crash was ~10s of blank screen (`attach.rs:272-341`). Fixed: the
-//!    client drops to the cooked screen and announces the loss with a live
-//!    countdown ("lost the server connection; waiting up to Ns...")
-//!    (phux-i0e8.2.3).
-//! 6. Dead-socket `--json` parses as the contract — audited: ~32 `--json`
-//!    verbs had no error-path contract (epic pattern 3, INCONSISTENCY).
-//!    Fixed: one JSON line on stderr — `schema_version` /
-//!    `error{code,message}` / `remedy` / `exit_code` — with stdout empty
-//!    (ADR-0065 section 4, phux-i0e8.8.2).
-//! 7. status/logs/doctor speak with real paths — audited: three log files
-//!    existed and no command or doc ever printed any path (epic pattern 2,
-//!    INVISIBILITY). Fixed: `phux status`, `phux logs`, and `phux doctor`
-//!    each name the canonical server-log path resolved through
-//!    `phux_server::telemetry`, so the printed path and the written path
-//!    can never disagree (phux-i0e8.7).
-//!
-//! Scenario 5 rides the lane's retry budget (`just e2e` runs serially with
-//! `--retries=2`); if it still proves flaky there, demote ONLY that test to
-//! the `stress` lane with a comment — the other six are deterministic.
+//! 1. A broken config makes `phux server` refuse to start, naming the path.
+//! 2. `phux config check` names a typo'd action with a suggestion.
+//! 3. One malformed chord does not disable the other keybindings.
+//! 4. Killing the last pane surfaces its exit status on teardown.
+//! 5. A SIGKILLed server shows the reconnect indicator.
+//! 6. A dead-socket `--json` error follows the shared JSON error contract.
+//! 7. `status`, `logs`, and `doctor` print the real server-log path.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -81,10 +40,6 @@ const POLL: Duration = Duration::from_millis(50);
 /// How long an attached client gets to reach a scripted state (exit,
 /// output marker) before the test declares the scenario broken.
 const CLIENT_DEADLINE: Duration = Duration::from_secs(20);
-
-// ---------------------------------------------------------------------------
-// harness
-// ---------------------------------------------------------------------------
 
 /// Per-scenario isolation: a private `HOME` plus XDG dirs so no test
 /// reads the developer's config, host registry, or log paths, and so
@@ -433,10 +388,6 @@ impl AttachedClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 1. broken config -> loud server start (audited: server.rs:113-148)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn broken_config_makes_server_start_loud() {
@@ -506,10 +457,6 @@ fn broken_config_makes_server_start_loud() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 2. typo'd action named at check (audited: input_dispatch.rs:2560)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn config_check_names_the_typoed_action() {
@@ -538,10 +485,6 @@ fn config_check_names_the_typoed_action() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 3. malformed chord does not kill keybindings/detach (audited: driver.rs:3709)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn malformed_chord_keeps_detach_alive() {
@@ -567,10 +510,6 @@ fn malformed_chord_keeps_detach_alive() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 4. pane death surfaces exit status (audited: server_frame.rs:1169-1216)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn last_pane_death_surfaces_its_exit_status() {
@@ -595,10 +534,6 @@ fn last_pane_death_surfaces_its_exit_status() {
     client.wait_for_output("the last pane");
 }
 
-// ---------------------------------------------------------------------------
-// 5. server SIGKILL shows the reconnect indicator (audited: attach.rs:272-341)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn server_sigkill_shows_the_reconnect_indicator() {
@@ -622,10 +557,6 @@ fn server_sigkill_shows_the_reconnect_indicator() {
     // the 10s reconnect window's outcome.
     client.wait_for_output("lost the server connection");
 }
-
-// ---------------------------------------------------------------------------
-// 6. dead-socket --json parses as the contract (ADR-0065 section 4)
-// ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
@@ -676,10 +607,6 @@ fn dead_socket_json_error_is_the_contract() {
     );
     assert_eq!(doc["exit_code"], 1, "embedded exit code matches:\n{doc}");
 }
-
-// ---------------------------------------------------------------------------
-// 7. status/logs/doctor speak with real paths (audit pattern 2: INVISIBILITY)
-// ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]

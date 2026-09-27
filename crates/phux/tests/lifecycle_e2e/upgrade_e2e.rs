@@ -1,18 +1,6 @@
-//! Binary-level acceptance drill for graceful server upgrade (ADR-0032,
-//! phux-fak5): a real `phux server` child, a real PTY-backed pane, a real
-//! in-place `execve`, and the assertion that the headline promise holds —
-//! **the pane's child process and its scrollback survive a binary update, and
-//! the resumed pane retains its normal kill/reap lifecycle.**
-//!
-//! The decisive signal is that the server's PID is *unchanged* after the
-//! upgrade: a kill-and-restart would replace it, but a graceful `execve`
-//! preserves it in place (and with it the open PTY masters that keep the
-//! children alive). We additionally check the pane child is still alive and
-//! the on-screen marker survived the snapshot replay.
-//!
-//! Like the other binary e2e tests it is `#[ignore]` — it spawns a real
-//! server and re-execs it, so it starves in the full parallel pool. Run via
-//! `just e2e` (or `cargo test -p phux --test lifecycle_e2e upgrade_e2e:: -- --ignored`).
+//! Graceful server upgrade (ADR-0032): after a real in-place `execve`, the
+//! server PID is unchanged, the pane's child is alive, its scrollback
+//! survived, and the pane still has its normal kill/reap lifecycle.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

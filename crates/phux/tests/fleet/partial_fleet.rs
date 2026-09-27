@@ -1,29 +1,12 @@
-//! What the user sees when the server could only answer for part of the fleet.
+//! What the user sees when a federation hub could only answer for part of
+//! the fleet (one `ERROR` per unreachable satellite ahead of the merged ack,
+//! served by [`phux_client::testkit`]). Black-box on the exact stderr, JSON
+//! key, and exit status:
 //!
-//! A federation hub that cannot reach a satellite still answers `GET_STATE`:
-//! it merges what it has and pushes one uncorrelated `ERROR` per unreachable
-//! satellite ahead of the ack (`handle_get_state_federated` —
-//! "observable degradation, not silence"). The client keeps those notices
-//! now, but keeping is not showing, and the bug this file pins down was
-//! entirely at the surface: `phux ls` printed a listing indistinguishable
-//! from a complete one, and `phux kill @9` said "no such target" about a pane
-//! that was alive on the other side of a downed link.
-//!
-//! These are black-box tests on purpose. The thing under test is the *user's
-//! eye level* — the exact sentence on stderr, the JSON key, the exit status —
-//! so they run the real binary and read its real streams. The server side is
-//! [`phux_client::testkit`], where the reference ordering (degradation ERRORs
-//! first, then the merged ack) is written down once.
-//!
-//! The split being asserted, verb by verb:
-//!
-//! - `ls` enumerates: warn, exit 0, and put it in the `--json` document too.
-//! - `kill` / `tag` resolve a Terminal against `panes`, the one list a hub
-//!   merges: a miss under degradation is *unresolved*, exit 3, and must not
-//!   use the words "no such target".
-//! - `rename` resolves a session name, and session lists never aggregate —
-//!   `handle_get_state_federated` discards each satellite's — so a partial
-//!   fleet cannot change its answer: warn, exit 0.
+//! - `ls` warns, exits 0, and records it in the `--json` document.
+//! - `kill` / `tag` treat a miss under degradation as unresolved (exit 3),
+//!   never "no such target".
+//! - `rename` resolves sessions, which hubs never aggregate: warn, exit 0.
 
 #![allow(
     clippy::expect_used,

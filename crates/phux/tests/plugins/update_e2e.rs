@@ -1,23 +1,8 @@
-//! Never-silent-failure coverage for `phux update`, against the real binary.
-//!
-//! `phux update` replaces the binary the user is running, so its refusals are
-//! the product. Every one of them has to be loud, machine-readable under
-//! `--json`, and — crucially — has to happen *before* anything is downloaded
-//! or written. That last property is what makes these tests possible without
-//! a network: each scenario here is a path that refuses on evidence phux
-//! already has (the resolved path of its own executable, the shape of a tag,
-//! clap's own grammar), so the whole file runs offline in the default pool.
-//!
-//! Nothing here performs a real download. The download / checksum / atomic
-//! replacement / rollback paths are exercised in the crate's unit tests
-//! against an injected fake release source
-//! (`commands::update::tests`), which is the seam that exists precisely so
-//! CI never has to reach github.com to prove the install path works.
-//!
-//! The binary under test lives in `target/{debug,release}`, which is
-//! deliberately NOT a recognized install location — so it is also the
-//! fixture for the "unknown source" arm, the one that must never degrade
-//! into a best-effort overwrite.
+//! `phux update` refusals against the real binary, offline: each must be
+//! loud, machine-readable under `--json`, and happen before anything is
+//! downloaded or written. The binary under `target/` is not a recognized
+//! install location, so it is the fixture for the unknown-source refusal.
+//! Download/checksum/rollback are unit-tested against a fake release source.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

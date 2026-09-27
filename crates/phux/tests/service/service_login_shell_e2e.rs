@@ -1,45 +1,11 @@
-//! Binary-level end-to-end regression for phux-87rr: "service-managed
-//! panes inherit a login-shell PATH; ordinary panes are unchanged."
+//! Service-managed panes get a login shell (so profile PATH entries such as
+//! Homebrew and Nix resolve); ordinary panes do not. The switch is the
+//! `PHUX_SERVICE_MANAGED` marker `phux service install` stamps into the unit,
+//! never a heuristic on environment shape.
 //!
-//! The bug: a server installed with `phux service install` runs under
-//! launchd/systemd's minimal environment. Its spawned panes ran the
-//! configured shell as a plain (non-login) shell, so platform profile
-//! initialization (`~/.profile`, `~/.zprofile`, …) never ran — Homebrew
-//! and Nix PATH entries were invisible even though environment markers
-//! like `NIX_PROFILES` could still be inherited and fool a naive guard
-//! into thinking initialization already happened.
-//!
-//! The fix threads a `login: bool` through
-//! `phux_server::terminal_actor::{default_shell_command, shell_command}`
-//! (see `crates/phux-server/src/terminal_actor/spawn.rs`), driven by
-//! whether `phux server` finds `PHUX_SERVICE_MANAGED` in its own
-//! environment — the marker `phux service install` stamps into the
-//! generated launchd plist / systemd unit
-//! (`crates/phux/src/commands/service.rs::SERVICE_MANAGED_ENV`), never a
-//! heuristic sniffed from environment shape.
-//!
-//! This file proves the whole pipeline against the REAL compiled `phux`
-//! binary — real env-var detection in `run_server`, real
-//! `shell_command`/`-l` argv construction, a real PTY, a real `/bin/sh`
-//! sourcing a real `~/.profile` fixture, and a real command-resolution
-//! outcome written to a file by the spawned shell itself. The only thing
-//! NOT real is launchd/systemd itself: the "minimal service environment"
-//! is simulated by starting the child process with `env_clear()` plus an
-//! explicit launchd-shaped minimal `PATH`, and the marker is set directly
-//! rather than by an installed unit — a real launchd/systemd test is not
-//! runnable in this CI. Everything downstream of "the child process's
-//! environment looks like this" is exercised for real.
-//!
-//! Two scenarios:
-//!   * [`service_managed_pane_resolves_a_profile_provided_command`] —
-//!     acceptance criterion 5. The marker is present; the profile-added
-//!     command must resolve.
-//!   * [`ordinary_pane_does_not_source_the_profile_twice`] — acceptance
-//!     criterion 6. The marker is absent (an ordinary hand-started
-//!     server); the same profile fixture must NOT be sourced, so the
-//!     same command must NOT resolve. This is the regression guard: it
-//!     would fail immediately if login-shell treatment ever stopped
-//!     being conditional.
+//! Runs the real binary with a real PTY and `/bin/sh` sourcing a fixture
+//! `~/.profile`; only launchd/systemd is simulated, by `env_clear()` plus a
+//! minimal `PATH` and the marker set directly.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

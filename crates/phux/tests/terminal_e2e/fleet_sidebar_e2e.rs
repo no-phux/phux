@@ -1,27 +1,8 @@
-//! Real-server end-to-end coverage for the fleet-inbox sidebar's roster zone.
-//!
-//! A real `phux server` runs on a private UDS, a second session is created
-//! headlessly beside the first with a persisted layout and a blocked agent
-//! record, and a real TUI client attaches through a pseudo-terminal. The
-//! assertion is that the attached client's Sessions row for the peer carries
-//! the peer's state histogram.
-//!
-//! phux-k0cw.10 is why this exists. The peer sweep that populates the roster
-//! used to be sent during bootstrap, ahead of the `TERMINAL_SNAPSHOT` burst
-//! that produces the first paint; it is now deferred to the first repaint
-//! drain so a session switch does not pay for the roster before it paints.
-//! Deferral buys latency and risks liveness: a sweep that is never issued
-//! leaves the roster permanently undescribed, and every unit test in the
-//! client still passes because each one calls the sweep directly. This test is
-//! the one that fails if the deferred send never goes out.
-//!
-//! The histogram — not the row — is the assertion, and that is deliberate. A
-//! roster ROW exists for every peer in the ATTACHED session graph whether or
-//! not any sweep ran (`session_roster` gives an undescribed session a row with
-//! zero counts on purpose: "this space exists" is the roster's whole job). So
-//! asserting on the row name would pass against a client that never swept.
-//! The counts are the part that can only come from the peer's fetched layout
-//! and its panes' fetched agent records, which is the chain this bead moved.
+//! Real-server coverage for the fleet sidebar's roster: a real TUI client
+//! attached through a PTY must show a peer session's state histogram. The
+//! peer sweep is deferred to the first repaint, and client unit tests call the
+//! sweep directly, so this is the test that fails if it is never sent. The
+//! histogram (not the row, which exists without any sweep) is the assertion.
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 

@@ -1,25 +1,7 @@
-//! Binary-level coverage for phux-l1yx: `phux service reconcile` must correct
-//! an installed unit's restart policy **without stopping the server**.
-//!
-//! The whole point of the verb is a promise that cannot be checked by reading
-//! a rendered string. `service.rs`'s unit tests prove the *patch* is correct —
-//! the right keys replaced, everything else preserved, a plist shape it cannot
-//! parse refused. What they cannot prove is the half that actually mattered to
-//! the user in phux-nvi2: that following the remedy does not cost them every
-//! pane and its in-flight shells, agents, and subagents.
-//!
-//! So these drive the REAL compiled binary against a REAL server, and assert
-//! the server is still accepting connections afterwards. If someone ever makes
-//! reconcile reload the unit — `launchctl bootout`, `systemctl enable --now` —
-//! this is the test that fails, and it fails for exactly the right reason.
-//!
-//! # Do not let these tests reach a real unit
-//!
-//! `Manager::unit_path` resolves from `HOME`, so `HOME` and `XDG_CONFIG_HOME`
-//! are redirected into the test's own tempdir and `PHUX_PROFILE` is pinned, so
-//! the path is deterministic rather than inferred from where the binary sits.
-//! A regression writes into the tempdir instead of the developer's real
-//! `~/Library/LaunchAgents/com.phux.server.plist`.
+//! `phux service reconcile` must correct an installed unit's restart policy
+//! without stopping the server: the real binary against a real server, which
+//! must still accept connections afterwards. `HOME`/`XDG_CONFIG_HOME` point
+//! into the tempdir and `PHUX_PROFILE` is pinned, so no real unit is touched.
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 

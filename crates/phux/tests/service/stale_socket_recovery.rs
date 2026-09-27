@@ -1,17 +1,6 @@
-//! End-to-end coverage for auto-spawn against a **stale** socket (phux-zomb.1).
-//!
-//! The bug this pins was the whole of "phux is broken and I have to `rm` a
-//! socket to use it". A server that dies without unlinking — `SIGKILL`, a
-//! panic, a supervisor tearing it down, a hard reboot — leaves its socket file
-//! behind. Auto-spawn used to be gated on `!socket_path.exists()`, so from
-//! that moment on every invocation found a file, declined to start a server,
-//! and then failed to connect to the nothing that was listening. The wedge was
-//! permanent and self-inflicted: nothing in phux ever cleaned it up.
-//!
-//! These tests drive the real binary against a real socket directory, because
-//! the defect lived precisely in the seam between "what the filesystem says"
-//! and "what a process will answer" — a seam that a mocked filesystem cannot
-//! reproduce.
+//! Auto-spawn against a stale socket file left by a server that died without
+//! unlinking it: every later invocation used to find the file, skip the spawn,
+//! and fail to connect. Real binary, real socket directory.
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 

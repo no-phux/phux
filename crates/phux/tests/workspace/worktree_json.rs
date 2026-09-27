@@ -1,23 +1,6 @@
-//! Binary-level contract tests for the `phux worktree` JSON surface
-//! (phux-w7z2.34).
-//!
-//! `worktree new --json` is the first call in a fan-out script: it creates the
-//! checkout an agent will work in and hands back the seed pane's
-//! `terminal_id`, which is what the orchestrator then sends its first prompt
-//! to. Before it existed the caller had to shell-parse the prose line or issue
-//! a second `phux ls --json` and guess which pane it had just made — and the
-//! guess is wrong under exactly the concurrency that makes fan-out worth
-//! doing.
-//!
-//! The document's *shape* is pinned by unit tests next to the code that builds
-//! it. What can only be checked from out here is the part a script depends on
-//! at the process boundary: that `--json` really is a flag on these verbs,
-//! that it refuses to combine with `--attach`, and that a failure leaves
-//! stdout empty and puts ONE contract line on stderr with a code from the
-//! closed vocabulary (ADR-0065 §4).
-//!
-//! No server is involved. Every case here fails locally, before any socket is
-//! touched, so these are cheap and run in the default pool.
+//! Process-boundary contract of `phux worktree ... --json`: the flag parses,
+//! refuses `--attach`, and a failure leaves stdout empty with one error line
+//! from the closed code vocabulary on stderr. No server is involved.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

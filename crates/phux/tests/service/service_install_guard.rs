@@ -1,58 +1,12 @@
-//! Binary-level regression for phux-67wg: `phux service install` must refuse
-//! to supervise a socket a live server already holds.
+//! `phux service install` must refuse to supervise a socket a live server
+//! already holds: the supervised server would fail to bind on every start and
+//! the init system would retry forever. `--adopt` is the non-destructive way
+//! past the refusal (writes and arms the unit without loading it).
 //!
-//! The bug had no coverage at all. `service.rs`'s test module pins unit
-//! *rendering* thoroughly — seventeen tests — but `run_install` itself, and
-//! therefore every precondition it does or does not check, was untested.
-//!
-//! What went wrong: install wrote the unit and handed it to the init system
-//! without looking at the socket. The supervised server then binds the same
-//! path, `handle_existing_socket` refuses with `SocketBusy` before `bind(2)`
-//! is reached, and the process exits non-zero — deterministically, every
-//! start. Under the ADR-0080 restart policy that is not a one-off failure but
-//! a permanent loop: launchd's `ThrottleInterval` is a minimum spacing rather
-//! than a give-up count, and the systemd unit set no `StartLimitBurst`, so
-//! neither platform ever stopped retrying. One failed start every 30s, for as
-//! long as the incumbent server lives.
-//!
-//! Stopping the incumbent instead would be worse — it owns live panes and
-//! their in-flight shells and agents — so the correct behaviour is to refuse
-//! and say so. `--adopt` (ADR-0088, phux-m3ot) is the way past the refusal
-//! that costs neither: it writes the unit and arms it rather than loading it,
-//! so nothing binds twice and nothing is stopped. Its test lives here too,
-//! because it is the same guard viewed from the other side.
-//!
-//! These tests drive the REAL compiled binary against a REAL socket. In the
-//! refusal tests nothing is installed: the refusal is asserted to happen
-//! *before* any unit is written, which is the whole point — an install that
-//! fails after writing would leave the loop behind.
-//!
-//! # Do not let these tests reach a real install
-//!
-//! `Manager::unit_path` resolves from `HOME`, **not** from `--socket`. A
-//! `phux service install` that gets past the guard therefore writes to the
-//! developer's own `~/Library/LaunchAgents/com.phux.server.plist` (or
-//! `$XDG_CONFIG_HOME/systemd/user/phux.service`) and then runs `launchctl
-//! bootout gui/$UID/com.phux.server` — which would tear down whatever real
-//! phux service that machine is running, panes and all.
-//!
-//! Two things keep that from happening, and both must stay:
-//!
-//!   1. `HOME` and `XDG_CONFIG_HOME` are redirected into the test's own
-//!      tempdir, so a regression writes there rather than into a real home.
-//!   2. Each test asserts **no unit file was created**, which is what proves
-//!      the guard runs before `unit_path()` rather than after it.
-//!
-//! Do not "simplify" this by letting the install proceed and cleaning up
-//! afterwards. There is no cleanup for a `launchctl bootout` that killed
-//! someone's panes.
-//!
-//! The `--adopt` test is the one that does write a unit, and it is safe for
-//! the same two reasons inverted: it writes into the sandboxed `HOME`, and
-//! `--adopt` never runs `bootout`, `bootstrap`, or `enable --now`. The only
-//! init-system call it can make is `systemctl --user enable` *without*
-//! `--now`, against a unit search path that `XDG_CONFIG_HOME` has already
-//! redirected into the tempdir.
+//! Safety: `Manager::unit_path` resolves from `HOME`, not `--socket`, and a
+//! real install runs `launchctl bootout`. So `HOME`/`XDG_CONFIG_HOME` point
+//! into the tempdir and each refusal test asserts no unit file was written.
+//! Never let these tests proceed past the guard and clean up afterwards.
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 

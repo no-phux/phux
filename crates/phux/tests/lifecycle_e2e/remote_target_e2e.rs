@@ -1,21 +1,8 @@
-//! The `--remote` resolution ladder, driven through the real binary on a
-//! real PTY (ADR-0093).
-//!
-//! `--remote` is an attach, so every rung sits behind the interactive TTY
-//! preflight — which is why these tests open a PTY rather than piping. What
-//! they pin is the *pairing* half of each rung, because that is the half
-//! with side effects: which registry entry gets written, where the bearer
-//! token lands and with what mode, and what the operator is told. The dial
-//! that follows is the pre-existing `run_attach_remote` path and is not
-//! re-tested here; each test stops as soon as the pairing it cares about is
-//! observable, and kills the child.
-//!
-//! Network-free throughout. The ssh rung runs against a fake `ssh` via
-//! `$PHUX_SSH` — the same seam `phux host add` is tested through — and
-//! the `--code` rung contacts nothing at all. The direct-route probe dials
-//! a TEST-NET address under a short `PHUX_DIRECT_PROBE_TIMEOUT_MS`, so
-//! every ssh pairing here ends on the `ssh://` route with the candidate
-//! kept as `direct`; the answering case lives in `host_add_e2e.rs`.
+//! The `--remote` resolution ladder (ADR-0093) through the real binary on a
+//! PTY (attach sits behind the TTY preflight). Pins the pairing half of each
+//! rung: which entry is written, where the token lands, what the operator is
+//! told; the dial afterwards is not re-tested. Network-free: fake `ssh` via
+//! `$PHUX_SSH`, and the direct probe dials TEST-NET under a short timeout.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

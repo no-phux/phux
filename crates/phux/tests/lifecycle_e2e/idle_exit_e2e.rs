@@ -1,32 +1,8 @@
-//! Binary-level end-to-end tests for `phux server --exit-after-idle`
-//! (ADR-0063): the opt-in lifetime that lets an ephemeral caller bound a
-//! daemon it may never get to clean up.
-//!
-//! `crates/phux-server/tests/server_idle_exit.rs` proves the runtime rule
-//! in-process. This file proves the three things only a real process can:
-//!
-//!   1. the CLI flag actually reaches `ServerConfig` (a broken wire-through
-//!      would leave that in-process test perfectly green);
-//!   2. the daemon **process** goes away, not merely `run_async` returning;
-//!   3. the pane's PTY child dies with it. A server that exits while leaving
-//!      an orphaned `sh` behind has moved the leak rather than fixed it, and
-//!      that is invisible from inside the server.
-//!
-//! (3) is checked without `pgrep`, `/proc`, or any pid plumbing the wire
-//! does not carry: the seed pane runs a shell loop that writes an
-//! incrementing counter to a file every `HEARTBEAT_TICK`. After the server
-//! is gone the counter is read twice, `HEARTBEAT_SETTLE` apart. A surviving
-//! child keeps counting; a dead one cannot. The same file also proves the
-//! pane was genuinely ALIVE at exit time, which is the entire premise —
-//! without it the test would be indistinguishable from the ordinary
-//! last-pane self-exit `server_self_exit.rs` already covers.
-//!
-//! Timing discipline: every deadline here is a HANG detector with a named
-//! constant and a comment saying what the real number is.
-//!
-//! Harness discipline follows `rec_e2e.rs`: sockets at the root of `/tmp`
-//! (macOS caps `sun_path` at 104 bytes and these run from deep worktrees),
-//! pid- and counter-qualified, guard-killed and unlinked on drop.
+//! `phux server --exit-after-idle` (ADR-0063) as a real process: the flag
+//! reaches `ServerConfig`, the daemon process exits, and the pane's PTY child
+//! dies with it. The seed pane writes a heartbeat counter to a file; after the
+//! server exits the counter is read twice to prove the child stopped (and that
+//! it was alive at exit time). Every deadline is a hang detector.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

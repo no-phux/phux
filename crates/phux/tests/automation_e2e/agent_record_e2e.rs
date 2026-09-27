@@ -1,22 +1,9 @@
-//! Binary-level end-to-end test for the ADR-0040 agent-identity record
-//! (`phux-3ert`): `phux agent set` writes `phux.agent/v1` through the real
-//! L3 `SET_METADATA` path, `phux agent show` reports from the record with
-//! `agent_record` authority plus detector provenance (no competing
-//! heuristics), and `phux agent clear` deletes it so the report falls back to
-//! the non-record sources.
-//!
-//! It also carries the phux-w7z2.26 join: the wrapper `phux agent
-//! install-claude` actually GENERATES, driven through its own `--phux-hook`
-//! entry point, against a live server on a pane painting a real Claude
-//! permission dialog — asserting the record ends up carrying a state only
-//! `rules/claude.toml` can produce. The two halves of that bug were
-//! previously proven apart (a rendered-string assertion in `shim.rs`, a
-//! hand-written identity-only `SET_METADATA` in
-//! `phux-server/tests/agent_detect.rs`) and joined only by reasoning.
-//!
-//! Same harness discipline as `run_wait_e2e.rs`: a real `phux server`
-//! child on a private UDS, each verb its own subprocess, guard-killed on
-//! drop. Kept in its own file so the `just e2e` lane lists it explicitly.
+//! The ADR-0040 agent-identity record end to end: `agent set` writes
+//! `phux.agent/v1` over `SET_METADATA`, `agent show` reports it with
+//! `agent_record` authority, and `agent clear` falls back to the other
+//! sources. Also drives the wrapper `agent install-claude` generates, through
+//! its `--phux-hook` entry, against a pane painting a real Claude permission
+//! dialog: the record must carry a state only `rules/claude.toml` produces.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

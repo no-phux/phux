@@ -1,31 +1,7 @@
-//! Binary-level end-to-end tests for `phux play`: playback as a pane
-//! (ADR-0064).
-//!
-//! What these prove that a unit test cannot: the bytes in a `.cast` end up
-//! on a **real pane's grid**, as read back through `phux snapshot --json` —
-//! i.e. through the server's own libghostty `Terminal`, not through anything
-//! this feature wrote. The chain under test is long and every link is real: a
-//! `SPAWN_RESOURCE` whose command is the phux binary in writer mode, a PTY,
-//! the line discipline, the pane actor's reader, and the emulator. A unit
-//! test can check the argv; only this can check that the argv produced a
-//! screen.
-//!
-//! The other thing only a live server can show is the *negative*: the pane
-//! named by TARGET is never written to. Playback creates a pane beside it,
-//! and `never_writes_into_the_target_pane` reads the target's grid back to
-//! prove nothing leaked into it.
-//!
-//! Harness discipline follows `resize_e2e.rs`: a real `phux server` child on
-//! a private UDS at the root of `/tmp` (macOS caps `sun_path` at 104 bytes
-//! and these are usually run by hand from a deep worktree), each verb its own
-//! subprocess, guard-killed and unlinked on drop.
-//!
-//! Timing discipline: the fixture is played at real speed and every wait is a
-//! poll with a HANG ceiling, never a `sleep` sized to what the recording
-//! "should" take. The one place a deadline is load-bearing is
-//! `loop_replays_the_recording_more_than_once`, and it does not measure time
-//! at all — it counts how many times the marker was painted, using
-//! `phux rec` as the observer.
+//! `phux play` as a pane (ADR-0064): a `.cast`'s bytes reach a real pane's
+//! grid, read back through `phux snapshot --json`, and the TARGET pane is
+//! never written to. Waits are polls with hang ceilings; the loop test counts
+//! repaints via `phux rec` rather than measuring time.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

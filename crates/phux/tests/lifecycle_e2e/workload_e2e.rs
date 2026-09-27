@@ -1,14 +1,7 @@
-//! `phux workload` against the real binary and a real server (ADR-0116,
-//! `docs/spec/workload-auth.md` §8).
-//!
-//! The CLI tests run hermetically against a private state directory and pin
-//! the secret-hygiene rules: the authority prints only its fingerprint, and
-//! no key bytes reach stdout or stderr however they are handed in. The
-//! server tests start a server whose loopback QUIC listener requires
-//! workload mTLS, dial it with a certificate `add-key` issued, revoke that
-//! credential, and see the next connection refused with no restart; and
-//! they pin that workload mode refuses to start beside an entry point that
-//! cannot carry a client certificate.
+//! `phux workload` (ADR-0116, `docs/spec/workload-auth.md` §8): the
+//! authority prints only its fingerprint and no key bytes reach stdout or
+//! stderr; a revoked credential's next connection is refused with no restart;
+//! workload mode refuses to start beside WebTransport.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

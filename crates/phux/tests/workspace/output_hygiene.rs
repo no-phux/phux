@@ -1,28 +1,9 @@
-//! Binary-level output-hygiene tests for `phux` (cli-ergonomics).
-//!
-//! These drive the REAL `phux` binary (handed to us by cargo at
-//! `env!("CARGO_BIN_EXE_phux")`) but need NO running server, so unlike
-//! `run_wait_e2e.rs` they are cheap and run in the default pool. They pin
-//! the contracts an agent or shell script depends on:
-//!
-//!   * A one-shot verb prints NO build banner — stderr stays clean.
-//!   * A `--json` path puts ONLY JSON on stdout (or nothing, on error),
-//!     never the banner; errors go to stderr with a nonzero exit.
-//!   * `--version` reports on stdout, banner-free.
-//!   * A verb whose reader hangs up (`| head`, quitting `less`) exits 0 in
-//!     silence instead of panicking — see `run_with_closed_stdout`.
-//!
-//! Every verb that contacts a server is pointed at a socket path that
-//! does not exist, so the server is never auto-spawned: `ls` does not
-//! auto-start one, and the selector verbs see a connect error first.
-//!
-//! "Needs no running server" is not the same as "needs no network", and
-//! `doctor` is the verb where the two came apart (phux-vlv1). Its
-//! remote-reachable check detects the host's overlay address and dials it
-//! with a 4s budget, so on a tailnet-attached developer box these
-//! default-pool tests opened a real TLS connection to that developer's own
-//! live server and hung on it under load. Every spawn here therefore goes
-//! through [`phux`], which turns overlay detection off.
+//! Output-hygiene contracts of the real binary, with no server (dead socket
+//! paths, so nothing auto-spawns): one-shot verbs print no banner, `--json`
+//! puts only JSON on stdout and errors on stderr, `--version` is clean stdout,
+//! and a closed reader (`| head`) exits 0 silently. Every spawn goes through
+//! [`phux`], which disables overlay detection so `doctor` never dials a real
+//! tailnet server.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -384,10 +365,6 @@ fn snapshot_json_no_server_is_silent_stdout_and_banner_free() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// One grammar: the global `--socket` (ADR-0065)
-// ---------------------------------------------------------------------------
-
 /// `phux --socket X ls` and `phux ls --socket X` are the same invocation:
 /// same exit code, same stdout, same stderr. Pointed at a dead socket so
 /// both take the identical "no server" path.
@@ -641,16 +618,6 @@ fn rec_json_no_server_is_silent_stdout_and_banner_free() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The JSON error contract (ADR-0065 §4, phux-i0e8.8.2)
-//
-// Every converted `--json` verb failing against a dead socket must leave
-// stdout empty and put ONE JSON line on stderr:
-// {"schema_version":1,"error":{"code":"no_server","message":...},
-//  "remedy":...,"exit_code":1} — with the process exiting 1. The prose
-// paths (no `--json`) are pinned separately above and in unit tests.
-// ---------------------------------------------------------------------------
-
 /// Run `phux <args...>` with an optional `XDG_CONFIG_HOME`, returning
 /// `(exit_code, stdout, stderr)`.
 fn run_maybe_xdg(args: &[&str], xdg: Option<&std::path::Path>) -> (i32, String, String) {
@@ -803,17 +770,6 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
         assert_no_server_json_contract(verb, args, *xdg, sock);
     }
 }
-
-// ---------------------------------------------------------------------------
-// The JSON error contract across the registry verbs (phux-i0e8.8.3)
-//
-// The sub-registries (`plugin`, `host`, `worktree`,
-// `workspace`, `config check`, plus `tag`'s serverless selector error)
-// mostly never dial a server; their failures are local — a broken config, an
-// unknown id, not-a-repository. Under `--json` each must still leave stdout
-// empty and put ONE contract line on stderr, with a code from the closed
-// vocabulary and `exit_code` mirroring the process status.
-// ---------------------------------------------------------------------------
 
 /// Assert the general per-verb contract: the expected exit code, empty
 /// stdout, and stderr that is ONE line parsing as the contract document
@@ -1026,16 +982,6 @@ fn no_server_without_json_stays_prose() {
         "prose keeps the remedy block; got {stderr:?}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Broken pipe (phux-h5hj.8, phux-ngq2)
-//
-// `phux snapshot work | head -8` used to die with a ~50-frame backtrace and
-// an ERROR line reading `server panic`, because `println!` panics when its
-// write fails and the panic hook of the day was the SERVER's. Piping a verb
-// into `head` or `less` is an ordinary thing for a human to do; it has to
-// exit 0 in silence.
-// ---------------------------------------------------------------------------
 
 /// Run `phux <args...>` with **the read end of its stdout pipe already
 /// closed**, and return `(exit_status_code, stderr)`.

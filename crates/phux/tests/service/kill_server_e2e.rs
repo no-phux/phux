@@ -1,18 +1,7 @@
-//! Binary-level end-to-end coverage for `phux kill --server` (phux-pimp).
-//!
-//! phux had four ways to start a server — auto-spawn, `phux server`, service
-//! supervision, and the ADR-0032 re-exec — and no way to stop one. Three
-//! places nonetheless documented `phux kill --server` as though it existed:
-//! ADR-0080's Decision, `docs/operations.md`, and a live test assertion in
-//! `service.rs`. These tests are what makes those three true.
-//!
-//! The stop is a wire command rather than a signal, and the reason is
-//! load-bearing enough to restate here: a signal-killed server exits
-//! non-zero-equivalent, and launchd's `KeepAlive{SuccessfulExit: false}`
-//! restarts it after `ThrottleInterval`. A signal-based stop would therefore
-//! have contradicted ADR-0080's own promise — "a deliberately stopped server
-//! stays stopped" — on the platform phux mostly runs on. `SHUTDOWN` cancels
-//! the root token and the process exits 0.
+//! `phux kill --server`. The stop is the `SHUTDOWN` wire command, not a
+//! signal: a signal-killed server would be restarted by launchd's
+//! `KeepAlive{SuccessfulExit: false}`, and a deliberate stop must stick
+//! (ADR-0080).
 
 #![allow(clippy::expect_used, clippy::panic, reason = "tests")]
 

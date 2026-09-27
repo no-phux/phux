@@ -1,21 +1,8 @@
-//! `phux host add HOST` against a real server, end to end (ADR-0122).
-//!
-//! The fleet tests prove every ssh step and every fallback with nothing
-//! answering. This file proves the path that matters most: a direct route
-//! that does answer. A real `phux server` runs here with a loopback QUIC
-//! listener, standing in for the far machine; a fake `ssh` via `$PHUX_SSH`
-//! runs the remote half — `phux --version`, `phux pair --json`, `phux
-//! server --ensure` — on this machine with the same private state, the way
-//! sshd would run it on the far end, and answers `ssh -G` with `127.0.0.1`.
-//! The probe therefore dials the real listener with the credentials the
-//! real `phux pair` just minted, and the entry it registers is the one the
-//! session verbs and the attach then use.
-//!
-//! Hermetic: private config, state, and runtime dirs, no overlay detection,
-//! and a socket inside the tempdir so the developer's own server is never
-//! touched. `PHUX_WS_SECURE=1` makes the loopback listener take the routable
-//! path (certificate pin plus bearer token), which is what the probe and the
-//! registered entry exercise on a real network.
+//! `phux host add HOST` (ADR-0122) where a direct route answers: a real
+//! server with a loopback QUIC listener stands in for the far machine, and a
+//! fake `ssh` via `$PHUX_SSH` runs the remote half locally with the same
+//! state. Hermetic dirs, no overlay detection; `PHUX_WS_SECURE=1` makes the
+//! loopback listener take the routable (pinned + token) path.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

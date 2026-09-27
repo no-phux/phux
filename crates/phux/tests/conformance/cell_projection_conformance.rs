@@ -1,80 +1,20 @@
 //! Conformance: the three libghostty cell projections must agree.
 //!
-//! The libghostty-snapshot -> cell projection exists three times in this
-//! workspace, deliberately:
+//! The snapshot-to-cell projection exists in `phux-client`'s renderer (the
+//! human's glass, `snapshot --rendered`), `phux-server`'s synthesizer (what an
+//! agent reads, `snapshot --cells`), and `phux-record`'s replayer (what a
+//! recording exports). Hoisting it into `phux-core` would give the domain crate
+//! a libghostty dependency, so it stays triplicated and this file feeds one VT
+//! corpus through all three and compares cell for cell.
 //!
-//!   * `phux-client`'s `attach::render::TerminalRenderer::render_at_cells`
-//!     (plus its `to_cell_style` / `cell_color` helpers) — what the human's
-//!     glass shows, answering `phux snapshot --rendered`;
-//!   * `phux-server`'s `grid::synthesizer`'s `screen_state_with_scrollback`
-//!     (plus its `collect_cell` / `cell_color`) — what an agent reads,
-//!     answering `phux snapshot --cells`;
-//!   * `phux-record`'s `replay::Replayer::sample` (plus its `project_cell`)
-//!     — what a recording exports.
+//! `RenderState::update` consumes the terminal's dirty bits, so each
+//! projection gets its own private `Terminal` fed the same bytes; never point
+//! two render states at one terminal here.
 //!
-//! The duplication is a decision, documented at the top of
-//! `crates/phux-record/src/replay.rs`: the only crate all three could import
-//! from is `phux-core`, and hoisting the projection there would force the
-//! domain crate to take a `libghostty-vt` dependency. Three ~30-line walks is
-//! the better trade — *provided something notices when they drift*. Nothing
-//! did. This file is that something.
-//!
-//! Divergence in this code has no loud failure mode. It surfaces months later
-//! as "the recording does not match the screen" or "the agent sees different
-//! cells than the human", and by then nobody remembers which of the three
-//! moved. One corpus of VT byte sequences, fed through all three, compared
-//! cell-for-cell, turns that into a red test on the commit that caused it.
-//!
-//! # Why this file lives in `crates/phux/tests/`
-//!
-//! The test must see all three projections, and the `phux` binary crate is
-//! the only workspace member that already depends on `phux-client`,
-//! `phux-server`, and `phux-record` (with `phux-record`'s `render` feature
-//! on, which is what gates the replayer). It also already carries
-//! `libghostty-vt` as a dev-dependency for the PTY oracles in `examples/`.
-//! So this costs no new crate, no new dependency edge, and no new published
-//! surface — `phux` is `publish = false`. A dedicated `phux-conformance` test
-//! crate was the alternative; it would have added a workspace member whose
-//! entire content is this file, and a fourth place to remember to update.
-//!
-//! # The dirty-bit rule this file obeys
-//!
-//! `RenderState::update` **consumes** the terminal's dirty bits. Two render
-//! states observing one `Terminal` race for them, and the loser reads back a
-//! stale cached row body. That is not hypothetical here: it cost this repo
-//! two CI flake investigations (`phux-uow0`'s `attach_detach_churn` and
-//! `phux-5pyx`'s `route_input_no_resize`), and both fixes are the reason
-//! `synthesize` and `screen_state_with_scrollback` build a *fresh*
-//! `RenderState` per call instead of using the pooled one — see the body
-//! comment at `crates/phux-server/src/grid/synthesizer.rs`.
-//!
-//! A conformance test is exactly the shape that reintroduces the bug: the
-//! obvious implementation drives one `Terminal` and points all three
-//! projections at it. This file does not. Each projection gets its **own
-//! private `Terminal`**, constructed fresh and fed the identical byte
-//! sequence ([`client_frame`], [`server_state`], and `phux-record`'s
-//! `Replayer`, which owns its terminal internally and never lends it out).
-//! Feeding the same bytes to three emulators is the same test — libghostty is
-//! deterministic — without ever putting two `RenderState`s on one grid. If a
-//! future case here needs two projections over one terminal, it does not: add
-//! a terminal.
-//!
-//! # Where the three cannot agree, and why
-//!
-//! Two asymmetries are structural, not drift. Both are asserted explicitly
-//! below rather than normalised away in silence:
-//!
-//!   1. **The server projection is sparse; the other two are dense.** A
-//!      `ScreenState` carries `CellInfo`s only for cells with a non-default
-//!      style or a semantic mark, and emits *nothing* for a wide glyph's
-//!      `SpacerTail` column. A `RenderedFrame` has one cell per column,
-//!      including the tail (as the empty string). [`dense_as_screen_state`]
-//!      is the declared bridge between the shapes; the tail rule is pinned on
-//!      its own by `wide_tail_is_dense_only_and_the_server_omits_it`.
-//!   2. **Only the server carries OSC-133 semantics.** `RenderedCell` has no
-//!      field for them by construction — a rendered frame is what a screen
-//!      looks like, and a prompt mark is not visible. Pinned by
-//!      `osc133_semantics_are_server_only`.
+//! Two asymmetries are structural and asserted: the server projection is
+//! sparse (no default cells, no wide-glyph tail) while the other two are dense
+//! ([`dense_as_screen_state`] bridges them), and only the server carries
+//! OSC-133 semantics.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

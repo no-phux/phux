@@ -1,14 +1,7 @@
-//! The `--remote` CLI surface, pinned at the binary level (ADR-0093).
-//!
-//! Everything here is reachable WITHOUT a terminal, on purpose. A malformed
-//! target, a root flag in front of a verb, and a `--socket`/`--remote`
-//! collision are usage errors, and a usage error that only reports itself on
-//! a TTY is a usage error a script cannot read. These tests are the pin on
-//! that ordering: each must exit 2 with its own message, never with
-//! "interactive use requires both stdin and stdout to be terminals".
-//!
-//! The resolution ladder itself (registry hit, `--code`, ssh pairing) needs
-//! a real attach and lives in `remote_target_e2e.rs`.
+//! The `--remote` CLI surface (ADR-0093) without a terminal: malformed
+//! targets, root flags before a verb, and `--socket`/`--remote` collisions
+//! must exit 2 with their own message, never the TTY-preflight error. The
+//! resolution ladder lives in `remote_target_e2e.rs`.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

@@ -1,25 +1,7 @@
-//! Binary-level end-to-end tests for `phux resize`: the headless way to set
-//! a pane's grid.
-//!
-//! What these prove that a unit test cannot: the size the verb reports is the
-//! size **libghostty actually settled on**. `phux resize` reads its answer
-//! back out of the registry (`GET_STATE`), which is server bookkeeping; the
-//! assertions here read it back out of `phux snapshot --json`, which is
-//! `GET_SCREEN` — a projection the pane actor builds from its own live
-//! `Terminal` after `Terminal::resize` and the `TIOCSWINSZ` ioctl. If the two
-//! ever disagree — a clamped dimension, a resize the actor dropped — this
-//! lane fails and the unit lane does not.
-//!
-//! The same read-back is what proves the attach path's chrome reservation
-//! (phux-e9fd): a real `phux attach` in a pseudoterminal must leave the pane's
-//! grid one row SHORT of the PTY, because the client spends that row on the
-//! status bar. Only `GET_SCREEN` can tell "the PTY agreed to 23 rows" from
-//! "the PTY is 24 rows and the client paints over the last one".
-//!
-//! Harness discipline follows `rec_e2e.rs`: a real `phux server` child on a
-//! private UDS at the root of `/tmp` (macOS caps `sun_path` at 104 bytes and
-//! these are usually run by hand from a deep worktree), each verb its own
-//! subprocess, guard-killed and unlinked on drop.
+//! `phux resize` against a real server: the reported size must match what
+//! libghostty settled on, read back through `phux snapshot --json`
+//! (`GET_SCREEN`), not the registry. The same read-back proves a real
+//! `phux attach` leaves the grid one row short of the PTY for the status bar.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
