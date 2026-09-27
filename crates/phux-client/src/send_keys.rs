@@ -1,20 +1,12 @@
-//! Translate a tmux-style key-spec into routed input events (phux-21o,
-//! ADR-0022, phux-3j3).
+//! Translate tmux-style key-specs into routed input events (ADR-0022).
 //!
-//! Each CLI argument is either a **named key** (`Enter`, `Tab`, `Escape`,
-//! `Up`, `C-c`, `M-x`, …) or a **literal string**. Literal strings normally
-//! type character by character, matching `tmux send-keys`. A literal run
-//! immediately before `Enter` is instead a submission-safe paste followed by
-//! the real key, so a paste-aware TUI can distinguish text from submission.
-//! Named-key bytes and ordinary literal bytes feed the *same* [`StdinParser`]
-//! the interactive client uses for real keystrokes; no hand-rolled char→key
-//! table is involved.
-//!
-//! The built events ride the side-effect-free `ROUTE_INPUT` control
-//! command (L1.md §5.1) rather than an `ATTACH` + `INPUT_KEY` stream. So,
-//! like `GET_SCREEN`, this neither subscribes the caller nor resizes the
-//! pane to the caller's viewport — the live session keeps its dimensions
-//! (phux-3j3).
+//! Each argument is a named key (`Enter`, `Tab`, `C-c`, `M-x`, ...) or a
+//! literal string typed character by character. A literal run immediately
+//! before `Enter` is instead one paste followed by the real key, so a
+//! paste-aware TUI can tell text from submission. Bytes go through the same
+//! [`StdinParser`] the interactive client uses, and events ride the
+//! side-effect-free `ROUTE_INPUT` command (L1.md §5.1): nothing attaches,
+//! subscribes, or resizes the pane.
 
 use std::path::Path;
 
@@ -29,28 +21,32 @@ use crate::attach::connection::Connection;
 use crate::attach::input::StdinParser;
 use crate::state::report_degradation;
 
-/// Translate one key-spec argument to the bytes a terminal would receive.
-///
-/// Named keys map to their control/escape bytes; `C-<x>` is a control
-/// byte, `M-<x>` is ESC-prefixed; anything else is literal UTF-8 (sent
-/// char by char by the parser downstream).
+/// The bytes of a named key (case-insensitive), if `arg` is one.
+fn named_key_bytes(arg: &str) -> Option<&'static [u8]> {
+    Some(match arg.to_ascii_lowercase().as_str() {
+        "enter" | "return" => b"\r",
+        "tab" => b"\t",
+        "escape" | "esc" => b"\x1b",
+        "space" => b" ",
+        "bspace" | "backspace" => b"\x7f",
+        "up" => b"\x1b[A",
+        "down" => b"\x1b[B",
+        "right" => b"\x1b[C",
+        "left" => b"\x1b[D",
+        "home" => b"\x1b[H",
+        "end" => b"\x1b[F",
+        _ => return None,
+    })
+}
+
+/// Translate one key-spec argument to the bytes a terminal would receive:
+/// named keys to their escape bytes, `C-<x>` to a control byte, `M-<x>`
+/// ESC-prefixed, anything else literal UTF-8.
 #[must_use]
 pub fn spec_to_bytes(arg: &str) -> Vec<u8> {
-    match arg.to_ascii_lowercase().as_str() {
-        "enter" | "return" => return b"\r".to_vec(),
-        "tab" => return b"\t".to_vec(),
-        "escape" | "esc" => return vec![0x1b],
-        "space" => return b" ".to_vec(),
-        "bspace" | "backspace" => return vec![0x7f],
-        "up" => return b"\x1b[A".to_vec(),
-        "down" => return b"\x1b[B".to_vec(),
-        "right" => return b"\x1b[C".to_vec(),
-        "left" => return b"\x1b[D".to_vec(),
-        "home" => return b"\x1b[H".to_vec(),
-        "end" => return b"\x1b[F".to_vec(),
-        _ => {}
+    if let Some(bytes) = named_key_bytes(arg) {
+        return bytes.to_vec();
     }
-    // `C-x` → control byte (C-a = 0x01 … C-z = 0x1a; C-[ = ESC, etc.).
     if let Some(rest) = strip_prefix_ci(arg, "c-")
         && rest.chars().count() == 1
         && let Some(c) = rest.chars().next()
@@ -58,7 +54,6 @@ pub fn spec_to_bytes(arg: &str) -> Vec<u8> {
     {
         return vec![(c.to_ascii_uppercase() as u8) & 0x1f];
     }
-    // `M-x` → ESC-prefixed (Alt).
     if let Some(rest) = strip_prefix_ci(arg, "m-") {
         let mut v = vec![0x1b];
         v.extend_from_slice(rest.as_bytes());
@@ -76,17 +71,9 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     }
 }
 
-/// Translate all key-spec args into structured [`InputEvent`]s.
-///
-/// A contiguous literal run immediately followed by `Enter`/`Return` is one
-/// trusted paste event followed by the real Enter key. The server then honors
-/// the pane's live DEC mode 2004 state: paste-aware TUIs receive explicit
-/// bracketed-paste delimiters before Enter, so they cannot mistake a fast text
-/// burst plus carriage return for a multiline paste. Literal input elsewhere
-/// retains tmux-shaped character-by-character semantics.
-///
-/// The events are routed by id via `ROUTE_INPUT`; they are not addressed to a
-/// Terminal here.
+/// Translate all key-spec args into [`InputEvent`]s. A literal run followed
+/// by `Enter` becomes one trusted paste plus the key, so the server can
+/// bracket it when the pane has DEC mode 2004 on.
 #[must_use]
 pub fn events_for(args: &[String]) -> Vec<InputEvent> {
     let mut parser = StdinParser::default();
@@ -129,31 +116,14 @@ fn is_enter_spec(arg: &str) -> bool {
 }
 
 fn is_named_spec(arg: &str) -> bool {
-    matches!(
-        arg.to_ascii_lowercase().as_str(),
-        "enter"
-            | "return"
-            | "tab"
-            | "escape"
-            | "esc"
-            | "space"
-            | "bspace"
-            | "backspace"
-            | "up"
-            | "down"
-            | "right"
-            | "left"
-            | "home"
-            | "end"
-    ) || strip_prefix_ci(arg, "c-").is_some_and(|rest| rest.chars().count() == 1)
+    named_key_bytes(arg).is_some()
+        || strip_prefix_ci(arg, "c-").is_some_and(|rest| rest.chars().count() == 1)
         || strip_prefix_ci(arg, "m-").is_some()
 }
 
-/// Resolve `target` to the Terminal id of its focused pane, against a
-/// `GET_STATE` snapshot. Mirrors the server's own focus rule: a session's
-/// `active_window`, then that window's `active_resource`. For
-/// [`AttachTarget::Last`] (no name) we defer to the snapshot's
-/// server-wide `focused_resource`.
+/// Resolve `target` to its focused pane: the session's `active_window`, then
+/// that window's `active_resource`; [`AttachTarget::Last`] is the server-wide
+/// `focused_resource`.
 fn resolve_focused_pane(snapshot: &SessionSnapshot, target: &AttachTarget) -> Option<ResourceId> {
     let session = match target {
         AttachTarget::Last => return Some(snapshot.focused_resource.clone()),
@@ -161,8 +131,7 @@ fn resolve_focused_pane(snapshot: &SessionSnapshot, target: &AttachTarget) -> Op
             snapshot.sessions.iter().find(|s| &s.name == name)?
         }
         AttachTarget::ById(id) => snapshot.sessions.iter().find(|s| s.id == *id)?,
-        // `AttachTarget` is `#[non_exhaustive]`; a future target a newer
-        // build introduces is not resolvable here.
+        // `#[non_exhaustive]`: a newer target is not resolvable here.
         _ => return None,
     };
     let active_window = session.active_window?;
@@ -173,24 +142,9 @@ fn resolve_focused_pane(snapshot: &SessionSnapshot, target: &AttachTarget) -> Op
         .and_then(|w| w.active_resource.clone())
 }
 
-/// Send `keys` to the focused pane of `target` via the side-effect-free
-/// `ROUTE_INPUT` route, returning the resolved pane id.
-///
-/// No `ATTACH`: the target's focused pane is resolved client-side from a
-/// `GET_STATE` snapshot (the same way `phux snapshot`/`kill` resolve
-/// selectors), then each built [`InputEvent`] is delivered with a
-/// `ROUTE_INPUT` command. Because nothing attaches and no viewport is
-/// advertised, the live pane keeps its dimensions — unlike the old
-/// attach-then-`INPUT_KEY` path, which transiently resized the pane to the
-/// caller's `80x24` viewport (phux-3j3).
-///
-/// This is the focused-pane convenience over [`send_to`]: callers that have
-/// already resolved a selector to a concrete pane (e.g. via the CLI's full
-/// `TARGET` grammar, phux-n95) call [`send_to`] directly and skip this
-/// extra `GET_STATE` round trip.
-///
-/// Returns the [`ResourceId`] of the focused pane the keys were sent to,
-/// so callers (e.g. `phux run`) can read back the *same* pane.
+/// Send `keys` to the focused pane of `target` without attaching, returning
+/// the pane so callers (e.g. `phux run`) can read back the same one. Callers
+/// with a resolved pane use [`send_to`].
 pub async fn send(
     socket: &Path,
     target: AttachTarget,
@@ -204,21 +158,12 @@ pub async fn send(
 }
 
 /// Resolve `target`'s focused pane over `conn` without attaching.
-///
-/// The first half of [`send`], split out so `run` can bound it separately
-/// from the input it delivers afterwards on the same connection.
 pub(crate) async fn focused_pane(
     conn: &mut Connection,
     target: &AttachTarget,
 ) -> Result<ResourceId, AttachError> {
-    // Resolve the focused pane without attaching (side-effect-free).
-    //
-    // GET_STATE on a hub interleaves one uncorrelated ERROR per unreachable
-    // satellite ahead of the merged snapshot, so this cannot use
-    // `into_result_ignoring_interleaved`. A degraded snapshot here is not
-    // fatal — the focused pane we are looking for is usually local — but it
-    // changes what "no such session" means, so it is reported rather than
-    // dropped (`report_degradation` logs; the CLI prints).
+    // A hub interleaves one ERROR per unreachable satellite; a degraded
+    // snapshot is not fatal here, but it is reported.
     let (result, interleaved) = conn
         .request(
             1,
@@ -244,48 +189,28 @@ pub(crate) async fn focused_pane(
     })
 }
 
-/// Send `keys` to a pre-resolved `pane` via the side-effect-free
-/// `ROUTE_INPUT` route.
-///
-/// The pane-targeted core of [`send`]: the caller has already resolved a
-/// selector (the CLI's full `TARGET` grammar — `session`, `session:window`,
-/// `session:window.pane`, `@id`; phux-n95) to a concrete [`ResourceId`], so
-/// there is no `GET_STATE` round trip and no focus heuristic — the keys land
-/// on exactly the pane named. Like [`send`], nothing attaches, so the live
-/// pane keeps its dimensions (phux-3j3).
+/// Send `keys` to a pre-resolved `pane` via `ROUTE_INPUT`.
 ///
 /// # Errors
 ///
-/// Propagates [`AttachError`] from the connection or the `ROUTE_INPUT`
-/// acks; an unknown pane id surfaces as [`AttachError::Refused`] from the
-/// server.
+/// Connection or `ROUTE_INPUT` failures; an unknown pane is
+/// [`AttachError::Refused`].
 pub async fn send_to(socket: &Path, pane: ResourceId, keys: &[String]) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket).await?;
     route_keys(&mut conn, &pane, keys).await
 }
 
-/// Paste a payload into a pre-resolved `pane` via the side-effect-free
-/// `ROUTE_INPUT` route.
+/// Paste `data` into a pre-resolved `pane` as one [`InputEvent::Paste`] via
+/// `ROUTE_INPUT`.
 ///
-/// The paste sibling of [`send_to`]: exactly one [`InputEvent::Paste`]
-/// carrying `data` and `trust` rides `ROUTE_INPUT`, so nothing attaches,
-/// nothing subscribes, and the live pane keeps its dimensions. The server
-/// owns the encoding: when the pane's program has bracketed paste (DEC
-/// mode 2004) switched on, the payload is wrapped in `ESC[200~`/`ESC[201~`
-/// markers; otherwise the bytes are delivered raw (`docs/spec/input.md`
-/// §5).
-///
-/// Trust is the caller's claim about the payload: a
-/// [`PasteTrust::Trusted`] paste is forwarded verbatim, while a
-/// [`PasteTrust::Untrusted`] one is classified server-side and the pane's
-/// untrusted-paste policy (reject by default) may drop it silently — the
-/// `ROUTE_INPUT` still acks `Ok`.
+/// The server brackets it when the pane has DEC mode 2004 on;
+/// an [`PasteTrust::Untrusted`] payload may be dropped by the pane's policy
+/// while the command still acks `Ok`.
 ///
 /// # Errors
 ///
-/// Propagates [`AttachError`] from the connection or the `ROUTE_INPUT`
-/// ack; an unknown pane id surfaces as [`AttachError::Refused`] from the
-/// server.
+/// Connection or `ROUTE_INPUT` failures; an unknown pane is
+/// [`AttachError::Refused`].
 pub async fn paste_to(
     socket: &Path,
     pane: ResourceId,
@@ -293,20 +218,40 @@ pub async fn paste_to(
     trust: PasteTrust,
 ) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket).await?;
-    // Ignoring the interleave is safe here for the same reason the whole
-    // module is side-effect-free: this connection never attaches or
-    // subscribes, so no fanout reaches its mailbox, and the server's
-    // `handle_route_input` (or the input lane's `route_command`) emits
-    // nothing to the caller ahead of the ack — the pane's resulting bytes go
-    // to that pane's *subscribers*, which this caller deliberately is not.
+    route_input(
+        &mut conn,
+        1,
+        pane,
+        InputEvent::Paste(PasteEvent { trust, data }),
+    )
+    .await
+}
+
+/// Deliver each built [`InputEvent`] to `pane` over `conn`, in order.
+pub(crate) async fn route_keys(
+    conn: &mut Connection,
+    pane: &ResourceId,
+    keys: &[String],
+) -> Result<(), AttachError> {
+    for (i, event) in events_for(keys).into_iter().enumerate() {
+        // Id 1 may have been a preceding GET_STATE on this connection.
+        let request_id = u32::try_from(i).unwrap_or(u32::MAX - 1).saturating_add(2);
+        route_input(conn, request_id, pane.clone(), event).await?;
+    }
+    Ok(())
+}
+
+/// One `ROUTE_INPUT`. The interleave is safely ignored: this connection
+/// never attaches or subscribes, and the handler pushes nothing before the
+/// ack.
+async fn route_input(
+    conn: &mut Connection,
+    request_id: u32,
+    terminal_id: ResourceId,
+    event: InputEvent,
+) -> Result<(), AttachError> {
     match conn
-        .request(
-            1,
-            Command::RouteInput {
-                terminal_id: pane,
-                event: InputEvent::Paste(PasteEvent { trust, data }),
-            },
-        )
+        .request(request_id, Command::RouteInput { terminal_id, event })
         .await?
         .into_result_ignoring_interleaved()
     {
@@ -319,68 +264,24 @@ pub async fn paste_to(
     }
 }
 
-/// Deliver each built [`InputEvent`] to `pane` over `conn` via `ROUTE_INPUT`.
-///
-/// Each `ROUTE_INPUT` is acked by a `COMMAND_RESULT` the server emits in
-/// order, so the events land on the pane actor's input mailbox in send
-/// order — no drain race.
-pub(crate) async fn route_keys(
-    conn: &mut Connection,
-    pane: &ResourceId,
-    keys: &[String],
-) -> Result<(), AttachError> {
-    for (i, event) in events_for(keys).into_iter().enumerate() {
-        // request_id 1 may have been a preceding GET_STATE; route-input
-        // acks start at 2 so a shared connection never reuses an id.
-        let request_id = u32::try_from(i).unwrap_or(u32::MAX - 1).saturating_add(2);
-        // Unsubscribed connection + a handler that pushes nothing before the
-        // ack; see `paste_to` for the full argument.
-        match conn
-            .request(
-                request_id,
-                Command::RouteInput {
-                    terminal_id: pane.clone(),
-                    event,
-                },
-            )
-            .await?
-            .into_result_ignoring_interleaved()
-        {
-            CommandResult::Ok => {}
-            CommandResult::Error { message, .. } => return Err(AttachError::Refused(message)),
-            other => {
-                return Err(AttachError::Protocol(crate::explain::explain_unexpected(
-                    "ROUTE_INPUT",
-                    &other,
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn named_keys_map_to_control_bytes() {
-        assert_eq!(spec_to_bytes("Enter"), b"\r");
-        assert_eq!(spec_to_bytes("tab"), b"\t");
-        assert_eq!(spec_to_bytes("Escape"), vec![0x1b]);
-        assert_eq!(spec_to_bytes("Up"), b"\x1b[A");
-    }
-
-    #[test]
-    fn control_and_alt_combos() {
-        assert_eq!(spec_to_bytes("C-c"), vec![0x03]);
-        assert_eq!(spec_to_bytes("c-a"), vec![0x01]);
-        assert_eq!(spec_to_bytes("M-x"), vec![0x1b, b'x']);
-    }
-
-    #[test]
-    fn literal_text_passes_through() {
-        assert_eq!(spec_to_bytes("echo hi"), b"echo hi");
+    fn key_specs_map_to_terminal_bytes() {
+        for (spec, bytes) in [
+            ("Enter", &b"\r"[..]),
+            ("tab", b"\t"),
+            ("Escape", b"\x1b"),
+            ("Up", b"\x1b[A"),
+            ("C-c", b"\x03"),
+            ("c-a", b"\x01"),
+            ("M-x", b"\x1bx"),
+            ("echo hi", b"echo hi"),
+        ] {
+            assert_eq!(spec_to_bytes(spec), bytes, "{spec}");
+        }
     }
 
     #[test]

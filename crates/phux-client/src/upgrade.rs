@@ -1,10 +1,5 @@
 //! Wire primitive for `phux upgrade` (ADR-0032): ask the server to
 //! graceful-upgrade itself in place.
-//!
-//! `UPGRADE` carries no payload and answers with a plain `COMMAND_RESULT`; a
-//! clean disconnect immediately after the request is the expected shape of
-//! the re-exec blink, not a fault — callers treat it the same as
-//! [`UpgradeAck::Upgrading`] (see `crates/phux/src/commands/upgrade.rs`).
 
 use phux_protocol::wire::frame::{Command, CommandResult};
 
@@ -19,18 +14,13 @@ pub enum UpgradeAck {
     Upgrading,
     /// The server refused, with its reason.
     Refused(String),
-    /// The server answered with a frame `upgrade` does not expect. Kept
-    /// apart from [`Self::Refused`] so the two keep the distinct wording
-    /// they have always had.
+    /// The server answered with a frame `upgrade` does not expect.
     Unexpected(String),
 }
 
-/// Send `UPGRADE` and classify the reply.
-///
-/// A disconnect right after the request (the server acking then re-execing)
-/// surfaces as `Err(AttachError::Disconnected)`, not folded into
-/// [`UpgradeAck`] here: the caller treats it the same as
-/// [`UpgradeAck::Upgrading`], same as the pre-migration behavior.
+/// Send `UPGRADE` and classify the reply. The re-exec blink surfaces as
+/// `Err(AttachError::Disconnected)`, which callers treat as
+/// [`UpgradeAck::Upgrading`].
 ///
 /// # Errors
 ///
@@ -63,9 +53,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
         let spec = ScriptSpec::new().degradation_notice("satellite edge is unreachable: timed out");
         let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
 

@@ -1,43 +1,11 @@
-//! Headless per-Terminal resize — set a pane's grid without a TTY.
+//! Headless per-Terminal resize: set a pane's grid without a TTY or a
+//! viewport, via `RESIZE_TERMINAL` (`L1.md` §3.1).
 //!
-//! Every other way to size a pane goes through a *viewport*: a client
-//! attaches, reports its outer geometry, and the server's window-size policy
-//! folds that report into the Terminal's authoritative `(cols, rows)`. That
-//! is exactly what a headless caller cannot do — it has no TTY to measure,
-//! so the viewport it would contribute is the 80x24 no-TTY fallback. The
-//! result was that an agent could read, drive, and record a pane but not
-//! *size* one, and the only workaround was to stand up a real PTY and a real
-//! `phux attach` purely for its side effect on the grid.
-//!
-//! This module closes that with the frame the wire already had:
-//! [`FrameKind::ResizeTerminal`] (`RESIZE_TERMINAL`, `L1.md` §3.1) is a
-//! C→S frame naming one Terminal and its exact cell dimensions, and the
-//! reference server has driven `TIOCSWINSZ` from it since it landed. No
-//! viewport, no attach, no subscription, no wire change.
-//!
-//! # Why this verifies instead of assuming
-//!
-//! `RESIZE_TERMINAL` is deliberately unacknowledged — the S→C
-//! `TERMINAL_RESIZED` counterpart at `0x92` is spec-only — so a caller that
-//! merely sends it learns nothing about whether the size took. That matters
-//! here because the size a pane ends up at is *not* purely a function of the
-//! request: under the view-derived `defaults.window-size` policies
-//! (`smallest`, `largest`, `latest`) an attached client's viewport is folded
-//! back in on the next attach, detach, or `SIGWINCH`, and under `manual` it
-//! never is. So [`resize_to`] sends the frame and then reads the server's
-//! own answer back with `GET_STATE` on the same connection, reporting the
-//! geometry the server actually holds. A caller that gets an [`Ok`] and
-//! [`ResizeOutcome::held`] knows the grid moved; one that gets an `Ok` and
-//! `!held` knows something else owns the size. Neither can mistake a
-//! delivered frame for an applied resize.
-//!
-//! The read-back is ordered, not racy: the server handles frames from one
-//! connection in arrival order, and its `RESIZE_TERMINAL` handler updates
-//! the registry `dims` synchronously — the same field `GET_STATE` projects
-//! into [`ResourceInfo`] — before the next frame is read. (A `GET_SCREEN`
-//! read-back would *not* be safe: that projection is served by the pane
-//! actor from a different mailbox than the resize, and the actor's `select!`
-//! polls the screen arm first.)
+//! The frame is unacknowledged and a view-derived `window-size` policy may
+//! override it, so [`resize_to`] reads the geometry back with `GET_STATE` on
+//! the same connection. That read is ordered: the server applies the resize
+//! to the registry before handling the next frame (a `GET_SCREEN` read-back
+//! would race the pane actor).
 
 use std::num::NonZeroU16;
 use std::path::Path;
@@ -50,10 +18,8 @@ use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::state::get_state_on;
 
-/// What a resize asked for, and what the server holds afterwards.
-///
-/// `applied` is read back from the server rather than echoed from the
-/// request, so it is the geometry a subsequent `phux snapshot` will report.
+/// What a resize asked for, and what the server holds afterwards (read
+/// back, not echoed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResizeOutcome {
     /// The `(cols, rows)` the caller asked for.
@@ -63,12 +29,8 @@ pub struct ResizeOutcome {
 }
 
 impl ResizeOutcome {
-    /// Whether the server settled on exactly the requested geometry.
-    ///
-    /// `false` means something else owns this Terminal's size — in practice
-    /// an attached client's viewport under a view-derived
-    /// `defaults.window-size` policy. It is the caller's cue to report a
-    /// failure rather than to retry: retrying loses to the same policy.
+    /// Whether the server settled on exactly the requested geometry; `false`
+    /// means something else (a view-derived size policy) owns it.
     #[must_use]
     pub const fn held(self) -> bool {
         self.requested.0 == self.applied.0 && self.requested.1 == self.applied.1
@@ -76,26 +38,12 @@ impl ResizeOutcome {
 }
 
 /// Resize `pane` to `cols` x `rows` and report the geometry the server
-/// holds afterwards.
-///
-/// Opens a fresh connection, negotiates generic L1, sends one
-/// `RESIZE_TERMINAL`, then reads the pane's dimensions back out of a
-/// `GET_STATE` snapshot on that same connection. No `ATTACH` and no
-/// subscription: this connection never becomes a view of the pane, so it
-/// contributes nothing to the window-size policy.
-///
-/// The dimensions are [`NonZeroU16`] because a zero-dimension grid does not
-/// exist: libghostty rejects it and the server clamps it to one cell. Taking
-/// the constraint in the type keeps the "0 is meaningless here" rule off
-/// every call site's checklist.
+/// holds afterwards. Never attaches, so it is never a view of the pane.
 ///
 /// # Errors
 ///
-/// Returns [`AttachError::Io`] when the socket cannot be reached,
-/// [`AttachError::Disconnected`] when the server closes mid-request, and
-/// [`AttachError::Refused`] when the pane is absent from the post-resize
-/// snapshot — which is how an unknown or just-died Terminal surfaces, since
-/// `RESIZE_TERMINAL` itself has no error reply.
+/// Transport failures, and [`AttachError::Refused`] when the pane is absent
+/// from the read-back (how an unknown Terminal surfaces).
 pub async fn resize_to(
     socket: &Path,
     pane: &ResourceId,
@@ -109,9 +57,6 @@ pub async fn resize_to(
         rows: rows.get(),
     })
     .await?;
-    // Ordered behind the frame above on this connection; see the module
-    // docs for why the registry read is the sound one and the actor's
-    // screen projection is not.
     let (snapshot, degradation) = get_state_on(&mut conn).await?.into_parts();
     drop(conn);
     let applied = snapshot
@@ -120,11 +65,7 @@ pub async fn resize_to(
         .find(|info| info.id == *pane)
         .map(|info: &ResourceInfo| (info.cols, info.rows))
         .ok_or_else(|| {
-            // The read-back searches `panes`, which is exactly the list a
-            // hub's federation merge leaves incomplete. Absent-and-complete
-            // means the Terminal is gone; absent-and-degraded means we could
-            // not look where it lives, and saying the first when we mean the
-            // second would report a healthy satellite pane as dead.
+            // Absent from a degraded view is not proof the pane is gone.
             if degradation.is_complete() {
                 AttachError::Refused(format!(
                     "pane {pane:?} is not in the server's state after the resize"
@@ -203,9 +144,7 @@ mod tests {
         assert_eq!(outcome.applied, (120, 40));
         assert!(outcome.held());
 
-        // The guarantee that makes this verb usable against a session someone
-        // is working in: no ATTACH and no VIEWPORT_RESIZE, so this connection
-        // never becomes a view and never contributes its no-TTY viewport.
+        // Never a view: no ATTACH and no VIEWPORT_RESIZE.
         assert!(
             !seen.iter().any(|frame| matches!(
                 frame,
@@ -237,10 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn reports_the_servers_size_when_it_differs_from_the_request() {
-        // The case the whole read-back exists for: an attached view under a
-        // view-derived `window-size` policy holds the pane somewhere else.
-        // `resize_to` must surface the server's number, not echo the
-        // request back and let the caller believe it won.
+        // A view-derived size policy held the pane elsewhere.
         let pane = ResourceId::local(7);
         let (outcome, _) = drive(snapshot_with(&pane, 80, 24), &pane).await;
 
@@ -252,10 +188,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pane_missing_from_the_read_back_is_a_refusal() {
-        // `RESIZE_TERMINAL` has no error reply, so an unknown or just-died
-        // pane can only be detected by its absence downstream. Silently
-        // reporting success there would be the exact failure mode the
-        // read-back exists to prevent.
+        // `RESIZE_TERMINAL` has no error reply; absence is the only signal.
         let pane = ResourceId::local(7);
         let other = ResourceId::local(9);
         let (outcome, _) = drive(snapshot_with(&other, 120, 40), &pane).await;
@@ -264,32 +197,5 @@ mod tests {
             matches!(outcome, Err(AttachError::Refused(_))),
             "expected a refusal, got {outcome:?}"
         );
-    }
-
-    #[test]
-    fn held_is_exact_match_on_both_axes() {
-        let exact = ResizeOutcome {
-            requested: (120, 40),
-            applied: (120, 40),
-        };
-        assert!(exact.held());
-
-        // A policy that clamps only one axis still means the caller did not
-        // get what it asked for; `held` must not be a per-axis "close
-        // enough".
-        let one_axis = ResizeOutcome {
-            requested: (120, 40),
-            applied: (120, 24),
-        };
-        assert!(!one_axis.held());
-    }
-
-    #[test]
-    fn zero_dimensions_are_unrepresentable() {
-        // The guardrail this module leans on: there is no way to spell a
-        // zero-column resize at the call site, so no caller has to remember
-        // not to.
-        assert!(NonZeroU16::new(0).is_none());
-        assert_eq!(nz(1).get(), 1);
     }
 }

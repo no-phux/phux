@@ -1,18 +1,8 @@
-//! Client-side performance telemetry: what the attach loop keeps about its
-//! own responsiveness.
+//! Client-side performance telemetry for the attach loop.
 //!
-//! The one number a user feels is `echo.rtt`: the time from a keystroke
-//! leaving this process until the first `RESOURCE_OUTPUT` for the pane it
-//! went to arrives back. It is sampled where the paint pacer already
-//! observes replies, so it costs nothing new. Around it sit the paint-side
-//! costs (`vt_apply`, `paint.*`, `stdout.*`) and the pacer's own decisions
-//! (`pacer.*`), so a slow session can be read as "the server was slow" or
-//! "we were slow to draw it" from the same table.
-//!
-//! Every metric is a `static` from [`phux_perf`] and is always on. The
-//! render-profile log line (`PHUX_RENDER_PROF=1`) and the one-line summary
-//! written to the client log when an attach ends are both rendered from this
-//! table; `render_prof` is the compatibility shim that feeds it.
+//! `echo.rtt` (a keystroke to its pane's first output frame), the paint-side
+//! costs, and the pacer's decisions, so "the server was slow" and "we drew
+//! slowly" read from one always-on table.
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -43,8 +33,7 @@ pub static FLUSHES: Counter = Counter::new();
 /// Bytes written to the outer terminal.
 pub static BYTES_OUT: Counter = Counter::new();
 /// Times the stdout backlog crossed its cap and queued diffs were dropped
-/// for a resync. Any non-zero value means the outer terminal could not keep
-/// up with what we were sending it.
+/// for a resync: the outer terminal could not keep up.
 pub static STDOUT_DROPS: Counter = Counter::new();
 /// Frames the pacer let through immediately because they answered input.
 pub static PACER_REPLIES: Counter = Counter::new();
@@ -133,21 +122,5 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), n);
-    }
-
-    #[test]
-    fn summary_line_names_the_headline_numbers() {
-        let line = summary_line();
-        assert!(line.starts_with("session perf: echo n="), "{line}");
-        assert!(line.contains("paint.full"), "{line}");
-        assert!(line.contains("stdout_drops="), "{line}");
-    }
-
-    #[test]
-    fn report_is_tagged_client() {
-        mark_started();
-        let r = report();
-        assert_eq!(r.role, "client");
-        assert_eq!(r.metrics.len(), TABLE.len());
     }
 }

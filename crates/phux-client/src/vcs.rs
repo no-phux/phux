@@ -1,37 +1,16 @@
-//! Client-side VCS branch inference for the sidebar's branch line
-//! (phux-p4vp).
+//! Client-side VCS branch inference for the sidebar's branch line.
 //!
-//! The herdr-style sidebar shows each window's workspace branch under its
-//! label. The branch is derived **client-side** from the pane's working
-//! directory (which already flows on the wire in the `ATTACHED` snapshot's
-//! `ResourceInfo::cwd`): walk up from the cwd to the enclosing `.git`,
-//! resolve worktree gitfiles, and read `HEAD`. This deliberately avoids a
-//! wire change — the field is display-only, derivable from data the client
-//! already has, and the TUI client shares a host with the server today
-//! (ADR-0003 / ADR-0007). If a remote-consumer future needs the server to
-//! own the derivation, an additive `ResourceInfo` field can carry it
-//! without breaking this path.
-//!
-//! Inference is a **cheap cached file read** — never a `git` subprocess
-//! (no exec storms) and never on the server's actor path:
-//!
-//! * `HEAD` is a one-line file; a symbolic ref (`ref: refs/heads/main`)
-//!   yields the branch name, anything else (a detached commit hash) yields
-//!   a short 8-character form.
-//! * A worktree's `.git` is a *file* containing `gitdir: <path>`; the
-//!   pointed-to per-worktree dir holds its own `HEAD`.
-//! * [`BranchCache`] memoizes per-cwd results and only re-validates after
-//!   a short TTL, re-reading `HEAD` only when its mtime changed — so the
-//!   per-frame chrome refresh costs a map lookup in the steady state.
+//! Derived from a pane's cwd (already on the wire) by walking up to the
+//! enclosing `.git`, following worktree gitfiles, and reading `HEAD`: a
+//! cached file read, never a `git` subprocess. [`BranchCache`] re-validates
+//! only after a short TTL, and re-parses only when `HEAD`'s mtime changed.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 /// How long a cached per-cwd answer is served without re-checking the
-/// filesystem. Chrome refreshes are human-paced but can burst with output
-/// frames; 2 s bounds the stat rate while keeping a `git switch` visible
-/// almost immediately.
+/// filesystem: bounds the stat rate while keeping a `git switch` visible.
 const REVALIDATE_TTL: Duration = Duration::from_secs(2);
 
 /// Length of the short hash rendered for a detached `HEAD`.
@@ -187,30 +166,26 @@ mod tests {
     }
 
     #[test]
-    fn symbolic_ref_yields_branch_name() {
-        let repo = fixture_repo("ref: refs/heads/main\n");
-        assert_eq!(
-            BranchCache::new().branch_for(repo.path()),
-            Some("main".to_owned())
-        );
-    }
-
-    #[test]
-    fn slashed_branch_names_are_preserved() {
-        let repo = fixture_repo("ref: refs/heads/wave2/herdr-sidebar\n");
-        assert_eq!(
-            BranchCache::new().branch_for(repo.path()),
-            Some("wave2/herdr-sidebar".to_owned())
-        );
-    }
-
-    #[test]
-    fn detached_head_yields_short_hash() {
-        let repo = fixture_repo("6eaca20deadbeef00112233445566778899aabb\n");
-        assert_eq!(
-            BranchCache::new().branch_for(repo.path()),
-            Some("6eaca20d".to_owned())
-        );
+    fn head_contents_map_to_labels() {
+        for (head, label) in [
+            ("ref: refs/heads/main\n", Some("main")),
+            (
+                "ref: refs/heads/wave2/herdr-sidebar\n",
+                Some("wave2/herdr-sidebar"),
+            ),
+            (
+                "6eaca20deadbeef00112233445566778899aabb\n",
+                Some("6eaca20d"),
+            ),
+            ("not a ref and not a hash\n", None),
+        ] {
+            let repo = fixture_repo(head);
+            assert_eq!(
+                BranchCache::new().branch_for(repo.path()).as_deref(),
+                label,
+                "{head:?}"
+            );
+        }
     }
 
     #[test]
@@ -265,18 +240,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_head_yields_none() {
-        let repo = fixture_repo("not a ref and not a hash\n");
-        assert_eq!(BranchCache::new().branch_for(repo.path()), None);
-    }
-
-    #[test]
     fn cache_serves_within_ttl_without_reparsing() {
         let repo = fixture_repo("ref: refs/heads/main\n");
         let mut cache = BranchCache::new();
         assert_eq!(cache.branch_for(repo.path()), Some("main".to_owned()));
-        // Change HEAD on disk. Within the TTL the memo is served as-is —
-        // this is the "no stat storm" property under test.
+        // Within the TTL the memo is served as-is.
         std::fs::write(repo.path().join(".git/HEAD"), "ref: refs/heads/other\n")
             .expect("rewrite HEAD");
         assert_eq!(cache.branch_for(repo.path()), Some("main".to_owned()));
