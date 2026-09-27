@@ -1,18 +1,10 @@
 //! Shared harness for the phux-relay integration tests.
 //!
-//! Everything under test is PRODUCTION code: [`spawn_relay`] runs the real
-//! [`phux_relay::RelayRuntime`], consumers dial through the production
-//! `phux_dial::quic::dial`, and the stub connector's tunnel leg goes
-//! through the production `dial_with_alpn` with `QUIC_RELAY_ALPN`. The
-//! only test-local logic is the connector's serving side (bearer check +
-//! tagged echo backend), lifted from the spike's `spawn_connector` shape
-//! (`crates/phux-server/tests/federation/relay_connector_spike.rs`).
-//!
-//! Every await in a test body is bounded by a timeout: the
-//! accept_bi-needs-bytes deadlock class must fail a test, never hang the
-//! suite (nextest runs with `retries = 0`).
+//! Everything under test is PRODUCTION code: the real relay runtime and the
+//! production dialers for both legs. The only test-local logic is the stub
+//! connector's serving side (bearer check + tagged echo backend). Every await
+//! is bounded so a deadlock fails a test instead of hanging the suite.
 
-#![allow(dead_code, reason = "shared helpers; some binaries use a subset")]
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
@@ -31,19 +23,14 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-/// Deadline applied to every wire recv. Mirrors the phux-server harness
-/// value (and its rationale): generous so parallel-CI scheduler latency
-/// never turns into a spurious failure; the happy path resolves in
-/// milliseconds, so the ceiling only elapses on an actual fault.
+/// Deadline applied to every wire recv; generous for loaded CI.
 pub const WIRE_RECV_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Deadline for connection establishment / readiness polling, mirroring
-/// the phux-server harness value with the same parallel-CI rationale.
+/// Deadline for connection establishment and readiness polling.
 pub const SOCKET_CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 
-/// The consumer-side bearer token. The relay never reads it (ADR-0051
-/// Decision 4); the STUB connector — the server side of the tunnel —
-/// verifies it before any consumer byte reaches the backend.
+/// The consumer-side bearer token: opaque to the relay, verified by the stub
+/// connector (ADR-0051 Decision 4).
 pub const CONSUMER_TOKEN: &[u8] = b"relay-test-consumer-0123456789ab";
 
 /// A running production relay: its bound address, the pinnable certificate
@@ -64,56 +51,48 @@ impl RelayHandle {
     }
 }
 
-/// An OS-assigned free loopback UDP address. The probe socket is dropped
-/// before the relay re-binds the port; [`spawn_relay`] retries on the rare
-/// race where another process grabs it in between.
-fn free_udp_addr() -> SocketAddr {
-    let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind probe socket");
-    probe.local_addr().expect("probe local addr")
-}
-
-/// Run the PRODUCTION `RelayRuntime::run_async` on the test runtime, with
-/// all state files inside `dir`, and return its handle.
-///
-/// Certificate material is provisioned (via the production
-/// `ensure_self_signed`) before startup so the fingerprint is pinnable and
-/// the runtime's own provisioning is a no-op — which keeps the bind fast
-/// enough for the port-race retry below to be reliable.
-pub async fn spawn_relay(dir: &Path, max_conns: usize) -> RelayHandle {
+/// Run the PRODUCTION relay (`bind` on port 0, then `serve`) on the test
+/// runtime with all state files inside `dir`, pre-provisioning the
+/// certificate so its fingerprint is pinnable. `preamble_deadline`
+/// overrides the tunnel auth-preamble deadline when set.
+pub async fn spawn_relay_with(
+    dir: &Path,
+    max_conns: usize,
+    preamble_deadline: Option<Duration>,
+) -> RelayHandle {
     let cert_path = dir.join("relay-cert.pem");
     let key_path = dir.join("relay-key.pem");
     let tokens_path = dir.join("relay-tokens");
     phux_relay::ensure_self_signed(&cert_path, &key_path).expect("provision relay cert");
     let fingerprint = phux_relay::cert_fingerprint(&cert_path).expect("relay fingerprint");
-
-    for _ in 0..5 {
-        let addr = free_udp_addr();
-        let config = RelayConfig {
-            listen: addr,
-            cert_path: cert_path.clone(),
-            key_path: key_path.clone(),
-            tokens_path: tokens_path.clone(),
-            max_conns,
-        };
-        let (tx, rx) = oneshot::channel::<()>();
-        let task = tokio::spawn(RelayRuntime::new(config).run_async(async move {
-            let _ = rx.await;
-        }));
-        // The bind happens early in run_async (store load and TLS setup are
-        // file reads); a lost port race surfaces as a prompt error return.
-        sleep(Duration::from_millis(100)).await;
-        if task.is_finished() {
-            continue;
-        }
-        return RelayHandle {
-            addr,
-            fingerprint,
-            tokens_path,
-            shutdown: tx,
-            task,
-        };
+    let mut runtime = RelayRuntime::new(RelayConfig {
+        listen: "127.0.0.1:0".parse().expect("loopback listen addr"),
+        cert_path,
+        key_path,
+        tokens_path: tokens_path.clone(),
+        max_conns,
+    });
+    if let Some(deadline) = preamble_deadline {
+        runtime = runtime.with_preamble_deadline(deadline);
     }
-    panic!("could not bind a relay endpoint after 5 attempts");
+    let bound = runtime.bind().expect("relay binds on port 0");
+    let addr = bound.local_addr();
+    let (shutdown, rx) = oneshot::channel::<()>();
+    let task = tokio::spawn(bound.serve(async move {
+        let _ = rx.await;
+    }));
+    RelayHandle {
+        addr,
+        fingerprint,
+        tokens_path,
+        shutdown,
+        task,
+    }
+}
+
+/// [`spawn_relay_with`] and the production preamble deadline.
+pub async fn spawn_relay(dir: &Path, max_conns: usize) -> RelayHandle {
+    spawn_relay_with(dir, max_conns, None).await
 }
 
 /// Mint an enrollment token for `route` through the production library fn
@@ -123,9 +102,8 @@ pub fn mint(tokens_path: &Path, route: &str) -> Vec<u8> {
     phux_dial::quic::parse_token_hex(&encoded).expect("minted token is hex")
 }
 
-/// Dial the relay's tunnel leg through the production ALPN-parameterized
-/// dialer: `QUIC_RELAY_ALPN`, pinned fingerprint, and (when `token` is
-/// set) the stream-0 auth preamble already written.
+/// Dial the relay's tunnel leg with `QUIC_RELAY_ALPN`, the pinned
+/// fingerprint, and (when `token` is set) the stream-0 auth preamble.
 pub async fn dial_tunnel_raw(
     relay_addr: SocketAddr,
     fingerprint: &str,
@@ -154,8 +132,7 @@ pub async fn dial_tunnel_raw(
     .expect("tunnel dial resolves within deadline")
 }
 
-/// Everything the tests assert about a stub connector after the fact,
-/// mirroring the spike's `ConnectorState` observability.
+/// What the stub connector observed, for after-the-fact assertions.
 #[derive(Default)]
 pub struct ConnectorState {
     pub bridged: usize,
@@ -215,18 +192,11 @@ impl ConnectorHandle {
     }
 }
 
-/// Dial out to the relay as a stub connector (the spike's `spawn_connector`
-/// shape, with the tunnel leg collapsed into the production
-/// `dial_with_alpn`): register the tunnel with `tunnel_token`, hold the
-/// reserved stream 0 open, then serve every relay-initiated bidi stream —
-/// verify the consumer's bearer preamble (reset/stop with
-/// `AUTH_FAILED_CODE` on mismatch), write `tag` once, and echo every
-/// consumer byte back, tapping it first.
-///
-/// `server_name` is the SNI offered on the tunnel dial. It is NOT
-/// load-bearing for connector admission (the token alone binds the route);
-/// tests pass the route name by convention and one test pins the
-/// distinction explicitly.
+/// Dial out as a stub connector: register the tunnel with `tunnel_token`,
+/// hold stream 0 open, then serve every relay-initiated stream by verifying
+/// the consumer's bearer (reset with `AUTH_FAILED_CODE` on mismatch),
+/// writing `tag` once, and echoing every byte back after tapping it.
+/// `server_name` is the tunnel's SNI, which does not decide the route.
 pub async fn spawn_connector(
     relay_addr: SocketAddr,
     fingerprint: &str,
@@ -242,8 +212,7 @@ pub async fn spawn_connector(
     let task_state = Arc::clone(&state);
     let task_conn = conn.clone();
     let task = tokio::spawn(async move {
-        // Stream 0 carries ONLY the auth preamble and is held open,
-        // reserved: dropping the halves would FIN/STOP it.
+        // Stream 0 is reserved: dropping the halves would FIN/STOP it.
         let _reserved_stream0 = (send0, recv0);
         while let Ok((mut tun_send, mut tun_recv)) = task_conn.accept_bi().await {
             task_state
@@ -251,9 +220,6 @@ pub async fn spawn_connector(
                 .unwrap()
                 .bridged_stream_ids
                 .push(tun_send.id());
-            // The consumer's bearer crossed the relay opaquely; verify it
-            // HERE — the server side of the tunnel — before any byte
-            // reaches the backend (ADR-0051 Decision 4).
             let Some(bearer) = read_preamble(&mut tun_recv).await else {
                 continue;
             };
@@ -269,9 +235,7 @@ pub async fn spawn_connector(
                 s.bridged += 1;
                 s.taps.push(Arc::clone(&stream_tap));
             }
-            // Echo backend: the tag once at stream start, then every byte
-            // back verbatim — tag first makes cross-talk visible, verbatim
-            // echo keeps expected bytes deterministic under fragmentation.
+            // Tag first makes cross-talk visible; then verbatim echo.
             tokio::spawn(async move {
                 if tun_send.write_all(tag).await.is_err() {
                     return;
@@ -297,9 +261,8 @@ pub async fn spawn_connector(
     }
 }
 
-/// Read one length-prefixed auth preamble (`len: u32 BE` + raw bytes),
-/// bounded like the production reader; `None` on short read, oversize, or
-/// the [`WIRE_RECV_TIMEOUT`] deadline.
+/// Read one length-prefixed auth preamble; `None` on short read, oversize,
+/// or timeout.
 pub async fn read_preamble(recv: &mut quinn::RecvStream) -> Option<Vec<u8>> {
     timeout(WIRE_RECV_TIMEOUT, async {
         let mut len_buf = [0u8; 4];
@@ -326,9 +289,8 @@ pub struct Consumer {
     pub recv: quinn::RecvStream,
 }
 
-/// Dial the relay as a consumer via the production `phux_dial::quic::dial`:
-/// production ALPN, `route` as the TLS SNI, pinned relay fingerprint, and
-/// `bearer` (when set) written as the auth preamble.
+/// Dial the relay as a consumer via `phux_dial::quic::dial` with `route`
+/// as SNI and `bearer` (when set) as the auth preamble.
 pub async fn dial_consumer_with_bearer(
     relay_addr: SocketAddr,
     fingerprint: &str,
@@ -367,59 +329,50 @@ pub async fn dial_consumer(
     .await
 }
 
-/// Send `payload` and read back exactly `tag + payload` (the echo
-/// connector writes its tag once at stream start — pass an empty tag for
-/// follow-up echoes on the same stream).
-pub async fn expect_echo(consumer: &mut Consumer, tag: &[u8], payload: &[u8]) {
-    consumer
-        .send
-        .write_all(payload)
-        .await
-        .expect("send payload");
+/// Send `payload` and read back `tag + payload` (the connector writes its
+/// tag once per stream; pass an empty tag for follow-ups). `None` when the
+/// stream ended first; a timeout or wrong bytes panic.
+async fn try_echo(consumer: &mut Consumer, tag: &[u8], payload: &[u8]) -> Option<()> {
+    consumer.send.write_all(payload).await.ok()?;
     let mut expected = tag.to_vec();
     expected.extend_from_slice(payload);
     let mut got = vec![0u8; expected.len()];
     timeout(WIRE_RECV_TIMEOUT, consumer.recv.read_exact(&mut got))
         .await
         .expect("echo within deadline")
-        .expect("echo read");
+        .ok()?;
     assert_eq!(got, expected, "echo must be tag + payload, byte-identical");
+    Some(())
 }
 
-/// Wait until `route` has a live tunnel at the relay, WITHOUT touching the
-/// connector: dial as a consumer but send no bearer preamble. A route with
-/// no tunnel is application-closed (`ROUTE_OFFLINE`) promptly; a live one
-/// leaves the probe connection open, because the relay's consumer-side
-/// `accept_bi` only resolves on the consumer's first bytes — which the
-/// probe never sends — so no bridge stream ever reaches the connector and
-/// no connector-side counter or tap moves.
+/// [`try_echo`] that must succeed.
+pub async fn expect_echo(consumer: &mut Consumer, tag: &[u8], payload: &[u8]) {
+    try_echo(consumer, tag, payload).await.expect("echo read");
+}
+
+/// Wait until `route` has a live tunnel without touching the connector: a
+/// probe consumer that sends no bytes is closed `ROUTE_OFFLINE` promptly
+/// when there is no tunnel, and left open (never bridged) when there is.
 pub async fn await_route_live(relay_addr: SocketAddr, fingerprint: &str, route: &str) {
     let deadline = tokio::time::Instant::now() + SOCKET_CONNECT_DEADLINE;
     while tokio::time::Instant::now() < deadline {
         let probe = dial_consumer_with_bearer(relay_addr, fingerprint, route, None).await;
-        if let Ok(consumer) = probe {
-            // An elapsed window means the connection is still open — the
-            // route is live (idle timeout is 30s, so only an admitted
-            // connection survives the window). A close under the window
-            // means no live tunnel yet; retry.
-            if timeout(Duration::from_millis(150), consumer.conn.closed())
+        // Still open after the window (idle timeout is 30s): the route is live.
+        if let Ok(consumer) = probe
+            && timeout(Duration::from_millis(150), consumer.conn.closed())
                 .await
                 .is_err()
-            {
-                consumer.conn.close(0u32.into(), b"probe done");
-                return;
-            }
+        {
+            consumer.conn.close(0u32.into(), b"probe done");
+            return;
         }
         sleep(Duration::from_millis(10)).await;
     }
     panic!("route {route} never came live at the relay");
 }
 
-/// Dial + echo with retries until the route serves, for windows where the
-/// registry is settling (a redial replacing a dead tunnel). Retried
-/// attempts fail BEFORE bridging (`ROUTE_OFFLINE` or a dead-tunnel
-/// `open_bi`), so connector-side counters and taps only record the one
-/// successful bridge.
+/// Dial + echo with retries while the registry settles. Retried attempts
+/// fail before bridging, so connector counters record only the success.
 pub async fn echo_when_ready(
     relay_addr: SocketAddr,
     fingerprint: &str,
@@ -430,21 +383,8 @@ pub async fn echo_when_ready(
     let deadline = tokio::time::Instant::now() + SOCKET_CONNECT_DEADLINE;
     while tokio::time::Instant::now() < deadline {
         if let Ok(mut consumer) = dial_consumer(relay_addr, fingerprint, route).await {
-            if consumer.send.write_all(payload).await.is_ok() {
-                let mut expected = tag.to_vec();
-                expected.extend_from_slice(payload);
-                let mut got = vec![0u8; expected.len()];
-                match timeout(WIRE_RECV_TIMEOUT, consumer.recv.read_exact(&mut got)).await {
-                    Ok(Ok(())) => {
-                        assert_eq!(got, expected, "echo must be tag + payload");
-                        return consumer;
-                    }
-                    // Stream ended before the echo: refused pre-bridge; retry.
-                    Ok(Err(_)) => {}
-                    Err(elapsed) => {
-                        panic!("echo timed out on what should be a live bridge: {elapsed}")
-                    }
-                }
+            if try_echo(&mut consumer, tag, payload).await.is_some() {
+                return consumer;
             }
             consumer.conn.close(0u32.into(), b"retry");
         }
@@ -468,12 +408,9 @@ pub fn assert_app_closed(err: &quinn::ConnectionError, code: u32, what: &str) {
     }
 }
 
-/// Assert the consumer-visible outcome of a refusal that happens AFTER a
-/// completed TLS handshake: either the dial returned a connection that is
-/// then application-closed with `code`, or (when the close won the race
-/// against `open_bi`/preamble) the dial error already carries the close's
-/// `reason` text — either way the refusal is post-handshake and
-/// distinguishable from a TLS-layer refusal.
+/// Assert a post-handshake refusal: the connection is application-closed
+/// with `code`, or (when the close won the race) the dial error carries
+/// `reason`.
 pub async fn expect_post_handshake_close(
     result: Result<Consumer, DialError>,
     code: u32,

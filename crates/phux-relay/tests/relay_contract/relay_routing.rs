@@ -1,8 +1,7 @@
-//! SNI routing against the PRODUCTION relay (ADR-0052 Decision 1): two
-//! routes never cross-talk; unknown or absent SNI is refused at the TLS
-//! layer with zero bytes reaching any tunnel; an enrolled route with no
-//! live tunnel is refused with `ROUTE_OFFLINE` only after a completed
-//! handshake (the outline's known-vs-unknown route distinction).
+//! SNI routing against the production relay (ADR-0052 Decision 1): routes
+//! never cross-talk, unknown or absent SNI is refused at TLS, and an enrolled
+//! route with no live tunnel is refused with `ROUTE_OFFLINE` after the
+//! handshake.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -21,9 +20,8 @@ use crate::common::{
 const PAYLOAD_A: &[u8] = b"payload-for-route-alpha";
 const PAYLOAD_B: &[u8] = b"payload-for-route-beta";
 
-/// Requirement 2: two routes, two connectors, and the byte-level clincher —
-/// each connector's tap holds its own consumer's payload and never the
-/// other's.
+/// Two routes, two connectors: each tap holds its own consumer's payload
+/// and never the other's.
 #[tokio::test]
 async fn two_routes_no_crosstalk() {
     let dir = tempfile::tempdir().unwrap();
@@ -65,25 +63,23 @@ async fn two_routes_no_crosstalk() {
     );
 }
 
-/// Requirement 3: a consumer naming an unknown route is refused during the
-/// TLS handshake (the `SniGate` declines to produce a certificate), and zero
-/// bytes ever reach any tunnel — no bridged stream, no tap movement.
+/// A consumer naming an unknown route, or sending no SNI at all (an IP
+/// literal server name sends none), is refused during the TLS handshake and
+/// zero bytes reach any tunnel.
 #[tokio::test]
-async fn unknown_sni_refused_no_bytes_reach_any_tunnel() {
+async fn unknown_or_absent_sni_refused_no_bytes_reach_any_tunnel() {
     let dir = tempfile::tempdir().unwrap();
     let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
     let token = mint(&relay.tokens_path, "alpha");
     let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
     await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
 
-    let refused = dial_consumer(relay.addr, &relay.fingerprint, "nosuch").await;
-    assert!(
-        refused.is_err(),
-        "an unenrolled SNI must fail the handshake, got a connection"
-    );
+    for sni in ["nosuch", "127.0.0.1"] {
+        let refused = dial_consumer(relay.addr, &relay.fingerprint, sni).await;
+        assert!(refused.is_err(), "SNI {sni:?} must fail the handshake");
+    }
 
-    // Settle any in-flight relay work, then assert nothing reached the
-    // tunnel: the refusal happened before any phux-shaped byte existed.
+    // Settle in-flight relay work, then prove nothing reached the tunnel.
     sleep(Duration::from_millis(100)).await;
     assert_eq!(connector.streams_seen(), 0, "no bridged stream ever opened");
     assert_eq!(connector.bridged(), 0);
@@ -91,35 +87,8 @@ async fn unknown_sni_refused_no_bytes_reach_any_tunnel() {
     assert!(connector.tapped_bytes().is_empty());
 }
 
-/// ADR-0052's "unknown or absent": dialing by IP literal sends no SNI
-/// extension at all; same TLS-layer refusal, same zero-byte guarantee.
-#[tokio::test]
-async fn absent_sni_refused_no_bytes_reach_any_tunnel() {
-    let dir = tempfile::tempdir().unwrap();
-    let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
-    let token = mint(&relay.tokens_path, "alpha");
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
-
-    // An IP-address server name is sent as NO SNI extension (rustls
-    // `ServerName::IpAddress`); the gate must refuse it like unknown SNI.
-    let refused = dial_consumer(relay.addr, &relay.fingerprint, "127.0.0.1").await;
-    assert!(
-        refused.is_err(),
-        "an SNI-less hello must fail the handshake, got a connection"
-    );
-
-    sleep(Duration::from_millis(100)).await;
-    assert_eq!(connector.streams_seen(), 0, "no bridged stream ever opened");
-    assert_eq!(connector.bridged(), 0);
-    assert_eq!(connector.rejected(), 0);
-}
-
-/// The outline's `ROUTE_OFFLINE` semantics: an ENROLLED route with no live
-/// tunnel completes the TLS handshake and is then application-closed with
-/// `ROUTE_OFFLINE` — distinguishable from an unknown route, which never
-/// gets past TLS. The relay survives, and once a connector arrives the
-/// same consumer retry succeeds.
+/// An enrolled route with no live tunnel completes the handshake and is
+/// closed `ROUTE_OFFLINE`; once a connector arrives, a retry succeeds.
 #[tokio::test]
 async fn consumer_before_tunnel_gets_route_offline_then_recovers() {
     let dir = tempfile::tempdir().unwrap();

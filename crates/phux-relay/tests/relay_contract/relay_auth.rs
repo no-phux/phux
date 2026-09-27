@@ -1,8 +1,7 @@
-//! Tunnel admission against the PRODUCTION relay (ADR-0052 Decision 2,
-//! ADR-0057 close-code semantics): a minted route token admits a tunnel
-//! end-to-end; a wrong token is refused with `AUTH_FAILED` and never
-//! wedges the endpoint; a stalled preamble is bounded by the deadline;
-//! and relay admission is never consumer authorization.
+//! Tunnel admission against the production relay (ADR-0052 Decision 2): a
+//! wrong token is refused with `AUTH_FAILED` without wedging the endpoint, a
+//! stalled preamble is bounded, and relay admission is never consumer
+//! authorization.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -12,39 +11,14 @@ use crate::common;
 
 use std::time::Duration;
 
-use phux_relay::{
-    AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE, RelayConfig, RelayRuntime,
-};
+use phux_relay::{AUTH_FAILED_CODE, DEFAULT_MAX_CONNS, ROUTE_OFFLINE_CODE};
 use tokio::time::timeout;
 
 use crate::common::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, assert_app_closed, await_route_live, dial_consumer,
     dial_consumer_with_bearer, dial_tunnel_raw, echo_when_ready, expect_post_handshake_close, mint,
-    spawn_connector, spawn_relay,
+    spawn_connector, spawn_relay, spawn_relay_with,
 };
-
-/// Requirement 1 (mint -> tunnel-auth roundtrip): a token minted through
-/// the production library fn authenticates a connector tunnel, and a
-/// consumer's bytes round-trip through it. Minting AFTER the relay is
-/// already running also proves the outline's pair-while-running liveness:
-/// the store is re-read per handshake, no restart needed.
-#[tokio::test]
-async fn enrolled_token_admits_tunnel_and_serves_consumers() {
-    let dir = tempfile::tempdir().unwrap();
-    let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
-    let token = mint(&relay.tokens_path, "alpha");
-
-    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
-    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
-
-    let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
-        .await
-        .expect("consumer dials the live route");
-    common::expect_echo(&mut consumer, b"A:", b"payload-alpha").await;
-
-    assert_eq!(connector.bridged(), 1, "exactly one consumer bridged");
-    assert_eq!(connector.rejected(), 0);
-}
 
 /// A connector presenting a token that is not in the store is refused with
 /// an application close carrying `AUTH_FAILED` (0x01) and the reason
@@ -88,57 +62,8 @@ async fn wrong_tunnel_token_refused_with_auth_failed() {
     assert_eq!(connector.bridged(), 1);
 }
 
-/// The stalled-preamble test's deadline, injected through the production
-/// `RelayRuntime::with_preamble_deadline` seam: the test must wait the
-/// deadline out for real, and the 5s production default is pure dead time
-/// here — the property under test is that the bound fires, not its size.
+/// Shortened preamble deadline: the test waits it out for real.
 const STALL_TEST_PREAMBLE_DEADLINE: Duration = Duration::from_millis(300);
-
-/// Like [`common::spawn_relay`] but with a shortened preamble deadline.
-/// Binds through the production `RelayRuntime::bind` on port 0, so the
-/// resolved address needs no probe-socket retry loop. The relay shuts
-/// down when the returned handle (its shutdown sender) drops.
-struct ShortPreambleRelay {
-    addr: std::net::SocketAddr,
-    fingerprint: String,
-    tokens_path: std::path::PathBuf,
-    _shutdown: tokio::sync::oneshot::Sender<()>,
-}
-
-/// Synchronous, but must run inside a tokio runtime context: `bind`
-/// attaches quinn's I/O driver to the current runtime.
-fn spawn_relay_with_preamble_deadline(
-    dir: &std::path::Path,
-    deadline: Duration,
-) -> ShortPreambleRelay {
-    let cert_path = dir.join("relay-cert.pem");
-    let key_path = dir.join("relay-key.pem");
-    let tokens_path = dir.join("relay-tokens");
-    phux_relay::ensure_self_signed(&cert_path, &key_path).expect("provision relay cert");
-    let fingerprint = phux_relay::cert_fingerprint(&cert_path).expect("relay fingerprint");
-    let config = RelayConfig {
-        listen: "127.0.0.1:0".parse().expect("loopback listen addr"),
-        cert_path,
-        key_path,
-        tokens_path: tokens_path.clone(),
-        max_conns: DEFAULT_MAX_CONNS,
-    };
-    let bound = RelayRuntime::new(config)
-        .with_preamble_deadline(deadline)
-        .bind()
-        .expect("relay binds on port 0");
-    let addr = bound.local_addr();
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(bound.serve(async move {
-        let _ = rx.await;
-    }));
-    ShortPreambleRelay {
-        addr,
-        fingerprint,
-        tokens_path,
-        _shutdown: tx,
-    }
-}
 
 /// A connector that opens stream 0 and stalls mid-preamble neither wedges
 /// the accept loop (a well-behaved route round-trips concurrently) nor
@@ -147,7 +72,12 @@ fn spawn_relay_with_preamble_deadline(
 #[tokio::test]
 async fn stalled_preamble_does_not_wedge_relay() {
     let dir = tempfile::tempdir().unwrap();
-    let relay = spawn_relay_with_preamble_deadline(dir.path(), STALL_TEST_PREAMBLE_DEADLINE);
+    let relay = spawn_relay_with(
+        dir.path(),
+        DEFAULT_MAX_CONNS,
+        Some(STALL_TEST_PREAMBLE_DEADLINE),
+    )
+    .await;
     let alpha_token = mint(&relay.tokens_path, "alpha");
     mint(&relay.tokens_path, "beta");
 
