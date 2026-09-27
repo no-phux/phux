@@ -1,18 +1,7 @@
-//! The TUI's "a newer phux is available" notice.
-//!
-//! Installing phux is a deliberate, manual step (ADR-0074: self-update stays
-//! explicit), so the TUI never replaces the binary behind the user's back. What
-//! it can do — and what the CLI only says if you think to ask — is *tell* them,
-//! where they already are: one small, dismissable toast naming the new version
-//! and the one command that installs it.
-//!
-//! The check is `phux update --check` run against the installed binary, in the
-//! background, once per attach. It shells out rather than linking the updater
-//! because the `phux` binary crate depends on this one; child-process execution
-//! is already the client-local pattern ([`super::plugin_actions`]). It is
-//! best-effort — every failure is silent — and cached for `CACHE_TTL` so a
-//! day of attaching is not a burst of release fetches.
-//!
+//! The TUI's "a newer phux is available" toast. Self-update stays explicit
+//! (ADR-0074); the TUI only tells the user. The check shells out to
+//! `phux update --check` in the background once per attach (the `phux` crate
+//! depends on this one), is silent on failure, and is cached for `CACHE_TTL`.
 //! Opt out with `PHUX_NO_UPDATE_CHECK=1`.
 
 use std::path::{Path, PathBuf};

@@ -1,33 +1,15 @@
-//! Rows for the `go-to-directory` picker.
+//! Rows for the `go-to-directory` picker: a
+//! [`SelectList`](crate::render::overlay::SelectList) over one
+//! `DIRECTORY_LISTING` reply (`docs/spec/L3.md` §4) from the attached server.
 //!
-//! The picker is a [`SelectList`](crate::render::overlay::SelectList) over
-//! one `DIRECTORY_LISTING` reply (`docs/spec/L3.md` §4). The listing comes
-//! from the server this client is attached to, so over `--remote` it browses
-//! the remote host with no client-side knowledge of which host that is.
+//! On a federation hub advertising `LIST_DIRECTORY_HOST`, a satellite pane's
+//! listing is relayed from the satellite ([`ListingHost::Satellite`], §4.1)
+//! and every row carries `host`; without the bit the hub lists itself and the
+//! picker says so ([`ListingHost::AttachedInsteadOf`]).
 //!
-//! Attached to a federation hub, a satellite pane's directories live on the
-//! satellite, not the hub. When the hub advertises `LIST_DIRECTORY_HOST` the
-//! request names that satellite ([`ListingHost::Satellite`]) and the hub
-//! relays it (§4.1); every row then carries `host`, so browsing stays on the
-//! satellite and "open new window here" spawns there. A hub without the bit
-//! would ignore the field and list itself, so the request stays on the hub
-//! and the picker says whose directories it shows
-//! ([`ListingHost::AttachedInsteadOf`]).
-//!
-//! Every row commits an ordinary action, so navigation reuses the dispatcher
-//! rather than growing a bespoke overlay:
-//!
-//! - "open new window here" commits `new-window { cwd = <path> }`, a new
-//!   window in the current session that leaves the existing layout intact;
-//! - `..` and each child directory commit `go-to-directory { path }`, which
-//!   re-lists and reopens the picker at that path;
-//! - a refused listing keeps `..` and `~` so the user is never stranded on a
-//!   path they cannot read.
-//!
-//! Typing filters the rows (the [`SelectList`] fuzzy filter); Escape
-//! dismisses.
-//!
-//! [`SelectList`]: crate::render::overlay::SelectList
+//! Rows commit ordinary actions: "open new window here" is
+//! `new-window { cwd }`; `..` and children are `go-to-directory { path }`; a
+//! refused listing keeps `..` and `~`.
 
 use std::collections::BTreeMap;
 use std::path::Path;

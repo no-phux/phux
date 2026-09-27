@@ -1,42 +1,16 @@
 //! The `phux --rec` session tee: an asciicast written from the client's own
 //! composited output stream (ADR-0060).
 //!
-//! # Why the `RenderSink` and not a per-pane output tap
+//! It wraps the one `RenderSink` the driver threads through the whole render
+//! path, so the recording is byte-for-byte what the glass received, chrome
+//! included, and it sits upstream of `StdoutSink`'s backlog drop, so a
+//! backpressured terminal loses frames on screen but not in the recording.
+//! Timing is the paint cadence (bursts coalesce into one event); content is
+//! exact.
 //!
-//! The driver threads exactly ONE `&mut W: RenderSink` through the whole
-//! render path (see [`super::RenderSink`]) — panes tiled per the layout,
-//! dividers, status bar, sidebar, overlays, cursor restore. Wrapping that one
-//! seam captures byte-for-byte what the human's glass received, which is the
-//! thing users mean by "record my session": it replays in a fresh libghostty
-//! `Terminal` sized to the viewport with no compositor anywhere in the loop.
-//! A per-pane `RESOURCE_OUTPUT` tap would record one pane's PTY bytes and
-//! lose every piece of chrome.
-//!
-//! The tee also sits deliberately UPSTREAM of
-//! `StdoutSink`'s 256 KiB backlog drop. When a
-//! terminal backpressures, that sink discards the stale queue and asks the
-//! driver for a fresh full repaint — so a backpressured terminal loses frames
-//! on the glass but never in the recording, because the tee already saw the
-//! bytes on the way past.
-//!
-//! # Known fidelity limit
-//!
-//! `defer_paint` / `overlay_active` (see `server_frame.rs`) suppress stdout
-//! emission without suppressing the pane mirror's `vt_write`, and the driver
-//! coalesces bursts of frames into one paint. Recorded *timing* is therefore
-//! the paint cadence, not the true per-frame arrival cadence: a fast burst
-//! shows up as one chunky event rather than N small ones. The content is
-//! exact; only the sub-paint timing is lost.
-//!
-//! # Failure policy
-//!
-//! Nothing in here may kill the session or write to stderr. This path owns
-//! the alt screen — `is_interactive_client` is true for `phux` / `phux
-//! attach`, tracing is file-only there, and one stray stderr byte corrupts
-//! the display. A recording write failure (full disk, unlinked file) latches
-//! a single `tracing::warn!` and then goes permanently silent; the prefix
-//! already on disk stays playable, which is the whole point of the streaming
-//! asciicast format.
+//! Nothing here may kill the session or write to stderr (it would corrupt
+//! the alt screen): a write failure latches one `tracing::warn!` and goes
+//! silent, leaving a playable prefix on disk.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -52,25 +26,16 @@ use phux_record::error::RecordError;
 
 use super::outcome::AttachError;
 
-/// Bytes of trailing whitespace reserved after the header line so
-/// [`SessionRecorder::finish`] can rewrite it in place with the `duration`
-/// key. `,"duration":86400.000` is 22 bytes; 32 leaves room for a recording
-/// far longer than anyone will sit through.
+/// Trailing whitespace reserved after the header line so `finish` can
+/// rewrite it in place with `,"duration":...` (22 bytes for a day).
 const HEADER_SLACK: usize = 32;
 
-/// How the recorder learns the outer terminal's current size.
-///
-/// Boxed rather than a generic parameter because the recorder is held behind
-/// an `Rc<RefCell<_>>` that the driver names without type arguments; a second
-/// generic there would leak into the driver's signature for no benefit.
+/// How the recorder learns the outer terminal's size (boxed so the
+/// `Rc<RefCell<_>>` the driver holds needs no extra type parameter).
 type SizeProbe = Box<dyn FnMut() -> Option<(u16, u16)>>;
 
-/// Read the controlling TTY's size, or `None` when stdout is not a terminal.
-///
-/// This is the same `tcgetwinsize` call `current_viewport` makes in the
-/// driver; going straight to the ioctl instead of plumbing SIGWINCH into the
-/// recorder keeps the driver diff to a handful of lines, and one ioctl per
-/// frame flush (~60/s) is free next to the write it accompanies.
+/// The controlling TTY's size, or `None` when stdout is not a terminal
+/// (one ioctl per frame flush).
 fn tty_winsize() -> Option<(u16, u16)> {
     let stdout = io::stdout();
     let size = rustix::termios::tcgetwinsize(stdout.as_fd()).ok()?;
@@ -84,9 +49,8 @@ fn unix_now() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
-/// The environment asciinema conventionally records. Deliberately just these
-/// two: a recording is a shareable artifact and a full `environ` dump is how
-/// tokens end up in a gist.
+/// The environment asciinema records: just these two, since a recording is
+/// shareable and a full `environ` dump leaks tokens.
 fn recorded_env() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for key in ["TERM", "SHELL"] {
@@ -97,11 +61,7 @@ fn recorded_env() -> BTreeMap<String, String> {
     env
 }
 
-/// Map a codec error onto the attach error vocabulary.
-///
-/// Recording failures are all "the output file went wrong" from the caller's
-/// point of view, so they collapse onto [`AttachError::Io`] rather than
-/// growing a variant that only one CLI flag can ever produce.
+/// Recording failures collapse onto [`AttachError::Io`].
 fn record_err(err: RecordError) -> AttachError {
     match err {
         RecordError::Io(inner) => AttachError::Io(inner),
@@ -109,16 +69,9 @@ fn record_err(err: RecordError) -> AttachError {
     }
 }
 
-/// Writer shim that reserves rewrite slack at the end of the header line.
-///
-/// `CastWriter` streams: it writes the header before the first event, so the
-/// `duration` key — knowable only at the end — cannot be written up front.
-/// The header line therefore lands on disk padded with trailing spaces (JSON
-/// ignores whitespace after the closing brace, and every asciicast reader
-/// parses one line at a time), leaving [`SessionRecorder::finish`] exactly
-/// enough room to seek back and overwrite line 1 in place. The alternative —
-/// rewriting the entire file to splice in a dozen bytes — is O(recording
-/// size) at session exit for no user-visible gain.
+/// Pads the header line with trailing spaces so `finish` can seek back and
+/// overwrite it with the `duration` key (known only at the end) instead of
+/// rewriting the whole file. JSON readers ignore the whitespace.
 struct SlackPad<W: Write> {
     inner: W,
     /// Spaces still owed before the header line's newline. Zero once the
@@ -156,13 +109,8 @@ impl<W: Write> Write for SlackPad<W> {
     }
 }
 
-/// A live session recording: an asciicast being written as the session runs.
-///
-/// The sink type is generic only so tests can substitute an in-memory buffer
-/// and a deliberately-failing writer; production is always the defaulted
-/// `BufWriter<File>` that [`SessionRecorder::create`] builds. `Seek` is part
-/// of the bound because [`SessionRecorder::finish_in_place`] rewrites the
-/// header line in place.
+/// A live session recording. Generic only so tests can use an in-memory
+/// (or failing) sink; `Seek` lets `finish` rewrite the header in place.
 pub struct SessionRecorder<W: Write + Seek = BufWriter<File>> {
     /// `None` once the recording has been abandoned (a latched write failure)
     /// or consumed by [`SessionRecorder::finish_in_place`].
@@ -175,9 +123,8 @@ pub struct SessionRecorder<W: Write + Seek = BufWriter<File>> {
     /// Set the first time a write fails, so the `tracing::warn!` fires once
     /// and never again on a per-frame path.
     failed: bool,
-    /// The exact header line as it was serialized, without its newline. Kept
-    /// so `finish` can rebuild it with `duration` appended and know how many
-    /// bytes it may occupy.
+    /// The serialized header line (no newline), rebuilt with `duration` at
+    /// finish within its reserved width.
     header_line: String,
     version: CastVersion,
     probe: SizeProbe,
@@ -195,13 +142,9 @@ impl<W: Write + Seek> std::fmt::Debug for SessionRecorder<W> {
 }
 
 impl SessionRecorder<BufWriter<File>> {
-    /// Open `path` and write the asciicast header, sized from the outer
-    /// terminal.
-    ///
-    /// Called before the TUI comes up, on the cooked terminal, so a bad path
-    /// surfaces as an ordinary CLI error rather than a failure behind the alt
-    /// screen. When stdout is not a TTY the header falls back to 80x24 — the
-    /// same default the driver's viewport read uses.
+    /// Open `path` and write the header sized from the outer terminal (80x24
+    /// when stdout is not a TTY). Runs before the TUI comes up, so a bad path
+    /// is an ordinary CLI error.
     pub fn create(
         path: &Path,
         title: Option<&str>,
@@ -224,23 +167,17 @@ impl<W: Write + Seek> SessionRecorder<W> {
             cols: dims.0,
             rows: dims.1,
             timestamp: Some(unix_now()),
-            // The live tee never clamps: the .cast is the archival artifact
-            // and idle collapsing belongs to the export step, which can be
-            // re-run with different settings against the same capture.
+            // Idle clamping belongs to the export step, not the archive.
             idle_time_limit: None,
             command: None,
             title: title.map(ToOwned::to_owned),
             env: recorded_env(),
-            // The outer terminal's palette is not knowable from here without
-            // an OSC round trip on a terminal we are about to take over, so
-            // the exporter supplies its own theme instead.
+            // The outer palette is unknowable here; the exporter themes.
             theme: None,
         };
 
-        // Serialize the header once into a throwaway sink so `finish` knows
-        // the exact byte length it is allowed to rewrite. Doing it this way
-        // rather than reimplementing the serializer means the two can never
-        // disagree about key order or formatting.
+        // Serialize once into a throwaway sink so `finish` knows the exact
+        // byte length it may rewrite, without a second serializer.
         let probe_bytes = CastWriter::new(Vec::new(), &header, version)
             .and_then(CastWriter::finish)
             .map_err(record_err)?;
@@ -290,11 +227,8 @@ impl<W: Write + Seek> SessionRecorder<W> {
         self
     }
 
-    /// Record composited output bytes, timestamped now.
-    ///
-    /// Infallible by design: see the module's failure policy. A partial or
-    /// failed write abandons the recording rather than propagating an error
-    /// into the render path.
+    /// Record composited output bytes, timestamped now. Infallible: a failed
+    /// write abandons the recording.
     pub fn record(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -306,12 +240,8 @@ impl<W: Write + Seek> SessionRecorder<W> {
         }
     }
 
-    /// Emit a resize event if the outer terminal changed size since the last
-    /// check.
-    ///
-    /// Comparing before emitting is load-bearing: this runs once per frame
-    /// flush, and an unconditional `"r"` would bury the recording under
-    /// thousands of no-op resizes that make a player rebuild its canvas.
+    /// Emit a resize event only when the outer terminal's size changed
+    /// (this runs every flush).
     pub fn poll_resize(&mut self) {
         let Some(dims) = (self.probe)() else {
             return;
@@ -328,16 +258,12 @@ impl<W: Write + Seek> SessionRecorder<W> {
     }
 
     /// Flush the residual UTF-8 tail, backfill the header's `duration`, and
-    /// close the file in place.
-    ///
-    /// Idempotent so the production pre-`process::exit` path and the CLI's
-    /// returning fallback can safely share an `Rc<RefCell<_>>`. Once called,
-    /// later recording writes and repeated finalization calls are no-ops.
+    /// close. Idempotent, so the pre-exit path and the CLI fallback can share
+    /// it.
     pub fn finish_in_place(&mut self) -> Result<(), AttachError> {
         let Some(writer) = self.writer.take() else {
-            // Already abandoned. The prefix on disk is a valid, playable
-            // asciicast; it simply has no `duration`, which is exactly what a
-            // truncated recording should look like.
+            // Abandoned: the prefix on disk is a playable asciicast without a
+            // duration.
             return Ok(());
         };
         let elapsed_ms = writer.elapsed_ms();
@@ -357,13 +283,9 @@ impl<W: Write + Seek> SessionRecorder<W> {
         self.finish_in_place()
     }
 
-    /// Build the replacement header line carrying `duration`, padded back out
-    /// to the exact width reserved at open time.
-    ///
-    /// Returns `None` when there is nothing safe to write: v3 (no `duration`
-    /// key exists), an unexpected header shape, or a line that somehow
-    /// outgrew its slack. Every one of those is "skip the rewrite", never
-    /// "corrupt the file".
+    /// The replacement header line with `duration`, padded to the reserved
+    /// width, or `None` when a rewrite would not be safe (v3, an unexpected
+    /// shape, or no room).
     fn duration_header(&self, elapsed_ms: u64) -> Option<Vec<u8>> {
         if self.version != CastVersion::V2 {
             return None;
@@ -395,10 +317,6 @@ impl<W: Write + Seek> SessionRecorder<W> {
 }
 
 /// The `RenderSink` wrapper that feeds a [`SessionRecorder`] on the way past.
-///
-/// Generic over the recorder's sink type purely so tests can drive a failing
-/// recorder; the default is the production `BufWriter<File>`, so the driver
-/// names this as `TeeSink { inner, rec }` with no type arguments.
 pub(crate) struct TeeSink<'a, W: Write, R: Write + Seek = BufWriter<File>> {
     pub(crate) inner: &'a mut W,
     pub(crate) rec: Rc<RefCell<SessionRecorder<R>>>,
@@ -411,16 +329,9 @@ impl<W: Write, R: Write + Seek> std::fmt::Debug for TeeSink<'_, W, R> {
 }
 
 impl<W: Write, R: Write + Seek> Write for TeeSink<'_, W, R> {
-    /// Write through, then record **only the bytes the inner sink accepted**.
-    ///
-    /// The order matters. Recording the whole buffer after a short write
-    /// would put bytes in the recording that the glass never received, and
-    /// every later byte would land at the wrong offset — the recording would
-    /// diverge from what the human actually saw and stay diverged.
-    ///
-    /// `write_all` is deliberately NOT overridden: its default implementation
-    /// loops on `write`, so the short-write accounting above stays the single
-    /// place that decides what gets recorded.
+    /// Write through, then record only the bytes the inner sink accepted, so
+    /// a short write never puts bytes in the recording the glass never got.
+    /// `write_all`'s default loops on this, keeping one accounting point.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let taken = self.inner.write(buf)?;
         if let Some(accepted) = buf.get(..taken) {
@@ -448,11 +359,7 @@ mod tests {
     use super::*;
     use phux_record::cast::{EventCode, read_cast};
 
-    /// Shared in-memory stand-in for `BufWriter<File>`.
-    ///
-    /// Implements `Seek` because `finish` rewrites the header in place; a
-    /// plain `Vec<u8>` would not exercise that path at all. `fail` flips the
-    /// sink into a permanent `ErrorKind::Other`, standing in for a full disk.
+    /// Shared in-memory `Seek` sink; `fail` makes it error like a full disk.
     #[derive(Clone, Default)]
     struct MemSink(Rc<RefCell<MemState>>);
 

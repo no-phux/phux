@@ -1,10 +1,5 @@
-//! Client-local focus transition and one-entry MRU bookkeeping.
-//!
-//! ADR-0019 makes focus consumer-local. This state therefore lives only for
-//! one attached TUI process: it is never serialized into layout metadata or
-//! sent over the wire. ADR-0049 (maintained on the sibling focus branch)
-//! owns the broader focus model; this module is the implementation dependency
-//! for `phux-oih5.4`, not a duplicate decision record.
+//! Client-local focus transition and one-entry MRU bookkeeping. Focus is
+//! consumer-local (ADR-0019): never serialized or sent over the wire.
 
 use phux_protocol::ResourceId;
 

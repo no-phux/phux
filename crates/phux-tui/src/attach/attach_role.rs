@@ -20,12 +20,9 @@ pub fn set_attach_role(policy: RolePolicy) {
     ATTACH_ROLE.store(policy.to_u8(), Ordering::Relaxed);
 }
 
-/// The `role_policy` field for an `ATTACH` on `conn`.
-///
-/// `None` for the default, so the frame is byte-identical to one from before
-/// roles. A declared role needs a server that honors it: an older one would
-/// ignore the field and grant an ordinary, input-capable attach, so the
-/// attach is refused here instead of silently widening.
+/// The `role_policy` for an `ATTACH` on `conn`: `None` by default (byte
+/// identical to pre-role frames). A declared role against a server that would
+/// ignore it is refused rather than silently widened.
 pub(super) fn attach_role_for(conn: &Connection) -> Result<Option<RolePolicy>, AttachError> {
     let policy = RolePolicy::from_u8(ATTACH_ROLE.load(Ordering::Relaxed));
     let field = role_field(policy, advertises_roles(conn))?;
@@ -37,10 +34,8 @@ pub(super) fn attach_role_for(conn: &Connection) -> Result<Option<RolePolicy>, A
     Ok(field)
 }
 
-/// The role a Terminal this process attaches on its own, after the session
-/// attach, declares: a viewer stays a viewer on every pane it opens, and
-/// nothing else rides a per-pane attach. The session attach already proved
-/// the server honors roles, or it would have been refused.
+/// The role a per-pane attach declares: a viewer stays a viewer on every pane
+/// it opens.
 pub(super) fn pane_attach_role() -> Option<RolePolicy> {
     let policy = RolePolicy::from_u8(ATTACH_ROLE.load(Ordering::Relaxed));
     policy.is_viewer().then_some(policy)

@@ -1,14 +1,8 @@
-//! Client-local copy-mode extraction and clipboard emission.
-//!
-//! Per [ADR-0030](../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md),
-//! selection is a *client-side projection* over the consumer's own libghostty
-//! engine — not a wire tier. When copy-mode commits (Enter), the client maps
-//! the overlay's viewport [`CopyRequest`] onto its focused pane's own
-//! `libghostty_vt::Terminal`, builds a one-shot
-//! [`Selection`], formats it to plain
-//! text with the sound `format_selection_alloc` API (the same path the server
-//! uses in `phux-server`'s `extract`), and writes the text to the *host*
-//! terminal's clipboard via an OSC 52 sequence. Nothing touches the wire.
+//! Client-local copy-mode extraction and clipboard emission (ADR-0030: a
+//! client-side projection, not a wire tier). On commit, the overlay's
+//! viewport [`CopyRequest`] becomes a one-shot [`Selection`] on the focused
+//! pane's own terminal, formatted to text and written to the host clipboard
+//! via OSC 52.
 
 use std::io::{self, Write};
 
@@ -25,26 +19,10 @@ use crate::render::overlay::{CopyRequest, ScreenSelectionPoint, SelectionGrab};
 /// Base64 alphabet (RFC 4648 §4, standard, with `+`/`/` and `=` padding).
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// Extract the plain text of `req`'s selection from `terminal`.
-///
-/// Branches on [`CopyRequest::grab`]:
-/// - [`SelectionGrab::Rect`] maps the overlay's inclusive `(row, col)` viewport
-///   rectangle onto two [`Point::Viewport`] grid references and builds a
-///   two-corner [`Selection`] (rectangular when `req.rectangle`).
-/// - The engine-derived grabs (`Word`/`Line`/`LineSemantic`/`All`/`Output`)
-///   call libghostty's own `select_*` helpers at the overlay cursor
-///   (`req.cursor_row`/`req.cursor_col`) and format the *returned* selection.
-///   `select_all` ignores the cursor. `Output` degrades to `None` (a no-op)
-///   when the pane has no OSC-133 command-output zones to resolve.
-///
-/// Returns `None` when the engine reports nothing selectable (e.g. an
-/// all-blank span, or `Output` with no zones) or a libghostty call fails —
-/// copy is best-effort, so a failure is a silent no-op rather than an error
-/// the caller must thread.
-///
-/// `Point::Viewport` (not `Active`) is deliberate: the overlay coordinates
-/// index the *visible* viewport the client rendered, which is what the user
-/// selected.
+/// The plain text of `req`'s selection in `terminal`: `Rect` builds a
+/// two-corner selection (rectangular when `req.rectangle`); the other grabs
+/// use libghostty's `select_*` at the overlay cursor (`Output` needs OSC-133
+/// zones). `None` when nothing is selectable or a call fails (best-effort).
 #[must_use]
 pub fn extract_selection_text(
     terminal: &GhosttyTerminal<'_, '_>,
@@ -64,13 +42,7 @@ pub fn extract_selection_text(
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Build the one-shot [`Selection`] `req`'s grab names, or `None` when the
-/// engine reports nothing selectable or a libghostty call fails.
-///
-/// Branches on [`CopyRequest::grab`]: `Rect` builds a two-corner
-/// selection from the overlay's own rectangle; every other grab delegates to
-/// libghostty's matching `select_*` helper at the overlay cursor. `select_all`
-/// ignores the cursor.
+/// The one-shot [`Selection`] `req`'s grab names, or `None`.
 fn resolve_selection<'t>(
     terminal: &'t GhosttyTerminal<'_, '_>,
     req: CopyRequest,
@@ -161,11 +133,8 @@ fn viewport_cursor_ref<'t>(
     viewport_grid_ref(terminal, req.cursor_col, req.cursor_row)
 }
 
-/// Resolve an overlay `(col, row)` into a libghostty grid reference.
-///
-/// `Point::Viewport` (not `Active`) is deliberate: the overlay coordinates
-/// index the *visible* viewport the client rendered, which is what the user
-/// selected.
+/// An overlay `(col, row)` as a viewport grid reference (the coordinates
+/// index the visible viewport the user selected from).
 fn viewport_grid_ref<'t>(
     terminal: &'t GhosttyTerminal<'_, '_>,
     col: u16,
@@ -179,12 +148,8 @@ fn viewport_grid_ref<'t>(
         .ok()
 }
 
-/// Build an OSC 52 "set clipboard" sequence carrying `text`.
-///
-/// Shape: `ESC ] 52 ; c ; <base64(text)> BEL`. `c` targets the system
-/// clipboard; the terminal emulator (the *host*) honors it if configured to.
-/// Honoring is host-dependent and outside phux's control — phux's
-/// responsibility ends at emitting a well-formed sequence.
+/// An OSC 52 "set clipboard" sequence: `ESC ] 52 ; c ; <base64> BEL`.
+/// Whether the host honors it is up to the host.
 #[must_use]
 pub fn osc52_set_clipboard(text: &str) -> Vec<u8> {
     let encoded = base64_encode(text.as_bytes());
@@ -195,20 +160,14 @@ pub fn osc52_set_clipboard(text: &str) -> Vec<u8> {
     out
 }
 
-/// The copy-mode extraction bridge (ADR-0045).
-///
-/// Resolves `req` against the focused pane's own libghostty `terminal` and, if
-/// the selection is non-empty, emits an OSC 52 clipboard sequence to `out` (the
-/// host terminal). This is the single seam where copy-mode touches the engine —
-/// the overlay layer stays engine-free and hands the dispatcher a plain-data
-/// [`CopyRequest`], which arrives here. `format_selection_alloc` (block when
-/// `req.rectangle`) or a `select_*` grab does the work; nothing goes on the
-/// wire ([ADR-0030](../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md)).
-/// Best-effort: an empty/unselectable range writes nothing.
-pub fn resolve_and_copy(
-    req: CopyRequest,
+/// The copy-mode extraction bridge (ADR-0045): resolve `req` against the
+/// focused pane's own engine and, when the selection is non-empty, write an
+/// OSC 52 clipboard sequence to `out` (the host terminal). The one seam where
+/// copy-mode touches the engine; nothing goes on the wire. Best-effort.
+pub fn copy_to_host_clipboard<W: Write>(
+    out: &mut W,
     terminal: &GhosttyTerminal<'_, '_>,
-    out: &mut impl Write,
+    req: CopyRequest,
 ) -> io::Result<()> {
     let Some(text) = extract_selection_text(terminal, req) else {
         return Ok(());
@@ -220,23 +179,8 @@ pub fn resolve_and_copy(
     out.flush()
 }
 
-/// Argument-order alias for [`resolve_and_copy`].
-///
-/// Kept for the existing dispatcher call sites, which pass `out` first;
-/// best-effort, so an empty/unselectable range writes nothing.
-pub fn copy_to_host_clipboard<W: Write>(
-    out: &mut W,
-    terminal: &GhosttyTerminal<'_, '_>,
-    req: CopyRequest,
-) -> io::Result<()> {
-    resolve_and_copy(req, terminal, out)
-}
-
-/// Encode `input` as standard base64 (RFC 4648), padded with `=`.
-///
-/// Hand-rolled rather than pulling a crate: it is a dozen lines on a cold
-/// path (one keypress on copy commit), and avoids a dependency for a fixed
-/// alphabet (see CONTRIBUTING "no new deps without justification").
+/// Standard padded base64 (RFC 4648), hand-rolled to avoid a dependency on a
+/// cold path.
 fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -399,10 +343,8 @@ mod tests {
         let mut t = fresh(20, 3);
         // Row 0: "abcd", row 1: "efgh".
         t.vt_write(b"abcd\r\nefgh");
-        // Corners (0,1)-(1,2). Block keeps only columns 1..=2 on every row
-        // ("bc"/"fg"); linear runs from (0,1) to the row end, wraps, and picks
-        // up (1,0) ("bcd"/"efg"). The wrap cells 'd' (row 0 col 3) and 'e'
-        // (row 1 col 0) are exactly what block excludes and linear includes.
+        // Block keeps columns 1..=2 per row; linear wraps and also takes 'd'
+        // and 'e'.
         let block = extract_selection_text(&t, block_req(0, 1, 1, 2)).expect("block text");
         assert!(block.contains('b') && block.contains('c'), "got {block:?}");
         assert!(block.contains('f') && block.contains('g'), "got {block:?}");
@@ -429,38 +371,12 @@ mod tests {
 
     #[test]
     fn extract_block_normalizes_inverted_column_corners() {
-        // Down-and-left block drag: anchor (row 0, col 5) to cursor (row 3,
-        // col 2). `CellRange::from_points` orders corners lexicographically by
-        // (row, col), so the CopyRequest arrives with start_col=5 > end_col=2.
-        // The highlight side normalizes the band to [2, 5] per row
-        // (`contains_block_normalizes_inverted_column_corners` in
-        // `selection.rs`); the extraction side relies on libghostty's own
-        // per-axis column normalization for rectangular selections. This test
-        // pins the two sides to the same rectangle: the copied text must be
-        // exactly the [2, 5] column band on rows 0..=3, matching the cells
-        // the overlay highlighted.
+        // An inverted-column block drag (start_col 5 > end_col 2) must copy
+        // exactly the [2, 5] band the highlight shows.
         let mut t = fresh(20, 4);
         t.vt_write(b"0123456789\r\nabcdefghij\r\nABCDEFGHIJ\r\nqrstuvwxyz");
         let text = extract_selection_text(&t, block_req(0, 5, 3, 2)).expect("inverted block text");
         assert_eq!(text, "2345\ncdef\nCDEF\nstuv");
-    }
-
-    #[test]
-    fn resolve_and_copy_emits_osc52_for_a_selection() {
-        let mut t = fresh(20, 3);
-        t.vt_write(b"hi");
-        let mut out: Vec<u8> = Vec::new();
-        resolve_and_copy(rect_req(0, 0, 0, 1), &t, &mut out).expect("write");
-        // "hi" -> base64 "aGk=" wrapped in OSC 52.
-        assert_eq!(out, b"\x1b]52;c;aGk=\x07");
-    }
-
-    #[test]
-    fn resolve_and_copy_blank_span_writes_nothing() {
-        let t = fresh(20, 3); // no output: viewport is all blanks
-        let mut out: Vec<u8> = Vec::new();
-        resolve_and_copy(rect_req(1, 0, 1, 5), &t, &mut out).expect("write");
-        assert!(out.is_empty(), "blank selection emits nothing, got {out:?}");
     }
 
     #[test]

@@ -1,31 +1,10 @@
-//! Plugin actions in the TUI.
-//!
-//! Plugin manifest `[[actions]]` were previously reachable only through
-//! `phux config run PLUGIN ACTION` and the MCP tool — nothing in the TUI
-//! surfaced them. This module makes enabled plugins *felt* in the client
-//! without touching the wire (ADR-0017: the TUI is not protocol-privileged;
-//! everything here is client-local config + child-process execution):
-//!
-//! * [`entries_from_manifests`] flattens the driver's load-once manifest
-//!   snapshot (see `attach::driver`; same load-once policy as the
-//!   keybindings snapshot) into per-action entries.
-//! * The command palette lists them as namespaced rows
-//!   (`plugin: <plugin-name>: <action title>`) under a "Plugin" header —
-//!   see [`super::action_registry::palette_items`].
-//! * [`merge_plugin_bindings`] folds each action's optional manifest
-//!   `keys = "..."` into the prefix table, with **user config always
-//!   winning** on conflict (exact-chord or ambiguous-prefix); conflicts
-//!   log a warning, never panic, and never disable the user's bindings.
-//! * [`spawn_plugin_action`] executes a chosen action through the same
-//!   `phux-plugin` child-process runtime the CLI uses, off the input loop
-//!   (spawned task), reporting completion over a channel the driver
-//!   selects on. Failures surface as a dismissable toast overlay built by
-//!   [`failure_toast`]; successes just log.
-//!
-//! Palette rows and merged bindings both commit the
-//! [`PLUGIN_ACTION_NAME`] dispatcher action carrying
-//! `plugin = <id>, action = <id>` args, so keybinds and the palette share
-//! the single `run_action` dispatch path (the architectural invariant).
+//! Plugin manifest `[[actions]]` in the TUI, client-local (ADR-0017):
+//! [`entries_from_manifests`] flattens the load-once manifest snapshot, the
+//! palette lists them under a "Plugin" header, [`merge_plugin_bindings`]
+//! folds their `keys` into the prefix table (user config always wins), and
+//! [`spawn_plugin_action`] runs one through the `phux-plugin` runtime off
+//! the input loop, toasting failures ([`failure_toast`]). Rows and bindings
+//! both commit [`PLUGIN_ACTION_NAME`], sharing the `run_action` path.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -35,17 +14,12 @@ use phux_config::plugin::PluginManifest;
 use phux_config::{Action, KeybindingsCfg, ParamAction};
 use tokio::sync::mpsc::UnboundedSender;
 
-/// The dispatcher action plugin palette rows and merged bindings commit.
-///
-/// Listed in [`phux_config::vocab::ACTION_NAMES`] and handled by a
-/// `run_action` arm; exempt from the static palette registry because its
-/// rows are built dynamically from the plugin snapshot.
+/// The dispatcher action plugin palette rows and merged bindings commit
+/// (built dynamically, so exempt from the static registry).
 pub const PLUGIN_ACTION_NAME: &str = "plugin-action";
 
-/// Cap on a TUI-triggered plugin action's runtime. The CLI runs
-/// uncapped (the user watches it); a TUI action runs detached from any
-/// visible process, so a hung plugin must not leak a child forever
-/// (`phux-plugin` kills the process on timeout).
+/// Cap on a TUI-triggered action's runtime: it runs detached, so a hung
+/// plugin must not leak a child (`phux-plugin` kills it on timeout).
 const PLUGIN_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One enabled plugin action, snapshotted at driver start.
@@ -103,13 +77,8 @@ fn plugin_args(plugin_id: &str, action_id: &str) -> BTreeMap<String, toml::Value
     args
 }
 
-/// Flatten loaded manifests into per-action entries.
-///
-/// Pure; separated from the manifest-loading I/O in the driver (which
-/// resolves manifests relative to the canonical config path via
-/// [`phux_config::plugin::load_enabled_manifests`], the same resolution
-/// `phux config run` uses, skipping broken manifests with a warning) so
-/// tests can drive it with in-memory manifests.
+/// Flatten loaded manifests into per-action entries (pure; the driver does
+/// the loading).
 #[must_use]
 pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginActionEntry> {
     manifests
@@ -126,19 +95,11 @@ pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginActionE
         .collect()
 }
 
-/// Merge plugin-contributed `keys` bindings into the prefix table.
-///
-/// User config ALWAYS wins: a plugin chord that collides with an existing
-/// prefix-table entry (exact chord string), that fails to parse, or that
-/// forms an ambiguous-prefix relationship with any existing binding is
-/// dropped with a `tracing::warn!` — never a panic, and never at the cost
-/// of the user's own bindings. Each candidate is validated by test-building
-/// a [`Resolver`] over the merged table, so a bad plugin binding can't
-/// poison resolver construction later (which would silently disable every
-/// keybinding).
-///
-/// Between two plugins contending for the same chord, the first (config
-/// `[[plugins]]` order) wins — deterministic, and the loser is logged.
+/// Merge plugin `keys` bindings into the prefix table. User config always
+/// wins: a chord that collides, fails to parse, or is ambiguous with an
+/// existing binding is dropped with a warning (validated by test-building a
+/// [`Resolver`], so a bad plugin binding cannot disable every binding).
+/// Between plugins, the first in `[[plugins]]` order wins.
 pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEntry]) {
     for entry in entries {
         let Some(keys) = entry.keys.as_deref() else {
@@ -154,11 +115,9 @@ pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEnt
             );
             continue;
         }
-        // Tentative insert + resolver validation: catches unparsable
-        // chords, chord-equivalent duplicates spelled differently (e.g.
-        // `?` vs `S-/`), and ambiguous-prefix relationships with user
-        // bindings — any of which would otherwise make `Resolver::new`
-        // fail wholesale at attach time.
+        // Tentative insert + resolver validation catches unparsable chords,
+        // differently spelled duplicates (`?` vs `S-/`), and ambiguous
+        // prefixes.
         kb.prefix_table
             .insert(keys.to_owned(), entry.config_action());
         if let Err(err) = Resolver::new(kb) {
@@ -188,13 +147,9 @@ pub struct PluginRunResult {
     pub result: Result<phux_plugin::PluginActionOutput, String>,
 }
 
-/// Execute one plugin action off the input loop.
-///
-/// Spawns a task that routes through the same
-/// [`phux_plugin::run_configured_action`] child-process runtime as
-/// `phux config run PLUGIN ACTION`, then reports the outcome on `tx`.
-/// The TUI never blocks: the input loop keeps running while the child
-/// does. A dropped receiver (loop exited) makes the send a no-op.
+/// Run one plugin action off the input loop through
+/// [`phux_plugin::run_configured_action`] (the `phux config run` runtime),
+/// reporting on `tx`.
 pub fn spawn_plugin_action(
     tx: UnboundedSender<PluginRunResult>,
     plugin_id: String,

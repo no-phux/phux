@@ -1,33 +1,18 @@
 //! Config-derived TUI state: built once per attach, swapped whole on reload.
 //!
-//! Before this module the driver derived the same dozen values from a
-//! `phux_config::Config` in three places -- a `ConfigSeed` at attach
-//! (tolerant), a `ReloadedConfig` on `reload-config` (strict), and a third
-//! copy for the headless rendered snapshot -- and threaded them through
-//! `SessionLoop` as loose fields. [`TuiSettings`] is that set as one value
-//! with one composition path and two policies:
+//! [`TuiSettings`] has one composition path and two policies:
 //!
-//! * **Tolerant** ([`TuiSettings::load_tolerant`], attach time). A malformed
-//!   config never blocks attach. A load or status-bar build failure degrades
-//!   to a visible error line on the bar row pointing at `phux config check`;
-//!   a bad keybinding disables only itself (the lenient resolver), with a
-//!   status-bar diagnostic naming the chord.
-//! * **Strict** ([`TuiSettings::load_strict`], reload). Any parse, layer,
-//!   widget, or binding failure fails the whole reload, so the caller keeps
-//!   its previous, known-good settings. Nothing is ever half-applied
+//! * **Tolerant** ([`TuiSettings::load_tolerant`], attach). A malformed
+//!   config never blocks attach: failures degrade to an error line on the bar
+//!   pointing at `phux config check`, and a bad keybinding disables only
+//!   itself.
+//! * **Strict** ([`TuiSettings::load_strict`], reload). Any failure fails
+//!   the whole reload and the previous settings stay; nothing is half-applied
 //!   (docs/consumers/tui.md section 4.3).
 //!
-//! The asymmetry is deliberate: a reload has a known-good previous config to
-//! fall back on; attach does not.
-//!
-//! What a reload swaps versus what it leaves alone is
-//! [`TuiSettings::adopt_reload`]: keybindings, resolver, theme, chrome
-//! breakpoints, status bar, plugin rows, and the which-key knobs move; the
-//! sidebar geometry and the mouse-capture gate are read once at attach
-//! (`[sidebar]` and `defaults.mouse` are listed as not-reloadable in the
-//! same doc section). The settings page (`render::overlay::settings`) reads
-//! the same fact from `phux_config::settings::Applies` so it can tell the
-//! user which edits land immediately.
+//! [`TuiSettings::adopt_reload`] swaps keybindings, resolver, theme, chrome
+//! breakpoints, status bar, plugin rows, and which-key knobs; sidebar
+//! geometry and the mouse gate are attach-time only.
 
 use std::path::Path;
 use std::time::Duration;
@@ -65,15 +50,10 @@ pub struct SidebarSettings {
     pub edge: SidebarEdge,
 }
 
-/// Everything the TUI derives from the on-disk config.
-///
-/// Loaded once, before any user input can reach the loop: opening a
-/// discovery surface must never perform config I/O under the user's
-/// fingers. The in-place reload swaps the same pieces through
-/// [`Self::adopt_reload`].
+/// Everything the TUI derives from the on-disk config, loaded before any
+/// input can reach the loop (discovery surfaces never do config I/O).
 pub struct TuiSettings {
-    /// The plugin-merged keybindings snapshot (action-finder chords, the
-    /// which-key rows, the onboarding hint). `None` only when the config
+    /// The plugin-merged keybindings snapshot; `None` only when the config
     /// failed to load at attach.
     pub keybindings: Option<KeybindingsCfg>,
     /// The keybind resolver built from that snapshot. `None`
@@ -121,12 +101,8 @@ impl std::fmt::Debug for TuiSettings {
 }
 
 impl TuiSettings {
-    /// Attach-time load: the layered config from its canonical path, with
-    /// every failure degraded so a broken config never blocks attach.
-    ///
-    /// When the file does not parse at all there is no keybinding snapshot
-    /// and no resolver -- the user still gets a working pane mirror, and the
-    /// status bar carries the parse error pointing at `phux config check`.
+    /// Attach-time load with every failure degraded; an unparsable file
+    /// yields no bindings and the parse error on the bar.
     #[must_use]
     pub fn load_tolerant() -> Self {
         match phux_config::loader::load() {
@@ -135,44 +111,31 @@ impl TuiSettings {
         }
     }
 
-    /// Reload: re-read the layered config at `path` and rebuild every piece
-    /// of TUI state from it, strictly.
-    ///
-    /// This is the same loader attach runs, so `extends` stacks, `-append`
-    /// array merges, and the embedded defaults all apply identically.
+    /// Reload: re-read the layered config at `path` strictly (same loader as
+    /// attach).
     ///
     /// # Errors
     ///
-    /// A human-readable, single-problem message suitable for a toast --
-    /// unreadable file, malformed TOML, a broken layer stack, a widget the
-    /// status bar cannot build, a keybinding table the resolver rejects --
-    /// never a partial result.
+    /// A single-problem message for a toast; never a partial result.
     pub fn load_strict(path: &Path) -> Result<Self, String> {
         let cfg = phux_config::loader::load_from(path).map_err(|err| err.to_string())?;
         Self::strict_from(&cfg)
     }
 
     /// Re-read `path` and swap the reloadable subset in, or leave `self`
-    /// untouched and hand back the error.
-    ///
-    /// This is the "keep the old config, never half-apply" contract in one
-    /// place: the swap happens only after [`Self::load_strict`] returned a
-    /// fully built value.
+    /// untouched.
     ///
     /// # Errors
     ///
-    /// The [`Self::load_strict`] message; `self` is untouched.
+    /// The [`Self::load_strict`] message.
     pub fn reload_in_place(&mut self, path: &Path) -> Result<(), String> {
         let new = Self::load_strict(path)?;
         self.adopt_reload(new);
         Ok(())
     }
 
-    /// Take the reloadable subset from `new`.
-    ///
-    /// Sidebar geometry and the mouse-capture gate stay as they were: both
-    /// were applied to the outer terminal and the layout at attach and are
-    /// documented as taking effect on the next attach.
+    /// Take the reloadable subset from `new` (sidebar geometry and the mouse
+    /// gate take effect on the next attach).
     pub fn adopt_reload(&mut self, new: Self) {
         self.keybindings = new.keybindings;
         self.resolver = new.resolver;
@@ -184,9 +147,8 @@ impl TuiSettings {
         self.which_key = new.which_key;
     }
 
-    /// The seed used when the config file itself does not load: no
-    /// bindings, default colors and thresholds, the sidebar off, mouse
-    /// capture on, and the parse error on the bar row.
+    /// The seed when the config does not load: no bindings, defaults, the
+    /// sidebar off, mouse capture on, the parse error on the bar row.
     fn without_config(err: &ConfigError) -> Self {
         tracing::warn!(error = %err, "phux-config load failed; surfacing on status bar");
         let theme = Theme::default();
@@ -217,12 +179,9 @@ impl TuiSettings {
         }
     }
 
-    /// Build tolerantly from a parsed config.
-    ///
-    /// The status bar degrades a build failure to the error-line painter; the
-    /// resolver is the lenient one, and its diagnostics take the bar row
-    /// unless a config error already owns it (which subsumes any keybinding
-    /// problem).
+    /// Build tolerantly: the bar degrades to the error-line painter, the
+    /// resolver is lenient, and its diagnostics take the bar row unless a
+    /// config error already does.
     #[must_use]
     pub fn tolerant_from(cfg: &Config) -> Self {
         let manifests = enabled_manifests(cfg);
@@ -256,8 +215,7 @@ impl TuiSettings {
         )
     }
 
-    /// Build strictly from a parsed config: any widget or binding the
-    /// composition rejects fails the whole build.
+    /// Build strictly: any widget or binding failure fails the build.
     ///
     /// # Errors
     ///
@@ -270,9 +228,7 @@ impl TuiSettings {
         let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
-        // Deliberately the STRICT build. Reload keeps its
-        // all-or-nothing contract: any binding the resolver rejects fails the
-        // whole reload and the previous config stays fully in effect.
+        // Strict on purpose: reload is all-or-nothing.
         let resolver = Resolver::new(&keybindings).map_err(|err| err.to_string())?;
         Ok(Self::assemble(
             cfg,
@@ -332,9 +288,8 @@ pub const fn sidebar_edge(position: SidebarPosition) -> SidebarEdge {
     }
 }
 
-/// The enabled plugins' manifests, resolved
-/// relative to the canonical config path -- the same resolution
-/// `phux config run` uses. A broken manifest is skipped with a warning.
+/// Enabled plugins' manifests, resolved like `phux config run` does; broken
+/// ones are skipped with a warning.
 fn enabled_manifests(cfg: &Config) -> Vec<PluginManifest> {
     if cfg.plugins.is_empty() {
         return Vec::new();
@@ -342,71 +297,43 @@ fn enabled_manifests(cfg: &Config) -> Vec<PluginManifest> {
     phux_config::plugin::load_enabled_manifests(&phux_config::loader::config_path(), &cfg.plugins)
 }
 
-/// The keybindings snapshot with the plugin manifests' `keys` merged in
-/// (user config wins every conflict), cached so opening a discovery surface
-/// never performs config I/O under user fingers.
+/// Keybindings with plugin `keys` merged in (user config wins), cached.
 fn merged_keybindings(cfg: &Config, plugin_actions: &[PluginActionEntry]) -> KeybindingsCfg {
     let mut kb = cfg.keybindings.clone();
     plugin_actions::merge_plugin_bindings(&mut kb, plugin_actions);
     kb
 }
 
-/// Compose the status-bar painter from a parsed [`Config`] plus the
-/// enabled plugins' manifests.
-///
-/// This is the ONE composition point shared by the tolerant and strict
-/// builds, so the two cannot drift (phux-i0e8.6.1: reload used to hardcode
-/// the default position and skip
-/// [`phux_config::widget::merge_widget_contributions`], silently resetting
-/// `[status] position = "top"` and dropping plugin-contributed widgets).
-/// Plugin `[[widgets]]` contributions merge in **after** the user's own
-/// `[status]` widgets and **before** the bar builds, and the painter takes
-/// `cfg.status.position` and the configured prefix. `Ok(None)` means the
-/// merged config composes an empty bar.
-///
-/// Only the composition is shared; error POLICY stays with the caller.
+/// Compose the status-bar painter from a config plus enabled plugins'
+/// manifests: the one composition point shared by the tolerant and strict
+/// builds (they once drifted, resetting `position` on reload). Plugin
+/// widgets merge after the user's own. `Ok(None)` ⇒ an empty bar.
 ///
 /// # Errors
 ///
-/// Forwards the [`phux_config::widget::StatusBar::build`] error (unknown
-/// widget kind, bad option) untouched for the caller's policy.
+/// The [`phux_config::widget::StatusBar::build`] error, for the caller's
+/// policy.
 pub fn compose_status_bar(
     cfg: &Config,
     manifests: &[PluginManifest],
 ) -> Result<Option<StatusBarPainter>, WidgetError> {
     let registry = phux_config::WidgetRegistry::with_builtins();
-    // Fold enabled plugins' `[[widgets]]` contributions in
-    // after the user's own `[status]` widgets. Invalid contributions are
-    // dropped with a warning inside the merge (mirroring the plugin
-    // keybinding policy), so a broken plugin cannot fail the build; a
-    // genuinely broken USER config still can.
+    // Invalid plugin contributions are dropped with a warning inside the
+    // merge; a broken user config still fails the build.
     let mut status = cfg.status.clone();
     phux_config::widget::merge_widget_contributions(&mut status, manifests, &registry);
     let bar = phux_config::widget::StatusBar::build(&status, &registry)?;
     if bar.is_empty() {
         return Ok(None);
     }
-    // `[status] position = "top" | "bottom"` picks the
-    // reserved row; the pane content rect shifts to match (see
-    // `paint::content_rect`).
     let mut painter = StatusBarPainter::new(bar, cfg.status.position.into());
     painter.set_prefix(cfg.keybindings.prefix.clone());
     Ok(Some(painter))
 }
 
-/// Build the lenient [`Resolver`] from a keybindings snapshot.
-///
-/// The snapshot is the plugin-merged one, so manifest `keys`
-/// chords resolve like user bindings -- the merge already validated each
-/// contributed chord, so a plugin can't poison this build.
-///
-/// The build is **lenient per binding** -- a resolver always
-/// comes back, and each diagnostic disables exactly the binding it names.
-/// Before this, one malformed chord failed the whole build and silently
-/// disabled EVERY binding, including `detach`. Diagnostics are logged here;
-/// the caller surfaces them as a visible status-bar error line
-/// ([`keybind_error_line`]). Config reload deliberately stays
-/// all-or-nothing instead ([`TuiSettings::strict_from`]).
+/// Build the lenient [`Resolver`] from the plugin-merged snapshot: each
+/// diagnostic disables only the binding it names (one bad chord once
+/// disabled every binding, `detach` included). Reload stays strict.
 #[must_use]
 pub fn build_resolver_from(kb: &KeybindingsCfg) -> (Resolver, Vec<BindingDiagnostic>) {
     let (resolver, diagnostics) = Resolver::new_lenient(kb);
@@ -416,13 +343,9 @@ pub fn build_resolver_from(kb: &KeybindingsCfg) -> (Resolver, Vec<BindingDiagnos
     (resolver, diagnostics)
 }
 
-/// Format the lenient resolver's diagnostics as the one-line status-bar
-/// error strip.
-///
-/// Names the first offending chord, the reason, how many more bindings (if
-/// any) were also disabled, and the actionable next step (`phux config
-/// check`). Empty input formats to an empty string (callers gate on
-/// non-empty diagnostics).
+/// The lenient resolver's diagnostics as a one-line bar error: the first
+/// chord, the reason, how many more, and `phux config check`. Empty input
+/// formats empty.
 #[must_use]
 pub fn keybind_error_line(diags: &[BindingDiagnostic]) -> String {
     let Some(first) = diags.first() else {
@@ -442,11 +365,8 @@ pub fn keybind_error_line(diags: &[BindingDiagnostic]) -> String {
     }
 }
 
-/// Format a one-line, on-screen config error for the status bar.
-///
-/// The `Display` of the error plus the actionable next step. The remedy is
-/// `phux config check` -- the verb that diagnoses, with key paths and layer
-/// attribution -- not `config show`, which only renders the effective config.
+/// A one-line config error for the bar, pointing at `phux config check`
+/// (which diagnoses; `config show` only renders).
 pub fn config_error_line(err: &impl std::fmt::Display) -> String {
     format!("config error: {err} (run: phux config check)")
 }

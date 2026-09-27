@@ -1,19 +1,7 @@
-//! The sidebar's cross-session projections.
-//!
-//! Agents and Sessions describe the whole server rather than only the
-//! attached session, so their
-//! inputs are the peer caches the driver keeps rather than the workspace it
-//! renders. Pure functions over plain data: everything arrives as arguments,
-//! nothing is fetched here, and the tests drive them with fully synthetic
-//! state.
-//!
-//! Zero new wire surface (ADR-0030). Every input is something the client
-//! already receives — the session graph from `ATTACHED`/`GET_STATE`, peer
-//! layouts and agent records from the L3 subscriptions phux-k0cw.5 opened,
-//! and peer asked flags from the server-wide event stream the client has
-//! always held. A CLI-created session has no persisted TUI layout until a
-//! TUI visits it; the server window/resource graph is the inventory until
-//! then.
+//! The sidebar's cross-session projections (Agents, Sessions): pure
+//! functions over the driver's peer caches, with no new wire surface
+//! (ADR-0030). A CLI-created session has no persisted TUI layout until a TUI
+//! visits it, so the server window/resource graph is its inventory until then.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,12 +18,7 @@ use super::review::ReviewIndex;
 /// record, so the strip can say WHAT happened without claiming to know who.
 const UNNAMED_AGENT: &str = "unnamed agent";
 
-/// The peer-wide state zones 1 and 3 are projected from.
-///
-/// Grouped rather than threaded as five more positional parameters: the
-/// chrome refresh already carried a `too_many_arguments` allow before this
-/// stage, and adding to that list is how a 22-argument function happens (see
-/// phux-jx39).
+/// The peer-wide state the sidebar's cross-session zones project from.
 #[derive(Clone, Copy)]
 pub(super) struct PeerInputs<'a> {
     /// The serving server's own hostname, never the TUI process's hostname.
@@ -296,16 +279,10 @@ pub(super) fn satellite_agent_rows(
     rows
 }
 
-/// Every session, including the current one, with its serving host.
-///
-/// A session with no cached layout still gets a row — "this space exists" is
-/// the roster's whole job, and a session the client cannot describe yet is
-/// exactly the one a user is most likely to have forgotten. Its counts are
-/// zero and its dot is the quiet rung, which reads as "nothing known", not as
-/// "nothing happening".
-///
-/// Satellite sessions come from the host inventory, not from scanning a
-/// local session's leaves. Their agent counts remain explicitly unknown.
+/// Every session, including the current one, with its serving host. A
+/// session with no cached layout still gets a row with zero counts and the
+/// quiet dot ("nothing known"). Satellite sessions come from the host
+/// inventory, their agent counts explicitly unknown.
 pub(super) fn session_roster(
     peers: &PeerInputs<'_>,
     local: &[AgentEntry],
@@ -782,10 +759,8 @@ mod tests {
         assert_eq!(peer.settled, 1);
     }
 
-    /// A satellite's panes are structurally unknowable from here, so the row
-    /// must say `unknown` and never `blocked: 0`. A calm-looking zero on a
-    /// session we cannot inspect is the one bug that would discredit the
-    /// whole attention surface.
+    /// A satellite's panes are unknowable here, so its row says `unknown`,
+    /// never a calm-looking `blocked: 0`.
     #[test]
     fn a_satellite_session_reports_unknown_not_zero() {
         let mut f = fixture();
@@ -959,10 +934,8 @@ mod tests {
         assert_eq!(session_roster(&inputs, &[])[0].host, "this server");
     }
 
-    /// The projections feed a change-gated painter, so identical inputs must
-    /// produce identical output. If they did not, `refresh_window_chrome`
-    /// would report a change every frame and the strip would repaint forever
-    /// against the ADR-0029 accumulator.
+    /// Identical inputs must project identically, or the change-gated
+    /// painter would repaint forever.
     #[test]
     fn an_unchanged_projection_does_not_report_a_change() {
         let mut f = fixture();

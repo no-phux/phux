@@ -16,13 +16,8 @@ use rustix::termios::{LocalModes, OptionalActions, SpecialCodeIndex, Termios};
 
 const COLOR_QUERY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
 
-/// Total wall-clock budget for the whole OSC 10/11 exchange.
-///
-/// This sits on the attach critical path: nothing is sent to the server until
-/// the probe answers, so its cost is added to every `attach_handshake`. A
-/// terminal that answers at all answers in about a millisecond, even over
-/// ssh; one that does not answer must not cost more than a frame. The old
-/// `VMIN=0`/`VTIME=1` shape charged 100 ms per read and up to three reads.
+/// Wall-clock budget for the whole OSC 10/11 exchange. It sits on the attach
+/// critical path; a terminal that answers does so in about a millisecond.
 const PROBE_BUDGET: Duration = Duration::from_millis(25);
 
 /// Extra wait, only after the budget misses, to swallow a late reply.
