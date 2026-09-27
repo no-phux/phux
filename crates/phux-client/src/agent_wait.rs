@@ -561,32 +561,29 @@ pub(crate) fn finish(
     shared: WaitShared,
 ) -> Result<AgentWaitResult, AgentWaitError> {
     let (tracker, latest, stats) = shared.into_parts();
-    match decision {
-        Some((Verdict::Satisfied { from, to }, record, via)) => Ok(AgentWaitResult {
-            edge: Some(ObservedEdge { from, to, via }),
-            baseline: tracker.baseline(),
-            last: tracker.last(),
-            record: record.or(latest),
-            edges: tracker.edges(),
-            polls: stats.polls,
-            pushes: stats.pushes,
-        }),
-        Some((Verdict::Departed { from, reason }, record, _)) => Err(AgentWaitError::Departed {
-            from,
-            reason,
-            last_record: record.or(latest),
-        }),
+    // `latest` already holds a satisfying record; a departure's may be a
+    // tombstone, so it falls back to the last record seen.
+    let edge = match decision {
+        Some((Verdict::Departed { from, reason }, record, _)) => {
+            return Err(AgentWaitError::Departed {
+                from,
+                reason,
+                last_record: record.or(latest),
+            });
+        }
+        Some((Verdict::Satisfied { from, to }, _, via)) => Some(ObservedEdge { from, to, via }),
         // The halves never return `Pending`; it folds in with the deadline.
-        Some((Verdict::Pending, _, _)) | None => Ok(AgentWaitResult {
-            edge: None,
-            baseline: tracker.baseline(),
-            last: tracker.last(),
-            record: latest,
-            edges: tracker.edges(),
-            polls: stats.polls,
-            pushes: stats.pushes,
-        }),
-    }
+        Some((Verdict::Pending, _, _)) | None => None,
+    };
+    Ok(AgentWaitResult {
+        edge,
+        baseline: tracker.baseline(),
+        last: tracker.last(),
+        record: latest,
+        edges: tracker.edges(),
+        polls: stats.polls,
+        pushes: stats.pushes,
+    })
 }
 
 /// Wait until `terminal`'s agent record transitions into one of `targets`,
@@ -1264,42 +1261,15 @@ mod tests {
         let first = ResourceId::local(7);
         let second = ResourceId::local(8);
         let mut fleet = FleetTrackers::new(&[AgentMetaState::Blocked]);
-
-        assert!(
-            fleet
-                .observe(
-                    first.clone(),
-                    Some(state_record(AgentMetaState::Blocked)),
-                    None,
-                )
-                .is_none(),
-            "an already-blocked agent is a stale level, not a transition"
-        );
-        assert!(
-            fleet
-                .observe(
-                    second.clone(),
-                    Some(state_record(AgentMetaState::Working)),
-                    None,
-                )
-                .is_none()
-        );
-        assert!(
-            fleet
-                .observe(
-                    second.clone(),
-                    Some(state_record(AgentMetaState::Idle)),
-                    Some(EdgeSource::Push),
-                )
-                .is_none(),
-            "an untargeted transition advances only that agent's tracker"
-        );
-        let matched = fleet
-            .observe(
-                second.clone(),
-                Some(state_record(AgentMetaState::Blocked)),
-                Some(EdgeSource::Push),
-            )
+        let mut see = |terminal: &ResourceId, state, via| {
+            fleet.observe(terminal.clone(), Some(state_record(state)), via)
+        };
+        // An already-blocked baseline is a stale level; an untargeted
+        // transition advances only that agent's tracker.
+        assert!(see(&first, AgentMetaState::Blocked, None).is_none());
+        assert!(see(&second, AgentMetaState::Working, None).is_none());
+        assert!(see(&second, AgentMetaState::Idle, Some(EdgeSource::Push)).is_none());
+        let matched = see(&second, AgentMetaState::Blocked, Some(EdgeSource::Push))
             .expect("the second agent's transition matches");
         assert_eq!(matched.terminal, second);
         assert_eq!(matched.edge.from, AgentMetaState::Idle);
