@@ -97,7 +97,9 @@ impl Home {
             ("XDG_CONFIG_HOME", root.join("config")),
             ("XDG_STATE_HOME", root.join("state")),
             ("XDG_RUNTIME_DIR", root.join("run")),
-            ("PHUX_PROFILE", PathBuf::from("default")),
+            // Dev binaries refuse the default-profile production socket even
+            // under a hermetic XDG_RUNTIME_DIR (refuse_dev_on_production).
+            ("PHUX_PROFILE", PathBuf::from("dev")),
             ("PHUX_TAILSCALE", root.join("no-such-tailscale")),
             ("PHUX_SSH", root.join("fake-ssh")),
         ]
