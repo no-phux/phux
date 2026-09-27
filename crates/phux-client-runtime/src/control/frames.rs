@@ -211,8 +211,7 @@ impl ControlPlane {
             } => self.hello_ok(
                 (protocol_major, protocol_minor, protocol_patch),
                 &server_id,
-                server_caps.features,
-                server_caps.layers,
+                server_caps,
                 selected_profile,
                 bootstrap_limits,
             )?,
@@ -285,6 +284,15 @@ impl ControlPlane {
                     // Preserve manually correlated extension traffic for
                     // projection shims such as the stable C ABI.
                     self.push_event(Event::Frame(Box::new(FrameKind::DirectoryListing {
+                        request_id,
+                        result,
+                    })));
+                }
+                Ok(())
+            }
+            FrameKind::PathResults { request_id, result } => {
+                if let Some(result) = self.resolve_path_results(request_id, result) {
+                    self.push_event(Event::Frame(Box::new(FrameKind::PathResults {
                         request_id,
                         result,
                     })));

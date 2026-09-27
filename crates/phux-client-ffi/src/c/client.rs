@@ -184,6 +184,8 @@ pub(crate) struct Client {
     pub attach_role: Option<phux_protocol::wire::frame::RolePolicy>,
     pub event_after_seq: Option<u64>,
     pub directory: crate::c::directory::DirectoryState,
+    /// Borrow-retained projected `PATH_RESULTS` batch for the C ABI.
+    pub path_answers: Vec<crate::projection::outcome::PathResult>,
     pub session_query: crate::c::session_query::SessionQuery,
     pub session_creates: crate::c::session_create::SessionCreates,
     pub session_rename: crate::c::session_rename::SessionRename,
@@ -278,6 +280,7 @@ impl Client {
             attach_role: None,
             event_after_seq: None,
             directory: crate::c::directory::DirectoryState::default(),
+            path_answers: Vec::new(),
             session_query: crate::c::session_query::SessionQuery::default(),
             session_creates: crate::c::session_create::SessionCreates::default(),
             session_rename: crate::c::session_rename::SessionRename::default(),

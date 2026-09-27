@@ -142,7 +142,7 @@ pub(crate) fn dispatch(client: &mut Client, frame: FrameKind) -> Option<FrameKin
     }
 }
 
-fn request_path(bytes: &[u8]) -> Result<&str, BridgeError> {
+pub(crate) fn request_path(bytes: &[u8]) -> Result<&str, BridgeError> {
     if bytes.len() > MAX_DIRECTORY_PATH_BYTES {
         return Err(BridgeError::invalid("directory path exceeds 4096 bytes"));
     }
@@ -156,7 +156,7 @@ fn request_path(bytes: &[u8]) -> Result<&str, BridgeError> {
 /// identity in every embedder this ABI serves.
 pub const MAX_DIRECTORY_HOST_BYTES: usize = 255;
 
-fn request_host(bytes: &[u8]) -> Result<Option<SatelliteHost>, BridgeError> {
+pub(crate) fn request_host(bytes: &[u8]) -> Result<Option<SatelliteHost>, BridgeError> {
     if bytes.is_empty() {
         return Ok(None);
     }

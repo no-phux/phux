@@ -30,7 +30,7 @@ use phux_client_core::session::{
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, ClientCapabilities, ImageProtocolSet,
-    Layer, LayerSet, ServerFeature, ServerFeatureSet,
+    Layer, LayerSet, ServerFeature, ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet,
 };
 #[cfg(not(feature = "engine"))]
 use phux_protocol::caps::{BootstrapProfileKind, BootstrapProfileSet};
@@ -71,6 +71,7 @@ mod topology;
 pub use events::{DeliveryOutcome, Event, Status};
 pub use extensions::{
     DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,
+    MAX_PATH_ANSWERS, PathAnswer, PathFailure, PathMatch, PathMatchKind, PathSearchStatus,
     TranscribeOutcome, TranscribeReceipt,
 };
 pub use geometry::TerminalResizeOutcome;
@@ -208,6 +209,8 @@ pub struct ServerInfo {
     pub id: Vec<u8>,
     /// The features the server advertised.
     pub features: ServerFeatureSet,
+    /// Capabilities from the trailing extension word (absent on older servers).
+    pub features_ext: ServerFeatureExtSet,
     /// The layers the server advertised.
     pub layers: LayerSet,
     /// The protocol triple the server selected.
@@ -223,6 +226,12 @@ impl ServerInfo {
     #[must_use]
     pub const fn has(&self, feature: ServerFeature) -> bool {
         self.features.contains(feature)
+    }
+
+    /// Whether the server advertised an extended feature.
+    #[must_use]
+    pub const fn has_ext(&self, feature: ServerFeatureExt) -> bool {
+        self.features_ext.contains(feature)
     }
 }
 

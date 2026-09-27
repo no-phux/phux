@@ -8,16 +8,86 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use phux_client_core::input_replay::INPUT_RETRY_HORIZON;
-use phux_protocol::ids::{FileUploadId, ResourceId};
+use phux_protocol::ids::{FileUploadId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, DirectoryEntry, DirectoryErrorCode,
     DirectoryListingError, DirectoryListingResult, ErrorCode, FrameKind, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE,
+    MAX_FILE_UPLOAD_SIZE, PathErrorCode, PathKind, PathQueryResult, PathStatus,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{ControlPlane, Pending, ServerFeature};
+use super::{ControlPlane, Pending, ServerFeature, ServerFeatureExt};
+
+/// Maximum outstanding plus undrained path answers on one client. Drain answers
+/// before issuing more searches; zero from `path_query` means no frame was sent.
+pub const MAX_PATH_ANSWERS: usize = 128;
+
+/// A matched absolute host path. Never insert without target-shell escaping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathMatch {
+    /// Absolute UTF-8 path on the queried host.
+    pub path: String,
+    /// Filesystem kind, independent of the basename.
+    pub kind: PathMatchKind,
+}
+
+/// Filesystem kind for a matched path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathMatchKind {
+    /// Regular file.
+    File,
+    /// Directory.
+    Directory,
+    /// Symbolic link, regardless of its target.
+    Symlink,
+}
+
+/// Completeness of a successful query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathSearchStatus {
+    /// Exhaustive result.
+    Complete,
+    /// Host discovery is still warming; retry may yield more.
+    Warming,
+    /// Search was capped; result is not exhaustive.
+    Truncated,
+}
+
+/// Reason the query was refused or cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathFailure {
+    /// Root does not exist.
+    NotFound,
+    /// The host denied access.
+    PermissionDenied,
+    /// Root is not a directory.
+    NotADirectory,
+    /// Another server-side or correlated protocol error.
+    Other,
+    /// Carrying connection ended before a reply.
+    Unanswered,
+}
+
+/// Correlated host browse/search result. `failure` is absent on success.
+/// `Warming` and `Truncated` are terminal answers to this request, not streams.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathAnswer {
+    /// Wire correlation returned by `path_query`.
+    pub request_id: u32,
+    /// Resolved or attempted root.
+    pub root: String,
+    /// Lexical parent on success, absent at filesystem root.
+    pub parent: Option<String>,
+    /// Matched absolute paths, at most the protocol's result cap.
+    pub rows: Vec<PathMatch>,
+    /// Completeness on success.
+    pub status: Option<PathSearchStatus>,
+    /// Refusal or local connection cancellation.
+    pub failure: Option<PathFailure>,
+    /// Display-only diagnostic; never parse it.
+    pub message: String,
+}
 
 const UPLOAD_CHUNK_BYTES: usize = 1024 * 1024;
 const COMPLETED_UPLOADS_KEPT: usize = 32;
@@ -145,6 +215,8 @@ pub(super) struct Extensions {
     transcribe_receipts: Vec<TranscribeReceipt>,
     pending_listings: HashMap<u32, String>,
     directory_listings: Vec<DirectoryListing>,
+    pending_paths: HashMap<u32, String>,
+    path_answers: Vec<PathAnswer>,
 }
 
 impl ControlPlane {
@@ -310,6 +382,122 @@ impl ControlPlane {
         std::mem::take(&mut self.extensions.directory_listings)
     }
 
+    /// Queue a host-side browse or fuzzy search. `None` targets the serving
+    /// host; `Some` names a satellite. Returns zero if disconnected, the
+    /// server predates `PATH_QUERY`, or the bounded answer queue is full. Zero
+    /// never consumes a request ID or sends a frame. This only reads paths;
+    /// inserting a selection requires a separate target-pane input lease.
+    pub fn path_query(
+        &mut self,
+        root: String,
+        query: String,
+        recursive: bool,
+        host: Option<SatelliteHost>,
+    ) -> u32 {
+        if !self.path_query_ready() {
+            return 0;
+        }
+        let request_id = self.next_request_id();
+        self.queue_path_query(request_id, root, query, recursive, host);
+        request_id
+    }
+
+    /// Query with an embedder-owned correlation. The caller must reserve the
+    /// ID in its explicit request ledger. False means no frame was sent.
+    pub fn path_query_with_id(
+        &mut self,
+        request_id: u32,
+        root: String,
+        query: String,
+        recursive: bool,
+        host: Option<SatelliteHost>,
+    ) -> bool {
+        if request_id == 0
+            || !self.path_query_ready()
+            || self.pending.contains_key(&request_id)
+            || self.extensions.pending_listings.contains_key(&request_id)
+            || self.input_replay.owns(request_id)
+            || self.extensions.pending_paths.contains_key(&request_id)
+        {
+            return false;
+        }
+        if request_id >= self.request_seq {
+            self.request_seq = request_id.wrapping_add(1).max(1);
+        }
+        self.queue_path_query(request_id, root, query, recursive, host);
+        true
+    }
+
+    fn path_query_ready(&self) -> bool {
+        self.handshake_ready
+            && self
+                .server
+                .as_ref()
+                .is_some_and(|server| server.has_ext(ServerFeatureExt::PathQuery))
+            && self.extensions.pending_paths.len() + self.extensions.path_answers.len()
+                < MAX_PATH_ANSWERS
+    }
+
+    fn queue_path_query(
+        &mut self,
+        request_id: u32,
+        root: String,
+        query: String,
+        recursive: bool,
+        host: Option<SatelliteHost>,
+    ) {
+        self.extensions
+            .pending_paths
+            .insert(request_id, root.clone());
+        self.queue_frame(&FrameKind::PathQuery {
+            request_id,
+            root,
+            query,
+            recursive,
+            host,
+        });
+    }
+
+    /// Drain path answers. No answer is silently dropped to make room.
+    pub fn take_path_answers(&mut self) -> Vec<PathAnswer> {
+        std::mem::take(&mut self.extensions.path_answers)
+    }
+
+    pub(super) fn resolve_path_results(
+        &mut self,
+        request_id: u32,
+        result: PathQueryResult,
+    ) -> Option<PathQueryResult> {
+        if self.extensions.pending_paths.remove(&request_id).is_none() {
+            return Some(result);
+        }
+        self.extensions
+            .path_answers
+            .push(project_path_answer(request_id, result));
+        None
+    }
+
+    pub(super) fn resolve_path_error(&mut self, request_id: Option<u32>, message: &str) -> bool {
+        let Some((request_id, root)) = request_id.and_then(|id| {
+            self.extensions
+                .pending_paths
+                .remove(&id)
+                .map(|root| (id, root))
+        }) else {
+            return false;
+        };
+        self.extensions.path_answers.push(PathAnswer {
+            request_id,
+            root,
+            parent: None,
+            rows: Vec::new(),
+            status: None,
+            failure: Some(PathFailure::Other),
+            message: message.to_owned(),
+        });
+        true
+    }
+
     pub(super) fn resolve_extension_result(
         &mut self,
         pending: &Pending,
@@ -346,6 +534,17 @@ impl ControlPlane {
     }
 
     pub(super) fn reset_extension_correlations(&mut self, message: &str) {
+        for (request_id, root) in self.extensions.pending_paths.drain() {
+            self.extensions.path_answers.push(PathAnswer {
+                request_id,
+                root,
+                parent: None,
+                rows: Vec::new(),
+                status: None,
+                failure: Some(PathFailure::Unanswered),
+                message: message.to_owned(),
+            });
+        }
         for upload in self.extensions.uploads.values_mut() {
             upload.in_flight = None;
         }
@@ -657,6 +856,49 @@ impl ControlPlane {
             },
         };
         self.extensions.transcribe_receipts.push(receipt);
+    }
+}
+
+fn project_path_answer(request_id: u32, result: PathQueryResult) -> PathAnswer {
+    match result {
+        Ok(reply) => PathAnswer {
+            request_id,
+            root: reply.root,
+            parent: reply.parent,
+            rows: reply
+                .rows
+                .into_iter()
+                .map(|row| PathMatch {
+                    path: row.path,
+                    kind: match row.kind {
+                        PathKind::File => PathMatchKind::File,
+                        PathKind::Directory => PathMatchKind::Directory,
+                        PathKind::Symlink => PathMatchKind::Symlink,
+                    },
+                })
+                .collect(),
+            status: Some(match reply.status {
+                PathStatus::Complete => PathSearchStatus::Complete,
+                PathStatus::Warming => PathSearchStatus::Warming,
+                PathStatus::Truncated => PathSearchStatus::Truncated,
+            }),
+            failure: None,
+            message: String::new(),
+        },
+        Err(error) => PathAnswer {
+            request_id,
+            root: error.root,
+            parent: None,
+            rows: Vec::new(),
+            status: None,
+            failure: Some(match error.code {
+                PathErrorCode::NotFound => PathFailure::NotFound,
+                PathErrorCode::PermissionDenied => PathFailure::PermissionDenied,
+                PathErrorCode::NotADirectory => PathFailure::NotADirectory,
+                PathErrorCode::Other => PathFailure::Other,
+            }),
+            message: error.message,
+        },
     }
 }
 

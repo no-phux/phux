@@ -1,7 +1,10 @@
 //! Runtime-owned native-client operations and lossless receipt drains.
 
 use super::{Client, ResourceId};
-use crate::control::{ControlPlane, DirectoryListing, FileUploadReceipt, TranscribeReceipt};
+use crate::control::{
+    ControlPlane, DirectoryListing, FileUploadReceipt, PathAnswer, TranscribeReceipt,
+};
+use phux_protocol::ids::SatelliteHost;
 
 impl Client {
     /// Upload bytes into the terminal-owning server's sandbox.
@@ -63,5 +66,26 @@ impl Client {
     #[must_use]
     pub fn take_directory_listings(&self) -> Vec<DirectoryListing> {
         self.inner.with(ControlPlane::take_directory_listings)
+    }
+
+    /// Query paths on the serving host or an explicitly named satellite.
+    /// Returns zero if the server lacks the extended capability or the
+    /// bounded queue is full; no request is sent in either case.
+    #[must_use]
+    pub fn path_query(
+        &self,
+        root: String,
+        query: String,
+        recursive: bool,
+        host: Option<SatelliteHost>,
+    ) -> u32 {
+        self.inner
+            .with(|control| control.path_query(root, query, recursive, host))
+    }
+
+    /// Drain correlated, typed path results, including disconnect cancellations.
+    #[must_use]
+    pub fn take_path_answers(&self) -> Vec<PathAnswer> {
+        self.inner.with(ControlPlane::take_path_answers)
     }
 }

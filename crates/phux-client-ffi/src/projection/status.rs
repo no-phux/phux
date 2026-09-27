@@ -1,7 +1,7 @@
 //! Connection status and negotiated capabilities, as a product reads them.
 
 use phux_client_runtime::control::{ServerInfo, Status};
-use phux_protocol::caps::ServerFeature;
+use phux_protocol::caps::{ServerFeature, ServerFeatureExt};
 
 /// Lossless, opaque server-incarnation identity. This is encoding, not a hash
 /// or a UTF-8 interpretation; even empty/non-UTF-8 identities retain every byte.
@@ -60,6 +60,12 @@ pub fn negotiated_features(server: &ServerInfo) -> Vec<String> {
     .into_iter()
     .filter(|(feature, _)| server.features.contains(*feature))
     .map(|(_, name)| name.to_owned())
+    .chain(
+        server
+            .features_ext
+            .contains(ServerFeatureExt::PathQuery)
+            .then(|| "path-query".to_owned()),
+    )
     .collect()
 }
 

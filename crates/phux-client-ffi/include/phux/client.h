@@ -1248,6 +1248,80 @@ PhuxClientResult phux_client_directory_info(const PhuxClient *client, PhuxDirect
 /** PHUX_CLIENT_INVALID_ARGUMENT for an index at or past entry_count. */
 PhuxClientResult phux_client_directory_entry_get(const PhuxClient *client, size_t index, PhuxDirectoryEntry *out_entry);
 
+/* ---------------------------------------------------- host path search
+ * PATH_QUERY requires HELLO_OK's extended capability word PATH_QUERY bit 0.
+ * Zero request_id means disconnected, unsupported, or the bounded queue is
+ * full: no frame was sent, so an older server cannot leave a picker waiting.
+ * root/query are UTF-8 without NUL, at most 4096 bytes each; empty host
+ * selects the serving host, otherwise host names a satellite (max 255 bytes).
+ * recursive=false browses immediate children, true searches below root.
+ * Results are absolute host paths, NOT escaped shell text. Selection/insertion
+ * is a separate input action requiring the target pane's lease; this API
+ * neither pastes text nor changes focus. request_id shares the embedder's
+ * strictly increasing explicit request space, consumed only when sent.
+ * An answer carries status (complete, warming, truncated) or a typed refusal;
+ * disconnect cancels pending requests with error UNANSWERED. Cap: 128 pending
+ * plus undrained answers; drain with answers_take to make room. The batch
+ * replaces the previous batch; borrowed spans live until next mutable call. */
+typedef struct PhuxPathQuery {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    PhuxBytes root;
+    PhuxBytes query;
+    bool recursive;
+    PhuxBytes host;
+} PhuxPathQuery;
+
+/* Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION. */
+PhuxClientResult phux_client_path_query(PhuxClient *client, const PhuxPathQuery *request, uint32_t *out_request_id);
+PhuxClientResult phux_client_path_query_supported(const PhuxClient *client, bool *out_supported);
+PhuxClientResult phux_client_path_answers_take(PhuxClient *client, size_t *out_count);
+
+typedef enum PhuxPathKind {
+    PHUX_PATH_FILE = 0,
+    PHUX_PATH_DIRECTORY = 1,
+    PHUX_PATH_SYMLINK = 2
+} PhuxPathKind;
+typedef enum PhuxPathStatus {
+    PHUX_PATH_COMPLETE = 0,
+    PHUX_PATH_WARMING = 1,
+    PHUX_PATH_TRUNCATED = 2
+} PhuxPathStatus;
+typedef enum PhuxPathError {
+    PHUX_PATH_NOT_FOUND = 0,
+    PHUX_PATH_PERMISSION_DENIED = 1,
+    PHUX_PATH_NOT_A_DIRECTORY = 2,
+    PHUX_PATH_OTHER = 3,
+    PHUX_PATH_UNANSWERED = 4
+} PhuxPathError;
+
+/* Initialize size/version before reading by index. The header's status is
+ * valid only without has_error; error is valid only with has_error. parent is
+ * valid only with has_parent. message is display-only, never parse it. */
+typedef struct PhuxPathAnswer {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    PhuxBytes root;
+    PhuxBytes parent;
+    bool has_parent;
+    size_t row_count;
+    uint32_t status;
+    bool has_error;
+    uint32_t error;
+    PhuxBytes message;
+} PhuxPathAnswer;
+typedef struct PhuxPathRow {
+    size_t size;
+    uint32_t version;
+    PhuxBytes path;
+    uint32_t kind;
+} PhuxPathRow;
+
+PhuxClientResult phux_client_path_answer_get(const PhuxClient *client, size_t index, PhuxPathAnswer *out_answer);
+PhuxClientResult phux_client_path_row_get(const PhuxClient *client, size_t answer_index, size_t row_index, PhuxPathRow *out_row);
+
 /* ------------------------------------------ sessions without attaching
  *
  * GET_STATE after HELLO_OK, for a client that only needs a server's session

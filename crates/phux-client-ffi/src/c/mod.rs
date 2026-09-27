@@ -18,6 +18,7 @@ mod error;
 mod grid_metadata;
 mod log;
 mod operations;
+mod path;
 mod pointer;
 mod projection;
 mod remote;
@@ -52,6 +53,7 @@ pub use directory::*;
 pub use grid_metadata::*;
 pub use log::*;
 pub use operations::*;
+pub use path::*;
 pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
     phux_client_terminal_mouse_mode,

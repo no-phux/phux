@@ -6,6 +6,70 @@ use phux_client_runtime::control::Event;
 
 use crate::projection::{event, id, outcome, status, topology};
 
+/// One absolute host path returned by `PATH_QUERY`.
+#[napi(object)]
+#[derive(Debug)]
+pub struct DesktopPathRow {
+    pub path: String,
+    /// "file", "directory", or "symlink"; do not infer from the basename.
+    pub kind: String,
+}
+
+/// A complete, warming, truncated, refused, or cancelled search answer.
+#[napi(object)]
+#[derive(Debug)]
+pub struct DesktopPathAnswer {
+    pub request_id: u32,
+    pub root: String,
+    pub parent: Option<String>,
+    pub rows: Vec<DesktopPathRow>,
+    pub status: Option<String>,
+    pub error: Option<String>,
+    pub message: String,
+}
+
+impl From<outcome::PathResult> for DesktopPathAnswer {
+    fn from(value: outcome::PathResult) -> Self {
+        Self {
+            request_id: value.request_id,
+            root: value.root,
+            parent: value.parent,
+            rows: value
+                .rows
+                .into_iter()
+                .map(|row| DesktopPathRow {
+                    path: row.path,
+                    kind: match row.kind {
+                        outcome::PathKind::File => "file",
+                        outcome::PathKind::Directory => "directory",
+                        outcome::PathKind::Symlink => "symlink",
+                    }
+                    .to_owned(),
+                })
+                .collect(),
+            status: value.status.map(|status| {
+                match status {
+                    outcome::PathStatus::Complete => "complete",
+                    outcome::PathStatus::Warming => "warming",
+                    outcome::PathStatus::Truncated => "truncated",
+                }
+                .to_owned()
+            }),
+            error: value.error.map(|error| {
+                match error {
+                    outcome::PathError::NotFound => "not-found",
+                    outcome::PathError::PermissionDenied => "permission-denied",
+                    outcome::PathError::NotADirectory => "not-a-directory",
+                    outcome::PathError::Other => "other",
+                    outcome::PathError::Unanswered => "unanswered",
+                }
+                .to_owned()
+            }),
+            message: value.message,
+        }
+    }
+}
+
 #[napi(string_enum)]
 #[derive(Debug)]
 pub enum DesktopStatus {

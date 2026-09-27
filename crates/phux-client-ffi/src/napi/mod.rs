@@ -51,7 +51,9 @@ use phux_client_runtime::{Client, ClientOptions, Target};
 use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::AttachTarget;
 
-use crate::projection::{id, status, topology};
+use crate::projection::{id, outcome, status, topology};
+
+use phux_protocol::ids::SatelliteHost;
 
 fn registry_error(error: RegistryError) -> Error {
     Error::from_reason(error.to_string())
@@ -168,6 +170,34 @@ impl DesktopClient {
     #[must_use]
     pub fn handle(&self) -> String {
         self.handle.clone()
+    }
+
+    /// Host browse/search. Zero means the extended feature was unavailable
+    /// or the bounded queue needs draining; no frame was sent. No pane input
+    /// or focus change happens here.
+    #[napi]
+    pub fn path_query(
+        &self,
+        root: String,
+        query: String,
+        recursive: bool,
+        host: Option<String>,
+    ) -> Result<u32> {
+        let host = host
+            .filter(|value| !value.is_empty())
+            .map(SatelliteHost::new);
+        Ok(self.client()?.path_query(root, query, recursive, host))
+    }
+
+    /// Drain correlated answers and disconnect cancellations.
+    #[napi]
+    pub fn take_path_answers(&self) -> Result<Vec<DesktopPathAnswer>> {
+        Ok(self
+            .client()?
+            .take_path_answers()
+            .into_iter()
+            .map(|answer| outcome::path_result(answer).into())
+            .collect())
     }
 
     /// Register the sole notification owner and begin dialing. Success means
