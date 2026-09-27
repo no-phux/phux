@@ -1528,15 +1528,17 @@ impl AttachResourceSession<'_> {
                     "ATTACH_RESOURCE pump generation lost its completion guard",
                 ));
             };
-            Some(self.spawn_output_pump(AttachResourcePumpSpawn {
-                bootstrap_id,
-                generation_last_seq: std::sync::Arc::clone(&generation_last_seq),
+            let (gate_tx, gate_rx) = oneshot::channel::<u64>();
+            let channels = AttachResourcePumpChannels {
                 token,
                 output_rx,
-                pump_done_guard,
+                snapshot_gate: gate_rx,
                 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 native_publication_gate: native_publication_gate_rx,
-            }))
+            };
+            let last_seq = std::sync::Arc::clone(&generation_last_seq);
+            self.spawn_output_pump(channels, bootstrap_id, last_seq, pump_done_guard);
+            Some(gate_tx)
         };
 
         Ok(AttachResourceGeneration {
@@ -1550,10 +1552,14 @@ impl AttachResourceSession<'_> {
         })
     }
 
-    /// Start the raw broadcast pump for one generation and hand back the gate
-    /// that releases its first delta once the published cut is known.
-    fn spawn_output_pump(&self, spawn: AttachResourcePumpSpawn) -> oneshot::Sender<u64> {
-        let (gate_tx, gate_rx) = oneshot::channel::<u64>();
+    /// Start the raw broadcast pump for one generation.
+    fn spawn_output_pump(
+        &self,
+        channels: AttachResourcePumpChannels,
+        bootstrap_id: phux_protocol::ids::BootstrapId,
+        generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        pump_done_guard: tokio_util::sync::DropGuard,
+    ) {
         let ctx = AttachResourcePumpCtx {
             state: self.state.clone(),
             out_tx: self.out_tx.clone(),
@@ -1569,22 +1575,12 @@ impl AttachResourceSession<'_> {
             client_caps: self.client_caps,
             stream_profile: self.stream_profile,
             bootstrap_limits: self.bootstrap_limits,
-            generation_last_seq: spawn.generation_last_seq,
+            generation_last_seq,
         };
-        let channels = AttachResourcePumpChannels {
-            token: spawn.token,
-            output_rx: spawn.output_rx,
-            snapshot_gate: gate_rx,
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_publication_gate: spawn.native_publication_gate,
-        };
-        let pump_done_guard = spawn.pump_done_guard;
-        let bootstrap_id = spawn.bootstrap_id;
         pump::spawn_tracked(self.state, self.client_id, self.core, None, async move {
             let _done_guard = pump_done_guard;
             ctx.run(channels, bootstrap_id).await;
         });
-        gate_tx
     }
 
     /// Publish the atomic state-sync bootstrap the actor captured with
@@ -1787,18 +1783,6 @@ impl AttachResourceSession<'_> {
         );
         Ok(())
     }
-}
-
-/// Everything [`AttachResourceSession::spawn_output_pump`] needs to hand one
-/// pump generation to its task.
-struct AttachResourcePumpSpawn {
-    bootstrap_id: phux_protocol::ids::BootstrapId,
-    generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    token: CancellationToken,
-    output_rx: tokio::sync::broadcast::Receiver<crate::terminal_actor::PaneOutput>,
-    pump_done_guard: tokio_util::sync::DropGuard,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_publication_gate: oneshot::Receiver<crate::terminal_actor::NativePublicationReply>,
 }
 
 /// The one-shot channels one pump generation consumes on its way to steady
@@ -3817,13 +3801,7 @@ async fn request_screen(
     format: u8,
     verb: &str,
 ) -> Result<(TerminalHandle, ScreenReply), CommandResult> {
-    let handle = state.with(|s| {
-        s.terminal_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core).cloned())
-    });
-    let Some(handle) = handle else {
-        return Err(terminal_not_found(terminal_id));
-    };
+    let (_, handle) = state.with(|s| terminal_handle(s, terminal_id))?;
     let terminal = handle.terminal().map_err(wrong_resource_kind)?.clone();
     let internal = |message: String| CommandResult::Error {
         code: ErrorCode::InternalError,
@@ -4177,25 +4155,27 @@ fn wire_client_id(id: ClientId) -> phux_protocol::ids::ClientId {
     phux_protocol::ids::ClientId::new(u32::try_from(id.0).unwrap_or(u32::MAX))
 }
 
-/// Outcome of resolving an `ACQUIRE_INPUT` against the lease map (ADR-0033).
-enum AcquireOutcome {
-    /// The wire id resolved to no pane.
-    NotFound,
-    /// The resource is not a Terminal (L1 §1.1).
-    WrongKind(WrongResourceKind),
-    /// A cooperative acquire lost to an existing holder.
-    Denied(ClientId),
-    /// The lease was granted; broadcast the change via the pane's actor.
-    Granted {
-        /// The pane actor to notify.
-        handle: Box<ResourceHandle>,
-        /// `Acquired` (was free / self) or `Seized` (preempted another).
-        action: ControlAction,
-        /// The internal id, for arming the TTL timer.
-        core: phux_core::ids::ResourceId,
-        /// `(ttl_ms, expiry generation)`; `None` for no TTL.
-        expiry: Option<(u32, u64)>,
-    },
+/// The local Terminal behind `terminal_id` as `(pane, handle)`, or the
+/// not-found / wrong-kind refusal.
+fn terminal_handle(
+    s: &crate::state::ServerState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+) -> Result<(phux_core::ids::ResourceId, ResourceHandle), CommandResult> {
+    let not_found = || terminal_not_found(terminal_id);
+    let core = s.terminal_from_wire(terminal_id).ok_or_else(not_found)?;
+    let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
+    handle.terminal().map_err(wrong_resource_kind)?;
+    Ok((core, handle))
+}
+
+/// A granted input lease (ADR-0033), to broadcast through the pane's actor.
+struct LeaseGrant {
+    handle: ResourceHandle,
+    /// `Acquired` (was free / self) or `Seized` (preempted another).
+    action: ControlAction,
+    core: phux_core::ids::ResourceId,
+    /// `(ttl_ms, expiry generation)`; `None` for no TTL.
+    expiry: Option<(u32, u64)>,
 }
 
 /// Handle `ACQUIRE_INPUT` (ADR-0033): take the pane's exclusive input lease.
@@ -4209,22 +4189,17 @@ pub(crate) async fn handle_acquire_input(
     mode: InputMode,
     ttl_ms: u32,
 ) -> CommandResult {
-    let outcome = state.with_mut(|s| {
-        let Some(core) = s.terminal_from_wire(terminal_id) else {
-            return AcquireOutcome::NotFound;
-        };
-        let Some(handle) = s.resource_handle(core).cloned() else {
-            return AcquireOutcome::NotFound;
-        };
-        if let Err(error) = handle.terminal() {
-            return AcquireOutcome::WrongKind(error);
-        }
+    let granted = state.with_mut(|s| {
+        let (core, handle) = terminal_handle(s, terminal_id)?;
         let prior = s.input_lease_holder(core);
         if mode == InputMode::Cooperative
             && let Some(holder) = prior
             && holder != client_id
         {
-            return AcquireOutcome::Denied(holder);
+            return Err(CommandResult::Error {
+                code: ErrorCode::InputLeaseHeld,
+                message: format!("input lease held by client {}", holder.0),
+            });
         }
         s.set_input_lease(core, client_id);
         let action = match prior {
@@ -4235,40 +4210,30 @@ pub(crate) async fn handle_acquire_input(
         let expiry = s
             .refresh_input_lease_expiry(core, ttl_ms != 0)
             .map(|generation| (ttl_ms, generation));
-        AcquireOutcome::Granted {
-            handle: Box::new(handle),
-            action,
-            core,
-            expiry,
-        }
-    });
-    match outcome {
-        AcquireOutcome::NotFound => terminal_not_found(terminal_id),
-        AcquireOutcome::WrongKind(error) => wrong_resource_kind(error),
-        AcquireOutcome::Denied(holder) => CommandResult::Error {
-            code: ErrorCode::InputLeaseHeld,
-            message: format!("input lease held by client {}", holder.0),
-        },
-        AcquireOutcome::Granted {
+        Ok(LeaseGrant {
             handle,
             action,
             core,
             expiry,
-        } => {
-            let _ = handle
-                .control
-                .send(ControlRequest::LeaseChanged {
-                    input_holder: Some(wire_client_id(client_id)),
-                    action,
-                    actor: Some(wire_client_id(client_id)),
-                })
-                .await;
-            if let Some((ttl_ms, generation)) = expiry {
-                spawn_input_lease_expiry(state, core, generation, ttl_ms);
-            }
-            CommandResult::Ok
-        }
+        })
+    });
+    let grant = match granted {
+        Ok(grant) => grant,
+        Err(refusal) => return refusal,
+    };
+    let _ = grant
+        .handle
+        .control
+        .send(ControlRequest::LeaseChanged {
+            input_holder: Some(wire_client_id(client_id)),
+            action: grant.action,
+            actor: Some(wire_client_id(client_id)),
+        })
+        .await;
+    if let Some((ttl_ms, generation)) = grant.expiry {
+        spawn_input_lease_expiry(state, grant.core, generation, ttl_ms);
     }
+    CommandResult::Ok
 }
 
 /// Schedule the timer that expires `terminal`'s input lease after `ttl_ms`
@@ -4383,45 +4348,29 @@ pub(crate) async fn handle_release_input(
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
 ) -> CommandResult {
-    enum Released {
-        NotFound,
-        WrongKind(WrongResourceKind),
-        Ok(ResourceHandle, bool),
-    }
     let released = state.with_mut(|s| {
-        let Some(core) = s.terminal_from_wire(terminal_id) else {
-            return Released::NotFound;
-        };
-        let Some(handle) = s.resource_handle(core).cloned() else {
-            return Released::NotFound;
-        };
-        if let Err(error) = handle.terminal() {
-            return Released::WrongKind(error);
-        }
+        let (core, handle) = terminal_handle(s, terminal_id)?;
         let did_release = s.release_input_lease(core, client_id);
         if did_release {
             // The lease's TTL goes with it.
             s.refresh_input_lease_expiry(core, false);
         }
-        Released::Ok(handle, did_release)
+        Ok(did_release.then_some(handle))
     });
-    match released {
-        Released::NotFound => terminal_not_found(terminal_id),
-        Released::WrongKind(error) => wrong_resource_kind(error),
-        Released::Ok(handle, did_release) => {
-            if did_release {
-                let _ = handle
-                    .control
-                    .send(ControlRequest::LeaseChanged {
-                        input_holder: None,
-                        action: ControlAction::Released,
-                        actor: Some(wire_client_id(client_id)),
-                    })
-                    .await;
-            }
-            CommandResult::Ok
-        }
-    }
+    let handle = match released {
+        Ok(Some(handle)) => handle,
+        Ok(None) => return CommandResult::Ok,
+        Err(refusal) => return refusal,
+    };
+    let _ = handle
+        .control
+        .send(ControlRequest::LeaseChanged {
+            input_holder: None,
+            action: ControlAction::Released,
+            actor: Some(wire_client_id(client_id)),
+        })
+        .await;
+    CommandResult::Ok
 }
 
 /// Handle `SIGNAL_TERMINAL` (ADR-0033): signal the pane's process group via
@@ -4442,22 +4391,11 @@ pub(crate) async fn handle_signal_terminal(
         };
         (resolved, holder)
     });
-    let (handle, input_holder) = match resolved {
-        (ResolvedOwned::Local(local), holder) => (local.handle, holder),
-        (ResolvedOwned::Remote(_), _) => {
-            return CommandResult::Error {
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                message: format!("SIGNAL_TERMINAL on satellite route unsupported: {terminal_id:?}"),
-            };
-        }
-        (ResolvedOwned::Unknown, _) => {
-            return terminal_not_found(terminal_id);
-        }
+    let (resolved, input_holder) = resolved;
+    let (_, handle) = match local_terminal(resolved, terminal_id, "SIGNAL_TERMINAL") {
+        Ok(local) => local,
+        Err(refusal) => return refusal,
     };
-    // L1 §1.1: only a Terminal has a PTY child to signal.
-    if let Err(error) = handle.terminal() {
-        return wrong_resource_kind(error);
-    }
     // ADR-0124: a retained pane's child is already reaped.
     if state.with(|s| {
         s.terminal_from_wire(terminal_id)
@@ -4482,19 +4420,49 @@ pub(crate) async fn handle_signal_terminal(
             message: "pane actor unavailable for SIGNAL_TERMINAL".to_owned(),
         };
     }
-    let result = match reply_rx.await {
+    let result = actor_reply(reply_rx.await, ErrorCode::InternalError, "SIGNAL_TERMINAL");
+    record_signal_failure(commit, &result);
+    result
+}
+
+/// A command's local Terminal target as `(pane, handle)`, or the refusal for
+/// a satellite route, an unknown id, or another resource kind (L1 §1.1).
+fn local_terminal(
+    resolved: ResolvedOwned,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    verb: &str,
+) -> Result<(phux_core::ids::ResourceId, ResourceHandle), CommandResult> {
+    match resolved {
+        ResolvedOwned::Local(local) => {
+            local.handle.terminal().map_err(wrong_resource_kind)?;
+            Ok((local.id, local.handle))
+        }
+        ResolvedOwned::Remote(_) => Err(CommandResult::Error {
+            code: ErrorCode::UnsupportedSatelliteRoute,
+            message: format!("{verb} on satellite route unsupported: {terminal_id:?}"),
+        }),
+        ResolvedOwned::Unknown => Err(terminal_not_found(terminal_id)),
+    }
+}
+
+/// The command result of a pane actor's `Result<(), String>` reply; a
+/// refusal carries `refusal_code`.
+fn actor_reply(
+    reply: Result<Result<(), String>, oneshot::error::RecvError>,
+    refusal_code: ErrorCode,
+    verb: &str,
+) -> CommandResult {
+    match reply {
         Ok(Ok(())) => CommandResult::Ok,
-        Ok(Err(msg)) => CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: msg,
+        Ok(Err(message)) => CommandResult::Error {
+            code: refusal_code,
+            message,
         },
         Err(_) => CommandResult::Error {
             code: ErrorCode::InternalError,
-            message: "pane actor dropped SIGNAL_TERMINAL reply".to_owned(),
+            message: format!("pane actor dropped {verb} reply"),
         },
-    };
-    record_signal_failure(commit, &result);
-    result
+    }
 }
 
 /// A queued signal that failed replaces the success its key was committed
@@ -4544,25 +4512,11 @@ pub(crate) async fn handle_report_agent_state(
             && crate::agent_detect::live_session::server_has_live_session(server, terminal_id);
         (resolved, live_session)
     });
-    let handle = match resolved {
-        ResolvedOwned::Local(local) => local.handle,
-        ResolvedOwned::Remote(_) => {
-            return CommandResult::Error {
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                message: format!(
-                    "REPORT_AGENT_STATE on satellite route unsupported: {terminal_id:?}"
-                ),
-            };
-        }
-        ResolvedOwned::Unknown => {
-            return terminal_not_found(terminal_id);
-        }
+    // The report addresses the instrumented Terminal, never the child stream.
+    let (_, handle) = match local_terminal(resolved, terminal_id, "REPORT_AGENT_STATE") {
+        Ok(local) => local,
+        Err(refusal) => return refusal,
     };
-    // L1 §1.1: the report addresses the instrumented Terminal, never the
-    // child stream itself.
-    if let Err(error) = handle.terminal() {
-        return wrong_resource_kind(error);
-    }
     let (reply, result) = oneshot::channel();
     let request = if live_session {
         ControlRequest::SynthesizeAgentStateRecord {
@@ -4581,17 +4535,11 @@ pub(crate) async fn handle_report_agent_state(
             message: "pane actor unavailable for REPORT_AGENT_STATE".to_owned(),
         };
     }
-    match result.await {
-        Ok(Ok(())) => CommandResult::Ok,
-        Ok(Err(message)) => CommandResult::Error {
-            code: ErrorCode::InvalidCommand,
-            message,
-        },
-        Err(_) => CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor dropped REPORT_AGENT_STATE reply".to_owned(),
-        },
-    }
+    actor_reply(
+        result.await,
+        ErrorCode::InvalidCommand,
+        "REPORT_AGENT_STATE",
+    )
 }
 
 /// Handle `SUBSCRIBE_RESOURCE_EVENTS`: a Terminal-scoped `SUBSCRIBE_EVENTS`
@@ -4630,23 +4578,10 @@ pub(crate) fn handle_report_asked(
     suggestions: Vec<String>,
     elapsed_seconds: Option<u64>,
 ) -> CommandResult {
-    let terminal = match state.with(|s| s.resolve_resource(terminal_id).into_owned()) {
-        ResolvedOwned::Local(local) => {
-            // L1 §1.1: the ask ladder renders on a Terminal.
-            if let Err(error) = local.handle.terminal() {
-                return wrong_resource_kind(error);
-            }
-            local.id
-        }
-        ResolvedOwned::Remote(_) => {
-            return CommandResult::Error {
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                message: format!("REPORT_ASKED on satellite route unsupported: {terminal_id:?}"),
-            };
-        }
-        ResolvedOwned::Unknown => {
-            return terminal_not_found(terminal_id);
-        }
+    let resolved = state.with(|s| s.resolve_resource(terminal_id).into_owned());
+    let terminal = match local_terminal(resolved, terminal_id, "REPORT_ASKED") {
+        Ok((terminal, _)) => terminal,
+        Err(refusal) => return refusal,
     };
     if let Some(message) = validate_asked_payload(&id, &question, &suggestions) {
         return CommandResult::Error {
