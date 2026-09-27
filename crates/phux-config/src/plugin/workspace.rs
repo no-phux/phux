@@ -97,10 +97,9 @@ fn normalize_workspace(
 ) -> Result<PluginManifestWorkspace, PluginManifestError> {
     let id = normalize_id(&raw.id, false, "plugin workspace id")?;
     let contexts = normalize_non_empty_strings(raw.contexts, "plugin workspace context")?;
-    let agents = normalize_workspace_refs(raw.agents, RefCheck::new(&known.agents, &id, "agent"))?;
-    let actions =
-        normalize_workspace_refs(raw.actions, RefCheck::new(&known.actions, &id, "action"))?;
-    let events = normalize_workspace_refs(raw.events, RefCheck::new(&known.events, &id, "event"))?;
+    let agents = normalize_workspace_refs(raw.agents, &known.agents, &id, "agent")?;
+    let actions = normalize_workspace_refs(raw.actions, &known.actions, &id, "action")?;
+    let events = normalize_workspace_refs(raw.events, &known.events, &id, "event")?;
     let panes = raw
         .panes
         .into_iter()
@@ -149,26 +148,11 @@ fn normalize_non_empty_strings(
         .collect()
 }
 
-#[derive(Clone, Copy)]
-struct RefCheck<'a> {
-    known: &'a BTreeSet<&'a str>,
-    workspace_id: &'a str,
-    label: &'static str,
-}
-
-impl<'a> RefCheck<'a> {
-    const fn new(known: &'a BTreeSet<&'a str>, workspace_id: &'a str, label: &'static str) -> Self {
-        Self {
-            known,
-            workspace_id,
-            label,
-        }
-    }
-}
-
 fn normalize_workspace_refs(
     raw: Vec<String>,
-    check: RefCheck<'_>,
+    known: &BTreeSet<&str>,
+    workspace_id: &str,
+    label: &str,
 ) -> Result<Vec<String>, PluginManifestError> {
     let refs = raw
         .into_iter()
@@ -179,8 +163,8 @@ fn normalize_workspace_refs(
         "plugin workspace reference",
     )?;
     for reference in &refs {
-        if !check.known.contains(reference.as_str()) {
-            return Err(unknown_ref(check.workspace_id, check.label, reference));
+        if !known.contains(reference.as_str()) {
+            return Err(unknown_ref(workspace_id, label, reference));
         }
     }
     Ok(refs)

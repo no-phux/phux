@@ -1,23 +1,8 @@
-//! Config scaffolding: materialize a commented starter `config.toml`.
+//! Config scaffolding: a commented starter `config.toml`.
 //!
-//! # Why a *projection*, not a copy
-//!
-//! phux ships its defaults as the embedded, prose-annotated
-//! [`DEFAULT_CONFIG_TOML`] base layer; a user's `config.toml` is merged
-//! *on top* of it (see [`crate::merged_config_table`]). Writing the
-//! defaults out as active values would freeze them at scaffold time — a
-//! later phux that changes a default would no longer reach anyone who
-//! ran `phux config init`.
-//!
-//! So [`reference_config`] emits a **comment-projection** of the
-//! embedded defaults: identical prose, but every active assignment and
-//! table header is commented out. The result is inert — it parses to an
-//! empty overlay, so the live defaults stay authoritative — while still
-//! documenting every option *with its real default visible* next to it.
-//! Uncommenting a line is the only way the file changes behavior.
-//!
-//! This keeps a single source of truth: [`DEFAULT_CONFIG_TOML`]. The
-//! starter file is generated from it, never hand-maintained alongside.
+//! The scaffold is a comment-projection of [`DEFAULT_CONFIG_TOML`]: the same
+//! prose with every assignment and header commented out, so it is inert and
+//! later default changes still reach the user.
 //!
 //! [`DEFAULT_CONFIG_TOML`]: crate::DEFAULT_CONFIG_TOML
 
@@ -26,9 +11,7 @@ use std::{fs, io};
 
 use crate::DEFAULT_CONFIG_TOML;
 
-/// Header prepended to the scaffolded `config.toml`, replacing the
-/// embedded default's "this ships with the binary" preamble (which is
-/// meaningless in a user's config dir).
+/// Header replacing the embedded default's own preamble.
 const SCAFFOLD_HEADER: &str = "\
 # phux configuration.
 #
@@ -44,8 +27,7 @@ const SCAFFOLD_HEADER: &str = "\
 
 ";
 
-/// Header prepended by [`distro_reference_config`], ahead of the active
-/// `extends` line. `{distro}` is substituted with the layer path.
+/// Header for [`distro_reference_config`]; `{distro}` is the layer path.
 const DISTRO_SCAFFOLD_HEADER: &str = "\
 # phux configuration, scaffolded on top of a starter distribution.
 #
@@ -61,25 +43,16 @@ const DISTRO_SCAFFOLD_HEADER: &str = "\
 
 ";
 
-/// Outcome of a [`write_reference_config`] call.
+/// Outcome of a [`write_scaffold`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScaffoldOutcome {
     /// The starter config was written to this path.
     Wrote(PathBuf),
-    /// A file already existed at this path and `force` was `false`, so
-    /// nothing was written.
+    /// A file already existed and `force` was `false`.
     Skipped(PathBuf),
 }
 
-/// Build the commented starter config: a fixed user-facing header
-/// followed by a comment-projection of [`DEFAULT_CONFIG_TOML`]'s body.
-///
-/// The embedded default's own header block (its leading run of comment
-/// and blank lines) is dropped; projection begins at the first
-/// structural line (a table header or assignment). From there, blank
-/// lines and lines that are already comments pass through verbatim;
-/// every other line is prefixed with `# ` so the document is fully
-/// inert.
+/// The commented starter config: [`SCAFFOLD_HEADER`] plus the projection.
 #[must_use]
 pub fn reference_config() -> String {
     let mut out = String::from(SCAFFOLD_HEADER);
@@ -87,15 +60,8 @@ pub fn reference_config() -> String {
     out
 }
 
-/// Build the distro-flavored starter config: a header naming the distro,
-/// one **active** `extends` line pointing at `distro`, then the same
-/// comment-projection body as [`reference_config`].
-///
-/// The `extends` line is the only live statement in the file — the rest
-/// stays inert, so the distro and the shipped defaults remain
-/// authoritative until the user uncomments an override. `distro` should
-/// be absolute (see `crate::distro::resolve_distro`): the scaffolded
-/// file lives in the user's config directory, not next to the distro.
+/// The distro-flavored starter: one active `extends` line pointing at the
+/// (absolute) `distro`, then the same inert projection.
 #[must_use]
 #[allow(
     clippy::literal_string_with_formatting_args,
@@ -122,8 +88,6 @@ fn toml_basic_string(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             c if u32::from(c) < 0x20 => {
-                // Control characters in a path are pathological, but a
-                // scaffold must never emit unparseable TOML.
                 let _ = write!(out, "\\u{:04X}", u32::from(c));
             }
             c => out.push(c),
@@ -133,25 +97,19 @@ fn toml_basic_string(s: &str) -> String {
     out
 }
 
-/// The comment-projection of [`DEFAULT_CONFIG_TOML`]'s body shared by
-/// both scaffold flavors (see [`reference_config`] for the rules).
+/// [`DEFAULT_CONFIG_TOML`]'s body from its first TOML line on, with every
+/// line that is not blank or a comment commented out.
 fn commented_default_body() -> String {
-    let mut out = String::new();
-    let mut in_body = false;
-    for line in DEFAULT_CONFIG_TOML.lines() {
-        if !in_body {
-            // Skip the embedded default's preamble: leading comments and
-            // blanks, up to the first real TOML line.
-            let trimmed = line.trim_start();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            in_body = true;
-        }
-        // Comment out structural lines (assignments, table headers);
-        // blank lines and existing prose comments pass through as-is.
+    let is_prose = |line: &str| {
         let trimmed = line.trim_start();
-        if !(trimmed.is_empty() || trimmed.starts_with('#')) {
+        trimmed.is_empty() || trimmed.starts_with('#')
+    };
+    let mut out = String::new();
+    for line in DEFAULT_CONFIG_TOML
+        .lines()
+        .skip_while(|line| is_prose(line))
+    {
+        if !is_prose(line) {
             out.push_str("# ");
         }
         out.push_str(line);
@@ -160,28 +118,12 @@ fn commented_default_body() -> String {
     out
 }
 
-/// Write [`reference_config`] to `path`, creating parent directories.
-///
-/// Refuses to clobber: if `path` already exists and `force` is `false`,
-/// returns [`ScaffoldOutcome::Skipped`] and touches nothing. With
-/// `force`, an existing file is overwritten.
+/// Write a rendered scaffold to `path`, creating parent directories. An
+/// existing file is left alone unless `force`.
 ///
 /// # Errors
 ///
-/// Returns the underlying [`io::Error`] if creating the parent directory
-/// or writing the file fails.
-pub fn write_reference_config(path: &Path, force: bool) -> io::Result<ScaffoldOutcome> {
-    write_scaffold(path, &reference_config(), force)
-}
-
-/// Write an already-rendered scaffold (e.g. [`distro_reference_config`])
-/// to `path`, creating parent directories, with the same
-/// refuse-to-clobber contract as [`write_reference_config`].
-///
-/// # Errors
-///
-/// Returns the underlying [`io::Error`] if creating the parent directory
-/// or writing the file fails.
+/// The underlying [`io::Error`] from creating the directory or writing.
 pub fn write_scaffold(path: &Path, contents: &str, force: bool) -> io::Result<ScaffoldOutcome> {
     if path.exists() && !force {
         return Ok(ScaffoldOutcome::Skipped(path.to_path_buf()));

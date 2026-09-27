@@ -1,9 +1,8 @@
-use std::path::Path;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::link::{RawPluginManifestLinkHandler, normalize_link_handler};
-use super::source::load_manifest_source;
 use super::validate::{
     non_empty, normalize_command, normalize_id, reject_duplicate_ids, trim_optional,
 };
@@ -385,4 +384,112 @@ fn normalize_pane(raw: RawPluginManifestPane) -> Result<PluginManifestPane, Plug
         placement: raw.placement,
         command,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPluginManifestLinkHandler {
+    id: String,
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    contexts: Vec<String>,
+    #[serde(default)]
+    schemes: Vec<String>,
+    #[serde(default)]
+    patterns: Vec<String>,
+    #[serde(default)]
+    platforms: Option<Vec<PluginPlatform>>,
+    command: Vec<String>,
+}
+
+fn normalize_link_handler(
+    raw: RawPluginManifestLinkHandler,
+) -> Result<PluginManifestLinkHandler, PluginManifestError> {
+    let contexts = raw
+        .contexts
+        .iter()
+        .map(|context| non_empty(context, "plugin link handler context"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let schemes = raw
+        .schemes
+        .iter()
+        .map(|scheme| non_empty(scheme, "plugin link handler scheme"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let patterns = raw
+        .patterns
+        .iter()
+        .map(|pattern| non_empty(pattern, "plugin link handler pattern"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if schemes.is_empty() && patterns.is_empty() {
+        return Err(PluginManifestError::Invalid(
+            "plugin link handler requires at least one scheme or pattern".to_owned(),
+        ));
+    }
+    let command = normalize_command(&raw.command)?;
+
+    Ok(PluginManifestLinkHandler {
+        id: normalize_id(&raw.id, false, "plugin link handler id")?,
+        title: non_empty(&raw.title, "plugin link handler title")?,
+        description: raw.description.as_deref().and_then(trim_optional),
+        contexts,
+        schemes,
+        patterns,
+        platforms: raw.platforms,
+        command,
+    })
+}
+
+const MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
+
+struct ManifestSource {
+    display_path: PathBuf,
+    canonical_path: PathBuf,
+    input: String,
+}
+
+fn load_manifest_source(path: &Path) -> Result<ManifestSource, PluginManifestError> {
+    let display_path = if path.is_dir() {
+        path.join("phux-plugin.toml")
+    } else {
+        path.to_path_buf()
+    };
+    let metadata = std::fs::metadata(&display_path)?;
+    if !metadata.is_file() {
+        return Err(PluginManifestError::Invalid(format!(
+            "{} is not a regular file",
+            display_path.display()
+        )));
+    }
+    reject_oversized(metadata.len())?;
+    let input = read_manifest_string(&display_path)?;
+    Ok(ManifestSource {
+        canonical_path: display_path.canonicalize()?,
+        display_path,
+        input,
+    })
+}
+
+fn read_manifest_string(path: &Path) -> Result<String, PluginManifestError> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = file.take(MANIFEST_MAX_BYTES + 1);
+    let mut input = String::new();
+    reader.read_to_string(&mut input)?;
+    let len = u64::try_from(input.len()).map_err(|_| oversized_error())?;
+    reject_oversized(len)?;
+    Ok(input)
+}
+
+fn reject_oversized(len: u64) -> Result<(), PluginManifestError> {
+    if len > MANIFEST_MAX_BYTES {
+        return Err(oversized_error());
+    }
+    Ok(())
+}
+
+fn oversized_error() -> PluginManifestError {
+    PluginManifestError::Invalid(format!(
+        "plugin manifest exceeds {MANIFEST_MAX_BYTES} byte limit"
+    ))
 }

@@ -1,8 +1,6 @@
 //! Declarative plugin manifest parsing for phux config consumers.
 
-mod link;
 mod loader;
-mod source;
 mod validate;
 mod version;
 mod workspace;
@@ -25,8 +23,6 @@ pub struct PluginConfigEntry {
 }
 
 /// Parsed `phux-plugin.toml` manifest.
-// `Eq` is not derived: `PluginManifestWidget.opts` carries `toml::Value`
-// (not `Eq` because of `f64`), matching the schema-crate convention.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginManifest {
     /// Globally unique plugin id.
@@ -146,12 +142,8 @@ pub struct PluginManifestAction {
     pub platforms: Option<Vec<PluginPlatform>>,
     /// Command argv to execute.
     pub command: Vec<String>,
-    /// Optional prefix-table chord sequence (e.g. `"g"` or `"g s"`,
-    /// chord syntax per [`crate::keybind`]) the TUI merges into its
-    /// prefix table so this action can fire from a keybinding.
-    /// Contributed bindings never override user config: on any conflict
-    /// (same chord, or an ambiguous-prefix relationship) the user's
-    /// binding wins and the plugin's is dropped with a logged warning.
+    /// Optional prefix-table chord sequence (e.g. `"g s"`) merged into the
+    /// TUI's prefix table; on any conflict the user's binding wins.
     #[serde(default)]
     pub keys: Option<String>,
 }
@@ -245,15 +237,9 @@ pub struct PluginWorkspacePane {
     pub description: Option<String>,
 }
 
-/// Status-bar widget contributed by a plugin manifest (phux-r82.6,
-/// `[[widgets]]` in `phux-plugin.toml`).
-///
-/// The entry is a [`crate::WidgetSpec`]-shaped table (`kind` plus
-/// kind-specific options) with two extra fields: a plugin-local `id` and
-/// the bar `slot` to append to. Contributions never displace user config:
-/// the TUI appends them after the user's own `[status]` widgets, and an
-/// entry whose spec fails widget validation is dropped with a logged
-/// warning (mirroring the [`PluginManifestAction::keys`] conflict policy).
+/// Status-bar widget contributed by a plugin (`[[widgets]]`): a widget spec
+/// plus a plugin-local `id` and the `slot` it appends to, after the user's
+/// own widgets.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginManifestWidget {
     /// Plugin-local widget id.
@@ -296,10 +282,6 @@ pub enum PluginPanePlacement {
 }
 
 /// Resolve a configured manifest path against the config file's directory.
-///
-/// Absolute paths pass through; relative paths resolve under
-/// `config_path`'s parent (the documented `[[plugins]]` contract — see
-/// `docs/consumers/tui.md`).
 #[must_use]
 pub fn resolve_manifest_path(manifest: &Path, config_path: &Path) -> PathBuf {
     if manifest.is_absolute() {
@@ -310,15 +292,11 @@ pub fn resolve_manifest_path(manifest: &Path, config_path: &Path) -> PathBuf {
         .map_or_else(|| manifest.to_path_buf(), |parent| parent.join(manifest))
 }
 
-/// Load the manifests of every **enabled** plugin in `entries`,
-/// resolving relative manifest paths against `config_path`'s directory.
+/// Load the manifests of every enabled plugin in `entries`.
 ///
-/// Best-effort by design: a manifest that fails to load or validate is
-/// skipped with a `tracing::warn!` rather than failing the whole batch —
-/// one broken plugin must not take down a consumer (e.g. the attach TUI)
-/// that only wants to surface the healthy ones. Disabled entries are
-/// skipped silently. Callers that need per-manifest errors should use
-/// [`load_plugin_manifest`] directly.
+/// Best-effort: a manifest that fails to load is skipped with a warning, so
+/// one broken plugin cannot take down the consumer. Use
+/// [`load_plugin_manifest`] for per-manifest errors.
 #[must_use]
 pub fn load_enabled_manifests(
     config_path: &Path,
