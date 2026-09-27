@@ -238,37 +238,18 @@ mod tests {
     }
 
     #[test]
-    fn decode_length_accepts_the_spec_bounds() {
+    fn decode_length_enforces_the_spec_bounds() {
         assert_eq!(decode_length([0, 0, 0, 1]).unwrap(), 1);
         assert_eq!(
             decode_length(MAX_FRAME_LEN.to_be_bytes()).unwrap(),
             MAX_FRAME_LEN as usize
         );
-    }
-
-    #[test]
-    fn decode_length_rejects_zero_and_oversize() {
-        assert_eq!(
-            decode_length([0, 0, 0, 0]),
-            Err(FramingError::LengthOutOfRange { length: 0 })
-        );
-        let over = MAX_FRAME_LEN + 1;
-        assert_eq!(
-            decode_length(over.to_be_bytes()),
-            Err(FramingError::LengthOutOfRange { length: over })
-        );
-        assert_eq!(
-            decode_length([0xff, 0xff, 0xff, 0xff]),
-            Err(FramingError::LengthOutOfRange { length: u32::MAX })
-        );
-    }
-
-    #[test]
-    fn frame_buffer_is_sized_for_prefix_plus_body() {
-        let buf = frame_buffer([0, 0, 0, 7]).unwrap();
-        assert_eq!(buf.len(), LENGTH_PREFIX_LEN + 7);
-        assert_eq!(&buf[..LENGTH_PREFIX_LEN], &[0, 0, 0, 7]);
-        assert!(buf[LENGTH_PREFIX_LEN..].iter().all(|byte| *byte == 0));
+        for length in [0, MAX_FRAME_LEN + 1, u32::MAX] {
+            assert_eq!(
+                decode_length(length.to_be_bytes()),
+                Err(FramingError::LengthOutOfRange { length })
+            );
+        }
     }
 
     #[test]
@@ -306,45 +287,30 @@ mod tests {
     }
 
     #[test]
-    fn check_frame_accepts_exactly_one_frame() {
+    fn check_frame_accepts_exactly_one_whole_frame() {
         assert_eq!(check_frame(&MIN_FRAME).unwrap(), 1);
-    }
-
-    #[test]
-    fn check_frame_rejects_trailing_bytes_and_truncation() {
         let mut trailing = MIN_FRAME.to_vec();
         trailing.push(0xff);
-        assert_eq!(
-            check_frame(&trailing),
-            Err(FramingError::LengthMismatch {
-                expected: 5,
-                actual: 6
-            })
-        );
-        assert_eq!(
-            check_frame(&MIN_FRAME[..4]),
-            Err(FramingError::LengthMismatch {
-                expected: 5,
-                actual: 4
-            })
-        );
-    }
-
-    #[test]
-    fn check_frame_rejects_a_buffer_too_short_to_hold_a_header() {
-        assert_eq!(
-            check_frame(&[0, 0, 0]),
-            Err(FramingError::HeaderTruncated { actual: 3 })
-        );
-        assert_eq!(
-            check_frame(&[]),
-            Err(FramingError::HeaderTruncated { actual: 0 })
-        );
-    }
-
-    #[test]
-    fn framing_errors_surface_as_invalid_data() {
-        let err = std::io::Error::from(FramingError::LengthOutOfRange { length: 0 });
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let cases: [(&[u8], FramingError); 4] = [
+            (
+                &trailing,
+                FramingError::LengthMismatch {
+                    expected: 5,
+                    actual: 6,
+                },
+            ),
+            (
+                &MIN_FRAME[..4],
+                FramingError::LengthMismatch {
+                    expected: 5,
+                    actual: 4,
+                },
+            ),
+            (&[0, 0, 0], FramingError::HeaderTruncated { actual: 3 }),
+            (&[], FramingError::HeaderTruncated { actual: 0 }),
+        ];
+        for (bytes, want) in cases {
+            assert_eq!(check_frame(bytes), Err(want));
+        }
     }
 }

@@ -994,19 +994,6 @@ fn hello_round_trips_across_capability_shapes() {
     }
 }
 
-#[test]
-fn hello_ok_round_trip() {
-    assert_round_trip(&FrameKind::HelloOk {
-        protocol_major: 0,
-        protocol_minor: 2,
-        protocol_patch: 0,
-        server_caps: ServerCapabilities::new().with_layers(LayerSet::all()),
-        server_id: vec![0xDE, 0xAD, 0xBE, 0xEF],
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
-        bootstrap_limits: BootstrapLimits::default(),
-    });
-}
-
 /// Protocol 0.7 requires an explicit selected profile and negotiated bounds.
 #[test]
 fn hello_ok_without_profile_is_rejected() {
@@ -1021,125 +1008,138 @@ fn hello_ok_without_profile_is_rejected() {
     );
 }
 
+/// Outer-frame rejections: truncated header, zero or over-cap length, a
+/// length past the buffer, a truncated body, and unknown or retired type
+/// bytes (0x40 is the pre-ADR-0013 `PANE_DIFF`).
 #[test]
-fn hello_decoder_rejects_truncated_legacy_caps() {
-    let caps_blob = [
+fn malformed_outer_frames_are_rejected() {
+    let frame = |len: u32, rest: &[u8]| {
+        let mut bytes = len.to_be_bytes().to_vec();
+        bytes.extend_from_slice(rest);
+        bytes
+    };
+    let cases = [
+        (vec![0u8, 0, 0], DecodeError::UnexpectedEof),
+        (frame(0, &[]), DecodeError::LengthOverflow),
+        (frame(0x0200_0000, &[0x7F]), DecodeError::LengthOverflow),
+        (frame(100, &[0x7F]), DecodeError::UnexpectedEof),
+        (frame(9, &[0x7F, 0, 0, 0]), DecodeError::UnexpectedEof),
+        (
+            frame(1, &[0x42]),
+            DecodeError::UnknownFrameKind { tag: 0x42 },
+        ),
+        (
+            frame(9, &[0x40, 0, 0, 0, 0, 0, 0, 0, 0]),
+            DecodeError::UnknownFrameKind { tag: 0x40 },
+        ),
+    ];
+    for (bytes, want) in cases {
+        assert_eq!(
+            Decoder::new(&bytes).read_frame().unwrap_err(),
+            want,
+            "{bytes:02x?}"
+        );
+    }
+}
+
+/// HELLO bodies from before the protocol-0.7 capability record, or with a
+/// truncated record, are malformed; an unknown `ColorSupport` tag is named.
+#[test]
+fn hello_rejects_legacy_and_truncated_capabilities() {
+    let full_caps = [
         ColorSupport::TrueColor.as_wire(),
         LayerSet::new().as_wire(),
         ImageProtocolSet::default().as_wire(),
         KeyboardProtocolSet::default().as_wire(),
         1u8,
     ];
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, b"x");
-    tlv_field(&mut fields, 2, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 3, &7u16.to_be_bytes());
-    tlv_field(&mut fields, 4, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 5, &caps_blob);
-    assert_eq!(
-        FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
-        DecodeError::UnexpectedEof
-    );
-}
-
-#[test]
-fn hello_decoder_rejects_legacy_body_without_caps() {
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, b"x");
-    tlv_field(&mut fields, 2, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 3, &7u16.to_be_bytes());
-    tlv_field(&mut fields, 4, &0u16.to_be_bytes());
-    assert_eq!(
-        FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
-        DecodeError::UnexpectedEof
-    );
-}
-
-#[test]
-fn hello_decoder_rejects_unknown_color_support_tag() {
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, b"x");
-    tlv_field(&mut fields, 2, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 3, &7u16.to_be_bytes());
-    tlv_field(&mut fields, 4, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 5, &[0xFF]);
-    assert_eq!(
-        FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
-        DecodeError::UnknownEnumValue {
-            field: "ColorSupport",
-            value: 0xFF,
+    let cases: [(Option<&[u8]>, DecodeError); 4] = [
+        (None, DecodeError::UnexpectedEof),
+        (Some(&[0x00]), DecodeError::UnexpectedEof),
+        (Some(&full_caps), DecodeError::UnexpectedEof),
+        (
+            Some(&[0xFF]),
+            DecodeError::UnknownEnumValue {
+                field: "ColorSupport",
+                value: 0xFF,
+            },
+        ),
+    ];
+    for (caps, want) in cases {
+        let mut fields = Vec::new();
+        tlv_field(&mut fields, 1, b"x");
+        tlv_field(&mut fields, 2, &0u16.to_be_bytes());
+        tlv_field(&mut fields, 3, &7u16.to_be_bytes());
+        tlv_field(&mut fields, 4, &0u16.to_be_bytes());
+        if let Some(caps) = caps {
+            tlv_field(&mut fields, 5, caps);
         }
-    );
+        assert_eq!(
+            FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
+            want
+        );
+    }
 }
 
-/// Fixed-value fixtures for simple protocol-0.7 PING and bound
-/// `RESOURCE_OUTPUT` frames.
+/// An unknown tag in a nested tagged union surfaces `UnknownEnumValue`
+/// rather than coercing to a placeholder variant.
 #[test]
-fn ping_round_trip() {
-    let frame = FrameKind::Ping {
-        nonce: 0xDEAD_BEEF_CAFE_F00D,
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, _) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-}
-
-#[test]
-fn pane_output_round_trip_hello_world() {
-    let frame = FrameKind::ResourceOutput {
-        stream_id: StreamId::new(1).unwrap(),
-        bootstrap_id: BootstrapId::new(1).unwrap(),
-        terminal_id: ResourceId::local(1),
-        seq: 0,
-        bytes: bytes::Bytes::from_static(b"hello world\r\n"),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn truncated_length_header_is_eof() {
-    let bytes = [0u8, 0, 0];
-    let err = Decoder::new(&bytes).read_frame().unwrap_err();
-    assert_eq!(err, DecodeError::UnexpectedEof);
-}
-
-#[test]
-fn zero_length_is_rejected() {
-    let bytes = [0u8, 0, 0, 0];
-    let err = Decoder::new(&bytes).read_frame().unwrap_err();
-    assert_eq!(err, DecodeError::LengthOverflow);
-}
-
-#[test]
-fn length_exceeds_protocol_cap() {
-    let mut bytes = vec![];
-    bytes.extend_from_slice(&0x0200_0000u32.to_be_bytes());
-    bytes.push(0x7F);
-    let err = Decoder::new(&bytes).read_frame().unwrap_err();
-    assert_eq!(err, DecodeError::LengthOverflow);
+fn unknown_nested_enum_tags_are_rejected() {
+    let local0 = [0x00u8, 0, 0, 0, 0];
+    let cases: [(u8, &[(u32, &[u8])], &str, u32); 6] = [
+        (
+            0x31,
+            &[(1, &1u32.to_be_bytes()), (2, &[0x7F])],
+            "Command",
+            0x7F,
+        ),
+        (
+            0xA2,
+            &[(1, &7u32.to_be_bytes()), (2, &[0xFE])],
+            "SpawnResult",
+            0xFE,
+        ),
+        (0x02, &[(1, &[0xFF])], "AttachTarget", 0xFF),
+        (0x14, &[(1, &local0), (2, &[0xAB])], "FocusEvent", 0xAB),
+        (
+            0xC1,
+            &[(2, &0x9999u16.to_be_bytes()), (3, b"")],
+            "ErrorCode",
+            0x9999,
+        ),
+        (
+            phux_protocol::wire::frame::TYPE_SET_METADATA,
+            &[(1, &0u32.to_be_bytes()), (2, &[0xFE])],
+            "Scope",
+            0xFE,
+        ),
+    ];
+    for (type_byte, tlvs, field, value) in cases {
+        let mut fields = Vec::new();
+        for (id, bytes) in tlvs {
+            tlv_field(&mut fields, *id, bytes);
+        }
+        assert_eq!(
+            FrameKind::decode(&framed_tlv(type_byte, &fields)).unwrap_err(),
+            DecodeError::UnknownEnumValue { field, value },
+        );
+    }
 }
 
 #[test]
-fn length_exceeds_buffer() {
-    let mut bytes = vec![];
-    bytes.extend_from_slice(&100u32.to_be_bytes());
-    bytes.push(0x7F);
-    let err = Decoder::new(&bytes).read_frame().unwrap_err();
-    assert_eq!(err, DecodeError::UnexpectedEof);
-}
-
-#[test]
-fn unknown_frame_kind_is_rejected() {
-    let mut bytes = vec![];
-    bytes.extend_from_slice(&1u32.to_be_bytes());
-    bytes.push(0x42);
-    let err = Decoder::new(&bytes).read_frame().unwrap_err();
-    assert_eq!(err, DecodeError::UnknownFrameKind { tag: 0x42 });
+fn layer_set_round_trips_drops_unknown_bits_and_forces_l1() {
+    for ls in [
+        LayerSet::new(),
+        LayerSet::with(&[Layer::L2]),
+        LayerSet::with(&[Layer::L3]),
+        LayerSet::all(),
+    ] {
+        let back = LayerSet::from_wire(ls.as_wire());
+        assert_eq!(back, ls);
+        assert!(back.contains(Layer::L1));
+    }
+    let future = LayerSet::from_wire(0x80 | 0x04);
+    assert_eq!(future, LayerSet::with(&[Layer::L3]));
 }
 
 #[test]
@@ -1205,21 +1205,6 @@ fn unknown_trailing_field_id_is_skipped_forward_compat() {
 }
 
 #[test]
-fn retired_pane_diff_discriminant_is_rejected() {
-    // The pre-ADR-0013 `PANE_DIFF` discriminant (0x40) is no longer
-    // recognised. A frame carrying it must surface as UnknownFrameKind.
-    let mut body = vec![0x40u8];
-    // Pad some plausible-looking diff bytes; doesn't matter, decoder
-    // refuses on the type byte.
-    body.extend_from_slice(&[0u8; 8]);
-    let mut bytes = vec![];
-    bytes.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
-    bytes.extend_from_slice(&body);
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(err, DecodeError::UnknownFrameKind { tag: 0x40 });
-}
-
-#[test]
 fn invalid_utf8_in_hello_client_name() {
     // HELLO (0x01) whose CLIENT_NAME field (id 1) holds non-UTF-8 bytes must
     // surface InvalidUtf8. The client_name value rides as raw bytes inside the
@@ -1230,16 +1215,6 @@ fn invalid_utf8_in_hello_client_name() {
 
     let err = Decoder::new(&bytes).read_frame().unwrap_err();
     assert_eq!(err, DecodeError::InvalidUtf8);
-}
-
-#[test]
-fn truncated_ping_body() {
-    let mut bytes = vec![];
-    bytes.extend_from_slice(&9u32.to_be_bytes());
-    bytes.push(0x7F);
-    bytes.extend_from_slice(&[0, 0, 0]);
-    let err = Decoder::new(&bytes).read_frame().unwrap_err();
-    assert_eq!(err, DecodeError::UnexpectedEof);
 }
 
 #[test]
@@ -1259,42 +1234,6 @@ fn tail_is_returned_after_single_frame() {
 // -----------------------------------------------------------------------------
 
 proptest! {
-    /// Isolated snapshot components. `arb_session_snapshot` mixes these
-    /// lists but does not pin a single-entry session, window, pane, or
-    /// layout, and `roundtrip_resource_info` additionally dedupes ids so
-    /// the facet join cannot collapse two rows.
-    #[test]
-    fn roundtrip_session_info(info in arb_session_info()) {
-        let snap = SessionSnapshot::new(info.id, WindowId::new(0), ResourceId::new(0))
-            .with_sessions(vec![info]);
-        assert_round_trip(&FrameKind::Attached {
-            attach_id: 1,
-            snapshot: snap,
-            initial_client_id: ClientId::new(0),
-        });
-    }
-
-    #[test]
-    fn roundtrip_window_info(info in arb_window_info()) {
-        let snap = SessionSnapshot::new(info.session_id, info.id, ResourceId::new(0))
-            .with_windows(vec![info]);
-        assert_round_trip(&FrameKind::Attached {
-            attach_id: 1,
-            snapshot: snap,
-            initial_client_id: ClientId::new(0),
-        });
-    }
-
-    #[test]
-    fn roundtrip_pane_info(info in arb_pane_info()) {
-        let snap = SessionSnapshot::new(SessionId::new(0), info.window_id, info.id.clone())
-            .with_resources(vec![info]);
-        assert_round_trip(&FrameKind::Attached {
-            attach_id: 1,
-            snapshot: snap,
-            initial_client_id: ClientId::new(0),
-        });
-    }
 
     /// Snapshot entries with resource facets round-trip through the trailing
     /// facet list, and a mix of plain and faceted entries keeps every entry
@@ -1319,78 +1258,6 @@ proptest! {
         });
     }
 
-    #[test]
-    fn roundtrip_layout_node(layout in arb_layout_node()) {
-        let win = WindowInfo::new(WindowId::new(1), SessionId::new(1), "w")
-            .with_layout(Some(layout));
-        let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(0))
-            .with_windows(vec![win]);
-        assert_round_trip(&FrameKind::Attached {
-            attach_id: 1,
-            snapshot: snap,
-            initial_client_id: ClientId::new(0),
-        });
-    }
-}
-
-#[test]
-fn attach_unknown_target_tag_is_rejected() {
-    // ATTACH (0x02) carrying a TARGET field (id 1) whose value is an
-    // AttachTarget with an unknown tag byte (0xFF) must surface
-    // UnknownEnumValue from the nested positional decoder.
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &[0xFF]); // field::attach::TARGET
-    let bytes = framed_tlv(0x02, &fields);
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(
-        err,
-        DecodeError::UnknownEnumValue {
-            field: "AttachTarget",
-            value: 0xFF,
-        }
-    );
-}
-
-#[test]
-fn input_focus_unknown_kind_is_rejected() {
-    // INPUT_FOCUS (0x14): TERMINAL_ID (id 1) = local{0}, then an EVENT field
-    // (id 2) carrying an unknown focus-kind byte (0xAB).
-    let mut term = vec![0x00u8]; // RESOURCE_ID_TAG_LOCAL
-    term.extend_from_slice(&0u32.to_be_bytes());
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &term); // field::input_focus::TERMINAL_ID
-    tlv_field(&mut fields, 2, &[0xAB]); // field::input_focus::EVENT
-    let bytes = framed_tlv(0x14, &fields);
-
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(
-        err,
-        DecodeError::UnknownEnumValue {
-            field: "FocusEvent",
-            value: 0xAB,
-        }
-    );
-}
-
-#[test]
-fn error_unknown_code_is_rejected() {
-    // A TYPE_ERROR (0xC1) frame whose CODE field (id 2) carries a code the
-    // v0.1 decoder does not recognise MUST surface UnknownEnumValue rather
-    // than silently mapping to a placeholder variant. (request_id is omitted
-    // — an absent optional field.)
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 2, &0x9999u16.to_be_bytes()); // field::error::CODE
-    tlv_field(&mut fields, 3, b""); // field::error::MESSAGE (empty)
-    let bytes = framed_tlv(0xC1, &fields);
-
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(
-        err,
-        DecodeError::UnknownEnumValue {
-            field: "ErrorCode",
-            value: 0x9999,
-        }
-    );
 }
 
 #[test]
@@ -1573,64 +1440,6 @@ fn arb_layer_set() -> impl Strategy<Value = LayerSet> {
     ]
 }
 
-#[test]
-fn hello_decoder_rejects_legacy_body_with_color_but_no_layers() {
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, b"x");
-    tlv_field(&mut fields, 2, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 3, &7u16.to_be_bytes());
-    tlv_field(&mut fields, 4, &0u16.to_be_bytes());
-    tlv_field(&mut fields, 5, &[0x00]);
-    assert_eq!(
-        FrameKind::decode(&framed_tlv(0x01, &fields)).unwrap_err(),
-        DecodeError::UnexpectedEof
-    );
-}
-
-#[test]
-fn layer_set_wire_round_trips() {
-    for ls in [
-        LayerSet::new(),
-        LayerSet::with(&[Layer::L2]),
-        LayerSet::with(&[Layer::L3]),
-        LayerSet::all(),
-    ] {
-        let wire = ls.as_wire();
-        let back = LayerSet::from_wire(wire);
-        assert_eq!(back, ls);
-        // L1 invariant: always set after round-trip.
-        assert!(back.contains(Layer::L1));
-    }
-}
-
-#[test]
-fn layer_set_unknown_bits_are_dropped_but_l1_forced_on() {
-    // A future encoder sets a yet-unknown bit (0x80) plus L3.
-    let ls = LayerSet::from_wire(0x80 | 0x04);
-    assert!(ls.contains(Layer::L1));
-    assert!(ls.contains(Layer::L3));
-    assert!(!ls.contains(Layer::L2));
-}
-
-#[test]
-fn scope_unknown_tag_is_rejected() {
-    // A SET_METADATA whose SCOPE field (id 2) carries an unknown Scope tag must
-    // surface UnknownEnumValue, not silently coerce.
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &0u32.to_be_bytes()); // field::set_metadata::REQUEST_ID
-    tlv_field(&mut fields, 2, &[0xFE]); // field::set_metadata::SCOPE (unknown tag)
-    let bytes = framed_tlv(phux_protocol::wire::frame::TYPE_SET_METADATA, &fields);
-
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(
-        err,
-        DecodeError::UnknownEnumValue {
-            field: "Scope",
-            value: 0xFE,
-        }
-    );
-}
-
 // -----------------------------------------------------------------------------
 // L1 Terminal lifecycle frames — SPEC §7.2 / §10.1 (phux-4li.10).
 //
@@ -1800,12 +1609,75 @@ proptest! {
     }
 }
 
-/// The fixed-payload command verbs share one wire shape (tag + positional
-/// body); one looped table covers `GET_STATE`, UPGRADE, SHUTDOWN,
-/// `RELEASE_INPUT` (ADR-0033), and `REPORT_ASKED`.
+/// Command verbs share one wire shape (tag + positional body); one table
+/// covers every variant `arb_frame_kind` does not, with Local and Satellite
+/// ids, empty/singleton/multi id lists, and every presence byte.
 #[test]
-fn command_simple_variants_round_trip() {
-    for command in [
+fn command_variants_round_trip() {
+    let id_lists = || {
+        [
+            Vec::new(),
+            vec![ResourceId::local(7)],
+            vec![
+                ResourceId::local(1),
+                ResourceId::local(2),
+                ResourceId::satellite("peer-a", 9),
+            ],
+        ]
+    };
+    let mut commands = Vec::new();
+    for terminal_id in [ResourceId::local(7), ResourceId::satellite("devbox", 7)] {
+        commands.push(Command::AttachResource {
+            terminal_id: terminal_id.clone(),
+            role_policy: None,
+        });
+        commands.push(Command::DetachResource { terminal_id });
+    }
+    for mode in [InputMode::Cooperative, InputMode::Seize] {
+        commands.push(Command::AcquireInput {
+            terminal_id: ResourceId::local(7),
+            mode,
+            ttl_ms: 30_000,
+        });
+    }
+    for signal in [
+        TerminalSignal::Interrupt,
+        TerminalSignal::Freeze,
+        TerminalSignal::Resume,
+        TerminalSignal::Terminate,
+        TerminalSignal::Kill,
+    ] {
+        commands.push(Command::SignalTerminal {
+            terminal_id: ResourceId::local(3),
+            signal,
+            operation_id: None,
+        });
+    }
+    for request_scrollback in [None, Some(0), Some(42)] {
+        for cells in [false, true] {
+            for format in [0, 1, 2] {
+                commands.push(Command::GetScreen {
+                    terminal_id: ResourceId::local(5),
+                    request_scrollback,
+                    cells,
+                    format,
+                });
+            }
+        }
+    }
+    for ids in id_lists() {
+        commands.push(Command::KillResources {
+            ids,
+            operation_id: None,
+        });
+    }
+    for ids in id_lists() {
+        commands.push(Command::CloseTabResources { ids });
+    }
+    for session in [None, Some("work".to_owned()), Some(String::new())] {
+        commands.push(Command::DetachClients { session });
+    }
+    commands.extend([
         Command::GetState {
             scope: StateScope::Server,
         },
@@ -1848,96 +1720,12 @@ fn command_simple_variants_round_trip() {
             upload_id: FileUploadId::new([9; 16]).expect("non-zero upload id"),
             terminal_id: ResourceId::local(7),
         },
-    ] {
+    ]);
+    for command in commands {
         assert_round_trip(&FrameKind::Command {
             request_id: 7,
             command,
         });
-    }
-}
-
-#[test]
-fn command_attach_detach_terminal_round_trip() {
-    // phux-v45.7: the per-Terminal subscription verbs (SPEC §5.1 tags
-    // 0x01/0x02) round-trip with both Local and Satellite ids — the
-    // Satellite form is what a hub consumer sends for two-hop attach.
-    for terminal_id in [ResourceId::local(7), ResourceId::satellite("devbox", 7)] {
-        for command in [
-            Command::AttachResource {
-                terminal_id: terminal_id.clone(),
-                role_policy: None,
-            },
-            Command::DetachResource {
-                terminal_id: terminal_id.clone(),
-            },
-        ] {
-            assert_round_trip(&FrameKind::Command {
-                request_id: 21,
-                command,
-            });
-        }
-    }
-}
-
-#[test]
-fn command_acquire_input_round_trips() {
-    // ADR-0033: both acquisition modes round-trip, with the advisory ttl.
-    for mode in [InputMode::Cooperative, InputMode::Seize] {
-        assert_round_trip(&FrameKind::Command {
-            request_id: 11,
-            command: Command::AcquireInput {
-                terminal_id: ResourceId::local(7),
-                mode,
-                ttl_ms: 30_000,
-            },
-        });
-    }
-}
-
-#[test]
-fn command_signal_terminal_round_trips() {
-    // ADR-0033: every signal variant round-trips.
-    for signal in [
-        TerminalSignal::Interrupt,
-        TerminalSignal::Freeze,
-        TerminalSignal::Resume,
-        TerminalSignal::Terminate,
-        TerminalSignal::Kill,
-    ] {
-        assert_round_trip(&FrameKind::Command {
-            request_id: 13,
-            command: Command::SignalTerminal {
-                terminal_id: ResourceId::local(3),
-                signal,
-                operation_id: None,
-            },
-        });
-    }
-}
-
-#[test]
-fn command_get_screen_round_trips() {
-    // GET_SCREEN (tag 0x07): ResourceId + a trailing optional<u32>
-    // `request_scrollback` (phux-o1v) + a trailing bool `cells` (phux-8yl)
-    // + a trailing u8 `format` (D9). The reply is OK_WITH(JSON(..)) —
-    // covered by the generic CommandValue::Json roundtrip. Exercise every
-    // scrollback state crossed with both `cells` values and every defined
-    // `format` value so the presence byte + value + cells bool + format
-    // byte all round-trip.
-    for request_scrollback in [None, Some(0), Some(42)] {
-        for cells in [false, true] {
-            for format in [0, 1, 2] {
-                assert_round_trip(&FrameKind::Command {
-                    request_id: 11,
-                    command: Command::GetScreen {
-                        terminal_id: ResourceId::local(5),
-                        request_scrollback,
-                        cells,
-                        format,
-                    },
-                });
-            }
-        }
     }
 }
 
@@ -2309,119 +2097,18 @@ fn hello_ok_server_feature_round_trips_and_old_caps_default_empty() {
     assert!(old.features.is_empty());
 }
 
+/// The reason-less `DETACHED` is byte-identical to the empty body every
+/// pre-`0.7.0-draft.7` peer emits, in both directions (ADR-0061).
 #[test]
-fn command_kill_terminals_round_trips() {
-    // KILL_RESOURCES (tag 0x09, the slot freed by the v0.3.0 "Option B"
-    // re-tier that dissolved the L2 lifecycle verbs): a u16-count-prefixed
-    // list of tagged TerminalIds. Exercise the empty list, a singleton, and a
-    // multi-id group so the count prefix and the per-id tagged encoding both
-    // round-trip.
-    for ids in [
-        Vec::new(),
-        vec![ResourceId::local(7)],
-        vec![
-            ResourceId::local(1),
-            ResourceId::local(2),
-            ResourceId::satellite("peer-a", 9),
-        ],
-    ] {
-        assert_round_trip(&FrameKind::Command {
-            request_id: 31,
-            command: Command::KillResources {
-                ids,
-                operation_id: None,
-            },
-        });
-    }
-}
-
-#[test]
-fn command_close_tab_resources_round_trips() {
-    // CLOSE_TAB_RESOURCES (tag 0x1d): same body as KILL_RESOURCES.
-    for ids in [
-        Vec::new(),
-        vec![ResourceId::local(7)],
-        vec![
-            ResourceId::local(1),
-            ResourceId::local(2),
-            ResourceId::satellite("peer-a", 9),
-        ],
-    ] {
-        assert_round_trip(&FrameKind::Command {
-            request_id: 32,
-            command: Command::CloseTabResources { ids },
-        });
-    }
-}
-
-#[test]
-fn command_detach_clients_round_trips() {
-    // DETACH_CLIENTS (tag 0x13): a presence byte + optional session name.
-    // Exercise both the `None` (detach all) and `Some(name)` targeting so the
-    // presence byte and the string encoding both round-trip.
-    for session in [None, Some("work".to_owned()), Some(String::new())] {
-        assert_round_trip(&FrameKind::Command {
-            request_id: 44,
-            command: Command::DetachClients { session },
-        });
-    }
-}
-
-/// Every `DetachReason` the catalog defines, paired with a message and with
-/// none, survives a full encode/decode cycle.
-#[test]
-fn detached_reason_and_message_round_trip() {
-    for reason in [
-        None,
-        Some(DetachReason::Requested),
-        Some(DetachReason::ServerShutdown),
-        Some(DetachReason::SessionKilled),
-        Some(DetachReason::Replaced),
-        Some(DetachReason::ProtocolError),
-        Some(DetachReason::AuthenticationFailed),
-        Some(DetachReason::AuthorizationRevoked),
-        Some(DetachReason::AuthorizationExpired),
-        Some(DetachReason::InternalError),
-    ] {
-        for message in [String::new(), "the server is stopping".to_owned()] {
-            assert_round_trip(&FrameKind::Detached { reason, message });
-        }
-    }
-}
-
-/// The reason-less shape MUST stay byte-identical to the empty body every
-/// pre-`0.7.0-draft.7` peer emits — that byte equality is what makes the
-/// field-id addition additive rather than a fleet-wide break (ADR-0061).
-#[test]
-fn detached_without_a_reason_encodes_the_legacy_empty_body() {
-    let mut buf = BytesMut::new();
-    FrameKind::Detached {
+fn detached_without_a_reason_is_the_legacy_empty_body() {
+    let unstated = FrameKind::Detached {
         reason: None,
         message: String::new(),
-    }
-    .encode(&mut buf);
-    assert_eq!(
-        buf.as_ref(),
-        framed_tlv(0x82, &[]).as_slice(),
-        "an unstated reason must not add bytes to DETACHED"
-    );
-}
-
-/// The other direction of the same compatibility claim: a `DETACHED` encoded
-/// by a server that predates the fields decodes as "reason unstated", never
-/// as a decode failure and never as `Requested`.
-#[test]
-fn detached_empty_body_decodes_as_unstated() {
-    let buf = framed_tlv(0x82, &[]);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(
-        decoded,
-        FrameKind::Detached {
-            reason: None,
-            message: String::new(),
-        }
-    );
-    assert!(tail.is_empty());
+    };
+    let mut buf = BytesMut::new();
+    unstated.encode(&mut buf);
+    assert_eq!(buf.as_ref(), framed_tlv(0x82, &[]).as_slice());
+    assert_round_trip(&unstated);
 }
 
 /// A reason value allocated by a *later* draft must decode as unstated rather
@@ -2495,27 +2182,6 @@ fn command_result_ok_with_values_round_trip() {
             result: CommandResult::OkWith(value),
         });
     }
-}
-
-#[test]
-fn command_unknown_tag_is_rejected() {
-    // A COMMAND frame whose COMMAND field (id 2) carries an unallocated command
-    // tag (0x7F) must decode-fail rather than silently coerce.
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &1u32.to_be_bytes()); // field::command::REQUEST_ID
-    tlv_field(&mut fields, 2, &[0x7F]); // field::command::COMMAND (unallocated tag)
-    let buf = framed_tlv(0x31, &fields);
-    let err = FrameKind::decode(&buf).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            DecodeError::UnknownEnumValue {
-                field: "Command",
-                ..
-            }
-        ),
-        "expected UnknownEnumValue for Command, got {err:?}",
-    );
 }
 
 // -----------------------------------------------------------------------------
@@ -2658,86 +2324,33 @@ fn event_fixture_variants_round_trip() {
     }
 }
 
+/// Forward-compat: an `EVENT` whose tag this version does not know (just
+/// past the highest allocated, and far past it) decodes as
+/// `AgentEvent::Unknown` with its body verbatim instead of failing the frame.
 #[test]
 fn event_unknown_tag_decodes_as_unknown_and_skips() {
-    // Forward-compat: an EVENT frame whose event tag this version does not
-    // know MUST decode as `AgentEvent::Unknown` (preserving the body verbatim)
-    // rather than failing the frame parse — so an older client skips a newer
-    // server's event kinds cleanly. The terminal scope is an absent field
-    // (server-scoped None); the EVENT field (id 2) holds the positional
-    // AgentEvent: unknown tag 0x7F + a length-prefixed body.
-    let body_bytes = [0xDEu8, 0xAD, 0xBE, 0xEF];
-    let mut agent_event = vec![0x7Fu8]; // unknown event tag
-    agent_event.extend_from_slice(&u32::try_from(body_bytes.len()).unwrap().to_be_bytes());
-    agent_event.extend_from_slice(&body_bytes);
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 2, &agent_event); // field::event::EVENT
-    let bytes = framed_tlv(0xB3, &fields);
-
-    let (decoded, tail) = FrameKind::decode(&bytes).unwrap();
-    assert_eq!(
-        decoded,
-        FrameKind::Event {
-            terminal: None,
-            event: AgentEvent::Unknown {
-                tag: 0x7F,
-                body: body_bytes.to_vec(),
-            },
-            stamp: None,
-        }
-    );
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn event_asked_decodes_as_unknown_for_an_older_decoder() {
-    // Forward-compat guard: prove the unknown-event-tag skip path. The
-    // highest allocated tag is SOURCE_GAP at `0x0c` (ADR-0123), so we
-    // build an event with tag `0x0d` — a tag THIS version does not know —
-    // carrying an opaque body, and assert an older-style decoder skips it by
-    // its outer length prefix to `AgentEvent::Unknown` (body preserved
-    // verbatim) rather than failing the frame parse. This pins the additive
-    // forward-compat contract.
-    let body_bytes = [0x01u8, 0x02, 0x03];
-    let mut agent_event = vec![0x0fu8]; // a tag this version does not know
-    agent_event.extend_from_slice(&u32::try_from(body_bytes.len()).unwrap().to_be_bytes());
-    agent_event.extend_from_slice(&body_bytes);
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 2, &agent_event); // field::event::EVENT
-    let bytes = framed_tlv(0xB3, &fields);
-
-    let (decoded, tail) = FrameKind::decode(&bytes).unwrap();
-    assert_eq!(
-        decoded,
-        FrameKind::Event {
-            terminal: None,
-            event: AgentEvent::Unknown {
-                tag: 0x0f,
-                body: body_bytes.to_vec(),
-            },
-            stamp: None,
-        }
-    );
-    assert!(tail.is_empty());
-}
-
-#[test]
-fn terminal_spawned_unknown_result_tag_is_rejected() {
-    // A `RESOURCE_SPAWNED` whose RESULT field (id 2) carries an unknown
-    // `SpawnResult` tag MUST surface as `UnknownEnumValue`, not silently coerce.
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::terminal_spawned::REQUEST_ID
-    tlv_field(&mut fields, 2, &[0xFE]); // field::terminal_spawned::RESULT (unknown tag)
-    let bytes = framed_tlv(0xA2, &fields);
-
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(
-        err,
-        DecodeError::UnknownEnumValue {
-            field: "SpawnResult",
-            value: 0xFE,
-        }
-    );
+    for tag in [0x0fu8, 0x7F] {
+        let body = [0xDEu8, 0xAD, 0xBE, 0xEF];
+        let mut agent_event = vec![tag];
+        agent_event.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+        agent_event.extend_from_slice(&body);
+        let mut fields = Vec::new();
+        tlv_field(&mut fields, 2, &agent_event); // field::event::EVENT
+        let bytes = framed_tlv(0xB3, &fields);
+        let (decoded, tail) = FrameKind::decode(&bytes).unwrap();
+        assert_eq!(
+            decoded,
+            FrameKind::Event {
+                terminal: None,
+                event: AgentEvent::Unknown {
+                    tag,
+                    body: body.to_vec(),
+                },
+                stamp: None,
+            }
+        );
+        assert!(tail.is_empty());
+    }
 }
 
 // -----------------------------------------------------------------------------

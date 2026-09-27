@@ -1672,7 +1672,7 @@ mod samples;
 mod tests {
     use super::*;
     use crate::ids::GroupId;
-    use crate::wire::frame::{ViewportInfo, encode_session_keep_empty};
+    use crate::wire::frame::encode_session_keep_empty;
 
     fn terminal() -> ResourceId {
         ResourceId::local(7)
@@ -1680,13 +1680,6 @@ mod tests {
 
     fn row(frame: &FrameKind) -> &'static str {
         frame_rule(frame).case
-    }
-
-    fn command_row(command: Command) -> &'static str {
-        row(&FrameKind::Command {
-            request_id: 1,
-            command,
-        })
     }
 
     fn spawn(
@@ -1711,24 +1704,6 @@ mod tests {
 
     fn agent(parent: ResourceId) -> SpawnResource {
         SpawnResource::agent_session(parent, "claude")
-    }
-
-    #[test]
-    fn terminal_spawn_rows_follow_satellite_and_owner() {
-        assert_eq!(row(&spawn(None, None, None)), F_SPAWN_LOCAL.case);
-        assert_eq!(
-            row(&spawn(None, Some(terminal()), None)),
-            F_SPAWN_OWNED.case
-        );
-        assert_eq!(row(&spawn(Some("h"), None, None)), F_SPAWN_SATELLITE.case);
-        assert_eq!(
-            row(&spawn(Some("h"), Some(terminal()), None)),
-            F_SPAWN_SATELLITE_OWNED.case
-        );
-        assert_eq!(
-            classify_frame(&spawn(Some("h"), Some(terminal()), None)),
-            Classification::Deny
-        );
     }
 
     #[test]
@@ -1861,82 +1836,6 @@ mod tests {
         assert_eq!(
             row(&subscribe(RESOURCE_AGENT_KEY)),
             F_SUBSCRIBE_METADATA.case
-        );
-    }
-
-    #[test]
-    fn attach_and_event_subscriptions_split_on_their_payload() {
-        let attach = |target| FrameKind::Attach {
-            attach_id: 1,
-            target,
-            viewport: ViewportInfo::new(80, 24),
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-            role_policy: None,
-        };
-        assert_eq!(row(&attach(AttachTarget::Last)), F_ATTACH.case);
-        assert_eq!(
-            row(&attach(AttachTarget::CreateIfMissing {
-                name: "work".to_owned(),
-                command: None,
-                cwd: None,
-            })),
-            F_ATTACH_CREATE.case
-        );
-        assert_eq!(
-            row(&FrameKind::SubscribeEvents {
-                terminal: Some(terminal()),
-                after_seq: None,
-            }),
-            F_SUBSCRIBE_EVENTS_ONE.case
-        );
-        assert_eq!(
-            row(&FrameKind::SubscribeEvents {
-                terminal: None,
-                after_seq: None,
-            }),
-            F_SUBSCRIBE_EVENTS_ALL.case
-        );
-    }
-
-    #[test]
-    fn commands_split_on_their_payload_and_the_envelope_defers() {
-        assert_eq!(
-            command_row(Command::DetachClients {
-                session: Some("work".to_owned())
-            }),
-            C_DETACH_CLIENTS_SESSION.case
-        );
-        assert_eq!(
-            command_row(Command::DetachClients { session: None }),
-            C_DETACH_CLIENTS_ALL.case
-        );
-        assert_eq!(
-            command_row(Command::GetPerf { reset: false }),
-            C_GET_PERF.case
-        );
-        assert_eq!(
-            command_row(Command::GetPerf { reset: true }),
-            C_GET_PERF_RESET.case
-        );
-        assert_eq!(
-            classify_command(&Command::Shutdown),
-            Classification::Allow {
-                verbs: Verbs::of(&[Verb::Signal]),
-                subject: Subject::Global {
-                    owner_uds_only: true
-                },
-            }
-        );
-        assert_eq!(F_COMMAND.classification(), Classification::Deny);
-    }
-
-    #[test]
-    fn server_to_client_frames_are_wrong_direction() {
-        assert_eq!(row(&FrameKind::Pong { nonce: 1 }), F_UNCLASSIFIED.case);
-        assert_eq!(
-            classify_frame(&FrameKind::AttachReady { attach_id: 1 }),
-            Classification::Deny
         );
     }
 

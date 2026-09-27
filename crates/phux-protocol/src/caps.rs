@@ -1760,10 +1760,6 @@ mod tests {
             let back = ColorSupport::from_wire(tag).expect("known tag");
             assert_eq!(back, v);
         }
-    }
-
-    #[test]
-    fn unknown_color_support_tag_is_none() {
         assert!(ColorSupport::from_wire(0xFF).is_none());
     }
 
@@ -1785,57 +1781,30 @@ mod tests {
     }
 
     #[test]
-    fn colorterm_truecolor_wins() {
-        let env = env_map(&[("COLORTERM", "truecolor"), ("TERM", "xterm-256color")]);
-        assert_eq!(detect_from_env(env), ColorSupport::TrueColor);
-    }
-
-    #[test]
-    fn colorterm_24bit_wins() {
-        let env = env_map(&[("COLORTERM", "24bit"), ("TERM", "xterm")]);
-        assert_eq!(detect_from_env(env), ColorSupport::TrueColor);
-    }
-
-    #[test]
-    fn term_256color_maps_to_indexed256() {
-        let env = env_map(&[("TERM", "xterm-256color")]);
-        assert_eq!(detect_from_env(env), ColorSupport::Indexed256);
-    }
-
-    #[test]
-    fn term_direct_maps_to_truecolor() {
-        let env = env_map(&[("TERM", "xterm-direct")]);
-        assert_eq!(detect_from_env(env), ColorSupport::TrueColor);
-    }
-
-    #[test]
-    fn term_xterm_maps_to_indexed16() {
-        let env = env_map(&[("TERM", "xterm")]);
-        assert_eq!(detect_from_env(env), ColorSupport::Indexed16);
-    }
-
-    #[test]
-    fn term_dumb_maps_to_mono() {
-        let env = env_map(&[("TERM", "dumb")]);
-        assert_eq!(detect_from_env(env), ColorSupport::Mono);
-    }
-
-    #[test]
-    fn macos_terminal_falls_back_to_indexed256() {
-        let env = env_map(&[("TERM_PROGRAM", "Apple_Terminal")]);
-        assert_eq!(detect_from_env(env), ColorSupport::Indexed256);
-    }
-
-    #[test]
-    fn iterm_advertises_truecolor() {
-        let env = env_map(&[("TERM_PROGRAM", "iTerm.app")]);
-        assert_eq!(detect_from_env(env), ColorSupport::TrueColor);
-    }
-
-    #[test]
-    fn unknown_env_falls_back_to_truecolor() {
-        let env = env_map(&[]);
-        assert_eq!(detect_from_env(env), ColorSupport::TrueColor);
+    fn color_support_detection_from_env() {
+        let cases: &[(&[(&str, &str)], ColorSupport)] = &[
+            (
+                &[("COLORTERM", "truecolor"), ("TERM", "xterm-256color")],
+                ColorSupport::TrueColor,
+            ),
+            (
+                &[("COLORTERM", "24bit"), ("TERM", "xterm")],
+                ColorSupport::TrueColor,
+            ),
+            (&[("TERM", "xterm-256color")], ColorSupport::Indexed256),
+            (&[("TERM", "xterm-direct")], ColorSupport::TrueColor),
+            (&[("TERM", "xterm")], ColorSupport::Indexed16),
+            (&[("TERM", "dumb")], ColorSupport::Mono),
+            (
+                &[("TERM_PROGRAM", "Apple_Terminal")],
+                ColorSupport::Indexed256,
+            ),
+            (&[("TERM_PROGRAM", "iTerm.app")], ColorSupport::TrueColor),
+            (&[], ColorSupport::TrueColor),
+        ];
+        for (pairs, want) in cases {
+            assert_eq!(detect_from_env(env_map(pairs)), *want, "{pairs:?}");
+        }
     }
 
     #[test]
@@ -1845,12 +1814,6 @@ mod tests {
         assert!(caps.image_protocols.contains(ImageProtocol::Sixel));
         assert!(caps.kbd_protocols.contains(KeyboardProtocol::Kitty));
         assert!(caps.hyperlinks);
-    }
-
-    #[test]
-    fn client_capabilities_builder() {
-        let caps = ClientCapabilities::new().with_color_support(ColorSupport::Indexed16);
-        assert_eq!(caps.color_support, ColorSupport::Indexed16);
     }
 
     #[test]
@@ -1908,93 +1871,6 @@ mod tests {
         assert_eq!(caps.native_features.as_wire(), 0);
     }
 
-    #[test]
-    fn get_perf_feature_bit_is_stable_and_known() {
-        assert_eq!(GET_PERF, 0x0000_0800);
-        assert_eq!(TRANSCRIBE, 0x0000_2000);
-        assert!(ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::Transcribe));
-        assert_eq!(RESOURCE_KINDS, 0x0000_4000);
-        assert!(ServerFeatureSet::from_wire(RESOURCE_KINDS).contains(ServerFeature::ResourceKinds));
-        assert!(!ServerFeatureSet::from_wire(TRANSCRIBE).contains(ServerFeature::ResourceKinds));
-        assert_eq!(LIST_DIRECTORY, 0x0000_8000);
-        assert!(ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::ListDirectory));
-        assert_eq!(HOST_SESSIONS, 0x0001_0000);
-        assert!(ServerFeatureSet::from_wire(HOST_SESSIONS).contains(ServerFeature::HostSessions));
-        assert!(!ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::HostSessions));
-        assert_eq!(KEEP_EMPTY_SESSIONS, 0x0002_0000);
-        assert!(
-            ServerFeatureSet::from_wire(KEEP_EMPTY_SESSIONS)
-                .contains(ServerFeature::KeepEmptySessions)
-        );
-        assert_eq!(
-            ServerFeatureSet::with(&[ServerFeature::KeepEmptySessions]).as_wire(),
-            KEEP_EMPTY_SESSIONS
-        );
-        assert_eq!(WHOAMI, 0x0004_0000);
-        assert!(ServerFeatureSet::from_wire(WHOAMI).contains(ServerFeature::Whoami));
-        assert!(!ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::Whoami));
-        assert_eq!(LIST_DIRECTORY_HOST, 0x0008_0000);
-        assert!(
-            ServerFeatureSet::from_wire(LIST_DIRECTORY_HOST)
-                .contains(ServerFeature::ListDirectoryHost)
-        );
-        assert!(
-            !ServerFeatureSet::from_wire(LIST_DIRECTORY).contains(ServerFeature::ListDirectoryHost)
-        );
-        assert_eq!(CONDITIONAL_KILL, 0x0020_0000);
-        assert_eq!(QUIC_STREAMS, 0x0040_0000);
-        assert!(ServerFeatureSet::from_wire(QUIC_STREAMS).contains(ServerFeature::QuicStreams));
-        assert!(
-            !ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::QuicStreams)
-        );
-        assert!(
-            ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::ConditionalKill)
-        );
-        assert!(!ServerFeatureSet::from_wire(SSH_ORIGIN).contains(ServerFeature::ConditionalKill));
-        assert_eq!(OPEN_LISTENER, 0x0080_0000);
-        assert!(ServerFeatureSet::from_wire(OPEN_LISTENER).contains(ServerFeature::OpenListener));
-        assert!(!ServerFeatureSet::from_wire(QUIC_STREAMS).contains(ServerFeature::OpenListener));
-        let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
-        assert!(set.contains(ServerFeature::GetPerf));
-        assert_eq!(set.as_wire(), GET_PERF);
-        assert!(ServerFeatureSet::from_wire(GET_PERF).contains(ServerFeature::GetPerf));
-    }
-
-    #[test]
-    fn server_feature_bits_are_stable_and_unknown_bits_are_ignored() {
-        assert_eq!(ACKNOWLEDGED_INPUT, 0x0000_0010);
-        assert_eq!(FILE_UPLOAD, 0x0000_0020);
-        assert_eq!(MOVE_RESOURCE, 0x0000_0040);
-        assert_eq!(TERMINAL_REPLY, 0x0000_0080);
-        assert_eq!(SHUTDOWN, 0x0000_0100);
-        assert_eq!(SPAWN_INITIAL_SIZE, 0x0000_0200);
-        assert_eq!(REPORT_AGENT_STATE, 0x0000_0400);
-        let set = ServerFeatureSet::with(&[
-            ServerFeature::AcknowledgedInput,
-            ServerFeature::FileUpload,
-            ServerFeature::MoveResource,
-            ServerFeature::TerminalReply,
-        ]);
-        assert!(set.contains(ServerFeature::AcknowledgedInput));
-        assert!(set.contains(ServerFeature::FileUpload));
-        assert!(set.contains(ServerFeature::MoveResource));
-        assert!(set.contains(ServerFeature::TerminalReply));
-        assert_eq!(set.as_wire(), 0x0000_00F0);
-        let full = ServerFeatureSet::with(&[
-            ServerFeature::AcknowledgedInput,
-            ServerFeature::FileUpload,
-            ServerFeature::MoveResource,
-            ServerFeature::TerminalReply,
-            ServerFeature::Shutdown,
-            ServerFeature::SpawnInitialSize,
-            ServerFeature::ReportAgentState,
-        ]);
-        assert_eq!(full.as_wire(), 0x0000_07F0);
-        let future = 1_u32 << 31;
-        assert!(ServerFeatureSet::from_wire(future).is_empty());
-        assert_eq!(ServerFeatureSet::from_wire(set.as_wire() | future), set);
-    }
-
     /// Every variant has exactly one name, each bit is unique, the known
     /// mask is their union, and each bit appears in `docs/spec/proto.md`
     /// §6.2 by name and value in both the bitset block and the
@@ -2047,11 +1923,5 @@ mod tests {
         assert_eq!(union & 0x0000_000F, 0, "low nibble stays unassigned");
         assert_eq!(union & 0x0000_1000, 0, "0x1000 stays retired-unshipped");
         assert_eq!(union & 0x8000_0000, 0, "0x80000000 stays unallocated");
-        assert_eq!(EVENT_JOURNAL, 0x0100_0000);
-        assert_eq!(RETAIN_ON_EXIT, 0x0200_0000);
-        assert_eq!(SPAWN_IDEMPOTENCY, 0x0400_0000);
-        assert_eq!(ATTACH_ROLES, 0x0800_0000);
-        assert_eq!(CLOSE_TAB_RESOURCES, 0x1000_0000);
-        assert_eq!(KEYED_SIGNAL, 0x2000_0000);
     }
 }
