@@ -1,4 +1,5 @@
-//! Submodule for runtime internals.
+//! `ATTACH`, `SPAWN_RESOURCE`, and `MOVE_RESOURCE` handling, plus the per-pane
+//! output pumps that publish bootstrap generations and live output.
 
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
@@ -31,10 +32,8 @@ use crate::terminal_actor::{
     ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
 };
 
-/// Adapt a broadcast byte chunk to a client's capabilities for the wire:
-/// a capable client gets the refcounted bytes verbatim (no copy); an
-/// incapable one gets an SGR-downsampled rewrite. Shared by both output
-/// pumps (the attach pump and the `SPAWN_RESOURCE` pump).
+/// Adapt a broadcast chunk to a client's capabilities: verbatim (no copy)
+/// when capable, SGR-downsampled otherwise.
 pub(crate) fn downsample_for_caps(
     bytes: &bytes::Bytes,
     caps: phux_protocol::ClientCapabilities,
@@ -70,9 +69,7 @@ fn bootstrap_source_ceiling(
     if crate::downsample::caps_pass_through(caps) {
         remaining_bytes
     } else {
-        // During adaptation the source and one equally bounded output Vec are
-        // simultaneously live. The rewriter has no other payload-sized heap
-        // scratch, so half the connection budget is the exact source ceiling.
+        // The source and one equally bounded rewrite are live together.
         remaining_bytes / 2
     }
 }
@@ -163,7 +160,7 @@ pub(crate) const fn stream_id_from(raw: u64) -> StreamId {
     }
 }
 
-pub(crate) const fn initial_bootstrap_id() -> BootstrapId {
+const fn initial_bootstrap_id() -> BootstrapId {
     match BootstrapId::new(1) {
         Some(id) => id,
         None => unreachable!(),
@@ -199,20 +196,14 @@ struct SnapshotGate {
     native_cursor: Option<crate::native_state::OpaqueHistoryCursor>,
 }
 
-/// Connection-wide retention ceiling for an aggregate ATTACH preflight.
-///
-/// A session can contain many panes, but the server must hold every pane's
-/// complete bootstrap until the atomic publication cut. Keep that aggregate no
-/// larger than one maximally bounded native prefix rather than multiplying the
-/// per-pane allowance by the pane count.
+/// Connection-wide retention ceiling for an aggregate ATTACH: every pane's
+/// bootstrap is held until the atomic publication, so the aggregate is capped
+/// at one maximal native prefix rather than scaling with the pane count.
 const MAX_STAGED_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STAGED_BOOTSTRAP_FRAMES: usize = 4_096 + 2;
 
-/// Maximum pane sources admitted to one aggregate bootstrap.
-/// Every supported profile consumes at least `BEGIN`, one opaque `CHUNK`, and
-/// `READY`, so a larger source set cannot fit the connection-wide frame budget.
-/// The preflight runs before the session snapshot and pane-handle vectors are
-/// allocated.
+/// Maximum panes in one aggregate bootstrap: each needs at least
+/// `BEGIN`/`CHUNK`/`READY`, so more cannot fit the frame budget.
 pub(crate) const MAX_AGGREGATE_BOOTSTRAP_PANES: usize = MAX_STAGED_BOOTSTRAP_FRAMES / 3;
 
 #[derive(Debug)]
@@ -224,10 +215,6 @@ struct BootstrapStagingBudget {
 }
 
 impl BootstrapStagingBudget {
-    const fn new() -> Self {
-        Self::with_limits(MAX_STAGED_BOOTSTRAP_BYTES, MAX_STAGED_BOOTSTRAP_FRAMES)
-    }
-
     const fn with_limits(max_bytes: usize, max_frames: usize) -> Self {
         Self {
             max_bytes,
@@ -243,27 +230,6 @@ impl BootstrapStagingBudget {
 
     const fn remaining_frames(&self) -> usize {
         self.max_frames.saturating_sub(self.staged_frames)
-    }
-
-    #[cfg(test)]
-    fn append(
-        &mut self,
-        staged: &mut Vec<FrameKind>,
-        incoming: &mut Vec<FrameKind>,
-    ) -> Result<(), ()> {
-        let incoming_bytes = incoming
-            .iter()
-            .try_fold(0_usize, |total, frame| {
-                total.checked_add(match frame {
-                    FrameKind::BootstrapChunk { payload, .. } => payload.len(),
-                    FrameKind::BootstrapReady { history_cursor, .. } => {
-                        history_cursor.as_ref().map_or(0, bytes::Bytes::len)
-                    }
-                    _ => 0,
-                })
-            })
-            .ok_or(())?;
-        self.append_accounted(staged, incoming, incoming_bytes)
     }
 
     fn append_accounted(
@@ -284,6 +250,53 @@ impl BootstrapStagingBudget {
         self.staged_bytes = next_bytes;
         Ok(())
     }
+}
+
+/// Is `profile` publishing native libghostty checkpoints?
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+const fn publishes_native_checkpoints(profile: BootstrapStreamProfile) -> bool {
+    matches!(
+        profile,
+        BootstrapStreamProfile::NativeState {
+            codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1
+        }
+    )
+}
+
+/// Why a native checkpoint request produced no reply.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+enum NativeCaptureFailure {
+    /// The actor mailbox is closed.
+    Unsent,
+    /// The actor dropped the reply.
+    Dropped,
+    /// The actor refused the capture.
+    Refused(crate::native_state::NativeStateError),
+}
+
+/// Send the native checkpoint request `make` builds and await its reply.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+async fn request_native_checkpoint(
+    terminal: &crate::terminal_actor::TerminalHandle,
+    make: impl FnOnce(
+        oneshot::Sender<
+            Result<
+                crate::terminal_actor::NativeBootstrapReply,
+                crate::native_state::NativeStateError,
+            >,
+        >,
+    ) -> crate::terminal_actor::NativeBootstrapRequest,
+) -> Result<crate::terminal_actor::NativeBootstrapReply, NativeCaptureFailure> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    terminal
+        .native_bootstrap
+        .send(make(reply_tx))
+        .await
+        .map_err(|_| NativeCaptureFailure::Unsent)?;
+    reply_rx
+        .await
+        .map_err(|_| NativeCaptureFailure::Dropped)?
+        .map_err(NativeCaptureFailure::Refused)
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -383,9 +396,8 @@ pub(crate) fn synthesized_bootstrap_frames(
 pub(crate) enum SnapshotQueue {
     /// Every bootstrap frame is on the mailbox, with nothing else between them.
     Queued,
-    /// The mailbox is full and this snapshot is not the final grid. The pump
-    /// stays fenced and keeps draining the broadcast, so an exit snapshot can
-    /// still reach it (phux-fpgl.28).
+    /// The mailbox is full and this is not the final grid: the pump stays
+    /// fenced and keeps draining, so a later exit snapshot still reaches it.
     Deferred,
     /// The consumer is gone.
     Closed,
@@ -420,16 +432,12 @@ pub(crate) async fn send_synthesized_bootstrap(
 
 /// Queue a resync bootstrap.
 ///
-/// A fenced pump defers a non-final snapshot that fits in the mailbox but
-/// cannot be queued yet. Parking there holds the pump off the broadcast, so
-/// the exit snapshot published later is still unread when `RESOURCE_CLOSED`
-/// takes the next free slot and the writer drops the chunk that carries the
-/// grid (phux-fpgl.28). A snapshot larger than the mailbox cannot be reserved
-/// as one unit, so it is sent frame by frame, the way a one-slot consumer
-/// already drains a bootstrap. An unfenced pump still waits: that snapshot
-/// is a resize the client has to adopt. The exit snapshot always waits, and
-/// when it fits it reserves every frame before the first one is visible, so
-/// close cannot land between `BOOTSTRAP_BEGIN` and that chunk.
+/// A fenced pump defers a non-final snapshot rather than park on a full
+/// mailbox: parking would leave the later exit snapshot unread when
+/// `RESOURCE_CLOSED` takes the next slot, losing the final grid. The exit
+/// snapshot (and an unfenced resize) always waits, reserving every frame at
+/// once when it fits so close cannot split `BEGIN` from its chunk; one larger
+/// than the mailbox goes frame by frame.
 pub(crate) async fn queue_resync_bootstrap(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     reason: crate::terminal_actor::ResyncReason,
@@ -519,15 +527,10 @@ async fn send_frames_contiguously(
     Ok(())
 }
 
-/// Queue the mandatory in-band resync after a broadcast gap.
-///
-/// The resync is addressed to `pump` alone: the gap is this consumer's, and
-/// every other consumer of the pane keeps its generation (phux-auqy). See
-/// [`PumpGeneration::takes_resync`].
-///
-/// The output pump awaits mailbox capacity and therefore cannot consume or
-/// forward a later delta until the actor has accepted the resync request.
-/// A closed or persistently full actor mailbox fails boundedly.
+/// Queue the in-band resync after a broadcast gap, addressed to `pump` alone
+/// so other consumers keep their generation. The pump forwards nothing until
+/// the actor accepts it; a closed or persistently full mailbox fails
+/// boundedly.
 pub(crate) async fn enqueue_output_resync(
     resize: &tokio::sync::mpsc::Sender<ResizeRequest>,
     pump: ResyncTarget,
@@ -549,11 +552,8 @@ pub(crate) async fn enqueue_output_resync(
     )
 }
 
-/// Why an output pump stopped serving its client.
-///
-/// The pump only reports the fault; the caller decides what to release,
-/// because a `SPAWN_RESOURCE` pump owns the pane it feeds while an ATTACH
-/// pump shares its panes with the rest of the session.
+/// Why an output pump stopped. The caller decides what to release: a
+/// `SPAWN_RESOURCE` pump owns its pane, an ATTACH pump shares it.
 #[derive(Debug, Clone, Copy)]
 enum PumpFault {
     /// The client's outbound mailbox closed. Nothing is left to serve.
@@ -571,8 +571,7 @@ enum PumpFault {
     /// without touching shared state.
     ReplayAbandoned,
     /// The pane's actor was gone when the pump asked it for a replacement:
-    /// a pane that exited while this consumer was fenced behind a full
-    /// mailbox. `RESOURCE_CLOSED` is the pane's end; the connection is fine.
+    /// `RESOURCE_CLOSED` is the pane's end; the connection is fine.
     PaneGone,
 }
 
@@ -624,10 +623,8 @@ const fn tombstone_reason_for(
 struct OutputPumpContext {
     /// This client's outbound mailbox.
     out_tx: tokio::sync::mpsc::Sender<Outbound>,
-    /// phux-y8v6: lets a lagged pump ask the actor to broadcast an in-band
-    /// resync (a full grid snapshot on the same ordered channel) so a
-    /// consumer that dropped bytes reconverges. The request names this pump
-    /// ([`Self::resync_target`]), so only it republishes (phux-auqy).
+    /// Where a lagged pump asks the actor for an in-band resync addressed to
+    /// it ([`Self::resync_target`]).
     resize: tokio::sync::mpsc::Sender<ResizeRequest>,
     /// Wire identity of the pane being pumped.
     wire_terminal_id: phux_protocol::ids::ResourceId,
@@ -677,17 +674,6 @@ impl OutputPumpContext {
             .await
     }
 
-    /// Is this pump publishing native libghostty checkpoints?
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    const fn publishes_native_checkpoints(&self) -> bool {
-        matches!(
-            self.profile,
-            BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1
-            }
-        )
-    }
-
     /// Frame one output chunk for this client, adapted to its capabilities.
     fn output_frame(
         &self,
@@ -725,12 +711,8 @@ impl OutputPumpContext {
     }
 
     /// Forward one live PTY chunk, dropping anything a tombstone voided or the
-    /// published bootstrap already covered.
-    ///
-    /// A full consumer mailbox is a gap: parking on `send` would keep this
-    /// pump off the broadcast until the consumer drains, so a pane that exits
-    /// in that window cannot deliver the resync the pump is about to ask for
-    /// (phux-fpgl.28). Fence and skip to a fresh screen instead.
+    /// published bootstrap already covered. A full mailbox is a gap: fence and
+    /// skip to a fresh screen rather than park off the broadcast.
     async fn forward_live(
         &self,
         generation: &mut PumpGeneration,
@@ -811,21 +793,17 @@ impl OutputPumpContext {
         ControlFlow::Continue(())
     }
 
-    /// Ask the actor for the replacement native checkpoint.
-    ///
-    /// Only a refused capture loses the generation. A closed mailbox or a
-    /// dropped reply means the actor is already gone, which ends this pump
-    /// without failing the connection.
+    /// Ask the actor for the replacement native checkpoint. Only a refused
+    /// capture loses the generation; a closed mailbox or dropped reply means
+    /// the actor is already gone, which ends this pump without failing the
+    /// connection.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn capture_native_checkpoint(
         &self,
         bootstrap_id: BootstrapId,
     ) -> Result<crate::terminal_actor::NativeBootstrapReply, PumpFault> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .terminal
-            .native_bootstrap
-            .send(crate::terminal_actor::NativeBootstrapRequest {
+        let captured = request_native_checkpoint(&self.terminal, |reply| {
+            crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
                 terminal_id: self.wire_terminal_id.clone(),
                 stream_id: self.stream_id,
@@ -833,26 +811,26 @@ impl OutputPumpContext {
                 limits: self.limits,
                 max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
                 max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            return Err(PumpFault::PaneGone);
-        }
-        let Ok(reply) = reply_rx.await else {
-            return Err(PumpFault::PaneGone);
-        };
-        let Ok(reply) = reply else {
-            let _ = self
-                .out_tx
-                .send(Outbound::Frame(FrameKind::Error {
-                    request_id: None,
-                    code: ErrorCode::CodecUnavailable,
-                    message: "native checkpoint resync failed".to_owned(),
-                }))
-                .await;
-            return Err(PumpFault::GenerationLost);
+                reply,
+            }
+        })
+        .await;
+        let reply = match captured {
+            Ok(reply) => reply,
+            Err(NativeCaptureFailure::Unsent | NativeCaptureFailure::Dropped) => {
+                return Err(PumpFault::PaneGone);
+            }
+            Err(NativeCaptureFailure::Refused(_)) => {
+                let _ = self
+                    .out_tx
+                    .send(Outbound::Frame(FrameKind::Error {
+                        request_id: None,
+                        code: ErrorCode::CodecUnavailable,
+                        message: "native checkpoint resync failed".to_owned(),
+                    }))
+                    .await;
+                return Err(PumpFault::GenerationLost);
+            }
         };
         Ok(reply)
     }
@@ -882,9 +860,7 @@ impl OutputPumpContext {
         {
             return Err(PumpFault::TombstoneNotQueued);
         }
-        // Same rule as the synthesized path: the id advances only once the
-        // replacement frames are queued. A capture or publish failure leaves
-        // the generation on the id the client already has.
+        // The id advances only once the replacement frames are queued.
         let bootstrap_id = next_bootstrap_id(prior_bootstrap_id);
         let reply = self.capture_native_checkpoint(bootstrap_id).await?;
         let (cut, cursor) = publish_native_bootstrap(&self.out_tx, reply)
@@ -901,28 +877,15 @@ impl OutputPumpContext {
         )
         .await
         .map_err(|()| PumpFault::PublicationNotActivated)?;
-        // Unfenced here, before the replay, so the replay's own frames pass
-        // the same `forwards` gate every other live delta does.
+        // Unfence before the replay so it passes the same `forwards` gate as
+        // live output: a replay entry at or behind the cut is already in the
+        // checkpoint, and resending it is a `DuplicateSequence` the client
+        // detaches on.
         generation.republished_at(cut);
         *output_rx = publication.live;
-        // Through the same gate as any other live delta, not around it. A
-        // replay entry at or behind the new cut is already inside the
-        // checkpoint just published, and re-sending it under the replacement
-        // `bootstrap_id` is a `DuplicateSequence` to the client kernel — which
-        // detaches on it.
-        for (seq, bytes) in publication.replay {
-            if !generation.forwards(seq) {
-                continue;
-            }
-            let frame = self.output_frame(generation, seq, &bytes);
-            if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
-                return Err(PumpFault::ReplayAbandoned);
-            }
-            generation.note_forwarded(seq);
-        }
-        // Activation stamped the generation, but the replay above can hold
-        // the pump for as long as the checkpoint takes to drain; live chunks
-        // queued behind it waited on that, not on a slow consumer.
+        self.forward_gated_replay(generation, publication.replay)
+            .await?;
+        // Chunks queued behind the replay waited on it, not on the consumer.
         generation.restart_staleness_clock();
         Ok(())
     }
@@ -956,19 +919,14 @@ impl OutputPumpContext {
                 generation.republished_at(resync.base_seq);
                 ControlFlow::Continue(())
             }
-            // Still fenced, still on the previous generation. The exit
-            // snapshot is later on this same broadcast.
+            // Still fenced; the exit snapshot is later on this broadcast.
             SnapshotQueue::Deferred => ControlFlow::Continue(()),
             SnapshotQueue::Closed => ControlFlow::Break(Some(PumpFault::OutboundClosed)),
         }
     }
 
     /// Replace the published generation after the actor resynchronized the
-    /// pane.
-    ///
-    /// Resync is a control event, not replayable live data: even an unchanged
-    /// cut (for example a resize directly after READY) invalidates and
-    /// replaces the generation.
+    /// pane. Even an unchanged cut replaces it: resync is a control event.
     async fn republish_generation(
         &self,
         generation: &mut PumpGeneration,
@@ -976,7 +934,7 @@ impl OutputPumpContext {
         resync: &PaneResync,
     ) -> ControlFlow<Option<PumpFault>> {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        if self.publishes_native_checkpoints() {
+        if publishes_native_checkpoints(self.profile) {
             let prior_bootstrap_id = generation.bootstrap_id();
             return match self
                 .republish_native_generation(
@@ -996,13 +954,9 @@ impl OutputPumpContext {
     }
 
     /// A dropped broadcast window leaves the client's mirror stale: fence the
-    /// generation, ask the actor for an in-band resync, and lose the
-    /// generation if it cannot deliver one.
-    ///
-    /// The fence is set *before* the request and is what makes the resync
-    /// land — see [`PumpGeneration::forwards`]. It is set even when the
-    /// request itself fails, so the frames between here and the pump's exit
-    /// are never the gapped ones that would detach the client.
+    /// generation (before the request, even if it fails, so gapped frames are
+    /// never forwarded), ask for an in-band resync, and lose the generation if
+    /// none can be delivered.
     async fn request_gap_resync(
         &self,
         generation: &mut PumpGeneration,
@@ -1018,9 +972,8 @@ impl OutputPumpContext {
             );
             return ControlFlow::Continue(());
         } else if matches!(cause, GapCause::Stale(_)) {
-            // A consumer slower than its link goes stale every cycle by
-            // design, so this is DEBUG: a WARN here would log once a second
-            // for as long as the remote attach lasts. `pump.lagged` counts it.
+            // A slow link goes stale every cycle by design; `pump.lagged`
+            // counts it.
             debug!(
                 terminal_id = ?self.wire_terminal_id,
                 %cause,
@@ -1035,47 +988,40 @@ impl OutputPumpContext {
                 self.lag_label,
             );
         }
-        generation.note_resync_requested();
         crate::perf::PUMP_GAP_RESYNC.incr();
+        self.send_gap_resync(generation).await
+    }
+
+    /// Ask the actor for this pump's resync. A gone actor ends the pump
+    /// quietly (`RESOURCE_CLOSED` follows); a stuck one loses the generation.
+    async fn send_gap_resync(
+        &self,
+        generation: &mut PumpGeneration,
+    ) -> ControlFlow<Option<PumpFault>> {
+        generation.note_resync_requested();
         if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
         }
         if self.resize.is_closed() {
-            // Pane actor is gone; RESOURCE_CLOSED is the terminal signal.
             return ControlFlow::Break(None);
         }
         self.fail_unrecoverable_gap().await
     }
 
     /// The resync asked for at the last gap has not arrived within
-    /// [`pump::GAP_RESYNC_RETRY`]: ask again.
-    ///
-    /// A pump waiting on a resync forwards nothing, so a request the actor
-    /// accepted but never answered (its snapshot synthesis failed, say) would
-    /// otherwise leave the client on a screen that can never change — silence
-    /// being the one failure the old behaviour did not have. Re-asking costs
-    /// one coalesced grid synthesis per retry and makes convergence
-    /// unconditional rather than conditional on the actor's first answer.
+    /// [`pump::GAP_RESYNC_RETRY`]: ask again, or the fenced client would sit
+    /// on a screen that never changes.
     async fn retry_gap_resync(
         &self,
         generation: &mut PumpGeneration,
     ) -> ControlFlow<Option<PumpFault>> {
-        // DEBUG, not WARN: the first gap already warned, and a retry loop that
-        // warns every time turns one wedged actor into a log flood.
         debug!(
             terminal_id = ?self.wire_terminal_id,
             attempt = generation.gap_attempts(),
             "{} is still waiting on its in-band resync; re-requesting",
             self.lag_label,
         );
-        generation.note_resync_requested();
-        if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
-            return ControlFlow::Continue(());
-        }
-        if self.resize.is_closed() {
-            return ControlFlow::Break(None);
-        }
-        self.fail_unrecoverable_gap().await
+        self.send_gap_resync(generation).await
     }
 
     /// The gap spent its whole request budget without the actor ever
@@ -1116,8 +1062,7 @@ enum GapCause {
     /// The chunk in hand was read from the pane this long ago, past
     /// [`pump::STALE_OUTPUT_BUDGET`].
     Stale(std::time::Duration),
-    /// The consumer mailbox was full; parking would have kept the pump off
-    /// the broadcast (phux-fpgl.28).
+    /// The consumer mailbox was full.
     Backpressure,
 }
 
@@ -1162,11 +1107,7 @@ async fn next_pump_event(
 /// Drive one client's output subscription for a pane: park on the publication
 /// gate, replay the backlog behind the published cut, then forward live
 /// output, ordered control, and generation replacements until the pane or the
-/// client goes away.
-///
-/// Returns the fault that ended the pump, or `None` for an orderly stop. The
-/// caller owns the cleanup, because a `SPAWN_RESOURCE` pump owns the pane it
-/// feeds while an ATTACH pump shares its panes with the rest of the session.
+/// client goes away. Returns the fault that ended it, `None` if orderly.
 async fn run_output_pump(
     ctx: &OutputPumpContext,
     gate_rx: oneshot::Receiver<OutputPumpStart>,
@@ -1197,9 +1138,8 @@ async fn run_output_pump(
             Ok(PaneOutput::Live { seq, bytes, at }) => {
                 let age = generation.chunk_age(at);
                 if pump::is_stale(age) && generation.forwards(seq) {
-                    // The consumer drains slower than the pane talks: skip it
-                    // to a fresh checkpoint rather than replay a backlog that
-                    // only grows (tmux's rule, measured in time).
+                    // Skip a slow consumer to a fresh checkpoint rather than
+                    // replay a backlog that only grows.
                     ctx.request_gap_resync(&mut generation, GapCause::Stale(age))
                         .await
                 } else {
@@ -1294,10 +1234,8 @@ async fn fail_aggregate_attach_prepublication(
     }
     crate::runtime::client::detach_and_release_consumer_state(state, client_id);
 
-    // Queue one ordered terminal sentinel after rollback. Even if an old
-    // state-sync producer survives its bounded detach acknowledgement and
-    // races another frame, the writer closes immediately after this ERROR and
-    // discards everything behind it.
+    // The writer closes right after this terminal ERROR, discarding anything
+    // a surviving producer races in behind it.
     if !matches!(
         tokio::time::timeout(
             producer_deadline,
@@ -1315,11 +1253,9 @@ async fn fail_aggregate_attach_prepublication(
     connection_token.cancel();
 }
 
-/// Tuple bundling everything `handle_attach` needs after it is done
-/// touching [`ServerState`]. Cloned out of the critical section so the
-/// remaining awaits do not hold the state lock. The final vector names
-/// snapshot participants with no actor handle; publication resolves those
-/// with `RESOURCE_CLOSED` before `ATTACH_READY`.
+/// What `handle_attach` needs after leaving the state lock: the snapshot, the
+/// initial client id, the panes to bootstrap, and snapshot participants with
+/// no actor (published as `RESOURCE_CLOSED` before `ATTACH_READY`).
 pub(crate) type AttachPrepared = (
     phux_protocol::wire::info::SessionSnapshot,
     phux_protocol::ids::ClientId,
@@ -1328,14 +1264,9 @@ pub(crate) type AttachPrepared = (
 );
 
 /// Resolve `target` to the session the attach joins: the one the dispatch
-/// guard authorized, pinned by id before the first await (`pinned`), or, only
-/// for a `CreateIfMissing` whose session does not exist, the one it creates.
-/// Nothing here re-resolves a name after a suspension point, so a concurrent
-/// rename cannot redirect the attach (workload-auth §5).
-///
-/// `Last` follows touch order once any activity exists, and before the first
-/// touch the server's configured pre-seeded session while it is live
-/// (`crate::policy::resolve_attach_session`); neither creates a session.
+/// guard authorized, pinned by id before the first await, or the one a
+/// `CreateIfMissing` creates. No name is re-resolved after an await, so a
+/// concurrent rename cannot redirect the attach (workload-auth §5).
 pub(crate) async fn resolve_attach_target(
     state: &SharedState,
     target: AttachTarget,
@@ -1402,45 +1333,14 @@ async fn create_attach_session(
     created
 }
 
-/// Handle [`AttachTarget::CreateIfMissing`] (phux-k61.3, SPEC §13).
+/// Handle [`AttachTarget::CreateIfMissing`] (SPEC §13): return `name` when
+/// the session exists, otherwise seed it (PTY-backed when the server runs
+/// with PTYs) and return `name` for the normal attach path.
 ///
-/// Behavior:
-///
-/// * If a session with `name` already exists in the registry, return
-///   its name unchanged — the caller's `prepare_attach` then runs the
-///   normal `ByName` attach path against it. No duplicate session is
-///   created.
-/// * Otherwise, seed a fresh `(session, window, pane)` triple, spawn
-///   the seed pane's actor in the mode the server was configured
-///   with (PTY-backed via [`seed_session_with_pty`] when
-///   [`crate::state::ServerState::attach_create_seeds_pty`] is `true`,
-///   or no-PTY via [`seed_session_with_actor`] otherwise), and return
-///   the name so the caller proceeds with the normal attach path.
-///
-/// `command` from the wire frame is honored only when the PTY mode is
-/// on AND no explicit
-/// [`crate::state::ServerState::attach_create_seed_command`] preempts
-/// it: an explicit per-server seed command always wins (it's how the
-/// `phux server` binary pins the default-shell command for the user).
-/// `cwd` from the wire frame (phux-3mtf) seeds the PTY child's working
-/// directory when it names an existing directory on the server host; a
-/// missing or non-directory path falls back to the pre-existing
-/// behavior (the builder's cwd stays unset, so the spawn lands where a
-/// `cwd: None` spawn would) rather than failing the attach — the
-/// client's idea of a path may be stale or belong to another host. A
-/// cwd already set on the server-wide override command is never
-/// clobbered. The no-PTY path ignores both, matching the existing
-/// `seed_session_with_actor` shape.
-///
-/// On terminal-actor spawn failure (e.g. PTY allocation fails on a
-/// host with no remaining ptys), emits a `SessionNotFound` error
-/// frame (mirroring how the pre-seed path logs-and-continues at
-/// startup) and returns `None` so the attach fails atomically. We
-/// reuse `SessionNotFound` rather than introducing a new error code:
-/// the user-visible effect is "the requested session is not available
-/// to attach to", which is what `SessionNotFound` already means on
-/// the wire. A richer error code (e.g. `SessionCreateFailed`) is a
-/// SPEC-level follow-up.
+/// With PTYs, a server-wide seed command wins over the wire `command`, and
+/// the wire `cwd` applies only when it names an existing directory (a stale
+/// client path falls back rather than failing the attach). Spawn failure is
+/// reported as `SessionNotFound`: the session is not available to attach.
 pub(crate) async fn resolve_create_if_missing(
     state: &SharedState,
     name: String,
@@ -1450,65 +1350,23 @@ pub(crate) async fn resolve_create_if_missing(
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
 ) -> Option<String> {
-    // Fast path: a session with this name already exists. Fall through
-    // to the normal `ByName(name)` attach by returning `name` as-is.
-    // The lookup is read-only so we hold only an immutable borrow.
     if state.with(|s| s.session_by_name(&name).is_some()) {
         debug!(session = %name, "CreateIfMissing: session already exists, attaching");
         return Some(name);
     }
 
-    // Slow path: create the session + seed pane. Snapshot the server's
-    // configured PTY mode and (optional) override command before
-    // releasing the state borrow.
-    let (with_pty, override_cmd, scrollback, term, shell, login_shell) = state.with(|s| {
+    let (with_pty, override_cmd, scrollback, term) = state.with(|s| {
         (
             s.attach_create_seeds_pty(),
             s.attach_create_seed_command(),
             s.scrollback_limits(),
             s.term().to_owned(),
-            s.shell().to_owned(),
-            s.login_shell(),
         )
     });
 
     let seed_result = if with_pty {
-        // Resolve the command. Precedence:
-        //   1. The server-wide override stashed via
-        //      `set_attach_create_pty(_, Some(cmd))`. Set explicitly by
-        //      the runtime (or by tests that want a deterministic
-        //      child like `cat`).
-        //   2. The wire-level `command` from the CreateIfMissing
-        //      variant. This is the per-attach command knob clients
-        //      use to spawn (e.g.) `phux new -- vim foo.txt`.
-        //   3. `default_shell_command` over the resolved default shell
-        //      (`defaults.shell` → `$SHELL` → `/bin/sh`, phux-i0e8.4.1)
-        //      — same fallback the pre-seed path uses.
-        let mut seed_cmd = override_cmd.unwrap_or_else(|| match command {
-            Some(argv) if !argv.is_empty() => {
-                let mut head = argv.into_iter();
-                // Safe: argv is non-empty here.
-                let program = head.next().unwrap_or_default();
-                let mut builder = portable_pty::CommandBuilder::new(program);
-                for arg in head {
-                    builder.arg(arg);
-                }
-                builder
-            }
-            _ => crate::terminal_actor::default_shell_command(&shell, login_shell),
-        });
-        // phux-3mtf / phux-0v1l: honor the wire `cwd` through the shared
-        // validate-and-fall-back helper, uniform with the
-        // `SESSION_CREATE_KEY` create-without-attach path. The wire cwd is
-        // applied only over a cwd-less builder (a server-wide override's cwd
-        // wins wholesale), honored only when it names an existing, enterable
-        // directory, and dropped with a warn otherwise — never failing the
-        // attach. The stamp in `seed_session_with_pty_and_colors` reads the
-        // builder's cwd back (`spawn_cwd_of`), so the honored value also
-        // lands on the pane's registry descriptor for the ATTACHED snapshot.
+        let mut seed_cmd = override_cmd.unwrap_or_else(|| spawn_argv_builder(state, command));
         crate::terminal_actor::apply_spawn_cwd(&mut seed_cmd, cwd.as_deref(), &name);
-        // Apply the server-wide `defaults.term` (phux-ign); this overrides
-        // whatever baseline the builder carried.
         crate::terminal_actor::apply_term(&mut seed_cmd, &term);
         seed_session_with_pty_and_colors(
             state,
@@ -1519,10 +1377,7 @@ pub(crate) async fn resolve_create_if_missing(
             default_colors,
         )
     } else {
-        // No-PTY path: the wire `command` is meaningless without a
-        // child to exec it on. We still create the session+pane so
-        // the snapshot path has a target — this is the shape every
-        // existing `spawn_server` test uses.
+        // No child to exec a wire `command` on.
         seed_session_with_actor(state, &name, scrollback, root_token)
     };
 
@@ -1549,37 +1404,8 @@ pub(crate) async fn resolve_create_if_missing(
     Some(name)
 }
 
-/// Resolve a freshly-spawned pane's working directory from
-/// `defaults.cwd-inheritance` (phux-cs6) when the `SPAWN_RESOURCE` wire
-/// frame left `cwd` unset.
-///
-/// Returns the directory to seed the new pane's `CommandBuilder.cwd`
-/// with, or `None` to inherit the server process's CWD (no override) —
-/// the same effect the wire-`cwd = None` path had before this policy
-/// existed.
-///
-/// Policy mapping:
-/// * [`InheritFocused`](phux_config::CwdInheritance::InheritFocused) —
-///   look up the spawning client's focused pane and ask its actor for
-///   the live PTY CWD (a kernel query on the PTY child, see
-///   [`crate::cwd_query`]). `None` when the client is not attached, has
-///   no focused pane, the pane has no live handle, or the query is
-///   unsupported/denied — each falls through to no override.
-/// * [`Home`](phux_config::CwdInheritance::Home) — `$HOME`, or `None`
-///   when unset.
-/// * [`SessionRoot`](phux_config::CwdInheritance::SessionRoot) — the
-///   session's creation directory: the live CWD of the session's seed
-///   (oldest) pane, captured once and frozen in
-///   [`crate::state::ServerState::record_session_root`] so a later `cd`
-///   in the seed pane does not move the root. `None` when the client is
-///   not attached, the session has no live seed pane, or the query is
-///   unsupported/denied (with no previously frozen value to fall back on).
-/// * [`LastCwdPerWindow`](phux_config::CwdInheritance::LastCwdPerWindow) —
-///   the most-recent CWD observed in the spawning client's active window.
-///   Resolved from the active pane's live CWD, recorded into
-///   [`crate::state::ServerState::record_window_last_cwd`], and reused as
-///   the fallback when a subsequent live query fails. `None` when there is
-///   no active window and nothing was ever recorded.
+/// A new pane's working directory from `defaults.cwd-inheritance` when the
+/// spawn left `cwd` unset; `None` inherits the server's CWD.
 pub(crate) async fn resolve_inherited_cwd(
     state: &SharedState,
     client_id: ClientId,
@@ -1593,11 +1419,6 @@ pub(crate) async fn resolve_inherited_cwd(
 }
 
 /// The live PTY CWD of the spawning client's focused pane.
-///
-/// Find the spawning client's focused pane's actor handle in a
-/// single critical section, then query it off-lock (the actor
-/// runs on the same `LocalSet`; `with` must not be held across
-/// the await).
 async fn focused_pane_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
     let handle = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
@@ -1607,18 +1428,12 @@ async fn focused_pane_cwd(state: &SharedState, client_id: ClientId) -> Option<St
     query_pane_cwd(handle).await
 }
 
-/// The session's creation directory.
-///
-/// The session root is the seed pane's directory at session
-/// creation, frozen on first observation. Query the seed pane
-/// live; if a root was already frozen, reuse it (and the live
-/// query is redundant). The freeze happens in `with_mut` after
-/// the off-lock query so a concurrent spawn cannot move it.
+/// The session's creation directory: the seed pane's CWD, frozen on first
+/// observation so a later `cd` does not move it.
 async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
     let (session, handle) = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
         if let Some(root) = s.session_root(session) {
-            // Already frozen — return it without a live query.
             return Some((session, FrozenOrQuery::Frozen(path_to_string(root)?)));
         }
         let seed = s.seed_pane_of_session(session)?;
@@ -1629,8 +1444,7 @@ async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<St
         FrozenOrQuery::Frozen(root) => Some(root),
         FrozenOrQuery::Query(handle) => {
             let resolved = query_pane_cwd(handle).await?;
-            // Freeze the first observed root; reuse any value a
-            // racing spawn already inserted.
+            // A racing spawn may have frozen a root first; keep that one.
             let frozen = state.with_mut(|s| {
                 path_to_string(s.record_session_root(session, std::path::PathBuf::from(&resolved)))
             });
@@ -1639,11 +1453,8 @@ async fn session_root_cwd(state: &SharedState, client_id: ClientId) -> Option<St
     }
 }
 
-/// The most-recent CWD observed in the spawning client's active window.
-///
-/// Resolve the active window and its active pane's handle. If the
-/// window has no live active pane, fall back to the last value we
-/// recorded for that window.
+/// The spawning client's active-window CWD: live from its active pane, else
+/// the last value recorded for the window.
 async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<String> {
     let (window, handle) = state.with(|s| {
         let session = s.attached().get(&client_id)?.session;
@@ -1658,72 +1469,39 @@ async fn last_window_cwd(state: &SharedState, client_id: ClientId) -> Option<Str
         None => None,
     };
     if let Some(cwd) = resolved {
-        // Record the freshly observed CWD and seed the new pane with
-        // it.
         state.with_mut(|s| {
             s.record_window_last_cwd(window, std::path::PathBuf::from(&cwd));
         });
         return Some(cwd);
     }
-    // Live query unavailable — reuse the most recent recorded value
-    // for this window, if any.
     state.with(|s| s.window_last_cwd(window).and_then(|p| path_to_string(p)))
 }
 
-/// Either a directory already frozen as a session root or the actor handle
-/// to query for it. Lets `resolve_inherited_cwd` decide whether a live PTY
-/// query is needed inside a single `with` critical section without holding
-/// the lock across the `await`.
-pub(crate) enum FrozenOrQuery {
+/// A frozen session root, or the handle to query for one off-lock.
+enum FrozenOrQuery {
     Frozen(String),
     Query(ResourceHandle),
 }
 
-/// Render `path` as a UTF-8 string, or `None` if it is not valid UTF-8 — the
-/// wire `cwd` and `CommandBuilder.cwd` plumbing are string-based, so a
-/// non-UTF-8 directory simply yields no override.
-pub(crate) fn path_to_string(path: &std::path::Path) -> Option<String> {
+/// `path` as UTF-8; a non-UTF-8 directory yields no override.
+fn path_to_string(path: &std::path::Path) -> Option<String> {
     path.to_str().map(ToOwned::to_owned)
 }
 
-/// Ask `handle`'s engine for its live PTY child CWD (a kernel query, see
-/// [`crate::cwd_query`]). `None` when the resource is not a Terminal (only a
-/// Terminal has a working directory), the actor has gone away, or the query
-/// is unsupported/denied. The handle must be cloned out of state before the
-/// call: `with` must not be held across the `await`.
-pub(crate) async fn query_pane_cwd(handle: ResourceHandle) -> Option<String> {
+/// Ask `handle`'s Terminal engine for its PTY child's live CWD. `None` for a
+/// non-Terminal, a gone actor, or an unsupported query.
+async fn query_pane_cwd(handle: ResourceHandle) -> Option<String> {
     let terminal = handle.terminal().ok()?;
     let (reply, rx) = tokio::sync::oneshot::channel();
     terminal.pwd.send(PwdRequest { reply }).await.ok()?;
     rx.await.ok().flatten()
 }
 
-/// Refresh every live pane's registry `cwd` from its PTY child's kernel
-/// CWD (phux-p4vp).
-///
-/// `TerminalDescriptor.cwd` is stamped once at spawn time (see
-/// `stamp_spawn_cwd` in `runtime::commands`) and would otherwise go stale
-/// as soon as the shell `cd`s. `handle_attach` calls this right before
-/// `prepare_attach` builds the `ATTACHED` snapshot, so
-/// `SessionSnapshot.resources[].cwd` reflects each pane's *current* directory
-/// — the TUI sidebar derives its per-window VCS branch line from it.
-///
-/// Best-effort per pane: a dead child, an unsupported platform, or a
-/// vanished actor leaves that pane's stamped value untouched. Queries fan
-/// out concurrently (same `FuturesUnordered` rationale as the snapshot
-/// fan-out below: attach latency scales with the MAX pane reply time, not
-/// the SUM) and the whole drain is capped by [`CWD_REFRESH_DEADLINE`]:
-/// an actor that never services its `pwd` mailbox (wedged, or a
-/// synthetic test handle) must not stall the `ATTACHED` frame. Panes
-/// whose replies miss the deadline keep their stamped spawn-time value;
-/// replies that landed before it still apply. Handles are cloned out of
-/// state first — `with` must not be held across an await.
+/// Refresh every pane's registry `cwd` from its PTY child before the
+/// `ATTACHED` snapshot, since the spawn-time stamp goes stale on `cd`.
+/// Best-effort and concurrent; replies that miss the deadline keep their
+/// stamped value, so a wedged actor cannot stall `ATTACHED`.
 pub(crate) async fn refresh_registry_cwds(state: &SharedState) {
-    /// Upper bound on the attach-time kernel-cwd fan-out. Real actors
-    /// answer a `PwdRequest` in well under a millisecond (one kernel
-    /// call, no PTY I/O), so this only ever fires for a wedged or
-    /// mock actor — where waiting longer buys nothing and every 100ms
-    /// visibly delays the attacher's first paint.
     const CWD_REFRESH_DEADLINE: std::time::Duration = std::time::Duration::from_millis(250);
 
     let handles: Vec<(ResourceId, ResourceHandle)> =
@@ -1761,11 +1539,7 @@ pub(crate) async fn refresh_registry_cwds(state: &SharedState) {
     });
 }
 
-/// The decoded `SPAWN_RESOURCE` payload, bundled 1:1 with the wire frame
-/// (minus `request_id`, threaded separately like every reply-correlated
-/// handler). Keeps [`handle_spawn_terminal`]'s signature stable as the
-/// frame grows additive fields (`term` — phux-ign, `satellite` —
-/// phux-v45.6).
+/// The decoded `SPAWN_RESOURCE` payload, minus `request_id`.
 #[derive(Debug)]
 pub(crate) struct SpawnRequest {
     /// Group under which to spawn (v0.1 servers expose `GroupId(1)`).
@@ -1776,20 +1550,17 @@ pub(crate) struct SpawnRequest {
     pub(crate) cwd: Option<String>,
     /// Environment pairs, `None` = inherit the server's environment.
     pub(crate) env: Option<Vec<(String, String)>>,
-    /// First-class `TERM` override (phux-ign).
+    /// First-class `TERM` override.
     pub(crate) term: Option<String>,
-    /// Satellite host to route the spawn to (phux-v45.6), `None` = local.
+    /// Satellite host to route the spawn to, `None` = local.
     pub(crate) satellite: Option<phux_protocol::ids::SatelliteHost>,
     /// Existing Terminal on the spawn's host whose exact window owns the new pane.
     pub(crate) owner_terminal: Option<phux_protocol::ids::ResourceId>,
     /// Opaque native agent-session provenance to install before publication.
     pub(crate) agent_session: Option<Vec<u8>>,
-    /// `(cols, rows)` to build the pane's grid and PTY at (phux-a5xj),
-    /// `None` for the server's default.
+    /// `(cols, rows)` for the pane's grid and PTY, `None` for the default.
     pub(crate) initial_size: Option<(u16, u16)>,
-    /// Kind, parent, and agent-session provenance (`SPAWN_RESOURCE` fields
-    /// 11 to 14). `None` — the shape every pre-kinds consumer sends — is a
-    /// plain Terminal with no parent.
+    /// Kind, parent, and provenance fields; `None` is a plain Terminal.
     pub(crate) resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
 }
 
@@ -1817,11 +1588,8 @@ fn satellite_spawn_owner(
     }
 }
 
-/// Relay one satellite-addressed spawn over the owning hub link
-/// (phux-v45.6, L1 §3.1 / §9.1) and return the re-tagged result. A
-/// missing route — non-hub server, or `host` absent from the hub's
-/// registry — is the typed configuration refusal; an unreachable
-/// satellite fails fast inside [`crate::hub::relay::RelayHandle::spawn`].
+/// Relay one satellite-addressed spawn over the hub link (L1 §9.1); no route
+/// is the typed configuration refusal.
 async fn relay_spawn_to_satellite(
     state: &SharedState,
     host: &phux_protocol::ids::SatelliteHost,
@@ -1837,11 +1605,8 @@ async fn relay_spawn_to_satellite(
     relay.spawn(spawn).await
 }
 
-/// ADR-0109: remember which hub consumer asked for a satellite resource, so
-/// the hub can tell its consumers apart when a conditional kill asks whether
-/// anyone else attached it. Every consumer shares one link identity on the
-/// satellite, so the satellite cannot. Recorded before the reply goes out,
-/// so no consumer can know the id first.
+/// ADR-0109: record which hub consumer spawned a satellite resource (the
+/// satellite sees one link identity), before any consumer can learn the id.
 fn record_satellite_spawn(state: &SharedState, client_id: ClientId, result: &SpawnResult) {
     if let Some(phux_protocol::ids::ResourceId::Satellite { host, id }) = result.spawned_id() {
         let instance = result.instance();
@@ -1849,10 +1614,8 @@ fn record_satellite_spawn(state: &SharedState, client_id: ClientId, result: &Spa
     }
 }
 
-/// Relay a satellite-targeted spawn and reply with its re-tagged result.
-///
-/// Only a validated payload reaches route lookup. Ownership or independent
-/// agent-session provenance refusals are returned without touching the link.
+/// Relay a satellite-targeted spawn (or reply with its validation refusal)
+/// and reply with the re-tagged result.
 pub(crate) async fn dispatch_satellite_spawn(
     state: &SharedState,
     client_id: ClientId,
@@ -1874,20 +1637,10 @@ pub(crate) async fn dispatch_satellite_spawn(
         .await;
 }
 
-/// Handle `MOVE_RESOURCE` (ADR-0056, L1 §10.1).
-///
-/// Re-parents `terminal` into the window that currently owns
-/// `owner_terminal`, atomically under the state lock: resolve both
-/// Terminals, move the registry entry, and reap the source window if the
-/// move emptied it — either the whole re-parent lands or none of it does.
-/// The pane's process, PTY, scrollback, metadata, and agent record are
-/// untouched; its `ResourceId` is stable across the move, so subscriptions
-/// and outstanding waits survive. Layout is deliberately NOT written here:
-/// geometry is the caller's L3 concern (the ADR-0019 seam), exactly as
-/// with spawn placement.
-///
-/// Local-only: a satellite-tagged id on either end is the typed
-/// [`MoveError::UnsupportedSatelliteRoute`], matching spawn's refusal.
+/// Handle `MOVE_RESOURCE` (ADR-0056): atomically re-parent `terminal` into
+/// the window owning `owner_terminal`, reaping a source window the move
+/// emptied. The `ResourceId` is stable, so subscriptions survive; layout is
+/// the caller's concern. Local-only.
 pub(crate) async fn handle_move_terminal(
     state: &SharedState,
     client_id: ClientId,
@@ -1905,64 +1658,9 @@ pub(crate) async fn handle_move_terminal(
     );
 
     let (result, clients_to_detach) =
-        if !matches!(terminal, phux_protocol::ids::ResourceId::Local { .. })
-            || !matches!(owner_terminal, phux_protocol::ids::ResourceId::Local { .. })
-        {
-            (
-                MoveResult::Err(MoveError::UnsupportedSatelliteRoute),
-                Vec::new(),
-            )
-        } else {
-            state.with_mut(|s| {
-                let Some(moved) = s.terminal_from_wire(&terminal) else {
-                    return (
-                        MoveResult::Err(MoveError::MoveFailed(
-                            "terminal was not found on this server".to_owned(),
-                        )),
-                        Vec::new(),
-                    );
-                };
-                let Some(owner) = s.terminal_from_wire(&owner_terminal) else {
-                    return (
-                        MoveResult::Err(MoveError::MoveFailed(
-                            "owner terminal was not found on this server".to_owned(),
-                        )),
-                        Vec::new(),
-                    );
-                };
-                let Some(dest_window) = s.registry().resource(owner).and_then(|t| t.window) else {
-                    return (
-                        MoveResult::Err(MoveError::MoveFailed(
-                            "owner terminal has no window on this server".to_owned(),
-                        )),
-                        Vec::new(),
-                    );
-                };
-                let source_window = s.registry().resource(moved).and_then(|t| t.window);
-                let source_session = source_window
-                    .and_then(|window| s.registry().window(window))
-                    .map(|window| window.session);
-                match s.registry_mut().move_terminal(moved, dest_window) {
-                    Ok(()) => {
-                        // A move that emptied its source window leaves it for
-                        // the same cascade pane death uses (ADR-0056: "the
-                        // server already reaps by its existing rules").
-                        if let Some(source_window) = source_window {
-                            s.reap_window_if_empty(source_window);
-                        }
-                        let clients = source_session
-                            .filter(|session| s.registry().session(*session).is_none())
-                            .map_or_else(Vec::new, |session| {
-                                s.attached_clients_in_session(session)
-                            });
-                        (MoveResult::Ok(terminal), clients)
-                    }
-                    Err(err) => (
-                        MoveResult::Err(MoveError::MoveFailed(err.to_string())),
-                        Vec::new(),
-                    ),
-                }
-            })
+        match state.with_mut(|s| move_local_terminal(s, &terminal, &owner_terminal)) {
+            Ok(clients) => (MoveResult::Ok(terminal), clients),
+            Err(error) => (MoveResult::Err(error), Vec::new()),
         };
 
     let _ = out_tx
@@ -1972,20 +1670,14 @@ pub(crate) async fn handle_move_terminal(
         }))
         .await;
 
-    // A session-scoped ATTACH cannot remain coherent after its session was
-    // reaped. Reply to the move first, then queue DETACHED for only those
-    // attached TUIs. Each delivery waits in its own task so a wedged client's
-    // full mailbox cannot block this command or the mover's follow-up requests.
-    // Headless ATTACH_RESOURCE subscriptions are not session-attached and keep
-    // streaming the stable ResourceId as ADR-0056 requires.
+    // Clients attached to a reaped session get DETACHED, each in its own task
+    // so a wedged mailbox cannot block this command. Headless resource
+    // subscriptions keep streaming the stable id.
     for (detached_client, tx) in clients_to_detach {
         let detached_state = state.clone();
         tokio::task::spawn_local(async move {
             let _ = tx
                 .send(Outbound::Frame(FrameKind::Detached {
-                    // The group this attach was rooted in is gone — the
-                    // `SESSION_KILLED` case in proto.md §7.2, under its legacy
-                    // wire name (ADR-0030).
                     reason: Some(DetachReason::SessionKilled),
                     message: "the session this attach was rooted in was reaped".to_owned(),
                 }))
@@ -1995,64 +1687,54 @@ pub(crate) async fn handle_move_terminal(
     }
 }
 
-/// Handle `SPAWN_RESOURCE` (phux-4li.11, SPEC §7.2 / §10.1).
-///
-/// v0.1 servers expose a single default Group at
-/// [`crate::state::DEFAULT_GROUP_ID`] (= `GroupId(1)`). Any
-/// other id is rejected with [`SpawnError::GroupNotFound`] inside
-/// the [`SpawnResult::Err`] arm of the reply frame — separate from
-/// the catch-all `Error` channel so command-correlated failures stay
-/// typed end-to-end (the same precedent the metadata reply path uses).
-///
-/// On success the spawn reuses the same PTY primitive
-/// [`seed_session_with_pty`] that
-/// [`resolve_create_if_missing`] threads through. We always go PTY-
-/// backed: a `SPAWN_RESOURCE` with no PTY would be functionally
-/// indistinguishable from "nothing happened," and the wire frame
-/// commits to a runnable Terminal (the `command = None` ↔ "use the
-/// server's default shell" contract from
-/// `FrameKind::SpawnResource`'s doc).
-///
-/// `command`/`cwd`/`env` from the wire frame populate the
-/// `portable_pty::CommandBuilder`:
-///   * `command = None`  → fall back to
-///     [`crate::terminal_actor::default_shell_command`] over the
-///     resolved default shell (`defaults.shell` → `$SHELL` → `/bin/sh`;
-///     same as `AttachTarget::CreateIfMissing.command = None`).
-///   * `cwd = Some(p)`    → `builder.cwd(p)`.
-///   * `env = Some(v)`    → each `(k, v)` set via `builder.env(k, v)`,
-///     additive over the parent environment. `env = Some(vec![])` is
-///     distinct from `None` per the wire schema but has no observable
-///     effect on the resulting child today (we don't `env_clear`).
-///
-/// The spawning client is auto-subscribed to the new pane and gets an
-/// output-pump task fanning the actor's broadcast into its outbound
-/// mailbox — the same machinery `handle_attach` uses for the session's
-/// initial panes. Without that, an `INPUT_KEY` to the freshly-spawned
-/// id would be rejected at [`crate::runtime::commands::handle_terminal_input`]'s
-/// subscription
-/// gate and the user would see nothing.
-///
-/// The pane joins the spawning client's CURRENT session's window
-/// (phux-i9zl): a TUI split keeps the session intact so `phux ls` shows one
-/// session and a reattach resolves every split pane. The session is
-/// resolved from the client's attachment; a `SPAWN_RESOURCE` from a
-/// non-attached client (the headless `phux spawn` CLI, or a hub's relayed
-/// spawn arriving over the link — phux-v45.6) falls back to the server's
-/// most recently active session, and is refused only when the server has
-/// no session at all to host the pane.
-///
-/// A `satellite: Some(host)` spawn never touches local dispatch: on a hub
-/// it is relayed over `host`'s link and the reply carries the new
-/// Terminal re-tagged `Satellite { host, id }`; a non-hub server (or a
-/// hub without `host` in its registry) refuses with the typed
-/// [`SpawnError::UnsupportedSatelliteRoute`], and an unreachable
-/// satellite fails fast with [`SpawnError::SatelliteUnreachable`]
-/// (L1 §3.1 / §9.1).
+/// Re-parent `terminal` into `owner_terminal`'s window under one lock, reaping
+/// an emptied source window. Returns the clients attached to a session the
+/// move reaped.
+fn move_local_terminal(
+    s: &mut crate::state::ServerState,
+    terminal: &phux_protocol::ids::ResourceId,
+    owner_terminal: &phux_protocol::ids::ResourceId,
+) -> Result<Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>, MoveError> {
+    let failed = |message: &str| MoveError::MoveFailed(message.to_owned());
+    if !terminal.is_local() || !owner_terminal.is_local() {
+        return Err(MoveError::UnsupportedSatelliteRoute);
+    }
+    let moved = s
+        .terminal_from_wire(terminal)
+        .ok_or_else(|| failed("terminal was not found on this server"))?;
+    let owner = s
+        .terminal_from_wire(owner_terminal)
+        .ok_or_else(|| failed("owner terminal was not found on this server"))?;
+    let dest_window = s
+        .registry()
+        .resource(owner)
+        .and_then(|t| t.window)
+        .ok_or_else(|| failed("owner terminal has no window on this server"))?;
+    let source_window = s.registry().resource(moved).and_then(|t| t.window);
+    let source_session = source_window
+        .and_then(|window| s.registry().window(window))
+        .map(|window| window.session);
+    s.registry_mut()
+        .move_terminal(moved, dest_window)
+        .map_err(|err| MoveError::MoveFailed(err.to_string()))?;
+    if let Some(source_window) = source_window {
+        s.reap_window_if_empty(source_window);
+    }
+    Ok(source_session
+        .filter(|session| s.registry().session(*session).is_none())
+        .map_or_else(Vec::new, |session| s.attached_clients_in_session(session)))
+}
+
+/// Handle `SPAWN_RESOURCE` (SPEC §10.1): spawn a PTY-backed Terminal into
+/// the spawning client's current session (or the most recently active one
+/// for a detached spawner), auto-subscribe the spawner, and publish its first
+/// generation. Refusals ride the typed `RESOURCE_SPAWNED` reply. Satellite
+/// spawns are relayed over the hub link and never touch local dispatch;
+/// other kinds are dispatched by kind (ADR-0102).
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "linear orchestration: route satellite spawns → validate group → build CommandBuilder from wire frame → resolve hosting session → spawn PTY-backed pane into its window → auto-subscribe spawning client + spawn output pump → reply on the wire. Every stage now lives in its own named helper, so what is left is the fixed argument list handle_client dispatches into plus one call per stage; the explicit context arguments preserve cancellation and output-pump ownership, and rebundling them would just move the arity to the call site."
+    reason = "linear orchestration, one named helper per stage"
 )]
 pub(crate) async fn handle_spawn_terminal(
     state: &SharedState,
@@ -2092,20 +1774,14 @@ pub(crate) async fn handle_spawn_terminal(
         ..
     } = request;
 
-    // Kind dispatch (ADR-0102): fields 1 to 10 back a Terminal, so a spawn
-    // that names another kind leaves this handler entirely. An unrecognised
-    // kind is refused rather than silently spawned as a Terminal — the open
-    // `u8` exists so a newer consumer gets a typed refusal, not a shell.
+    // An unrecognised kind is refused, never spawned as a Terminal.
     let kind = resource
         .as_ref()
         .map_or(phux_protocol::ids::ResourceKind::Terminal, |r| r.kind);
     let bind_instance = resource.as_ref().is_some_and(|r| r.bind_instance);
-    // ADR-0123: the pane's `pane_spawned` names who asked and under which
-    // idempotency key.
     let attribution = super::commands::SpawnAttribution {
         actor: Some(client_id),
         operation_id: resource.as_ref().and_then(|r| r.idempotency_key),
-        // ADR-0124: field 16 resolved against `defaults.retain-on-exit*`.
         retain_secs: state.with(|s| {
             s.retain_policy()
                 .resolve(resource.as_ref().and_then(|r| r.retain_secs))
@@ -2140,17 +1816,13 @@ pub(crate) async fn handle_spawn_terminal(
             return;
         }
     }
-    // A Terminal spawn takes no parent: the one edge v1 defines runs the
-    // other way (ADR-0104 §5).
+    // A Terminal takes no parent (ADR-0104 §5).
     if resource.as_ref().is_some_and(|r| r.parent.is_some()) {
         refuse_spawn(out_tx, request_id, SpawnError::ParentKindMismatch).await;
         return;
     }
 
-    // Satellite-targeted spawn (phux-v45.6, L1 §3.1 / §9.1): relay over
-    // the owning hub link; the group and PTY details are validated on the
-    // satellite, whose errors relay back verbatim. Never falls through to
-    // local dispatch.
+    // The satellite validates the rest and its errors relay back verbatim.
     if let Some(host) = satellite {
         let spawn = satellite_spawn_owner(&host, owner_terminal, agent_session.is_some()).map(
             |owner_terminal| SatelliteSpawn {
@@ -2223,8 +1895,6 @@ pub(crate) async fn handle_spawn_terminal(
         refuse_vanished_pane_handle(state, out_tx, client_id, request_id, core_terminal_id).await;
         return;
     };
-    // The pane was just built by the Terminal engine; the facet is resolved
-    // once and carried through publication.
     let terminal = match handle.terminal() {
         Ok(terminal) => terminal.clone(),
         Err(error) => {
@@ -2260,13 +1930,9 @@ pub(crate) async fn handle_spawn_terminal(
     .await;
 }
 
-/// The resource record a satellite Terminal spawn forwards: the bind request
-/// (ADR-0109), the idempotency key (ADR-0126), and `retain_secs` (ADR-0124),
-/// when the consumer sent them. The satellite answers with its own instance
-/// token, evaluates the key, and applies retention itself; the hub relays
-/// those answers unchanged. A satellite that did not advertise the matching
-/// bit is refused in the relay, not here, so the field is never silently
-/// dropped.
+/// The resource record a satellite Terminal spawn forwards (bind request,
+/// idempotency key, `retain_secs`), when the consumer sent any; the
+/// satellite applies them itself.
 fn forwarded_resource(
     bind_instance: bool,
     idempotency_key: Option<phux_protocol::ids::IdempotencyKey>,
@@ -2282,9 +1948,8 @@ fn forwarded_resource(
     })
 }
 
-/// The success reply for a spawn: bound to `instance` when the spawn set
-/// `bind_instance` (ADR-0109), the plain `Ok` otherwise, so a consumer that
-/// never asks sees the reply it always has.
+/// The success reply for a spawn, bound to `instance` when requested
+/// (ADR-0109).
 pub(crate) const fn spawned_result(
     id: phux_protocol::ids::ResourceId,
     instance: Option<phux_protocol::ids::ServerInstance>,
@@ -2295,9 +1960,6 @@ pub(crate) const fn spawned_result(
     }
 }
 
-/// Record the decoded `SPAWN_RESOURCE` payload at the handler's entry point.
-/// `initial_size` is the geometry hint after the zero-axis drop, not the raw
-/// wire value.
 fn log_spawn_request(
     client_id: ClientId,
     request_id: u32,
@@ -2328,7 +1990,7 @@ struct PaneSpawnPlan {
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     /// Opaque native agent-session provenance to install before publication.
     agent_session: Option<Vec<u8>>,
-    /// `(cols, rows)` to build the pane's grid and PTY at (phux-a5xj).
+    /// `(cols, rows)` to build the pane's grid and PTY at.
     initial_size: Option<(u16, u16)>,
     /// Who asked, for the pane's `pane_spawned` stamp (ADR-0123).
     attribution: super::commands::SpawnAttribution,
@@ -2377,10 +2039,8 @@ fn spawn_pane_or_refusal(
     }
 }
 
-/// Defensive: the pane spawn succeeded but its handle somehow vanished before
-/// we could clone it. Reap the unreachable pane and treat it as a spawn
-/// failure on the wire so the client doesn't hang on a reply that will never
-/// arrive.
+/// The pane spawned but its handle vanished: reap it and refuse the spawn so
+/// the client is not left waiting.
 async fn refuse_vanished_pane_handle(
     state: &SharedState,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
@@ -2407,9 +2067,8 @@ async fn refuse_vanished_pane_handle(
     .await;
 }
 
-/// Reply to a `SPAWN_RESOURCE` with a typed refusal. Command-correlated
-/// failures stay on the reply frame rather than the catch-all `Error` channel.
-async fn refuse_spawn(
+/// Reply to a `SPAWN_RESOURCE` with a typed refusal.
+pub(crate) async fn refuse_spawn(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     request_id: u32,
     error: SpawnError,
@@ -2422,19 +2081,13 @@ async fn refuse_spawn(
         .await;
 }
 
-/// phux-a5xj: a zero on either axis is "I do not know my geometry", not a
-/// zero-cell grid — libghostty has no such thing. Drop it and take the
-/// server default, matching SPEC §10.5's zero-viewport no-op rule.
+/// A zero axis means "geometry unknown" (SPEC §10.5): use the default.
 fn usable_initial_size(initial_size: Option<(u16, u16)>) -> Option<(u16, u16)> {
     initial_size.filter(|&(cols, rows)| cols > 0 && rows > 0)
 }
 
-/// Validate the parts of a local `SPAWN_RESOURCE` payload that need no state:
-/// the agent-session provenance bound, and the v0.1 single-Group rule.
-///
-/// v0.1 servers expose a single default Group at
-/// [`crate::state::DEFAULT_GROUP_ID`]; any other id is
-/// [`SpawnError::GroupNotFound`].
+/// Stateless validation of a local spawn: the provenance bound, and the
+/// single default Group ([`crate::state::DEFAULT_GROUP_ID`]).
 fn validate_local_spawn(agent_session: Option<&[u8]>, group: GroupId) -> Result<(), SpawnError> {
     if agent_session
         .is_some_and(|value| value.is_empty() || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
@@ -2449,11 +2102,7 @@ fn validate_local_spawn(agent_session: Option<&[u8]>, group: GroupId) -> Result<
     Ok(())
 }
 
-/// Build the child's argv.
-///
-/// `command = None` mirrors `AttachTarget::CreateIfMissing.command = None`:
-/// fall back to the resolved default shell (`defaults.shell` → `$SHELL` →
-/// `/bin/sh`, phux-i0e8.4.1).
+/// Build the child's argv; no command runs the default shell.
 fn spawn_argv_builder(
     state: &SharedState,
     command: Option<Vec<String>>,
@@ -2475,24 +2124,9 @@ fn spawn_argv_builder(
     }
 }
 
-/// Build the `CommandBuilder` a `SPAWN_RESOURCE` execs: argv, `TERM`, working
-/// directory, and environment, each in the precedence order it defines.
-///
-/// TERM precedence (phux-ign): each later tier overrides the prior via
-/// `CommandBuilder::env`, which overwrites. So the order is:
-///   1. compiled-in `DEFAULT_TERM` (from `default_shell_command`)
-///   2. server `defaults.term` (here)
-///   3. per-spawn first-class `SPAWN_RESOURCE.term` field (below)
-///   4. per-spawn `SPAWN_RESOURCE.env` entry for `TERM` (wire `env`
-///      loop, which runs last) — authoritative for the Terminal.
-///
-/// Working directory precedence (phux-cs6): an explicit wire `cwd`
-/// always wins; otherwise fall back to `defaults.cwd-inheritance`. The
-/// inherit-focused policy reads the spawning client's focused pane's
-/// live PTY CWD via a kernel query, so `C-a |` from a pane cd'd to
-/// /tmp opens the new pane in /tmp.
-///
-/// `env = Some(v)` sets each `(k, v)` additively over the parent environment.
+/// Build the `CommandBuilder` a `SPAWN_RESOURCE` execs. `TERM` layers, last
+/// wins: server `defaults.term`, the spawn's `term`, then an `env` entry. An
+/// explicit `cwd` wins over `defaults.cwd-inheritance`; `env` is additive.
 async fn build_spawn_command(
     state: &SharedState,
     client_id: ClientId,
@@ -2520,17 +2154,9 @@ async fn build_spawn_command(
     builder
 }
 
-/// Resolve which existing Terminal or session must host the new pane.
-///
-/// phux-i9zl: a split spawns into the spawning client's CURRENT session's
-/// window, not a fresh `spawn-N` wrapper session. Resolve that session
-/// from the client's attachment (the same `s.attached()` lookup the cwd
-/// inheritance uses). A non-attached spawner — the headless
-/// `phux spawn` CLI, or a hub's relayed spawn arriving over the link
-/// (phux-v45.6; the hub's link consumer never attaches) — falls back to
-/// the server's most recently active session (the same focus heuristic
-/// `GET_STATE` snapshots use). Only a server with no session at all
-/// refuses, rather than orphan a PTY nothing can list.
+/// Resolve which Terminal's window or session hosts the new pane: the named
+/// owner, else the spawner's attached session, else the most recently active
+/// one. A server with no session refuses rather than orphan the PTY.
 fn resolve_spawn_ownership(
     state: &SharedState,
     client_id: ClientId,
@@ -2561,16 +2187,8 @@ fn resolve_spawn_ownership(
     Ok(SpawnOwnership::Session(session))
 }
 
-/// Auto-subscribe the spawning client to the new pane and clone out its wire
-/// id, actor handle, and negotiated capabilities.
-///
-/// Without subscription the `INPUT_*` dispatch path's
-/// `subscribers_for_terminal(...).contains(&client_id)` gate would reject
-/// every keystroke the spawning client sends to the new id.
-///
-/// The subscribe-and-handle lookup happens in a single `with_mut`
-/// critical section so the wire-id allocation and the subscriber
-/// append observe the same registry state.
+/// Auto-subscribe the spawning client to the new pane (or input to it would
+/// be refused) and clone out its wire id, handle, and capabilities.
 fn subscribe_spawning_client(
     state: &SharedState,
     client_id: ClientId,
@@ -2582,26 +2200,16 @@ fn subscribe_spawning_client(
 )> {
     state.with_mut(|s| {
         let wire_terminal_id = s.intern_terminal_wire(core_terminal_id);
-        // ADR-0109: provenance goes in before any subscription can, so the
-        // spawner's own subscription below never reads as someone else's
-        // attach. Nothing awaits between the pane's creation and here.
+        // ADR-0109: provenance before any subscription.
         s.record_spawn(core_terminal_id, client_id);
         let client_caps = s
             .attached()
             .get(&client_id)
             .map(|c| c.client_caps)
             .unwrap_or_default();
-        // Only auto-subscribe if the client is currently attached —
-        // a bare `SPAWN_RESOURCE` from a non-attached client is legal
-        // wire-wise (the frame doesn't require ATTACH first) but the
-        // subscription would have no `attached` slot to live in.
+        // A detached spawner has no `attached` slot to subscribe from.
         if s.attached().contains_key(&client_id) {
-            // `None` mailbox: the `attached` entry just checked already
-            // carries this client's sender, so terminal-scoped fanout
-            // resolves it without a second copy (phux-w7z2.56).
             s.subscribe_terminal(client_id, core_terminal_id, None);
-            // ADR-0127: a session attached as `VIEWER` watches its own
-            // spawns too.
             s.mark_if_viewer_session(client_id, &wire_terminal_id);
         }
         s.resource_handle(core_terminal_id)
@@ -2611,11 +2219,7 @@ fn subscribe_spawning_client(
 }
 
 /// Spawn the `SPAWN_RESOURCE` output pump and hand back its publication gate.
-///
-/// A `SPAWN_RESOURCE` pump owns the pane it feeds: nothing else is subscribed
-/// yet, so a lost generation reaps the terminal rather than leaving an
-/// unreadable PTY behind. A tombstone that could not be queued, a closed
-/// mailbox, and an abandoned replay only end the pump — the pane is untouched.
+/// This pump owns its pane, so a lost generation reaps it.
 fn spawn_terminal_output_pump(
     ctx: OutputPumpContext,
     output_rx: tokio::sync::broadcast::Receiver<PaneOutput>,
@@ -2645,9 +2249,9 @@ fn spawn_terminal_output_pump(
                     let reaped = pump_state.with_mut(|s| {
                         super::client::reap_pane_journaling_close(s, core_terminal_id)
                     });
-                    // A pane that already closed ended with RESOURCE_CLOSED:
-                    // its fenced pump losing the generation on the way out
-                    // is no reason to drop the client.
+                    // A pane that already closed ended with RESOURCE_CLOSED;
+                    // losing the generation on the way out is no reason to
+                    // drop the client.
                     if reaped {
                         warn!(
                             ?core_terminal_id,
@@ -2669,61 +2273,32 @@ fn spawn_terminal_output_pump(
     gate_tx
 }
 
-/// The freshly spawned pane and everything its publication stage needs: the
-/// wire identity to announce, the actor to capture from, and the reply
-/// correlation the client is waiting on.
+/// The freshly spawned pane and everything its publication needs.
 struct SpawnPublication<'a> {
-    /// Server state, for reaping a pane the client can never read.
     state: &'a SharedState,
-    /// The spawning client's outbound mailbox.
     out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    /// Correlates every reply frame with the client's request.
     request_id: u32,
-    /// The spawning client.
     client_id: ClientId,
-    /// Server-local id of the pane just spawned.
     core_terminal_id: ResourceId,
-    /// Wire id announced to the client.
     wire_terminal_id: phux_protocol::ids::ResourceId,
-    /// The resource's generic channels (output, consumers).
     handle: ResourceHandle,
-    /// The Terminal facet of `handle`, for capture and resync.
     terminal: crate::terminal_actor::TerminalHandle,
-    /// Negotiated capabilities the payload is adapted to.
     client_caps: ClientCapabilities,
-    /// Stream the pane's generation publishes on.
     stream_id: StreamId,
-    /// Negotiated bootstrap stream profile.
     profile: BootstrapStreamProfile,
-    /// Negotiated bootstrap bounds.
     limits: BootstrapLimits,
-    /// The spawn set `bind_instance`: answer with the instance token
-    /// (ADR-0109).
+    /// Answer with the instance token (ADR-0109).
     bind_instance: bool,
-    /// The spawn's idempotency key, unbound again if the pane is reaped
-    /// before its spawner could use it (ADR-0126).
+    /// Unbound again if the pane is reaped (ADR-0126).
     idempotency_key: Option<phux_protocol::ids::IdempotencyKey>,
 }
 
 impl SpawnPublication<'_> {
-    /// Is this spawn publishing native libghostty checkpoints?
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    const fn publishes_native_checkpoints(&self) -> bool {
-        matches!(
-            self.profile,
-            BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1
-            }
-        )
-    }
-
     /// Drop the pane nobody can reach: the client never received a usable
     /// generation for it.
     fn reap(&self) {
         self.state.with_mut(|s| {
             let _ = super::client::reap_pane_journaling_close(s, self.core_terminal_id);
-            // ADR-0126: a refused spawn binds nothing, so the key goes with
-            // the pane and a retry spawns fresh.
             super::idempotent_create::unbind_spawned(
                 s,
                 self.idempotency_key,
@@ -2753,11 +2328,8 @@ impl SpawnPublication<'_> {
     async fn capture_native_checkpoint(
         &self,
     ) -> Option<crate::terminal_actor::NativeBootstrapReply> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let sent = self
-            .terminal
-            .native_bootstrap
-            .send(crate::terminal_actor::NativeBootstrapRequest {
+        let captured = request_native_checkpoint(&self.terminal, |reply| {
+            crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
                 terminal_id: self.wire_terminal_id.clone(),
                 stream_id: self.stream_id,
@@ -2765,41 +2337,21 @@ impl SpawnPublication<'_> {
                 limits: self.limits,
                 max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
                 max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
-                reply: reply_tx,
-            })
-            .await
-            .is_ok();
-        if !sent {
-            return None;
-        }
-        match reply_rx.await {
-            Ok(Ok(reply)) => Some(reply),
-            Ok(Err(error)) => {
-                let core_terminal_id = self.core_terminal_id;
-                warn!(?core_terminal_id, %error, "native spawn preflight failed");
-                None
+                reply,
             }
-            Err(_) => None,
+        })
+        .await;
+        if let Err(NativeCaptureFailure::Refused(error)) = &captured {
+            let core_terminal_id = self.core_terminal_id;
+            warn!(?core_terminal_id, %error, "native spawn preflight failed");
         }
+        captured.ok()
     }
 
-    /// Spawn the pane's output pump, then publish its first generation for
-    /// whichever bootstrap profile was negotiated.
-    ///
-    /// `profile` was validated before spawning the pane, so an unknown
-    /// future profile can never publish a partial bootstrap generation.
-    /// Spawn the output pump BEFORE replying with `ResourceSpawned`
-    /// so any bytes the freshly-spawned PTY emits in the gap between
-    /// exec and the client's first read are queued on the broadcast
-    /// channel (broadcasts buffer per subscriber). Mirrors the
-    /// subscribe-before-snapshot ordering in `handle_attach`.
-    ///
-    /// Under QUIC multi-stream (`defer_subscription`) nothing is published
-    /// here: every L1 §4 frame rides the pane's own Terminal stream (L1
-    /// §4.9), so the reply alone goes out on control and the pump and first
-    /// generation start at the client's `STREAM_BIND`, exactly as for
-    /// `ATTACH_RESOURCE`. The spawner is already subscribed, so the bind is
-    /// authorized.
+    /// Subscribe the output pump (before the reply, so early PTY output is
+    /// buffered), then publish the first generation. Under QUIC multi-stream
+    /// (`defer_subscription`) only the reply goes out; the pump and bootstrap
+    /// start at the client's `STREAM_BIND`.
     async fn publish(
         self,
         output_pumps: &mut JoinSet<()>,
@@ -2835,7 +2387,7 @@ impl SpawnPublication<'_> {
             output_pumps,
         );
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        if self.publishes_native_checkpoints() {
+        if publishes_native_checkpoints(self.profile) {
             self.publish_native_spawn(gate_tx).await;
             return;
         }
@@ -2856,18 +2408,14 @@ impl SpawnPublication<'_> {
             .await;
             return;
         };
-        let cut = reply.base_seq;
-        let cursor = reply.publication_cursor;
         if !self.queue_spawned_ok().await {
             self.reap();
             return;
         }
-        for frame in reply.frames {
-            if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
-                self.reap();
-                return;
-            }
-        }
+        let Ok((cut, cursor)) = publish_native_bootstrap(self.out_tx, reply).await else {
+            self.reap();
+            return;
+        };
         let Ok(publication) = activate_native_publication(
             &self.terminal,
             self.client_id.0,
@@ -2977,12 +2525,8 @@ fn is_same_session_reattach(
     })
 }
 
-/// Run [`prepare_attach`] and translate each refusal into the `ERROR` frame the
-/// client sees. `None` once the attach has been refused.
-/// Apply a session `ATTACH`'s declared role (ADR-0127) to every Terminal the
-/// attach returned, in one critical section, then broadcast what it changed
-/// through each Terminal's engine. A re-attach to the same session with a
-/// different role is a journaled change on every Terminal it flips.
+/// Apply a session `ATTACH`'s declared role (ADR-0127) to every Terminal it
+/// returned in one critical section, then announce what changed.
 async fn apply_session_role(
     state: &SharedState,
     client_id: ClientId,
@@ -3014,6 +2558,7 @@ async fn apply_session_role(
     }
 }
 
+/// Run [`prepare_attach`], translating each refusal into an `ERROR` frame.
 async fn prepare_attach_or_refuse(
     state: &SharedState,
     client_id: ClientId,
@@ -3023,7 +2568,8 @@ async fn prepare_attach_or_refuse(
     negotiated_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
 ) -> Option<AttachPrepared> {
-    match prepare_attach(
+    use crate::state::AttachError;
+    let error = match prepare_attach(
         state,
         client_id,
         session,
@@ -3032,43 +2578,29 @@ async fn prepare_attach_or_refuse(
         negotiated_profile,
         bootstrap_limits,
     ) {
-        Ok(prepared) => Some(prepared),
-        Err(crate::state::AttachError::UnknownSession(name)) => {
-            send_error(
-                out_tx,
-                ErrorCode::SessionNotFound,
-                &format!("session {name:?} not found"),
-            )
-            .await;
-            None
-        }
-        Err(crate::state::AttachError::AlreadyAttached(_)) => {
-            send_error(
-                out_tx,
-                ErrorCode::AlreadyAttached,
-                "client is already attached",
-            )
-            .await;
-            None
-        }
-        Err(crate::state::AttachError::ResourceLimit) => {
-            send_error(
-                out_tx,
-                ErrorCode::CodecUnavailable,
-                "session exceeds bounded aggregate attach limits",
-            )
-            .await;
-            None
-        }
-    }
+        Ok(prepared) => return Some(prepared),
+        Err(error) => error,
+    };
+    let (code, message) = match error {
+        AttachError::UnknownSession(name) => (
+            ErrorCode::SessionNotFound,
+            format!("session {name:?} not found"),
+        ),
+        AttachError::AlreadyAttached(_) => (
+            ErrorCode::AlreadyAttached,
+            "client is already attached".to_owned(),
+        ),
+        AttachError::ResourceLimit => (
+            ErrorCode::CodecUnavailable,
+            "session exceeds bounded aggregate attach limits".to_owned(),
+        ),
+    };
+    send_error(out_tx, code, &message).await;
+    None
 }
 
-/// Stop the prior generation's actor-side tick emitters before the new
-/// ATTACHED frame is visible. Raw pumps were aborted by the caller; without
-/// this matching teardown, a state-sync delta from the old stream
-/// could interleave between ATTACHED and the replacement bootstrap.
-///
-/// Only a state-sync consumer has actor-side emitters to stop.
+/// Stop a state-sync consumer's prior actor-side emitters before the new
+/// ATTACHED, so an old delta cannot land between it and the new bootstrap.
 async fn detach_prior_state_sync_consumers(
     panes: &[AttachSnapshotPane],
     wire_client_id: phux_protocol::ids::ClientId,
@@ -3097,11 +2629,9 @@ async fn detach_prior_state_sync_consumers(
     }
 }
 
-/// Terminal defaults are shared pane state. The most recently attached
-/// interactive client that advertises a palette wins; palette-less agent
-/// and legacy attaches leave the last known values untouched. Await each
-/// acknowledgement before snapshotting so OSC 10/11 queries parsed after
-/// ATTACHED observe the selected host palette.
+/// The most recent attach that advertises a palette sets the panes' default
+/// colors; each is acknowledged before snapshotting so later OSC 10/11
+/// queries see it.
 async fn apply_client_default_colors(
     panes: &[AttachSnapshotPane],
     colors: Option<phux_protocol::caps::TerminalDefaultColors>,
@@ -3110,7 +2640,6 @@ async fn apply_client_default_colors(
         return;
     };
     for pane in panes {
-        // A palette is grid state; a resource of another kind has none.
         let Ok(terminal) = pane.handle.terminal() else {
             continue;
         };
@@ -3126,30 +2655,27 @@ async fn apply_client_default_colors(
     }
 }
 
-/// The aggregate staging state one ATTACH accumulates across its panes.
-///
-/// Captures are deliberately awaited one pane at a time: the retained result
-/// from earlier panes is charged here before the next actor receives its
-/// remaining source-allocation ceiling, so no set of concurrent actor
-/// allocations can exceed the connection-wide cap.
+/// The staging state one ATTACH accumulates, one pane at a time: each
+/// capture is charged before the next actor gets its remaining ceiling, so
+/// concurrent allocations never exceed the connection-wide cap.
 struct AttachStaging {
-    /// Connection-wide byte and frame ceiling for the whole publication.
     budget: BootstrapStagingBudget,
-    /// Bootstrap and authoritative-closure frames staged for atomic publication.
+    /// Bootstrap and closure frames staged for atomic publication.
     frames: Vec<FrameKind>,
-    /// Resource handles staged so the rollback boundary can detach each producer.
+    /// Handles the rollback boundary detaches.
     handles: Vec<ResourceHandle>,
-    /// phux-7w1j: per-pane "snapshot has been sent" gates.
+    /// Per-pane publication gates.
     gates: Vec<SnapshotGate>,
-    /// A failed replacement is connection-fatal: preserving an older producer
-    /// would allow output to overtake the terminal ERROR.
     pumps: JoinSet<()>,
 }
 
 impl Default for AttachStaging {
     fn default() -> Self {
         Self {
-            budget: BootstrapStagingBudget::new(),
+            budget: BootstrapStagingBudget::with_limits(
+                MAX_STAGED_BOOTSTRAP_BYTES,
+                MAX_STAGED_BOOTSTRAP_FRAMES,
+            ),
             frames: Vec::new(),
             handles: Vec::new(),
             gates: Vec::new(),
@@ -3169,13 +2695,7 @@ impl AttachStaging {
         frames.extend(
             terminal_ids
                 .into_iter()
-                // `Unknown` is the honest reason here and the one place it
-                // is: these panes were in the snapshot and had no engine
-                // left by the time the attach captured them, so the close
-                // ledger that would have named a reason (ADR-0104 §4) was
-                // claimed and dropped by their own exit watcher before this
-                // ran. Every site that still knows why a resource left
-                // states it.
+                // Their exit watcher already consumed the close reason.
                 .map(|terminal_id| FrameKind::ResourceClosed {
                     terminal_id,
                     exit_status: None,
@@ -3192,41 +2712,29 @@ impl AttachStaging {
 struct ConsumerRegistration {
     /// The actor accepted the registration.
     registered: bool,
-    /// phux-3uv: the actor's tick is this consumer's sole live emitter, so the
-    /// broadcast pump must be suppressed for this pane.
+    /// The actor's tick is this consumer's sole live emitter: no pump.
     tick_managed: bool,
     /// Atomic synthesized bootstrap captured in the same actor turn.
     state_sync_bootstrap: Option<crate::terminal_actor::StateSyncBootstrap>,
 }
 
-/// The negotiated shape of one ATTACH's per-pane capture: everything that is
-/// identical for every pane in the session.
+/// The negotiated shape shared by every pane capture in one ATTACH.
 struct PaneCaptureContext<'a> {
-    /// Server state, for the pumps' fatal-fault cleanup.
     state: &'a SharedState,
-    /// The attaching client's outbound mailbox.
     out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
     /// Cancelled by a pump whose generation became unrecoverable.
     connection_token: &'a CancellationToken,
     /// Released once the aggregate publication is on the wire.
     live_gate_rx: tokio::sync::watch::Receiver<bool>,
-    /// The attaching client.
     client_id: ClientId,
-    /// Wire form of [`Self::client_id`], as the actors key consumers.
     wire_client_id: phux_protocol::ids::ClientId,
-    /// Negotiated capabilities every payload is adapted to.
     client_caps: ClientCapabilities,
-    /// Stream every pane's generation publishes on.
     stream_id: StreamId,
-    /// Generation the aggregate publication carries.
     bootstrap_id: BootstrapId,
-    /// Negotiated bootstrap stream profile.
     profile: BootstrapStreamProfile,
-    /// Negotiated bootstrap bounds.
     limits: BootstrapLimits,
-    /// phux-9q5f: the ATTACH's scrollback request, capped in lines.
+    /// The ATTACH's scrollback request, capped in lines.
     scrollback: Option<u32>,
-    /// Per-chunk ceiling shared by every pane's capture.
     chunk_bytes: usize,
 }
 
@@ -3239,37 +2747,11 @@ impl PaneCaptureContext<'_> {
         )
     }
 
-    /// Is this attach publishing native libghostty checkpoints?
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    const fn publishes_native_checkpoints(&self) -> bool {
-        matches!(
-            self.profile,
-            BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1
-            }
-        )
-    }
-
-    /// ADR-0018 / phux-0q8: register the per-consumer state-sync entry
-    /// so the actor allocates and primes a per-consumer `RenderState`
-    /// cache for this client/pane, keyed by `wire_client_id`. We do
-    /// this BEFORE emitting the snapshot so the per-consumer cache is
-    /// primed against the same canonical state the snapshot installs
-    /// on the client mirror (see `register_consumer`'s doc).
-    ///
-    /// phux-3uv: the register reply reports whether the actor is
-    /// tick-managing this consumer (`consumer_tick_emits == true`). If
-    /// so, the actor's `tick_emit` is the sole emitter and we MUST
-    /// suppress the broadcast pump — otherwise two independent
-    /// `seq` streams land on one consumer mailbox (double-paint, SPEC
-    /// §12.2 monotonic-per-consumer violation). If not tick-managed
-    /// (gate off, or register failed / actor gone / no local id), the
-    /// broadcast pump stays the live emitter and the per-consumer
-    /// entry just drives the dormant `FRAME_ACK` eviction loop.
-    ///
-    /// Awaited (not fire-and-forget) so the cache is primed before the
-    /// pump starts streaming deltas; a dropped reply or actor-gone is
-    /// logged and we fall back to the broadcast path.
+    /// Register the per-consumer state-sync entry (ADR-0018) before the
+    /// snapshot, so its cache is primed against the same state. When the
+    /// actor tick-manages the consumer, its tick is the sole emitter and the
+    /// broadcast pump must be suppressed (two `seq` streams on one mailbox
+    /// violate SPEC §12.2). Any failure falls back to the broadcast path.
     async fn register_consumer(
         &self,
         handle: &ResourceHandle,
@@ -3290,24 +2772,12 @@ impl PaneCaptureContext<'_> {
                 wire_terminal_id: wire_id,
                 stream_id: self.stream_id,
                 bootstrap_id: self.bootstrap_id,
-                // phux-fseo: honor the consumer's negotiated output mode.
-                // StateSync ⇒ the actor's tick is this consumer's emitter
-                // and the broadcast pump is suppressed for it; Raw
-                // (the human-TUI default) keeps the pump.
                 wants_state_sync: self.wants_state_sync(),
                 state_sync_scrollback: self.scrollback,
                 bootstrap_max_bytes,
                 bootstrap_max_frames,
                 bootstrap_chunk_bytes: self.chunk_bytes,
-                // phux-v45.8: a directly-attached consumer rides a reliable,
-                // ordered transport (UDS / SSH stdio / WebSocket / QUIC
-                // stream), so the emit-once model is correct and cheapest —
-                // no loss-tolerant re-diff needed. Activation for a
-                // forwarded (hub->satellite->consumer) leg, where the hub's
-                // fan-out can drop whole frames, is the deferred follow-up
-                // (the satellite cannot see the downstream drop from the
-                // link's reliable transport); the advance-on-ack mechanism
-                // it flips on is fully implemented here (ADR-0042).
+                // A direct consumer's transport is reliable and ordered.
                 live_gate: self.live_gate_rx.clone(),
                 loss_tolerant: false,
                 reply: attach_reply_tx,
@@ -3352,22 +2822,10 @@ impl PaneCaptureContext<'_> {
         }
     }
 
-    /// Stage this pane's output pump behind its publication gate.
-    ///
-    /// Subscribe to live PTY output BEFORE requesting the snapshot.
-    /// Subscribing first means anything the `TerminalActor` broadcasts
-    /// after this point lands in our receiver; we then ask for a
-    /// snapshot so the client has a complete starting picture, and
-    /// any subsequent `ResourceOutput` we forward is "post-snapshot
-    /// delta" rather than racing against it.
-    ///
-    /// phux-7w1j: the pump parks on the gate registered here and must not
-    /// FORWARD a `ResourceOutput` frame until the pane's bootstrap has been
-    /// written to `out_tx` — else a PTY-active pane races output ahead of its
-    /// snapshot and the client sees frame 2 = OUTPUT instead of SNAPSHOT.
-    ///
-    /// An ATTACH pump shares its panes with the rest of the session, so a
-    /// fatal fault releases only this client's consumer state.
+    /// Stage this pane's output pump behind its publication gate. It
+    /// subscribes before the snapshot is requested, so nothing is missed, and
+    /// forwards nothing until the bootstrap is queued. A fatal fault releases
+    /// only this client's consumer state: the pane is shared.
     fn spawn_pane_pump(
         &self,
         staging: &mut AttachStaging,
@@ -3499,10 +2957,8 @@ impl PaneCaptureContext<'_> {
         wire_terminal_id: &phux_protocol::ids::ResourceId,
         terminal: &crate::terminal_actor::TerminalHandle,
     ) -> Result<(), String> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if terminal
-            .native_bootstrap
-            .send(crate::terminal_actor::NativeBootstrapRequest {
+        let captured = request_native_checkpoint(terminal, |reply| {
+            crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
                 terminal_id: wire_terminal_id.clone(),
                 stream_id: self.stream_id,
@@ -3510,21 +2966,21 @@ impl PaneCaptureContext<'_> {
                 limits: self.limits,
                 max_bytes: staging.budget.remaining_bytes(),
                 max_frames: staging.budget.remaining_frames(),
-                reply: reply_tx,
-            })
-            .await
-            .is_err()
-        {
-            warn!(?terminal_id, "pane actor dropped before native bootstrap");
-            return Err("pane actor dropped native bootstrap request".to_owned());
-        }
-        let mut reply = match reply_rx.await {
-            Ok(Ok(reply)) => reply,
-            Ok(Err(error)) => {
+                reply,
+            }
+        })
+        .await;
+        let mut reply = match captured {
+            Ok(reply) => reply,
+            Err(NativeCaptureFailure::Refused(error)) => {
                 warn!(?terminal_id, %error, "native checkpoint failed before attach publication");
                 return Err("native checkpoint capture failed".to_owned());
             }
-            Err(_) => {
+            Err(NativeCaptureFailure::Unsent) => {
+                warn!(?terminal_id, "pane actor dropped before native bootstrap");
+                return Err("pane actor dropped native bootstrap request".to_owned());
+            }
+            Err(NativeCaptureFailure::Dropped) => {
                 warn!(?terminal_id, "pane actor dropped native checkpoint reply");
                 return Err("pane actor dropped native checkpoint reply".to_owned());
             }
@@ -3609,8 +3065,6 @@ impl PaneCaptureContext<'_> {
             bootstrap_source_ceiling(staging.budget.remaining_bytes(), self.client_caps);
         let terminal_id = pane.terminal_id;
         let handle = pane.handle;
-        // A window slot only ever holds a Terminal; a bootstrap of anything
-        // else is a state inconsistency that fails the attach.
         let terminal = handle
             .terminal()
             .map_err(|error| error.to_string())?
@@ -3633,25 +3087,8 @@ impl PaneCaptureContext<'_> {
             );
             return Err("state-sync consumer registration failed".to_owned());
         }
-        // A tick-managed (state-sync) consumer gets NO broadcast output pump:
-        // the actor's 33 Hz tick emits its deltas directly, in that consumer's
-        // own per-consumer sequence space, with its own resync. That is what
-        // keeps the pump's gap fence (`PumpGeneration::forwards`) and the
-        // state-sync path disjoint rather than merely non-interfering — there
-        // is no pump here to fence, and no broadcast sequence for a fence to
-        // hold back.
-        //
-        // The invariant is enforced in two places and they must agree: here,
-        // for ATTACH, and in `commands.rs` for the `SPAWN_RESOURCE` path,
-        // which additionally drops its `pump_done_guard` because there is no
-        // pump task for a replacement to wait on. What covers it today is
-        // indirect — `statesync_convergence` would diverge if a pump were also
-        // feeding raw broadcast bytes into a state-sync consumer's stream —
-        // and no test pins the two call sites against each other directly.
-        // (A citation here previously named a test called
-        // `state_sync_consumer_gets_no_broadcast_pump`; no such test has ever
-        // existed. Writing the real two-path version is its own piece of work
-        // and its own bead, not a comment.)
+        // A tick-managed consumer's deltas come from the actor, in its own
+        // sequence space: a broadcast pump beside it would double-emit.
         if !registration.tick_managed {
             self.spawn_pane_pump(staging, terminal_id, &wire_terminal_id, &handle, &terminal);
         }
@@ -3665,7 +3102,7 @@ impl PaneCaptureContext<'_> {
             );
         }
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        if self.publishes_native_checkpoints() {
+        if publishes_native_checkpoints(self.profile) {
             return self
                 .stage_native_bootstrap(staging, terminal_id, &wire_terminal_id, &terminal)
                 .await;
@@ -3713,22 +3150,15 @@ impl PaneCaptureContext<'_> {
     }
 }
 
-/// The atomic ATTACH publication: the frames the client sees, in the one order
-/// the handshake permits.
+/// The atomic ATTACH publication, in the one order the handshake permits.
 struct AttachPublication<'a> {
-    /// Server state, for releasing consumer state on a closed mailbox.
     state: &'a SharedState,
-    /// The attaching client's outbound mailbox.
     out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
-    /// Cancelled when a published generation can no longer be activated.
+    /// Cancelled when a published generation cannot be activated.
     connection_token: &'a CancellationToken,
-    /// The attaching client.
     client_id: ClientId,
-    /// Correlates `ATTACHED` and `ATTACH_READY` with the client's request.
     attach_id: u32,
-    /// Stream every pane's generation publishes on.
     stream_id: StreamId,
-    /// Generation this publication carries.
     bootstrap_id: BootstrapId,
 }
 
@@ -3779,11 +3209,8 @@ impl AttachPublication<'_> {
     }
 
     /// Release every parked output pump now that the publication is on the
-    /// wire.
-    ///
-    /// A native generation activates its publication here: the actor hands back
-    /// the replay backlog and the post-cut receiver the pump adopts. A pane
-    /// whose capture produced no cut has no pump to release.
+    /// wire, activating native publications for their replay and post-cut
+    /// receiver.
     async fn release_gates(&self, gates: Vec<SnapshotGate>) {
         for gate in gates {
             let Some(cut) = gate.cut else {
@@ -3821,41 +3248,15 @@ impl AttachPublication<'_> {
     }
 }
 
-/// Handle `RESIZE_TERMINAL` (phux-4li.11, SPEC §7.2 / §10.2).
-///
-/// Look up the target Terminal by its wire id, then `try_send` the new
-/// `(cols, rows)` into the actor's resize mailbox. The actor's existing
-/// `handle_resize` (built for `VIEWPORT_RESIZE` in phux-byc.5) drives
-/// both `libghostty_vt::Terminal::resize` and the PTY
-/// `ioctl(TIOCSWINSZ)` from one place — we reuse it verbatim so the
-/// per-Terminal resize and the per-Viewport resize stay in lockstep.
-///
-/// Silent on every "not found" path per the wire frame's
-/// no-reply-by-design contract. The frame label distinguishes this
-/// path from `VIEWPORT_RESIZE` in logs.
-///
-/// `client_id` is unused today (the wire frame is unauthenticated;
-/// SATELLITE-routed ids are rejected before we get here). It's wired
-/// through anyway so future per-client validation (e.g. checking that
-/// the client is subscribed to the pane) doesn't require widening the
-/// helper signature.
-/// Resolve `target`, call [`prepare_attach`], and queue the
-/// `ATTACHED` + per-pane `TERMINAL_SNAPSHOT` frames on `out_tx`.
-///
-/// On any failure path, emits an `ERROR` frame and returns. We never
-/// partially-attach: either every frame queues or none does.
+/// Handle `ATTACH`: resolve the target, prepare the snapshot, capture every
+/// pane's bounded bootstrap, and publish `ATTACHED`, the bootstraps, and
+/// `ATTACH_READY` atomically. Any failure sends `ERROR`; nothing is
+/// partially attached.
 #[allow(
     clippy::too_many_lines,
-    reason = "linear attach orchestration: resolve target -> prepare -> stage per-pane output pumps -> capture each bounded source against the remaining aggregate budget -> publish atomically. Every stage now lives in its own named helper; what is left is the fixed argument list, the rollback macro that must `return` from this frame, and one call per stage."
-)]
-#[allow(
     clippy::too_many_arguments,
-    reason = "the ATTACH branch in handle_client pre-decomposes the FrameKind::Attach payload (target/viewport/request_scrollback/scrollback_limit_lines) and threads the negotiated ColorSupport alongside the SharedState + client_id + out_tx; rebundling into a struct would just move the arity from the call site to a builder"
+    reason = "linear orchestration over the decomposed ATTACH payload; the rollback macro must return from this frame"
 )]
-// Lifecycle span (info): one ATTACH per client. Its CLOSE duration is the
-// attach-handshake timing (bounded per-pane capture is the slow part); the
-// fields correlate it to a client + target + requested dims. `skip_all` keeps the
-// large arg list (state handle, channels, token) out of the span.
 #[tracing::instrument(
     level = "info",
     name = "handle_attach",
@@ -3879,17 +3280,11 @@ pub(crate) async fn handle_attach(
     root_token: &CancellationToken,
     output_pumps: &mut JoinSet<()>,
     connection_token: &CancellationToken,
-    // QUIC multi-stream (proto.md §4.2): publish the snapshot and stop.
-    // Per-pane subscription (actor registration, pump, bootstrap) starts
-    // at `STREAM_BIND` with the stream's mailbox, not here — so this path
-    // skips capture, staging, and pump commit while keeping resolve,
-    // viewport, snapshot, and `ATTACHED` / `ATTACH_READY`. Panes stay
-    // bindable through the subscription sweep `prepare_attach` already
-    // performed. `false` everywhere else.
+    // QUIC multi-stream (proto.md §4.2): publish the snapshot only; per-pane
+    // registration, pumps, and bootstraps start at `STREAM_BIND`.
     defer_subscription: bool,
 ) {
-    // L1 §8.1: a viewer cannot take over. Refused before anything resolves,
-    // so no Terminal's role changes.
+    // L1 §8.1: a viewer cannot take over; refused before anything changes.
     let role = role_policy.unwrap_or_default();
     if !role.is_valid() {
         send_error(
@@ -3900,11 +3295,8 @@ pub(crate) async fn handle_attach(
         .await;
         return;
     }
-    // Pin the target to the session the dispatch guard authorized. Nothing
-    // between the guard and this line awaits, so it reads the guard's
-    // snapshot. From here the attach follows the session id, never its name,
-    // so a rename that lands while it awaits cannot redirect it
-    // (workload-auth §5: one snapshot authorizes and routes).
+    // Pin the session the dispatch guard authorized (nothing has awaited
+    // since); from here the attach follows the id, never the name.
     let pinned = state.with(|s| crate::policy::resolve_attach_session(s, &target));
     let Some(stream_profile) = bootstrap_stream_profile(negotiated_profile) else {
         send_error(
@@ -3915,10 +3307,7 @@ pub(crate) async fn handle_attach(
         .await;
         return;
     };
-    // phux-9q5f: honor the ATTACH scrollback request. `request_scrollback`
-    // gates the feature; `scrollback_limit_lines` caps it (0 ⇒ all retained
-    // history, the SCROLLBACK_ALL sentinel). The per-pane SnapshotRequest
-    // carries this so the actor primes TERMINAL_SNAPSHOT.scrollback_bytes.
+    // `scrollback_limit_lines == 0` means all retained history.
     let scrollback_req: Option<u32> = request_scrollback.then_some(scrollback_limit_lines);
 
     let Some(session) = resolve_attach_target(
@@ -3934,9 +3323,6 @@ pub(crate) async fn handle_attach(
         return;
     };
 
-    // phux-p4vp: fold each live pane's kernel CWD into its registry
-    // descriptor before the snapshot is built, so ATTACHED carries a
-    // current `cwd` per pane (the sidebar's VCS branch line depends on it).
     refresh_registry_cwds(state).await;
 
     let same_session_reattach = is_same_session_reattach(state, client_id, session);
@@ -3957,8 +3343,7 @@ pub(crate) async fn handle_attach(
     };
     let wire_client_id =
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
-    // The name the pinned session carries now, for publication only: routing
-    // already followed the id.
+    // For publication only: routing already followed the id.
     let session_name = state
         .with(|s| {
             s.registry()
@@ -3972,27 +3357,8 @@ pub(crate) async fn handle_attach(
 
     apply_client_default_colors(&panes_to_snapshot, client_caps.default_colors).await;
 
-    // phux-2lj: apply the client's ATTACH viewport to every pane so
-    // freshly-spawned PTYs (currently built at hardcoded 80x24, see
-    // `seed_session_with_pty`) are resized to match the attaching
-    // client's host terminal. Without this, e.g. `vim` running in a
-    // 120x48 host terminal only fills the top 24 rows of the screen
-    // until SIGWINCH or an explicit VIEWPORT_RESIZE drives a resize.
-    //
-    // SPEC §10.5: ATTACH.viewport is the outer client viewport. Single-
-    // pane: the server applies it directly as the PTY's winsize (matches
-    // the existing `handle_viewport_resize` convention; the off-by-one
-    // for a host-side status bar is the client's concern via the
-    // post-attach `RESIZE_TERMINAL` reflow path used by multi-pane).
     apply_attach_viewport(state, client_id, &panes_to_snapshot, viewport);
 
-    // Multi-stream deferral (proto.md §4.2): the snapshot above is the
-    // whole attach. Subscription membership is registered (the sweep in
-    // `prepare_attach`), so every pane is bindable, but no actor consumer
-    // is registered, no pump is spawned, and no bootstrap is staged — all
-    // of that starts at STREAM_BIND with the stream's mailbox. `ATTACHED`
-    // tells the client which panes to open streams for; `ATTACH_READY`
-    // tells it the set is complete.
     if defer_subscription {
         let publication = AttachPublication {
             state,
@@ -4003,9 +3369,7 @@ pub(crate) async fn handle_attach(
             stream_id: stream_id_from(u64::from(attach_id)),
             bootstrap_id: initial_bootstrap_id(),
         };
-        // The per-pane subscriptions come at STREAM_BIND, which carries no
-        // role, so the session's declared role applies here, once the attach
-        // has published (ADR-0127).
+        // `STREAM_BIND` carries no role, so the session's role applies here.
         if publication
             .publish(snapshot, initial_client_id, Vec::new(), &session_name)
             .await
@@ -4022,14 +3386,8 @@ pub(crate) async fn handle_attach(
         return;
     }
 
-    // Capture sources one pane at a time. Each completed result is charged to
-    // the aggregate staging budget before the next actor receives its remaining
-    // byte/frame ceiling, so no set of concurrent actor allocations can exceed
-    // the connection-wide cap.
     let stream_id = stream_id_from(u64::from(attach_id));
     let bootstrap_id = initial_bootstrap_id();
-    // `stream_profile` was validated before resolving or mutating the attach
-    // target, so no ATTACHED/BOOTSTRAP_BEGIN can precede this preflight.
     let mut staging = AttachStaging::default();
     macro_rules! fail_prepublication {
         ($reason:expr) => {{
@@ -4075,9 +3433,7 @@ pub(crate) async fn handle_attach(
         scrollback: scrollback_req,
         chunk_bytes: aggregate_chunk_bytes,
     };
-    // ADR-0127: roles apply once the attach has published, so a refused
-    // attach neither marks nor seizes anything. This client's own input is
-    // not read until this handler returns.
+    // ADR-0127: roles apply only once the attach has published.
     let role_panes = panes_to_snapshot.clone();
     if let Err(reason) = capture
         .capture_panes(&mut staging, panes_to_snapshot, closed_before_ready)
@@ -4086,9 +3442,7 @@ pub(crate) async fn handle_attach(
         fail_prepublication!(reason.as_str());
     }
 
-    // Commit the replacement only after every pane has produced a complete,
-    // bounded bootstrap. Until this point the prior generation's pumps remain
-    // live and every new pump is parked on its unpublished gate.
+    // Only now, with every bootstrap staged, retire the prior generation.
     if same_session_reattach {
         super::client::abort_output_pumps(output_pumps, client_id, "replacement ATTACH").await;
     }
@@ -4116,31 +3470,10 @@ pub(crate) async fn handle_attach(
     publication.release_gates(staging.gates).await;
 }
 
-/// phux-2lj: Apply the ATTACH viewport to every pane in the freshly-
-/// attached session.
-///
-/// Panes are spawned at a hardcoded 80x24 default ([`seed_session_with_pty`]
-/// / [`seed_session_with_actor`]) because the session may exist before any
-/// client attaches (e.g. `phux-server` pre-seeding). On the first attach
-/// we have to size the PTY to match the client's outer viewport, otherwise
-/// full-screen TUIs (vim, htop) think they're running in 24 rows and
-/// render into a fraction of the visible area. This mirrors what
-/// [`crate::runtime::commands::handle_viewport_resize`] does for a live
-/// `VIEWPORT_RESIZE` frame.
-///
-/// The resize is fire-and-forget on the per-actor mpsc channel — same
-/// primitive `handle_viewport_resize` and `handle_terminal_resize` use.
-/// We `try_send` rather than `.await` so we can stay in a sync helper
-/// (no impact on `handle_attach`'s lock ordering) and because the
-/// resize channel is sized at `DEFAULT_INPUT_MAILBOX = 64`, which is
-/// well above the worst-case number of panes per attach (1 today; would
-/// stay << 64 even with multi-window sessions).
-///
-/// The `pane.dims` update is wrapped in `with_mut` once so the registry
-/// stays consistent with what future `TERMINAL_SNAPSHOT` payloads will
-/// report; the resize sends are emitted while holding the same lock,
-/// matching `handle_viewport_resize`'s pattern (the actor's mailbox is
-/// independent of the state lock).
+/// Record the ATTACH viewport and resize every pane to the window-size
+/// policy across its subscribers, so full-screen programs fill the client's
+/// terminal. Zero dimensions are a no-op (SPEC §10.5); the resize is a
+/// fire-and-forget `try_send`.
 pub(crate) fn apply_attach_viewport(
     state: &SharedState,
     client_id: ClientId,
@@ -4150,17 +3483,9 @@ pub(crate) fn apply_attach_viewport(
     let cols = viewport.cols;
     let rows = viewport.rows;
     if cols == 0 || rows == 0 {
-        // SPEC §10.5: zero-dimension viewports are treated as no-ops
-        // rather than kernel errors. Skip the resize entirely.
         return;
     }
     state.with_mut(|s| {
-        // phux-nk07: this client now contributes its viewport to every pane
-        // it just subscribed to; each pane's geometry is the window-size
-        // policy applied across all subscribers (so a second, smaller client
-        // attaching under `smallest` shrinks the grid rather than the
-        // last-writer winning). `Manual` (or no usable viewport) skips the
-        // resize, leaving the pane at its current size.
         s.set_client_viewport(client_id, viewport);
         for pane in panes_to_snapshot {
             let Some((cols, rows)) =
@@ -4171,11 +3496,8 @@ pub(crate) fn apply_attach_viewport(
             if let Some(pane_entry) = s.registry_mut().terminal_mut(pane.terminal_id) {
                 pane_entry.dims = (cols, rows);
             }
-            // ATTACH-time resize: do NOT resync — the attach handshake
-            // already sends an authoritative TERMINAL_SNAPSHOT, and a
-            // resync broadcast here would race ahead of it (phux-8v1).
-            // Pixel geometry rides along (most recent usable subscriber
-            // report — normally the viewport recorded above).
+            // No resync: the attach bootstrap is authoritative, and a resync
+            // would race ahead of it.
             let Ok(terminal) = pane.handle.terminal() else {
                 continue;
             };
@@ -4320,24 +3642,6 @@ mod tests {
         );
     }
 
-    /// ADR-0124 / ADR-0126: the hub's forwarded spawn carries `retain_secs`
-    /// alongside bind and the idempotency key; omitting every field writes
-    /// no resource record.
-    #[test]
-    fn forwarded_resource_carries_retain_secs() {
-        assert!(forwarded_resource(false, None, None).is_none());
-        let retain_only = forwarded_resource(false, None, Some(600)).expect("retain_secs alone");
-        assert_eq!(retain_only.retain_secs, Some(600));
-        assert!(!retain_only.bind_instance);
-        assert!(retain_only.idempotency_key.is_none());
-
-        let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
-        let combined = forwarded_resource(true, key, Some(0)).expect("all three fields");
-        assert!(combined.bind_instance);
-        assert_eq!(combined.idempotency_key, key);
-        assert_eq!(combined.retain_secs, Some(0));
-    }
-
     fn tiny_staged_pane(pane: u32) -> Vec<FrameKind> {
         let terminal_id = phux_protocol::ids::ResourceId::local(pane + 1);
         let stream_id = StreamId::new(1).expect("stream id");
@@ -4375,7 +3679,7 @@ mod tests {
 
         for pane in 0..16 {
             let mut frames = tiny_staged_pane(pane);
-            let result = budget.append(&mut staged, &mut frames);
+            let result = budget.append_accounted(&mut staged, &mut frames, 4);
             if pane < 8 {
                 assert!(result.is_ok(), "pane {pane} fits the aggregate budget");
                 assert!(frames.is_empty(), "accepted frames move into staging");
@@ -4451,65 +3755,6 @@ mod tests {
             bytes.as_ptr(),
             "native path keeps the shared bytes"
         );
-    }
-
-    #[test]
-    fn aggregate_staging_charges_many_tiny_native_records_by_capacity() {
-        const RECORDS: usize = 64;
-        const RECORD_CAPACITY: usize = 1_024;
-        let retained_per_pane = RECORDS * RECORD_CAPACITY;
-        let mut budget = BootstrapStagingBudget::with_limits(retained_per_pane * 3, usize::MAX);
-        let mut staged = Vec::new();
-
-        for pane in 0..4_u32 {
-            let terminal_id = phux_protocol::ids::ResourceId::local(pane + 1);
-            let stream_id = StreamId::new(u64::from(pane) + 1).expect("stream id");
-            let bootstrap_id = BootstrapId::new(u64::from(pane) + 1).expect("bootstrap id");
-            let mut frames = Vec::new();
-            frames.push(FrameKind::BootstrapBegin {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                profile: BootstrapStreamProfile::NativeState {
-                    codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
-                },
-                cols: 80,
-                rows: 24,
-                base_seq: 0,
-            });
-            let mut retained_bytes = 0_usize;
-            for chunk_seq in 0..RECORDS {
-                let mut record = Vec::with_capacity(RECORD_CAPACITY);
-                record.push(b'x');
-                retained_bytes += record.capacity();
-                frames.push(FrameKind::BootstrapChunk {
-                    terminal_id: terminal_id.clone(),
-                    stream_id,
-                    bootstrap_id,
-                    chunk_seq: u32::try_from(chunk_seq).expect("chunk sequence"),
-                    payload: bytes::Bytes::from(record),
-                });
-            }
-            frames.push(FrameKind::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            });
-            let wire_bytes = frames
-                .iter()
-                .map(|frame| match frame {
-                    FrameKind::BootstrapChunk { payload, .. } => payload.len(),
-                    _ => 0,
-                })
-                .sum::<usize>();
-            assert_eq!(retained_bytes, retained_per_pane);
-            assert!(retained_bytes > wire_bytes);
-
-            let result = budget.append_accounted(&mut staged, &mut frames, retained_bytes);
-            assert_eq!(result.is_ok(), pane < 3);
-        }
-        assert_eq!(budget.staged_bytes, retained_per_pane * 3);
     }
 
     #[test]
@@ -4844,11 +4089,7 @@ mod tests {
         }
     }
 
-    /// How long a two-pump test waits for any one step before failing.
-    ///
-    /// Generous on purpose: nothing here is timed against it except a
-    /// broken pump, and a loaded CI box can hold a test process off the CPU
-    /// for seconds.
+    /// Generous: only a broken pump ever hits it.
     const TWO_PUMP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// Drain `consumer` until it has seen `count` frames.
@@ -4880,13 +4121,8 @@ mod tests {
         }
     }
 
-    /// Wait for the gap resync request the pump behind `laggard` sends the
-    /// actor.
-    ///
-    /// A missing request has three very different causes, so a timeout
-    /// reports which one it was instead of just "elapsed": a chunk in the
-    /// laggard's mailbox means its pump judged the output fresh, and an empty
-    /// mailbox means its pump either died (task finished) or never ran.
+    /// Wait for the gap resync request the pump behind `laggard` sends; on
+    /// timeout, report what the laggard was sent and whether its pump died.
     async fn resync_request_from(
         resize_rx: &mut tokio::sync::mpsc::Receiver<ResizeRequest>,
         laggard: &mut TwoPumpConsumer,
@@ -4936,18 +4172,8 @@ mod tests {
         }
     }
 
-    /// phux-auqy: one consumer going stale re-bootstraps that consumer and
-    /// nobody else on the pane.
-    ///
-    /// Two ATTACH pumps share one pane. The fresh one attached later, so its
-    /// checkpoint already covers the chunk the remote one is only now
-    /// dequeuing, a second after the PTY read — past the staleness budget for
-    /// the remote pump alone. The remote pump fences and asks for a resync
-    /// that names it; the actor's answer is addressed to it. The fresh pump
-    /// must keep forwarding on its original generation with no tombstone and
-    /// no republish, and the stale one must converge onto a fresh generation
-    /// and resume live output there. A reflow afterwards is still owed to
-    /// both.
+    /// One consumer going stale re-bootstraps that consumer and nobody else
+    /// on the pane; a later reflow is still owed to both.
     #[tokio::test(flavor = "current_thread")]
     #[allow(
         clippy::too_many_lines,
@@ -4964,13 +4190,10 @@ mod tests {
                 let initial = two_pump_initial_generation();
                 let replacement = next_bootstrap_id(initial);
 
-                // Let both pumps open (stamping their generations) before the
-                // clock below starts, or a late first poll pushes their
-                // publish instants past the backdated chunk.
+                // Staleness counts from the later of the read and the
+                // generation's publication, so open the pumps and outlive the
+                // budget before sending a backdated chunk.
                 let_pumps_run().await;
-                // Staleness is measured from the later of the read and the
-                // generation's publication, so the pumps must have been live
-                // past the budget before a backdated chunk can count as late.
                 tokio::time::sleep(
                     crate::runtime::pump::STALE_OUTPUT_BUDGET
                         + std::time::Duration::from_millis(50),
@@ -5074,12 +4297,9 @@ mod tests {
             .await;
     }
 
-    /// phux-auqy + phux-fpgl.28: a consumer whose mailbox fills is
-    /// re-bootstrapped alone. A full mailbox is itself a gap — parking
-    /// would keep the pump off the broadcast — so the resync is requested
-    /// without waiting for the consumer to drain. Its neighbour, draining
-    /// promptly, sees every chunk on its original generation and never a
-    /// republish.
+    /// A consumer whose mailbox fills is re-bootstrapped alone, without
+    /// waiting for it to drain; its neighbour sees every chunk on its
+    /// original generation.
     #[tokio::test(flavor = "current_thread")]
     async fn a_lagged_consumer_resyncs_without_republishing_its_neighbour() {
         let local = tokio::task::LocalSet::new();
@@ -5092,10 +4312,7 @@ mod tests {
                 let initial = two_pump_initial_generation();
                 let replacement = next_bootstrap_id(initial);
 
-                // Nobody drains the lagging consumer: its one mailbox slot
-                // takes seq 1, and seq 2 finds the mailbox full. That is a
-                // gap (phux-fpgl.28); the pump fences and asks for a resync
-                // instead of parking while the four-slot ring moves on.
+                // The lagging consumer's one slot takes seq 1; seq 2 is a gap.
                 let now = std::time::Instant::now();
                 for seq in 1..=9 {
                     output.send(live(seq, now)).expect("pumps subscribed");
@@ -5112,8 +4329,6 @@ mod tests {
                     "the resync names the lagging pump, not the pane",
                 );
 
-                // The one live frame that made it before the fence. Draining
-                // it gives republish room on the one-slot mailbox.
                 assert_eq!(
                     frames_seen(&mut lagging, 1).await,
                     vec![Seen::Output {
@@ -5137,9 +4352,7 @@ mod tests {
                     "the lagging consumer converges onto a fresh generation",
                 );
 
-                // Stamp seq 10 after the republish so it cannot sit in the
-                // four-slot ring (or age past the stale budget) while the
-                // one-slot mailbox drains Begin/Chunk/Ready.
+                // Stamped after the republish so it cannot age past the budget.
                 output
                     .send(live(10, std::time::Instant::now()))
                     .expect("pumps subscribed");
@@ -5216,6 +4429,61 @@ mod tests {
         );
     }
 
+    /// A Terminal handle with every channel closed (no actor behind it).
+    fn detached_handle(
+        facet: crate::terminal_actor::TerminalHandle,
+    ) -> crate::resource::ResourceHandle {
+        crate::resource::ResourceHandle {
+            kind: crate::resource::ResourceKind::Terminal,
+            parent: None,
+            output: tokio::sync::broadcast::channel(8).0,
+            consumer_attach: tokio::sync::mpsc::channel(1).0,
+            consumer_detach: tokio::sync::mpsc::channel(1).0,
+            consumer_ack: tokio::sync::mpsc::channel(1).0,
+            upgrade: tokio::sync::mpsc::channel(1).0,
+            control: tokio::sync::mpsc::channel(1).0,
+            facet: crate::resource::ResourceFacetHandle::Terminal(facet),
+        }
+    }
+
+    /// Drive `handle_attach` for session `name` with fixed defaults.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "test shorthand for handle_attach"
+    )]
+    async fn attach(
+        state: &SharedState,
+        client_id: ClientId,
+        attach_id: u32,
+        name: &str,
+        role: Option<phux_protocol::wire::frame::RolePolicy>,
+        out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+        profile: BootstrapProfile,
+        output_pumps: &mut JoinSet<()>,
+        connection_token: &CancellationToken,
+        defer_subscription: bool,
+    ) {
+        handle_attach(
+            state,
+            client_id,
+            attach_id,
+            AttachTarget::ByName(name.to_owned()),
+            phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+            false,
+            0,
+            role,
+            out_tx,
+            ClientCapabilities::default(),
+            profile,
+            BootstrapLimits::default(),
+            &CancellationToken::new(),
+            output_pumps,
+            connection_token,
+            defer_subscription,
+        )
+        .await;
+    }
+
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn native_attach_handle() -> (
         ResourceHandle,
@@ -5223,45 +4491,19 @@ mod tests {
         tokio::sync::mpsc::Receiver<crate::terminal_actor::NativeBootstrapRequest>,
         tokio::sync::mpsc::Receiver<crate::terminal_actor::NativePublicationRequest>,
     ) {
-        use tokio::sync::{broadcast, mpsc, watch};
-
-        let (output, _seed) = broadcast::channel(8);
-        let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
-        let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
-        let (native_publication, native_publication_rx) = mpsc::channel(8);
+        let (consumer_attach, consumer_attach_rx) = tokio::sync::mpsc::channel(8);
+        let (native_bootstrap, native_bootstrap_rx) = tokio::sync::mpsc::channel(8);
+        let (native_publication, native_publication_rx) = tokio::sync::mpsc::channel(8);
+        let handle = ResourceHandle {
+            consumer_attach,
+            ..detached_handle(crate::terminal_actor::TerminalHandle {
+                native_bootstrap,
+                native_publication,
+                ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
+            })
+        };
         (
-            crate::resource::ResourceHandle {
-                kind: crate::resource::ResourceKind::Terminal,
-                parent: None,
-                output,
-                consumer_attach,
-                consumer_detach: mpsc::channel(8).0,
-                consumer_ack: mpsc::channel(8).0,
-                upgrade: mpsc::channel(8).0,
-                control: mpsc::channel(8).0,
-                facet: crate::resource::ResourceFacetHandle::Terminal(
-                    crate::terminal_actor::TerminalHandle {
-                        input: mpsc::channel(8).0,
-                        encoded_input: mpsc::channel(8).0,
-                        input_snapshot: watch::channel(
-                            crate::input::InputEncoderSnapshot::default(),
-                        )
-                        .1,
-                        snapshot: mpsc::channel(8).0,
-                        native_bootstrap,
-                        native_publication,
-                        native_history: mpsc::channel(8).0,
-                        native_release: mpsc::channel(8).0,
-                        set_default_colors: mpsc::channel(8).0,
-                        screen: mpsc::channel(8).0,
-                        pwd: mpsc::channel(8).0,
-                        process: mpsc::channel(8).0,
-                        resize: mpsc::channel(8).0,
-                        cols: 80,
-                        rows: 24,
-                    },
-                ),
-            },
+            handle,
             consumer_attach_rx,
             native_bootstrap_rx,
             native_publication_rx,
@@ -5375,9 +4617,8 @@ mod tests {
         );
     }
 
-    /// ADR-0127 (review round 2): the QUIC multi-stream `ATTACH` defers every
-    /// per-pane subscription to `STREAM_BIND`, which carries no role, so the
-    /// session's declared role must apply in the deferred branch itself.
+    /// ADR-0127: `STREAM_BIND` carries no role, so a deferred (QUIC
+    /// multi-stream) session `ATTACH` must apply its declared role itself.
     #[tokio::test(flavor = "current_thread")]
     async fn deferred_session_attach_applies_the_declared_role() {
         let local = tokio::task::LocalSet::new();
@@ -5385,26 +4626,9 @@ mod tests {
             .run_until(async {
                 let state = crate::state::SharedState::new();
                 let (_session, _window, pane) = state.with_mut(|s| s.seed_session("roles"));
-                let (core, channels) = crate::resource::ResourceCore::new(
-                    crate::resource::ResourceKind::Terminal,
-                    None,
-                    CancellationToken::new(),
-                    8,
+                let handle = detached_handle(
+                    crate::terminal_actor::TerminalHandle::detached_for_test(80, 24),
                 );
-                drop(core);
-                let handle = crate::resource::ResourceHandle {
-                    kind: crate::resource::ResourceKind::Terminal,
-                    parent: None,
-                    output: channels.output,
-                    consumer_attach: tokio::sync::mpsc::channel(8).0,
-                    consumer_detach: tokio::sync::mpsc::channel(8).0,
-                    consumer_ack: tokio::sync::mpsc::channel(8).0,
-                    upgrade: tokio::sync::mpsc::channel(8).0,
-                    control: channels.control,
-                    facet: crate::resource::ResourceFacetHandle::Terminal(
-                        crate::terminal_actor::TerminalHandle::detached_for_test(80, 24),
-                    ),
-                };
                 let wire = state.with_mut(|s| {
                     let _ = s.register_resource_handle(pane, handle, CancellationToken::new());
                     s.intern_terminal_wire(pane)
@@ -5413,24 +4637,16 @@ mod tests {
                     crate::state::DEFAULT_CLIENT_MAILBOX,
                 );
                 let client_id = state.with_mut(crate::state::ServerState::new_client_id);
-                let token = CancellationToken::new();
-                let mut output_pumps = tokio::task::JoinSet::new();
-                handle_attach(
+                attach(
                     &state,
                     client_id,
                     1,
-                    AttachTarget::ByName("roles".to_owned()),
-                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
-                    false,
-                    0,
+                    "roles",
                     Some(phux_protocol::wire::frame::RolePolicy::VIEWER),
                     &out_tx,
-                    ClientCapabilities::default(),
                     BootstrapProfile::SynthesizedVtRaw,
-                    BootstrapLimits::default(),
-                    &token,
-                    &mut output_pumps,
-                    &token,
+                    &mut JoinSet::new(),
+                    &CancellationToken::new(),
                     true,
                 )
                 .await;
@@ -5471,35 +4687,28 @@ mod tests {
                 let client_id = state.with_mut(crate::state::ServerState::new_client_id);
                 let (out_tx, mut out_rx) =
                     tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
-                let root_token = CancellationToken::new();
                 let connection_token = CancellationToken::new();
                 let mut output_pumps = JoinSet::new();
-
-                let attach = handle_attach(
-                    &state,
-                    client_id,
-                    41,
-                    AttachTarget::ByName("fresh-failure".to_owned()),
-                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
-                    false,
-                    0,
-                    None,
-                    &out_tx,
-                    ClientCapabilities::default(),
-                    native_profile(),
-                    BootstrapLimits::default(),
-                    &root_token,
-                    &mut output_pumps,
-                    &connection_token,
-                    false,
+                tokio::join!(
+                    attach(
+                        &state,
+                        client_id,
+                        41,
+                        "fresh-failure",
+                        None,
+                        &out_tx,
+                        native_profile(),
+                        &mut output_pumps,
+                        &connection_token,
+                        false,
+                    ),
+                    answer_native_attach(
+                        &mut consumer_attach_rx,
+                        &mut native_bootstrap_rx,
+                        &mut native_publication_rx,
+                        false,
+                    )
                 );
-                let actor = answer_native_attach(
-                    &mut consumer_attach_rx,
-                    &mut native_bootstrap_rx,
-                    &mut native_publication_rx,
-                    false,
-                );
-                tokio::join!(attach, actor);
 
                 assert!(matches!(
                     out_rx.recv().await,
@@ -5522,10 +4731,6 @@ mod tests {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     #[tokio::test(flavor = "current_thread")]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one linear scripted attach, replacement, and failure sequence; the role argument tipped it over"
-    )]
     async fn replacement_native_capacity_failure_closes_but_preserves_terminal_state() {
         let local = tokio::task::LocalSet::new();
         local
@@ -5545,69 +4750,37 @@ mod tests {
                 let client_id = state.with_mut(crate::state::ServerState::new_client_id);
                 let (out_tx, mut out_rx) =
                     tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
-                let root_token = CancellationToken::new();
                 let connection_token = CancellationToken::new();
                 let mut output_pumps = JoinSet::new();
 
-                let first = handle_attach(
-                    &state,
-                    client_id,
-                    51,
-                    AttachTarget::ByName("replacement-failure".to_owned()),
-                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
-                    false,
-                    0,
-                    None,
-                    &out_tx,
-                    ClientCapabilities::default(),
-                    native_profile(),
-                    BootstrapLimits::default(),
-                    &root_token,
-                    &mut output_pumps,
-                    &connection_token,
-                    false,
-                );
-                tokio::join!(
-                    first,
-                    answer_native_attach(
-                        &mut consumer_attach_rx,
-                        &mut native_bootstrap_rx,
-                        &mut native_publication_rx,
-                        true,
-                    )
-                );
-                for _ in 0..5 {
-                    out_rx.recv().await.expect("initial attach publication");
+                for (attach_id, succeed) in [(51, true), (52, false)] {
+                    tokio::join!(
+                        attach(
+                            &state,
+                            client_id,
+                            attach_id,
+                            "replacement-failure",
+                            None,
+                            &out_tx,
+                            native_profile(),
+                            &mut output_pumps,
+                            &connection_token,
+                            false,
+                        ),
+                        answer_native_attach(
+                            &mut consumer_attach_rx,
+                            &mut native_bootstrap_rx,
+                            &mut native_publication_rx,
+                            succeed,
+                        )
+                    );
+                    if succeed {
+                        for _ in 0..5 {
+                            out_rx.recv().await.expect("initial attach publication");
+                        }
+                        assert!(state.with(|s| s.attached().contains_key(&client_id)));
+                    }
                 }
-                assert!(state.with(|s| s.attached().contains_key(&client_id)));
-
-                let replacement = handle_attach(
-                    &state,
-                    client_id,
-                    52,
-                    AttachTarget::ByName("replacement-failure".to_owned()),
-                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
-                    false,
-                    0,
-                    None,
-                    &out_tx,
-                    ClientCapabilities::default(),
-                    native_profile(),
-                    BootstrapLimits::default(),
-                    &root_token,
-                    &mut output_pumps,
-                    &connection_token,
-                    false,
-                );
-                tokio::join!(
-                    replacement,
-                    answer_native_attach(
-                        &mut consumer_attach_rx,
-                        &mut native_bootstrap_rx,
-                        &mut native_publication_rx,
-                        false,
-                    )
-                );
                 assert!(matches!(
                     out_rx.recv().await,
                     Some(Outbound::TerminalError {

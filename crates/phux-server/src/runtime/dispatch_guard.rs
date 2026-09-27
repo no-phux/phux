@@ -1,20 +1,8 @@
-//! The dispatch guard's three call sites in the client loop, and the refusal
-//! each one sends (`docs/spec/workload-auth.md` §6, §7).
-//!
-//! The decision is [`crate::policy::enforce`]; this module only turns a
-//! denial into the reply the spec asks for:
-//!
-//! - a correlated frame or command gets its ordinary correlated error
-//!   carrying `PERMISSION_DENIED`;
-//! - an uncorrelated frame (`INPUT_*`, `FRAME_ACK`, a stream bind, ...) is
-//!   dropped, with at most one uncorrelated `ERROR` per second per
-//!   connection;
-//! - the connection stays up.
-//!
-//! The reply names no subject and no rule, so a refused client learns
-//! nothing about what exists. The owner's grant admits everything, so for a
-//! local or transitional server every function here returns `false` and the
-//! client loop runs exactly as it did before enforcement.
+//! Turns a [`crate::policy::enforce`] denial into the reply
+//! `docs/spec/workload-auth.md` §6-§7 asks for: a correlated frame or
+//! command gets its correlated `PERMISSION_DENIED`; an uncorrelated one is
+//! dropped with at most one `ERROR` per second; the connection stays up. The
+//! reply names no subject and no rule.
 
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{
@@ -27,14 +15,9 @@ use crate::state::{ClientId, Outbound, SharedState};
 /// The one refusal message: no subject, no rule.
 const DENIED: &str = "permission denied";
 
-/// Guard a decoded frame before any routing or handler. Returns `true` when
-/// the frame was refused and must be dropped.
-///
-/// Runs only after HELLO: before it, the only frames the loop accepts are
-/// HELLO and PING, and no grant exists yet. A second HELLO passes through to
-/// `negotiate_hello`, whose duplicate check is the PRE_HELLO-only rule and
-/// closes the connection. `COMMAND` passes through to the command guard,
-/// which classifies the nested tag.
+/// Guard a decoded frame after HELLO; `true` means refused and dropped.
+/// `HELLO` (a duplicate closes elsewhere) and `COMMAND` (guarded by
+/// [`guard_command`]) pass through.
 pub(super) async fn refuse_frame(
     state: &SharedState,
     client_id: ClientId,
@@ -122,8 +105,7 @@ fn frame_refusal(state: &SharedState, client_id: ClientId, frame: &FrameKind) ->
     if let Some(request_id) = request_id_of(frame) {
         return Some(denied(Some(request_id)));
     }
-    // ATTACH carries no request id, but its sender waits for an answer, so
-    // it always gets one, exactly as `SESSION_NOT_FOUND` is sent.
+    // ATTACH has no request id, but its sender waits for an answer.
     if matches!(frame, FrameKind::Attach { .. }) {
         return Some(denied(None));
     }
@@ -132,9 +114,7 @@ fn frame_refusal(state: &SharedState, client_id: ClientId, frame: &FrameKind) ->
         .then(|| denied(None))
 }
 
-/// The frame's own reply, in its refusal form, where that form can say
-/// "permission denied": a waiter for the reply ends on it as on any other
-/// refusal of the same request.
+/// The frame's own reply in its refusal form, where it has one.
 fn native_refusal(frame: &FrameKind) -> Option<FrameKind> {
     match frame {
         FrameKind::SpawnResource { request_id, .. } => Some(FrameKind::ResourceSpawned {
@@ -171,14 +151,10 @@ const fn request_id_of(frame: &FrameKind) -> Option<u32> {
     }
 }
 
-const fn denied_code() -> ErrorCode {
-    ErrorCode::PermissionDenied
-}
-
 fn denied(request_id: Option<u32>) -> FrameKind {
     FrameKind::Error {
         request_id,
-        code: denied_code(),
+        code: ErrorCode::PermissionDenied,
         message: DENIED.to_owned(),
     }
 }
