@@ -185,6 +185,23 @@ impl<'a> Decoder<'a> {
         self.take_array().map(f64::from_be_bytes)
     }
 
+    /// Read a presence byte (`0` = `None`, `1` = `Some`) and, when present, the
+    /// value via `body`; any other byte is `UnknownEnumValue { field }`.
+    pub(crate) fn read_option<T>(
+        &mut self,
+        field: &'static str,
+        body: impl FnOnce(&mut Self) -> Result<T, DecodeError>,
+    ) -> Result<Option<T>, DecodeError> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => body(self).map(Some),
+            other => Err(DecodeError::UnknownEnumValue {
+                field,
+                value: u32::from(other),
+            }),
+        }
+    }
+
     /// Read a `u32`-length-prefixed byte slice; `LengthOverflow` past the
     /// protocol cap.
     pub fn read_bytes(&mut self) -> Result<&'a [u8], DecodeError> {
@@ -356,16 +373,16 @@ impl<'a> Decoder<'a> {
             match id {
                 field::hello::CLIENT_NAME => client_name = Some(utf8_value(value)?),
                 field::hello::PROTOCOL_MAJOR => {
-                    protocol_major = Some(sub!(value, Decoder::read_u16_be))
+                    protocol_major = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello::PROTOCOL_MINOR => {
-                    protocol_minor = Some(sub!(value, Decoder::read_u16_be))
+                    protocol_minor = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello::PROTOCOL_PATCH => {
-                    protocol_patch = Some(sub!(value, Decoder::read_u16_be))
+                    protocol_patch = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello::CLIENT_CAPS => {
-                    client_caps = Some(sub!(value, decode_client_capabilities))
+                    client_caps = Some(sub!(value, decode_client_capabilities));
                 }
                 field::hello::COMPRESSION => {
                     compression = Some(crate::caps::CompressionSet::from_bits(sub!(
@@ -374,7 +391,7 @@ impl<'a> Decoder<'a> {
                     )));
                 }
                 field::hello::SSH_ORIGIN => {
-                    ssh_origin = super::ssh_origin::decode_ssh_origin(value)
+                    ssh_origin = super::ssh_origin::decode_ssh_origin(value);
                 }
                 field::hello::QUIC_STREAMS => quic_streams = sub!(value, Decoder::read_u8) != 0,
                 _ => {}
@@ -412,26 +429,26 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::hello_ok::PROTOCOL_MAJOR => {
-                    protocol_major = Some(sub!(value, Decoder::read_u16_be))
+                    protocol_major = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello_ok::PROTOCOL_MINOR => {
-                    protocol_minor = Some(sub!(value, Decoder::read_u16_be))
+                    protocol_minor = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello_ok::PROTOCOL_PATCH => {
-                    protocol_patch = Some(sub!(value, Decoder::read_u16_be))
+                    protocol_patch = Some(sub!(value, Decoder::read_u16_be));
                 }
                 field::hello_ok::SERVER_CAPS => {
-                    server_caps = Some(sub!(value, decode_server_capabilities))
+                    server_caps = Some(sub!(value, decode_server_capabilities));
                 }
                 field::hello_ok::SERVER_ID => server_id = Some(value.to_vec()),
                 field::hello_ok::SELECTED_PROFILE => {
-                    selected_profile = Some(sub!(value, decode_bootstrap_profile))
+                    selected_profile = Some(sub!(value, decode_bootstrap_profile));
                 }
                 field::hello_ok::MAX_CHUNK_BYTES => {
-                    max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be))
+                    max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::hello_ok::MAX_HISTORY_PAGE_BYTES => {
-                    max_history_page_bytes = Some(sub!(value, Decoder::read_u32_be))
+                    max_history_page_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::hello_ok::COMPRESSION => {
                     compression = Some(crate::caps::Compression::from_u8(sub!(
@@ -491,7 +508,7 @@ impl<'a> Decoder<'a> {
                     )));
                 }
                 field::frame_compressed::UNCOMPRESSED_LEN => {
-                    uncompressed_len = Some(sub!(value, Decoder::read_u32_be))
+                    uncompressed_len = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::frame_compressed::PAYLOAD => payload = Some(value),
                 _ => {}
@@ -541,15 +558,15 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_output::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::terminal_output::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
                 field::terminal_output::BYTES => bytes = Some(bytes::Bytes::copy_from_slice(value)),
                 field::terminal_output::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id))
+                    stream_id = Some(sub!(value, decode_stream_id));
                 }
                 field::terminal_output::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 _ => {}
             }
@@ -581,10 +598,10 @@ impl<'a> Decoder<'a> {
                 field::attach::TARGET => target = Some(sub!(value, decode_attach_target)),
                 field::attach::VIEWPORT => viewport = Some(sub!(value, decode_viewport_info)),
                 field::attach::REQUEST_SCROLLBACK => {
-                    request_scrollback = sub!(value, Decoder::read_u8) != 0
+                    request_scrollback = sub!(value, Decoder::read_u8) != 0;
                 }
                 field::attach::SCROLLBACK_LIMIT_LINES => {
-                    scrollback_limit_lines = sub!(value, Decoder::read_u32_be)
+                    scrollback_limit_lines = sub!(value, Decoder::read_u32_be);
                 }
                 field::attach::ATTACH_ID => attach_id = Some(sub!(value, Decoder::read_u32_be)),
                 _ => {}
@@ -611,7 +628,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::input_key::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::input_key::EVENT => event = Some(sub!(value, decode_key_event)),
                 _ => {}
@@ -629,7 +646,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::input_mouse::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::input_mouse::EVENT => event = Some(sub!(value, decode_mouse_event)),
                 _ => {}
@@ -647,7 +664,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::input_focus::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::input_focus::EVENT => {
                     let tag = sub!(value, Decoder::read_u8);
@@ -668,7 +685,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::input_paste::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::input_paste::EVENT => event = Some(sub!(value, decode_paste_event)),
                 _ => {}
@@ -686,7 +703,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::input_terminal_reply::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::input_terminal_reply::BYTES => {
                     if value.is_empty() || value.len() > MAX_INPUT_TERMINAL_REPLY_BYTES {
@@ -711,12 +728,12 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::frame_ack::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::frame_ack::SEQ => seq = Some(sub!(value, Decoder::read_u64_be)),
                 field::frame_ack::STREAM_ID => stream_id = Some(sub!(value, decode_stream_id)),
                 field::frame_ack::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 _ => {}
             }
@@ -749,7 +766,7 @@ impl<'a> Decoder<'a> {
             match id {
                 field::attached::SNAPSHOT => snapshot = Some(sub!(value, decode_session_snapshot)),
                 field::attached::INITIAL_CLIENT_ID => {
-                    initial_client_id = Some(sub!(value, decode_client_id))
+                    initial_client_id = Some(sub!(value, decode_client_id));
                 }
                 field::attached::ATTACH_ID => attach_id = Some(sub!(value, Decoder::read_u32_be)),
                 _ => {}
@@ -786,22 +803,22 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::bootstrap_begin::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::bootstrap_begin::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id))
+                    stream_id = Some(sub!(value, decode_stream_id));
                 }
                 field::bootstrap_begin::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::bootstrap_begin::CODEC => codec = Some(sub!(value, decode_bootstrap_codec)),
                 field::bootstrap_begin::COLS => cols = Some(sub!(value, Decoder::read_u16_be)),
                 field::bootstrap_begin::ROWS => rows = Some(sub!(value, Decoder::read_u16_be)),
                 field::bootstrap_begin::OUTPUT_MODE => {
-                    output_mode = Some(sub!(value, Decoder::read_u8))
+                    output_mode = Some(sub!(value, Decoder::read_u8));
                 }
                 field::bootstrap_begin::BASE_SEQ => {
-                    base_seq = Some(sub!(value, Decoder::read_u64_be))
+                    base_seq = Some(sub!(value, Decoder::read_u64_be));
                 }
                 _ => {}
             }
@@ -828,16 +845,16 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::bootstrap_chunk::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::bootstrap_chunk::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id))
+                    stream_id = Some(sub!(value, decode_stream_id));
                 }
                 field::bootstrap_chunk::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::bootstrap_chunk::CHUNK_SEQ => {
-                    chunk_seq = Some(sub!(value, Decoder::read_u32_be))
+                    chunk_seq = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::bootstrap_chunk::PAYLOAD => {
                     if value.len() > self.max_bootstrap_chunk_bytes as usize {
@@ -865,16 +882,16 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::bootstrap_ready::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::bootstrap_ready::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id))
+                    stream_id = Some(sub!(value, decode_stream_id));
                 }
                 field::bootstrap_ready::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::bootstrap_ready::HISTORY_CURSOR => {
-                    history_cursor = Some(checked_history_cursor(value)?)
+                    history_cursor = Some(checked_history_cursor(value)?);
                 }
                 _ => {}
             }
@@ -897,20 +914,20 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::history_request::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::history_request::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id))
+                    stream_id = Some(sub!(value, decode_stream_id));
                 }
                 field::history_request::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::history_request::CURSOR => cursor = Some(checked_history_cursor(value)?),
                 field::history_request::MAX_BYTES => {
-                    max_bytes = Some(sub!(value, Decoder::read_u32_be))
+                    max_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::history_request::MAX_ROWS => {
-                    max_rows = Some(sub!(value, Decoder::read_u32_be))
+                    max_rows = Some(sub!(value, Decoder::read_u32_be));
                 }
                 _ => {}
             }
@@ -991,25 +1008,23 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::bootstrap_tombstone::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::bootstrap_tombstone::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id))
+                    stream_id = Some(sub!(value, decode_stream_id));
                 }
                 field::bootstrap_tombstone::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::bootstrap_tombstone::REASON => {
                     let value = sub!(value, Decoder::read_u8);
-                    reason = Some(TombstoneReason::from_wire(value).ok_or_else(|| {
-                        DecodeError::UnknownEnumValue {
-                            field: "TombstoneReason",
-                            value: u32::from(value),
-                        }
-                    })?);
+                    reason = Some(
+                        TombstoneReason::from_wire(value)
+                            .ok_or_else(|| DecodeError::unknown_enum("TombstoneReason", value))?,
+                    );
                 }
                 field::bootstrap_tombstone::LAST_VALID_SEQ => {
-                    last_valid_seq = Some(sub!(value, Decoder::read_u64_be))
+                    last_valid_seq = Some(sub!(value, Decoder::read_u64_be));
                 }
                 _ => {}
             }
@@ -1032,22 +1047,19 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::history_tombstone::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::history_tombstone::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id))
+                    stream_id = Some(sub!(value, decode_stream_id));
                 }
                 field::history_tombstone::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::history_tombstone::CURSOR => cursor = Some(checked_history_cursor(value)?),
                 field::history_tombstone::REASON => {
                     let value = sub!(value, Decoder::read_u8);
                     reason = Some(HistoryTombstoneReason::from_wire(value).ok_or_else(|| {
-                        DecodeError::UnknownEnumValue {
-                            field: "HistoryTombstoneReason",
-                            value: u32::from(value),
-                        }
+                        DecodeError::unknown_enum("HistoryTombstoneReason", value)
                     })?);
                 }
                 _ => {}
@@ -1086,29 +1098,26 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::history_rejected::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::history_rejected::STREAM_ID => {
-                    stream_id = Some(sub!(value, decode_stream_id))
+                    stream_id = Some(sub!(value, decode_stream_id));
                 }
                 field::history_rejected::BOOTSTRAP_ID => {
-                    bootstrap_id = Some(sub!(value, decode_bootstrap_id))
+                    bootstrap_id = Some(sub!(value, decode_bootstrap_id));
                 }
                 field::history_rejected::CURSOR => cursor = Some(checked_history_cursor(value)?),
                 field::history_rejected::REASON => {
                     let value = sub!(value, Decoder::read_u8);
                     reason = Some(HistoryRejectionReason::from_wire(value).ok_or_else(|| {
-                        DecodeError::UnknownEnumValue {
-                            field: "HistoryRejectionReason",
-                            value: u32::from(value),
-                        }
+                        DecodeError::unknown_enum("HistoryRejectionReason", value)
                     })?);
                 }
                 field::history_rejected::REQUIRED_BYTES => {
-                    required_bytes = Some(sub!(value, Decoder::read_u32_be))
+                    required_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::history_rejected::REQUIRED_ROWS => {
-                    required_rows = Some(sub!(value, Decoder::read_u32_be))
+                    required_rows = Some(sub!(value, Decoder::read_u32_be));
                 }
                 _ => {}
             }
@@ -1168,12 +1177,10 @@ impl<'a> Decoder<'a> {
                 field::error::REQUEST_ID => request_id = Some(sub!(value, Decoder::read_u32_be)),
                 field::error::CODE => {
                     let raw = sub!(value, Decoder::read_u16_be);
-                    code = Some(ErrorCode::from_wire(raw).ok_or_else(|| {
-                        DecodeError::UnknownEnumValue {
-                            field: "ErrorCode",
-                            value: u32::from(raw),
-                        }
-                    })?);
+                    code = Some(
+                        ErrorCode::from_wire(raw)
+                            .ok_or_else(|| DecodeError::unknown_enum("ErrorCode", raw))?,
+                    );
                 }
                 field::error::MESSAGE => message = Some(utf8_value(value)?),
                 _ => {}
@@ -1335,7 +1342,7 @@ impl<'a> Decoder<'a> {
             match id {
                 field::spawn_terminal::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
                 field::spawn_terminal::GROUP => {
-                    group = GroupId::new(sub!(value, Decoder::read_u32_be))
+                    group = GroupId::new(sub!(value, Decoder::read_u32_be));
                 }
                 field::spawn_terminal::COMMAND => command = Some(sub!(value, decode_string_list)),
                 field::spawn_terminal::CWD => cwd = Some(utf8_value(value)?),
@@ -1347,7 +1354,7 @@ impl<'a> Decoder<'a> {
                     ));
                 }
                 field::spawn_terminal::OWNER_TERMINAL => {
-                    owner_terminal = Some(sub!(value, decode_terminal_id))
+                    owner_terminal = Some(sub!(value, decode_terminal_id));
                 }
                 field::spawn_terminal::AGENT_SESSION => agent_session = Some(value.to_vec()),
                 field::spawn_terminal::INITIAL_SIZE => {
@@ -1387,14 +1394,14 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_spawned::REQUEST_ID => {
-                    request_id = sub!(value, Decoder::read_u32_be)
+                    request_id = sub!(value, Decoder::read_u32_be);
                 }
                 field::terminal_spawned::RESULT => result = Some(sub!(value, decode_spawn_result)),
                 field::terminal_spawned::INSTANCE => {
-                    instance = Some(sub!(value, crate::wire::frame::decode_server_instance))
+                    instance = Some(sub!(value, crate::wire::frame::decode_server_instance));
                 }
                 field::terminal_spawned::REPLAYED => {
-                    replayed = sub!(value, |d: &mut Decoder<'_>| decode_flag(d, "replayed"))
+                    replayed = sub!(value, |d: &mut Decoder<'_>| decode_flag(d, "replayed"));
                 }
                 _ => {}
             }
@@ -1415,7 +1422,7 @@ impl<'a> Decoder<'a> {
                 field::move_terminal::REQUEST_ID => request_id = sub!(value, Decoder::read_u32_be),
                 field::move_terminal::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
                 field::move_terminal::OWNER_TERMINAL => {
-                    owner_terminal = Some(sub!(value, decode_terminal_id))
+                    owner_terminal = Some(sub!(value, decode_terminal_id));
                 }
                 _ => {}
             }
@@ -1451,11 +1458,11 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_closed::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::terminal_closed::EXIT_STATUS => exit_status = Some(read_i32_value(value)?),
                 field::terminal_closed::REASON => {
-                    reason = CloseReason::from_wire(sub!(value, Decoder::read_u8))
+                    reason = CloseReason::from_wire(sub!(value, Decoder::read_u8));
                 }
                 field::terminal_closed::SIGNAL => signal = Some(read_i32_value(value)?),
                 _ => {}
@@ -1476,7 +1483,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_resize::TERMINAL_ID => {
-                    terminal_id = Some(sub!(value, decode_terminal_id))
+                    terminal_id = Some(sub!(value, decode_terminal_id));
                 }
                 field::terminal_resize::COLS => cols = sub!(value, Decoder::read_u16_be),
                 field::terminal_resize::ROWS => rows = sub!(value, Decoder::read_u16_be),
@@ -1528,10 +1535,10 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::subscribe_events::TERMINAL => {
-                    terminal = Some(sub!(value, decode_terminal_id))
+                    terminal = Some(sub!(value, decode_terminal_id));
                 }
                 field::subscribe_events::AFTER_SEQ => {
-                    after_seq = Some(sub!(value, Decoder::read_u64_be))
+                    after_seq = Some(sub!(value, Decoder::read_u64_be));
                 }
                 _ => {}
             }
@@ -1620,23 +1627,23 @@ fn absorb_spawn_resource_field(
 ) -> Result<(), DecodeError> {
     match id {
         field::spawn_terminal::KIND => {
-            resource.kind = ResourceKind::from_wire(sub!(value, Decoder::read_u8))
+            resource.kind = ResourceKind::from_wire(sub!(value, Decoder::read_u8));
         }
         field::spawn_terminal::PARENT => resource.parent = Some(sub!(value, decode_terminal_id)),
         field::spawn_terminal::PROVIDER => {
-            resource.provider = Some(decode_agent_facet_str(value, MAX_RESOURCE_PROVIDER_BYTES)?)
+            resource.provider = Some(decode_agent_facet_str(value, MAX_RESOURCE_PROVIDER_BYTES)?);
         }
         field::spawn_terminal::NATIVE_ID => {
-            resource.native_id = Some(decode_agent_facet_str(value, MAX_RESOURCE_NATIVE_ID_BYTES)?)
+            resource.native_id = Some(decode_agent_facet_str(value, MAX_RESOURCE_NATIVE_ID_BYTES)?);
         }
         field::spawn_terminal::BIND_INSTANCE => {
-            resource.bind_instance = sub!(value, decode_bind_instance)
+            resource.bind_instance = sub!(value, decode_bind_instance);
         }
         field::spawn_terminal::RETAIN_SECS => {
-            resource.retain_secs = Some(sub!(value, Decoder::read_u32_be))
+            resource.retain_secs = Some(sub!(value, Decoder::read_u32_be));
         }
         field::spawn_terminal::IDEMPOTENCY_KEY => {
-            resource.idempotency_key = Some(decode_idempotency_key(value)?)
+            resource.idempotency_key = Some(decode_idempotency_key(value)?);
         }
         _ => {}
     }
@@ -1778,10 +1785,8 @@ fn decode_client_capabilities(
 /// Decode the color-support byte of a client capability block.
 fn decode_color_support(d: &mut Decoder<'_>) -> Result<crate::caps::ColorSupport, DecodeError> {
     let color_value = d.read_u8()?;
-    crate::caps::ColorSupport::from_wire(color_value).ok_or_else(|| DecodeError::UnknownEnumValue {
-        field: "ColorSupport",
-        value: u32::from(color_value),
-    })
+    crate::caps::ColorSupport::from_wire(color_value)
+        .ok_or_else(|| DecodeError::unknown_enum("ColorSupport", color_value))
 }
 
 /// Decode the hyperlink-support flag of a client capability block.
@@ -1789,10 +1794,7 @@ fn decode_hyperlinks_flag(d: &mut Decoder<'_>) -> Result<bool, DecodeError> {
     match d.read_u8()? {
         0 => Ok(false),
         1 => Ok(true),
-        value => Err(DecodeError::UnknownEnumValue {
-            field: "hyperlinks",
-            value: u32::from(value),
-        }),
+        value => Err(DecodeError::unknown_enum("hyperlinks", value)),
     }
 }
 
@@ -1802,10 +1804,7 @@ fn decode_output_mode(d: &mut Decoder<'_>) -> Result<crate::caps::OutputMode, De
     match output_mode_tag {
         0 => Ok(crate::caps::OutputMode::Raw),
         1 => Ok(crate::caps::OutputMode::StateSync),
-        value => Err(DecodeError::UnknownEnumValue {
-            field: "OutputMode",
-            value: u32::from(value),
-        }),
+        value => Err(DecodeError::unknown_enum("OutputMode", value)),
     }
 }
 
@@ -1828,10 +1827,7 @@ fn decode_default_colors(
                 b: d.read_u8()?,
             },
         })),
-        value => Err(DecodeError::UnknownEnumValue {
-            field: "default_colors presence",
-            value: u32::from(value),
-        }),
+        value => Err(DecodeError::unknown_enum("default_colors presence", value)),
     }
 }
 

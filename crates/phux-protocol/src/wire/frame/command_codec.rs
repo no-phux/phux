@@ -1,5 +1,5 @@
-//! Control-plane command, command-result, and agent-event codecs —
-//! SPEC §5 (phux-k61 / ADR-0021) and SPEC §7.5 / §10.3 (phux-y2t).
+//! Control-plane command, command-result, and agent-event codecs (SPEC §5,
+//! ADR-0021; SPEC §7.5 / §10.3).
 
 use bytes::BytesMut;
 
@@ -41,19 +41,7 @@ use super::{
     encode_paste_event, encode_terminal_id,
 };
 
-// -----------------------------------------------------------------------------
-// Control-plane command codec — SPEC §5 (phux-k61 / ADR-0021).
-//
-// COMMAND body:        u32 request_id, then Command (tag + body).
-// COMMAND_RESULT body: u32 request_id, then CommandResult (tag + body).
-//
-// Command tags follow the SPEC §5.1 catalog order; KILL_RESOURCE (0x03)
-// and GET_STATE (0x05) are wired in v0.1, plus the appended GET_SCREEN
-// (0x07, after RUN_HOOK's reserved 0x06), ROUTE_INPUT (0x08), and
-// KILL_RESOURCES (0x09, reusing the slot freed by the v0.3.0 dissolution
-// of the L2 lifecycle verbs). CommandResult / CommandValue tags use the
-// same `Ok = 0x00` / sequential convention as the rest of the wire.
-// -----------------------------------------------------------------------------
+// `Command` and `CommandResult`: a tag, then a positional body.
 
 #[allow(
     clippy::too_many_lines,
@@ -140,16 +128,7 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         }
         Command::DetachClients { session } => {
             enc.write_u8(COMMAND_TAG_DETACH_CLIENTS);
-            // Presence byte + optional session name (u32-BE-len-prefixed
-            // UTF-8 via `write_str`), mirroring the other optional-string
-            // args.
-            match session {
-                Some(name) => {
-                    enc.write_u8(1);
-                    enc.write_str(name);
-                }
-                None => enc.write_u8(0),
-            }
+            enc.write_option(session.as_deref(), Encoder::write_str);
         }
         Command::GetTerminalState {
             terminal_id,
@@ -246,15 +225,11 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             enc.write_u64_be(*offset);
             enc.write_bytes(data);
             enc.write_u8(u8::from(*final_chunk));
-            match sha256 {
-                Some(digest) => {
-                    enc.write_u8(1);
-                    for byte in digest {
-                        enc.write_u8(*byte);
-                    }
+            enc.write_option(sha256.as_ref(), |e, digest| {
+                for byte in digest {
+                    e.write_u8(*byte);
                 }
-                None => enc.write_u8(0),
-            }
+            });
         }
         Command::ReportAsked {
             terminal_id,
@@ -308,20 +283,15 @@ fn decode_input_event(dec: &mut Decoder<'_>) -> Result<InputEvent, DecodeError> 
         INPUT_EVENT_TAG_MOUSE => Ok(InputEvent::Mouse(decode_mouse_event(dec)?)),
         INPUT_EVENT_TAG_FOCUS => Ok(InputEvent::Focus(decode_focus_event(dec.read_u8()?)?)),
         INPUT_EVENT_TAG_PASTE => Ok(InputEvent::Paste(decode_paste_event(dec)?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "InputEvent",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("InputEvent", other)),
     }
 }
 
 pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let command_body_len = dec.remaining_in_body();
     let tag = dec.read_u8()?;
-    // Dispatch is split by the SPEC §5.1 command families rather than one flat
-    // table: each family owns a disjoint set of tags and returns `None` for a
-    // tag it does not claim, so the first family that recognises `tag` is the
-    // only one that reads from `dec`.
+    // Each family claims a disjoint tag set and returns `None` (reading
+    // nothing) for the rest.
     if let Some(command) = decode_terminal_subscription_command(tag, dec)? {
         return Ok(command);
     }
@@ -340,17 +310,10 @@ pub(in crate::wire) fn decode_command(dec: &mut Decoder<'_>) -> Result<Command, 
     if let Some(command) = decode_resource_command(tag, dec)? {
         return Ok(command);
     }
-    Err(DecodeError::UnknownEnumValue {
-        field: "Command",
-        value: u32::from(tag),
-    })
+    Err(DecodeError::unknown_enum("Command", tag))
 }
 
-/// Decode the producer verbs of a producer-fed resource:
-/// `APPEND_RESOURCE_OUTPUT`.
-///
-/// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
-/// another family.
+/// Decode the producer verb `APPEND_RESOURCE_OUTPUT`.
 fn decode_resource_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Command>, DecodeError> {
     let command = match tag {
         COMMAND_TAG_APPEND_RESOURCE_OUTPUT => decode_append_resource_output_command(dec)?,
@@ -359,9 +322,8 @@ fn decode_resource_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comm
     Ok(Some(command))
 }
 
-/// Decode `APPEND_RESOURCE_OUTPUT`, bounding the payload before it is copied
-/// out of the borrowed frame: an empty append and one over
-/// [`MAX_APPEND_BYTES`] are both refused with no owned allocation made.
+/// Decode `APPEND_RESOURCE_OUTPUT`, refusing an empty or over-
+/// [`MAX_APPEND_BYTES`] payload before copying it.
 fn decode_append_resource_output_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
     let bytes = dec.read_bytes()?;
@@ -374,11 +336,7 @@ fn decode_append_resource_output_command(dec: &mut Decoder<'_>) -> Result<Comman
     })
 }
 
-/// Decode the per-Terminal subscription and single-Terminal destroy verbs
-/// (SPEC §5.1): `ATTACH_RESOURCE`, `DETACH_RESOURCE`, `KILL_RESOURCE`.
-///
-/// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
-/// another family.
+/// Decode `ATTACH_RESOURCE`, `DETACH_RESOURCE`, and `KILL_RESOURCE`.
 fn decode_terminal_subscription_command(
     tag: u8,
     dec: &mut Decoder<'_>,
@@ -386,9 +344,7 @@ fn decode_terminal_subscription_command(
     let command = match tag {
         COMMAND_TAG_ATTACH_RESOURCE => Command::AttachResource {
             terminal_id: decode_terminal_id(dec)?,
-            // A trailing additive byte (ADR-0127), behind the same
-            // `at_body_end` guard as `GET_SCREEN`'s `cells`: a body from
-            // before roles ends after the id, which means `{ PRIMARY, NEVER }`.
+            // Trailing additive role byte (ADR-0127); absent = default.
             role_policy: if dec.at_body_end() {
                 None
             } else {
@@ -413,8 +369,7 @@ fn decode_terminal_subscription_command(
 }
 
 /// Write the trailing `operation_id: bytes16` of a keyed supervisory command
-/// (`docs/spec/L1.md` §5.1.1), or nothing for an unkeyed one, so an unkeyed
-/// body is byte-identical to what an encoder before the field wrote.
+/// (`docs/spec/L1.md` §5.1.1), or nothing when unkeyed.
 fn encode_trailing_key(key: Option<&IdempotencyKey>, enc: &mut Encoder<'_>) {
     if let Some(key) = key {
         for byte in key.as_bytes() {
@@ -423,9 +378,8 @@ fn encode_trailing_key(key: Option<&IdempotencyKey>, enc: &mut Encoder<'_>) {
     }
 }
 
-/// Read the trailing `operation_id` only when bytes remain in the command
-/// body, the `GET_SCREEN` rule: a body that ends before it is unkeyed. A
-/// present key must be 16 non-zero bytes.
+/// Read the trailing `operation_id` when bytes remain; it must be 16
+/// non-zero bytes.
 fn decode_trailing_key(dec: &mut Decoder<'_>) -> Result<Option<IdempotencyKey>, DecodeError> {
     if dec.at_body_end() {
         return Ok(None);
@@ -439,33 +393,21 @@ fn decode_trailing_key(dec: &mut Decoder<'_>) -> Result<Option<IdempotencyKey>, 
         .ok_or(DecodeError::InvalidIdempotencyKey)
 }
 
-/// Write a `KILL_RESOURCE_IF` precondition: an `Option` tag, the 16 instance
-/// bytes when present, then the condition bits.
+/// Write a `KILL_RESOURCE_IF` precondition: optional instance, then bits.
 fn encode_kill_precondition(precondition: &KillPrecondition, enc: &mut Encoder<'_>) {
-    match &precondition.instance {
-        None => enc.write_u8(0),
-        Some(instance) => {
-            enc.write_u8(1);
-            super::codec::encode_server_instance(instance, enc);
-        }
-    }
+    enc.write_option(precondition.instance.as_ref(), |e, instance| {
+        super::codec::encode_server_instance(instance, e);
+    });
     enc.write_u8(precondition.conditions.bits());
 }
 
-/// Read a `KILL_RESOURCE_IF` precondition. Unknown condition bits are kept,
-/// so the server can refuse them with a typed error rather than the
-/// connection failing on a malformed frame.
+/// Read a `KILL_RESOURCE_IF` precondition, keeping unknown condition bits so
+/// the server can refuse them with a typed error.
 fn decode_kill_precondition(dec: &mut Decoder<'_>) -> Result<KillPrecondition, DecodeError> {
-    let instance = match dec.read_u8()? {
-        0 => None,
-        1 => Some(super::codec::decode_server_instance(dec)?),
-        other => {
-            return Err(DecodeError::UnknownEnumValue {
-                field: "Option<ServerInstance> tag",
-                value: u32::from(other),
-            });
-        }
-    };
+    let instance = dec.read_option(
+        "Option<ServerInstance> tag",
+        super::codec::decode_server_instance,
+    )?;
     let conditions = KillConditions::from_bits(dec.read_u8()?);
     Ok(KillPrecondition {
         instance,
@@ -473,13 +415,8 @@ fn decode_kill_precondition(dec: &mut Decoder<'_>) -> Result<KillPrecondition, D
     })
 }
 
-/// Decode the live agent affordances (SPEC §6): `GET_SCREEN`, `ROUTE_INPUT`,
-/// `APPLY_INPUT`, `GET_TERMINAL_STATE`, `SUBSCRIBE_RESOURCE_EVENTS`, and
-/// `PUT_FILE`.
-///
-/// `command_body_len` is the Command body length measured *before* the tag
-/// byte was read — `APPLY_INPUT` bounds itself on it. Returns `Ok(None)` —
-/// without reading from `dec` — when `tag` belongs to another family.
+/// Decode the agent affordances (SPEC §6). `command_body_len`, measured before
+/// the tag byte, bounds `APPLY_INPUT`.
 fn decode_live_affordance_command(
     tag: u8,
     dec: &mut Decoder<'_>,
@@ -504,11 +441,7 @@ fn decode_live_affordance_command(
     Ok(Some(command))
 }
 
-/// Decode the supervisory verbs of ADR-0033 ("take the wheel + kill"):
-/// `ACQUIRE_INPUT`, `RELEASE_INPUT`, `SIGNAL_TERMINAL`.
-///
-/// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
-/// another family.
+/// Decode the ADR-0033 supervisory verbs.
 fn decode_supervisory_command(
     tag: u8,
     dec: &mut Decoder<'_>,
@@ -524,11 +457,7 @@ fn decode_supervisory_command(
     Ok(Some(command))
 }
 
-/// Decode the agent-evidence reports: `REPORT_ASKED` (ADR-0036) and
-/// `REPORT_AGENT_STATE`.
-///
-/// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
-/// another family.
+/// Decode `REPORT_ASKED` (ADR-0036) and `REPORT_AGENT_STATE`.
 fn decode_agent_report_command(
     tag: u8,
     dec: &mut Decoder<'_>,
@@ -541,12 +470,7 @@ fn decode_agent_report_command(
     Ok(Some(command))
 }
 
-/// Decode the commands whose subject is the session or the server rather than
-/// one Terminal: `GET_STATE`, `KILL_RESOURCES` (§5.2), `DETACH_CLIENTS`,
-/// `UPGRADE`, `SHUTDOWN`, `GET_PERF`, `OPEN_LISTENER`.
-///
-/// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
-/// another family.
+/// Decode the session- and server-scoped commands.
 fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Command>, DecodeError> {
     let command = match tag {
         COMMAND_TAG_GET_STATE => Command::GetState {
@@ -571,12 +495,8 @@ fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comma
     Ok(Some(command))
 }
 
-/// Decode an `OPEN_LISTENER` body: `transport: u8`, `port_min: u16`,
-/// `port_max: u16`, `linger_secs: u32`, all big-endian.
-///
-/// Total by design: an unknown transport and a malformed range both decode,
-/// so the server can refuse them with a message instead of the frame failing.
-/// `0, 0` is the only spelling of "any port".
+/// Decode an `OPEN_LISTENER` body. Total: unknown transports and bad ranges
+/// decode so the server can refuse them with a message; `0, 0` is any port.
 fn decode_open_listener_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let transport = ListenerTransport::from_u8(dec.read_u8()?);
     let min = dec.read_u16_be()?;
@@ -592,20 +512,13 @@ fn decode_open_listener_command(dec: &mut Decoder<'_>) -> Result<Command, Decode
 fn decode_get_screen_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
     let request_scrollback = decode_optional_u32(dec)?;
-    // `cells` is a trailing additive bool (`phux-8yl`): a
-    // pre-`phux-8yl` body ends after `request_scrollback`, so an
-    // absent byte (cursor already at the frame-body end) means
-    // `false`. A present byte is read as a bool (non-zero is
-    // `true`). `at_body_end` (not `remaining().is_empty()`) keeps a
-    // following frame's bytes from being misread as `cells`.
+    // `cells` and `format` are trailing additive bytes; absent = `false` / `0`.
     let cells = if dec.at_body_end() {
         false
     } else {
         dec.read_u8()? != 0
     };
-    // `format` is a second trailing additive byte, following the same
-    // `at_body_end` guard as `cells` immediately above it: a pre-D9 body
-    // ends after `cells`, so an absent byte means `0` (no rendering).
+
     let format = if dec.at_body_end() { 0 } else { dec.read_u8()? };
     Ok(Command::GetScreen {
         terminal_id,
@@ -615,9 +528,7 @@ fn decode_get_screen_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeErr
     })
 }
 
-/// Decode `APPLY_INPUT`, bounded twice: once on the whole Command body
-/// (`command_body_len`, measured before the tag byte was read) and once on the
-/// declared event count.
+/// Decode `APPLY_INPUT`, bounded on the body length and the event count.
 fn decode_apply_input_command(
     dec: &mut Decoder<'_>,
     command_body_len: usize,
@@ -646,10 +557,7 @@ fn decode_apply_input_command(
     })
 }
 
-/// Length-prefixed list: u16 count, then each tagged `ResourceId`. u16 is
-/// ample — a single close-group never approaches 65 535 panes — and matches
-/// the count-prefix width used elsewhere (e.g.
-/// `SubscribeResourceEvents.event_types`).
+/// A `u16`-counted list of tagged `ResourceId`s.
 fn encode_resource_ids(ids: &[crate::ids::ResourceId], enc: &mut Encoder<'_>) {
     enc.write_u16_be(u16::try_from(ids.len()).unwrap_or(u16::MAX));
     for id in ids {
@@ -731,11 +639,8 @@ fn decode_signal_terminal_command(dec: &mut Decoder<'_>) -> Result<Command, Deco
 fn decode_report_agent_state_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
     let terminal_id = decode_terminal_id(dec)?;
     let value = dec.read_u8()?;
-    let state =
-        ReportedAgentState::from_u8(value).ok_or_else(|| DecodeError::UnknownEnumValue {
-            field: "ReportedAgentState",
-            value: u32::from(value),
-        })?;
+    let state = ReportedAgentState::from_u8(value)
+        .ok_or_else(|| DecodeError::unknown_enum("ReportedAgentState", value))?;
     Ok(Command::ReportAgentState { terminal_id, state })
 }
 
@@ -774,9 +679,7 @@ fn decode_put_file_extension(dec: &mut Decoder<'_>) -> Result<String, DecodeErro
     Ok(extension.to_owned())
 }
 
-/// Read the `PUT_FILE` chunk payload, rejecting a chunk that exceeds the
-/// per-chunk cap or whose `offset + len` would carry the upload past the
-/// whole-file cap.
+/// Read a `PUT_FILE` chunk within the per-chunk and whole-file caps.
 fn decode_put_file_chunk(dec: &mut Decoder<'_>, offset: u64) -> Result<Vec<u8>, DecodeError> {
     let data = dec.read_bytes()?;
     let data_len = u64::try_from(data.len()).map_err(|_| DecodeError::FileUploadLimitExceeded)?;
@@ -821,33 +724,12 @@ fn decode_report_asked_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeE
     })
 }
 
-// -----------------------------------------------------------------------------
-// `Option<ClientId>` codec — used by `AgentEvent::TerminalControl` (ADR-0033)
-// for `input_holder` and `actor`. Tag convention matches every other `Option`
-// on the wire (`0 = None`, `1 = Some`); the body is the inner `u32` via the
-// shared `ClientId` codec ([`encode_client_id`] / [`decode_client_id`]).
-// -----------------------------------------------------------------------------
-
 fn encode_optional_client_id(value: Option<ClientId>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(id) => {
-            enc.write_u8(1);
-            encode_client_id(id, enc);
-        }
-    }
+    enc.write_option(value, |e, id| encode_client_id(id, e));
 }
 
 fn decode_optional_client_id(dec: &mut Decoder<'_>) -> Result<Option<ClientId>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => Ok(Some(decode_client_id(dec)?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<ClientId> tag",
-            value: u32::from(other),
-        }),
-    }
+    dec.read_option("Option<ClientId> tag", decode_client_id)
 }
 
 fn encode_state_scope(scope: &StateScope, enc: &mut Encoder<'_>) {
@@ -860,10 +742,7 @@ fn decode_state_scope(dec: &mut Decoder<'_>) -> Result<StateScope, DecodeError> 
     let tag = dec.read_u8()?;
     match tag {
         STATE_SCOPE_TAG_SERVER => Ok(StateScope::Server),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "StateScope",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("StateScope", other)),
     }
 }
 
@@ -891,18 +770,12 @@ pub(in crate::wire) fn decode_command_result(
         COMMAND_RESULT_TAG_OK_WITH => Ok(CommandResult::OkWith(decode_command_value(dec)?)),
         COMMAND_RESULT_TAG_ERROR => {
             let code_raw = dec.read_u16_be()?;
-            let code =
-                ErrorCode::from_wire(code_raw).ok_or_else(|| DecodeError::UnknownEnumValue {
-                    field: "ErrorCode",
-                    value: u32::from(code_raw),
-                })?;
+            let code = ErrorCode::from_wire(code_raw)
+                .ok_or_else(|| DecodeError::unknown_enum("ErrorCode", code_raw))?;
             let message = dec.read_str()?.to_owned();
             Ok(CommandResult::Error { code, message })
         }
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "CommandResult",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("CommandResult", other)),
     }
 }
 
@@ -931,13 +804,7 @@ fn encode_command_value(value: &CommandValue, enc: &mut Encoder<'_>) {
         CommandValue::FileUpload(ack) => {
             enc.write_u8(COMMAND_VALUE_TAG_FILE_UPLOAD);
             enc.write_u64_be(ack.next_offset);
-            match &ack.path {
-                Some(path) => {
-                    enc.write_u8(1);
-                    enc.write_str(path);
-                }
-                None => enc.write_u8(0),
-            }
+            enc.write_option(ack.path.as_deref(), Encoder::write_str);
         }
     }
 }
@@ -962,96 +829,30 @@ fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeErr
                 path,
             }))
         }
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "CommandValue",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("CommandValue", other)),
     }
 }
 
-// -----------------------------------------------------------------------------
-// `Option<i32>` codec — used by `RESOURCE_CLOSED.exit_status` (SPEC §10.1).
-//
-// Tag convention matches every other `Option` on the wire: `0 = None`,
-// `1 = Some(value)`. The body is the two's-complement bit pattern
-// reinterpreted as `u32` (matching how the `i64` encoder treats
-// timestamps in `info.rs`).
-// -----------------------------------------------------------------------------
-
+// `Option<i32>`: presence byte, then the two's-complement bits as a `u32`.
 pub(in crate::wire) fn encode_optional_i32(value: Option<i32>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(n) => {
-            enc.write_u8(1);
-            // Two's-complement bit pattern reinterpreted as u32 — bit-
-            // identical to the `i64` encoder treatment in `info.rs`. Using
-            // `i32::to_be_bytes` avoids the sign-loss clippy lint that a
-            // direct `n as u32` cast triggers (the in-memory bits are the
-            // same; the lint is right that the *value* changes meaning).
-            enc.write_u32_be(u32::from_be_bytes(n.to_be_bytes()));
-        }
-    }
+    enc.write_option(value, |e, n| {
+        e.write_u32_be(u32::from_be_bytes(n.to_be_bytes()));
+    });
 }
 
 pub(in crate::wire) fn decode_optional_i32(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<i32>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => {
-            // Symmetric to the encoder: reinterpret the u32's big-endian
-            // bytes as the i32 two's-complement bit pattern.
-            let bits = dec.read_u32_be()?;
-            Ok(Some(i32::from_be_bytes(bits.to_be_bytes())))
-        }
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<i32> tag",
-            value: u32::from(other),
-        }),
-    }
+    dec.read_option("Option<i32> tag", |d| {
+        Ok(i32::from_be_bytes(d.read_u32_be()?.to_be_bytes()))
+    })
 }
 
-// `SPAWN_RESOURCE.env`'s optionality is now carried by TLV field presence (an
-// absent `env` field = `None`; a present field holds a concrete, possibly
-// empty, list via [`encode_env`] / [`decode_env`]). The old
-// `encode_optional_env` / `decode_optional_env` presence-tag helpers were
-// retired with the field-tagged migration.
-
-// -----------------------------------------------------------------------------
-// AgentEvent codec — SPEC §7.5 / §10.3 (phux-y2t).
-//
-// TLV layout: `tag: u8`, then a length-prefixed `body: bytes`. The
-// length prefix is the forward-compat lever — a decoder that doesn't
-// recognise `tag` reads the body length, captures the bytes verbatim as
-// `AgentEvent::Unknown { tag, body }`, and moves on without failing the
-// frame. Known bodies decode from a sub-`Decoder` over the captured body
-// slice, so a body that declares more fields than this version knows is
-// still bounded by its own length (trailing additive fields inside a
-// known event are likewise skippable).
-//
-// Body shapes by tag:
-//   COMMAND_STARTED  (0x00) → empty
-//   COMMAND_FINISHED (0x01) → optional<i32> exit_code
-//   TITLE_CHANGED    (0x02) → str title
-//   BELL             (0x03) → empty
-//   PANE_SPAWNED     (0x04) → field-tagged TLV: optional u8 kind (absent =
-//                            Terminal), optional ResourceId parent; empty
-//                            for a root Terminal (the id rides the envelope)
-//   PANE_CLOSED      (0x05) → optional<i32> exit_status
-//   DIRTY            (0x06) → empty
-//   IDLE             (0x07) → empty
-//   ASKED            (0x09) → field-tagged TLV: str id, str question,
-//                            repeated str suggestion, optional u64 elapsed_seconds
-//   CWD_CHANGED      (0x0a) → str cwd
-//   JOURNAL_GAP      (0x0b) → field-tagged TLV: u64 first_missing, u64 last_missing
-//   SOURCE_GAP       (0x0c) → field-tagged TLV: u64 dropped
-// -----------------------------------------------------------------------------
+// `AgentEvent` (SPEC §7.5 / §10.3): `tag: u8` + a length-prefixed body, so an
+// unknown tag is captured verbatim as `Unknown` and a known body is bounded
+// by its own length.
 
 pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<'_>) {
-    // Encode the variant body into a scratch buffer first, then write the
-    // tag + the body as a single length-prefixed block. Keeping the body
-    // length-delimited is what lets an older decoder skip an unknown tag.
     let mut body = BytesMut::new();
     let tag = {
         let mut body_enc = Encoder::new(&mut body);
@@ -1139,12 +940,7 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 body_enc.write_u8(outcome.to_u8());
                 EVENT_TAG_APPROVAL_DECIDED
             }
-            // `Unknown` is decoder-only: an encoder that reaches here has
-            // round-tripped an event this version did not understand.
-            // Re-emit the captured body verbatim so a relay (a hub
-            // forwarding a satellite's event, say) is lossless rather than
-            // dropping the event or panicking. The raw bytes are appended
-            // after this block to sidestep the `body`/`body_enc` borrow.
+            // Re-emit an unknown event's body verbatim so relays are lossless.
             AgentEvent::Unknown { tag, .. } => *tag,
         }
     };
@@ -1195,11 +991,8 @@ fn encode_asked_fields(
     elapsed_seconds: Option<u64>,
     enc: &mut Encoder<'_>,
 ) {
-    // Field-tagged TLV body: id, question, then one repeated SUGGESTION field
-    // per suggestion (in order), then an optional ELAPSED_SECONDS. An absent
-    // suggestion list writes no field; an absent elapsed counter writes no
-    // field. The same body shape backs both Command::ReportAsked and
-    // AgentEvent::Asked so the hook and event payload cannot drift.
+    // Shared by `Command::ReportAsked` and `AgentEvent::Asked` so they cannot
+    // drift.
     enc.write_field(field::event_asked::ID, id.as_bytes());
     enc.write_field(field::event_asked::QUESTION, question.as_bytes());
     for suggestion in suggestions {
@@ -1217,9 +1010,7 @@ pub(in crate::wire) fn decode_agent_event(
 ) -> Result<AgentEvent, DecodeError> {
     let tag = dec.read_u8()?;
     let body = dec.read_bytes()?;
-    // Sub-decoder over just this event's body. A known body that declares
-    // fewer bytes than expected errors with `UnexpectedEof`; an unknown
-    // tag is captured verbatim and skipped.
+
     let mut body_dec = Decoder::new(body);
     let event = match tag {
         EVENT_TAG_COMMAND_STARTED => AgentEvent::CommandStarted,
@@ -1236,9 +1027,7 @@ pub(in crate::wire) fn decode_agent_event(
         },
         EVENT_TAG_DIRTY => AgentEvent::Dirty,
         EVENT_TAG_IDLE => AgentEvent::Idle,
-        // A lifecycle or action byte this build does not know makes the
-        // whole event opaque rather than failing the frame, so a later value
-        // degrades like a later tag does.
+        // An unknown lifecycle or action byte makes the event opaque.
         EVENT_TAG_TERMINAL_CONTROL => {
             decode_terminal_control_event(&mut body_dec)?.unwrap_or_else(|| AgentEvent::Unknown {
                 tag,
@@ -1251,17 +1040,14 @@ pub(in crate::wire) fn decode_agent_event(
         },
         EVENT_TAG_JOURNAL_GAP => decode_journal_gap_event(&mut body_dec)?,
         EVENT_TAG_SOURCE_GAP => decode_source_gap_event(&mut body_dec)?,
-        // A zero id or an outcome this build does not know makes the event
-        // opaque rather than failing the frame, as for `terminal_control`.
+        // A zero id or unknown outcome makes the event opaque.
         EVENT_TAG_APPROVAL_REQUESTED | EVENT_TAG_APPROVAL_DECIDED => {
             decode_approval_event(tag, &mut body_dec)?.unwrap_or_else(|| AgentEvent::Unknown {
                 tag,
                 body: body.to_vec(),
             })
         }
-        // Unknown event tag: preserve the body verbatim and skip. This is
-        // the forward-compat path — a v0.2.x server may add event kinds an
-        // older client does not know.
+
         other => AgentEvent::Unknown {
             tag: other,
             body: body.to_vec(),
@@ -1270,13 +1056,8 @@ pub(in crate::wire) fn decode_agent_event(
     Ok(event)
 }
 
-/// Decode an [`AgentEvent::TerminalControl`] body (ADR-0033): lifecycle,
-/// optional exit status, optional input-lease holder, the control action, and
-/// the optional actor that caused it.
-///
-/// `Ok(None)` when the lifecycle or action byte is one this build does not
-/// know; the caller keeps the event as `Unknown`. A truncated body is still
-/// an error.
+/// Decode an [`AgentEvent::TerminalControl`] body (ADR-0033); `Ok(None)` for
+/// an unknown lifecycle or action byte.
 fn decode_terminal_control_event(dec: &mut Decoder<'_>) -> Result<Option<AgentEvent>, DecodeError> {
     let lifecycle = ResourceLifecycle::from_u8(dec.read_u8()?);
     let exit_status = decode_optional_i32(dec)?;
@@ -1300,8 +1081,7 @@ fn read_u64_value(value: &[u8]) -> Result<u64, DecodeError> {
     Decoder::new(value).read_u64_be()
 }
 
-/// Decode an [`AgentEvent::JournalGap`] body (field-tagged TLV). An absent
-/// bound reads as `0`; an unknown field is skipped by length.
+/// Decode an [`AgentEvent::JournalGap`] body; an absent bound reads as `0`.
 fn decode_journal_gap_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
     let mut first_missing = 0;
     let mut last_missing = 0;
@@ -1329,21 +1109,17 @@ fn decode_source_gap_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeEr
     Ok(AgentEvent::SourceGap { dropped })
 }
 
-/// Decode an [`AgentEvent::ResourceSpawned`] body (field-tagged TLV).
-///
-/// An empty body, which is what every pre-kind encoder wrote and what a
-/// root Terminal still gets, decodes as `Terminal` with no parent; an
-/// unrecognised field id is skipped by its length.
+/// Decode an [`AgentEvent::ResourceSpawned`] body; empty is a root Terminal.
 fn decode_pane_spawned_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
     let mut kind = ResourceKind::Terminal;
     let mut parent = None;
     while let Some((field_id, value)) = dec.read_field()? {
         match field_id {
             field::event_pane_spawned::KIND => {
-                kind = ResourceKind::from_wire(Decoder::new(value).read_u8()?)
+                kind = ResourceKind::from_wire(Decoder::new(value).read_u8()?);
             }
             field::event_pane_spawned::PARENT => {
-                parent = Some(decode_terminal_id(&mut Decoder::new(value))?)
+                parent = Some(decode_terminal_id(&mut Decoder::new(value))?);
             }
             _ => {}
         }
@@ -1351,14 +1127,7 @@ fn decode_pane_spawned_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, Decode
     Ok(AgentEvent::ResourceSpawned { kind, parent })
 }
 
-/// Decode an [`AgentEvent::Asked`] body (field-tagged TLV).
-///
-/// Loops over the body's TLV fields by id, accumulating suggestions as the
-/// repeated `SUGGESTION` field appears. An unrecognised field id is skipped by
-/// its length (forward-compat), `id` / `question` default to empty when their
-/// field is absent, and `elapsed_seconds` is `None` unless its field is
-/// present. The whole body is bounded by the event's outer length prefix, so a
-/// trailing future field cannot bleed into the next event.
+/// Decode an [`AgentEvent::Asked`] body; absent `id` / `question` are empty.
 fn decode_asked_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
     let mut id = String::new();
     let mut question = String::new();
@@ -1372,10 +1141,9 @@ fn decode_asked_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> 
                 suggestions.push(utf8_value(value)?);
             }
             field::event_asked::ELAPSED_SECONDS => {
-                elapsed_seconds = Some(Decoder::new(value).read_u64_be()?)
+                elapsed_seconds = Some(Decoder::new(value).read_u64_be()?);
             }
-            // Unknown field id: skip by length (already consumed by
-            // `read_field`) — the forward-compat additive-field path.
+
             _ => {}
         }
     }

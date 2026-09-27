@@ -1,16 +1,8 @@
-//! Snapshot-graph types delivered with `ATTACHED` per `docs/spec/L1.md` §7.
+//! Snapshot-graph types delivered with `ATTACHED` (`docs/spec/L1.md` §7).
 //!
-//! SPEC §13 references `SessionInfo`, `WindowInfo`, `ResourceInfo`, and
-//! `SessionSnapshot` but does not define their fields. This module fills that
-//! gap with wire-portable shapes that mirror `phux_core::{Session, Window,
-//! Pane, LayoutNode, SplitDir}` semantics WITHOUT crossing the
-//! core/protocol independence boundary (`phux-protocol` cannot depend on
-//! `phux-core`).
-//!
-//! The snapshot is the minimum a reconnecting client needs to render
-//! UI chrome, status bars, and pane layout — terminal contents flow separately
-//! through protocol-0.7 bootstrap streams (`ATTACHED` → per-pane
-//! `BOOTSTRAP_BEGIN`/`CHUNK`/`READY` → `ATTACH_READY`).
+//! Wire mirrors of `phux_core`'s session/window/layout shapes (this crate
+//! cannot depend on `phux-core`): enough to render chrome and layout.
+//! Terminal contents flow through the bootstrap streams.
 
 use bytes::BytesMut;
 
@@ -25,11 +17,6 @@ use super::frame::{
     encode_terminal_id,
 };
 
-// -----------------------------------------------------------------------------
-// Tagged-union tags. `pub(crate)` so the codec and tests can spell them
-// without re-deriving the byte assignments.
-// -----------------------------------------------------------------------------
-
 /// Tag byte for [`LayoutNode::Leaf`] on the wire.
 pub(crate) const LAYOUT_TAG_LEAF: u8 = 0;
 /// Tag byte for [`LayoutNode::Split`] on the wire.
@@ -40,14 +27,7 @@ pub(crate) const SPLIT_DIR_HORIZONTAL: u8 = 0;
 /// Tag byte for [`SplitDir::Vertical`] on the wire.
 pub(crate) const SPLIT_DIR_VERTICAL: u8 = 1;
 
-// -----------------------------------------------------------------------------
-// SplitDir / LayoutNode
-// -----------------------------------------------------------------------------
-
 /// Axis along which a [`LayoutNode::Split`] divides its rectangle.
-///
-/// Wire-side mirror of `phux_core::window::SplitDir`. Duplication is
-/// deliberate — see module docs for the core/protocol independence rationale.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -58,14 +38,8 @@ pub enum SplitDir {
     Vertical = SPLIT_DIR_VERTICAL,
 }
 
-/// Wire-side mirror of `phux_core::window::LayoutNode`.
-///
-/// `Leaf` carries a single [`ResourceId`]; `Split` divides its rectangle between
-/// two children along [`SplitDir`] at `ratio` (the left/top child gets
-/// `ratio` of the parent dimension along the split axis).
-///
-/// The server-side bridge (parallel to the `IdBridge` pattern) converts
-/// between this type and `phux_core::window::LayoutNode`.
+/// Binary split tree of a window's panes; `Split` gives its left/top child
+/// `ratio` of the parent along [`SplitDir`].
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum LayoutNode {
@@ -75,17 +49,11 @@ pub enum LayoutNode {
     Split {
         /// The axis the split is taken along.
         dir: SplitDir,
-        /// Fraction of the parent dim given to `left`, in the **closed**
-        /// interval `0.0..=1.0`.
+        /// Fraction given to `left`, in the closed interval `0.0..=1.0`.
         ///
-        /// Decoders reject NaN, infinite, or out-of-range values as
-        /// [`DecodeError::MalformedLayoutRatio`], but admit the endpoints on
-        /// purpose — wider than `phux_core`'s constructor-side open interval,
-        /// because the reference TUI banks `resize-pane` ratios it has not
-        /// applied yet (`phux_client_core::multi_pane::layout`, ADR-0048) and
-        /// a transport that rejected `0.0`/`1.0` would drop legitimate client
-        /// state. That divergence is deliberate and mapped in
-        /// `crates/phux/tests/conformance/layout_conformance.rs`.
+        /// NaN, infinite, and out-of-range ratios are
+        /// [`DecodeError::MalformedLayoutRatio`]. The endpoints are admitted
+        /// because clients bank unapplied resize ratios (ADR-0048).
         ratio: f32,
         /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
         left: Box<Self>,
@@ -94,19 +62,8 @@ pub enum LayoutNode {
     },
 }
 
-// -----------------------------------------------------------------------------
-// SessionInfo / WindowInfo / ResourceInfo / SessionSnapshot
-// -----------------------------------------------------------------------------
-
-/// Description of a single session, sufficient for UI chrome and `phux ls`.
-///
-/// Excludes the windows themselves — those are flattened into
-/// [`SessionSnapshot::windows`] and joined via `WindowInfo::session_id`.
-///
-/// Marked `#[non_exhaustive]` so additive field growth (process info, last-
-/// attach timestamp, ...) is non-breaking. Construct via [`Self::new`] plus
-/// the `with_*` setters; field-literal syntax is reserved for the crate's
-/// own decoder and tests.
+/// One session, sufficient for UI chrome and `phux ls`; its windows are in
+/// [`SessionSnapshot::windows`]. Construct via [`Self::new`] and `with_*`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SessionInfo {
@@ -114,44 +71,22 @@ pub struct SessionInfo {
     pub id: SessionId,
     /// Human-readable name; `AttachTarget::ByName` matches against this.
     pub name: String,
-    /// Session's remembered focused window. Distinct from
-    /// [`SessionSnapshot::focused_window`] — that one tracks the attaching
-    /// client's current focus; this one tracks the session's "last known"
-    /// focus, restored when a client attaches with no fresher signal.
+    /// The session's remembered focus, restored on attach (distinct from the
+    /// client's [`SessionSnapshot::focused_window`]).
     pub active_window: Option<WindowId>,
-    /// Wall-clock creation time as seconds since the Unix epoch.
-    ///
-    /// `i64` (not `u64`) is the cross-language standard for Unix time and
-    /// costs nothing in bytes; signedness leaves room for sub-1970 cases
-    /// future implementations might dream up (none today).
+    /// Creation time, seconds since the Unix epoch.
     pub created_at_unix_secs: i64,
-    /// Number of windows in this session.
-    ///
-    /// Denormalized at snapshot time so `phux ls` and status widgets can
-    /// render without walking the windows list. Not stored long-term in
-    /// core; computed on snapshot construction.
+    /// Number of windows, denormalized at snapshot time.
     pub window_count: u16,
-    /// Number of clients currently attached to this session.
-    ///
-    /// Drives multi-attach UX (status-bar indicators, etc.). Like
-    /// `window_count`, denormalized at snapshot time.
+    /// Number of attached clients, denormalized at snapshot time.
     pub attached_client_count: u16,
-    /// Whether the session survives its last window (ADR-0105).
-    ///
-    /// A keep-empty session is not reaped when its last window closes; only
-    /// an explicit kill removes it. Rides the snapshot's trailing session
-    /// facet list (see [`SessionSnapshot`]), so an older peer decodes it as
-    /// `false`. Advertised by `ServerFeature::KeepEmptySessions`.
+    /// Whether the session survives its last window (ADR-0105); rides the
+    /// trailing session facets, so older peers read `false`.
     pub keep_empty: bool,
 }
 
 impl SessionInfo {
-    /// Construct a `SessionInfo` from its load-bearing fields.
-    ///
-    /// `active_window`, `created_at_unix_secs`, `window_count`, and
-    /// `attached_client_count` default to "unknown" sentinels (`None` / `0`);
-    /// `keep_empty` defaults to `false`. Fill them via the `with_*` setters
-    /// when the server has the data.
+    /// A `SessionInfo` with every other field at `None` / `0` / `false`.
     #[must_use]
     pub fn new(id: SessionId, name: impl Into<String>) -> Self {
         Self {
@@ -208,12 +143,8 @@ impl SessionInfo {
     }
 }
 
-/// Description of a single window, sufficient for tab/pane chrome.
-///
-/// Excludes the resources themselves — those are flattened into
-/// [`SessionSnapshot::resources`] and joined via `ResourceInfo::window_id`.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+/// One window, sufficient for tab/pane chrome; its resources are in
+/// [`SessionSnapshot::resources`]. Construct via [`Self::new`] and `with_*`.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct WindowInfo {
@@ -222,27 +153,17 @@ pub struct WindowInfo {
     /// Foreign key into [`SessionSnapshot::sessions`].
     pub session_id: SessionId,
     /// Position within the session's windows list.
-    ///
-    /// Not stored in `phux_core::Window` today; computed at snapshot time
-    /// as the position of this window's id in `session.windows`. Tmux-style
-    /// numeric indices (`Ctrl-b 2`) bind against this.
     pub index: u16,
     /// Human-readable window name.
     pub name: String,
     /// Window's remembered focused pane.
     pub active_resource: Option<ResourceId>,
-    /// Pane layout as a binary split tree.
-    ///
-    /// `None` iff this window has no resources — `SessionSnapshot::resources`
-    /// filtered by `window_id` will be empty.
+    /// Pane layout; `None` iff the window has no resources.
     pub layout: Option<LayoutNode>,
 }
 
 impl WindowInfo {
-    /// Construct a `WindowInfo` from its load-bearing fields.
-    ///
-    /// `index` defaults to `0`; `active_resource` and `layout` default to
-    /// `None`. Use the `with_*` setters to fill them when meaningful.
+    /// A `WindowInfo` at index `0` with no active resource or layout.
     #[must_use]
     pub fn new(id: WindowId, session_id: SessionId, name: impl Into<String>) -> Self {
         Self {
@@ -277,10 +198,7 @@ impl WindowInfo {
     }
 }
 
-/// The agent-session facet of a [`ResourceKind::AgentSession`] resource, as
-/// carried in the snapshot.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+/// The snapshot facet of a [`ResourceKind::AgentSession`] resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct AgentFacet {
@@ -288,15 +206,13 @@ pub struct AgentFacet {
     pub provider: String,
     /// Opaque provider-native session id, when the producer supplied one.
     pub native_id: Option<String>,
-    /// Server-derived lifecycle state as an open lower-case string
-    /// (`working`, `blocked`, `done`, `idle`, `unknown`, ...). A consumer
-    /// treats an unrecognised value as `unknown`.
+    /// Derived state, an open lower-case string; unknown values read as
+    /// `unknown`.
     pub state: String,
 }
 
 impl AgentFacet {
-    /// Construct an `AgentFacet` from its provider and derived state.
-    /// `native_id` defaults to `None`.
+    /// An `AgentFacet` with no `native_id`.
     #[must_use]
     pub fn new(provider: impl Into<String>, state: impl Into<String>) -> Self {
         Self {
@@ -314,25 +230,16 @@ impl AgentFacet {
     }
 }
 
-/// How a retained resource ended (ADR-0124), as carried in the snapshot and
-/// in `GET_TERMINAL_STATE`'s `process.exit`.
-///
-/// Present on a [`ResourceInfo`] only while the resource is retained after
-/// its process exited: the resource is still in the inventory, its grid and
-/// history still answer reads, and it closes with `RESOURCE_CLOSED` when
-/// `retained_until_ms` passes or someone kills it.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+/// How a retained resource's process ended (ADR-0124); present only while
+/// the exited resource is retained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ExitFacet {
-    /// `_exit(n)` status, or `None` when the process died by a signal or the
-    /// status is unknown.
+    /// `_exit(n)` status, when known.
     pub exit_status: Option<i32>,
-    /// The terminating signal, or `None` when the process exited on its own
-    /// or the cause is unknown.
+    /// Terminating signal, when known.
     pub signal: Option<i32>,
-    /// Why the process ended, in the `RESOURCE_CLOSED.reason` vocabulary.
+    /// Why the process ended (`RESOURCE_CLOSED.reason` vocabulary).
     pub reason: CloseReason,
     /// When the process exited, Unix milliseconds.
     pub exited_at_ms: u64,
@@ -341,8 +248,7 @@ pub struct ExitFacet {
 }
 
 impl ExitFacet {
-    /// A facet for a process that exited on its own at `exited_at_ms`,
-    /// retained until `retained_until_ms`, with no status or signal known.
+    /// An `Exited` facet with no status or signal known.
     #[must_use]
     pub const fn new(exited_at_ms: u64, retained_until_ms: u64) -> Self {
         Self {
@@ -376,31 +282,11 @@ impl ExitFacet {
     }
 }
 
-/// Description of a single served resource, sufficient for layout chrome.
+/// One served resource of any [`ResourceKind`], sufficient for layout chrome.
 ///
-/// Every resource the server serves has an entry here, whatever its
-/// [`ResourceKind`]; the name is the Terminal-era one and stays until the
-/// wire rename. For a Terminal the entry carries its grid and window. For a
-/// non-Terminal kind the Terminal facet is absent, which the positional
-/// prefix encodes as `window_id = WindowId(0)` and `cols = rows = 0`: no
-/// window owns such a resource and it has no grid, and a `WindowId` of zero
-/// is never allocated. Consumers key layout on [`Self::kind`], not on those
-/// sentinels.
-///
-/// Excludes grid contents, cursor state, scrollback, and process info.
-/// Grid contents and retained history flow through separate bootstrap/history
-/// streams. Process info (PID, command, exit status) is not yet modeled in
-/// `phux_core::TerminalDescriptor`; adding wire fields the server can only send
-/// `None` for is premature. Revisit when core grows process tracking.
-///
-/// [`Self::kind`], [`Self::parent`], and [`Self::agent`] are additive: the
-/// positional per-entry prefix is unchanged, and the snapshot carries the
-/// non-default values in one trailing list decoded with the `at_body_end`
-/// convention (see [`SessionSnapshot`]), so a Terminal-only snapshot is
-/// byte-identical to one encoded before the fields existed and a snapshot
-/// from a peer that predates them decodes with every entry at the defaults.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+/// A non-Terminal kind has no window or grid, encoded as `WindowId(0)` and
+/// `0 x 0`; key layout on [`Self::kind`], not those sentinels. `kind`,
+/// `parent`, and `agent` ride the snapshot's trailing facet list.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ResourceInfo {
@@ -409,48 +295,33 @@ pub struct ResourceInfo {
     /// Foreign key into [`SessionSnapshot::windows`]; `WindowId(0)` for a
     /// non-Terminal kind, which no window owns.
     pub window_id: WindowId,
-    /// Current grid width in cells (from `core::TerminalDescriptor::dims.0`);
-    /// `0` for a non-Terminal kind.
+    /// Grid width in cells; `0` for a non-Terminal kind.
     pub cols: u16,
-    /// Current grid height in cells (from `core::TerminalDescriptor::dims.1`);
-    /// `0` for a non-Terminal kind.
+    /// Grid height in cells; `0` for a non-Terminal kind.
     pub rows: u16,
-    /// User-set title, distinct from any title the shell may set.
+    /// User-set title, distinct from any shell-set title.
     pub title: Option<String>,
-    /// Working directory as a UTF-8 string.
-    ///
-    /// `phux_core::TerminalDescriptor::cwd` is `PathBuf`; conversion uses
-    /// `to_string_lossy().into_owned()`. Lossy on non-UTF-8 cwds (rare on
-    /// modern systems) and acceptable for a display field.
+    /// Working directory (lossy UTF-8, display only).
     pub cwd: Option<String>,
-    /// What backs the resource. Defaults to [`ResourceKind::Terminal`].
+    /// What backs the resource; defaults to [`ResourceKind::Terminal`].
     pub kind: ResourceKind,
-    /// The resource this one is bound to, when it is a child. Set at spawn
-    /// and immutable; closing the parent closes the child.
+    /// The parent this child is bound to; closing the parent closes it.
     pub parent: Option<ResourceId>,
-    /// The agent-session facet, present iff `kind` is
-    /// [`ResourceKind::AgentSession`].
+    /// Agent facet, present iff `kind` is [`ResourceKind::AgentSession`].
     pub agent: Option<AgentFacet>,
-    /// Process lifecycle: `Running` by default, `Exited` while a retained
-    /// resource outlives its process (ADR-0124). Rides the snapshot
-    /// extension block, not the positional prefix or the facet row.
+    /// `Running`, or `Exited` while retained (ADR-0124); rides the extension
+    /// block.
     pub lifecycle: ResourceLifecycle,
     /// How a retained resource's process ended; `None` while it runs.
     pub exit: Option<ExitFacet>,
-    /// The connection holding the input lease; `None` while the Terminal is
-    /// open to every attached client (ADR-0033).
+    /// Input-lease holder; `None` while open to every client (ADR-0033).
     pub input_holder: Option<ClientId>,
-    /// Connections subscribed as `VIEWER` (ADR-0127), ascending; empty when
-    /// none is. Rides `RESOURCE_STATE` field 4, repeated once per viewer.
+    /// `VIEWER` subscribers, ascending (ADR-0127).
     pub viewers: Vec<ClientId>,
 }
 
 impl ResourceInfo {
-    /// Construct a `ResourceInfo` from its load-bearing fields.
-    ///
-    /// `title` and `cwd` default to `None`; `kind` to `Terminal`; `parent`
-    /// and `agent` to `None`. Set them via the `with_*` helpers when the
-    /// server has the data.
+    /// A running Terminal entry with every optional field unset.
     #[must_use]
     pub const fn new(id: ResourceId, window_id: WindowId, cols: u16, rows: u16) -> Self {
         Self {
@@ -554,16 +425,12 @@ impl ResourceInfo {
         self
     }
 
-    /// Whether this entry carries anything beyond the Terminal-era
-    /// positional prefix, i.e. whether the snapshot's trailing resource
-    /// facet list needs a row for it.
+    /// Whether the trailing resource facet list needs a row for this entry.
     const fn has_resource_facets(&self) -> bool {
         !self.kind.is_terminal() || self.parent.is_some() || self.agent.is_some()
     }
 
-    /// Whether the snapshot extension block needs a `RESOURCE_STATE` entry
-    /// for this resource: it is not plainly running, someone holds its
-    /// input lease, or someone watches it as a viewer.
+    /// Whether the extension block needs a `RESOURCE_STATE` entry for it.
     const fn has_resource_state(&self) -> bool {
         !matches!(self.lifecycle, ResourceLifecycle::Running)
             || self.exit.is_some()
@@ -572,20 +439,14 @@ impl ResourceInfo {
     }
 }
 
-/// One session on a federation satellite, as a hub lists it in
-/// [`SessionSnapshot::hosts`].
+/// One satellite session as a hub lists it in [`SessionSnapshot::hosts`].
 ///
-/// The hub never renumbers a satellite session into its own id space:
-/// [`Self::id`] is the satellite-local [`SessionId`], meaningful only on
-/// that satellite and never joined against [`SessionSnapshot::sessions`].
-/// [`Self::active_resource`] is the one routable handle, re-tagged
-/// `SATELLITE { host, id }` so every relayed verb reaches it through the hub.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+/// [`Self::id`] is satellite-local and never joined against the hub's
+/// sessions; [`Self::active_resource`] is re-tagged `SATELLITE` so it routes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct HostSessionInfo {
-    /// The satellite-local session id. Opaque to the hub and to consumers.
+    /// The satellite-local session id.
     pub id: SessionId,
     /// The session's name on the satellite.
     pub name: String,
@@ -597,14 +458,12 @@ pub struct HostSessionInfo {
     pub pane_count: u16,
     /// Number of clients attached to the session on the satellite.
     pub attached_client_count: u16,
-    /// The session's remembered focused pane, re-tagged `SATELLITE`, when
-    /// the satellite reported one.
+    /// The session's remembered focused pane, re-tagged `SATELLITE`.
     pub active_resource: Option<ResourceId>,
 }
 
 impl HostSessionInfo {
-    /// Construct a `HostSessionInfo` from its id and name; counts default to
-    /// `0`, `created_at_unix_secs` to `0`, `active_resource` to `None`.
+    /// A `HostSessionInfo` with zero counts and no active resource.
     #[must_use]
     pub fn new(id: SessionId, name: impl Into<String>) -> Self {
         Self {
@@ -654,26 +513,16 @@ impl HostSessionInfo {
     }
 }
 
-/// One federation satellite's row in [`SessionSnapshot::hosts`]: its
-/// sessions, or why the hub could not list them.
-///
-/// A satellite that could not be reached stays in the inventory with
-/// [`Self::unreachable`] set and no sessions, so a consumer can show it as
-/// degraded instead of letting it disappear.
-///
-/// `#[non_exhaustive]`; construct via [`Self::reachable`] or
-/// [`Self::unreachable`].
+/// One satellite's row in [`SessionSnapshot::hosts`]: its sessions, or why
+/// the hub could not list them (so it shows as degraded, not missing).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct HostInventory {
-    /// The hub-local satellite name, the same token `SATELLITE { host, .. }`
-    /// ids carry.
+    /// The hub-local satellite name that `SATELLITE` ids carry.
     pub host: SatelliteHost,
-    /// `Some(diagnostic)` when the hub could not list this satellite. The
-    /// text is the hub's prose; branch on presence, not on content.
+    /// Diagnostic prose when unreachable; branch on presence only.
     pub unreachable: Option<String>,
-    /// The satellite's sessions, in the order it reported them. Empty when
-    /// [`Self::unreachable`] is set.
+    /// The satellite's sessions in reported order; empty when unreachable.
     pub sessions: Vec<HostSessionInfo>,
 }
 
@@ -705,84 +554,22 @@ impl HostInventory {
     }
 }
 
-/// Flat graph of sessions/windows/resources delivered with `ATTACHED`.
+/// Flat, id-joined graph of sessions, windows, and resources delivered with
+/// `ATTACHED` and `GET_STATE`.
 ///
-/// All three lists are joined by id. The triple of `focused_*` fields
-/// records the **attaching client's** current focus — distinct from the
-/// per-container `SessionInfo::active_window` / `WindowInfo::active_resource`,
-/// which record the container's remembered focus from when no client was
-/// attached (tmux behavior: detach → attach later restores last focus).
+/// The `focused_*` triple is the attaching client's focus, distinct from each
+/// container's remembered `active_*` focus.
 ///
-/// # Wire shape and the trailing resource facets
+/// # Wire shape
 ///
-/// The snapshot is positional: three `u32`-counted lists, then the focus
-/// triple. After `focused_resource` an encoder appends one more `u32`-counted
-/// list, the *resource facets*, with one row per `resources` entry whose
-/// [`ResourceInfo::kind`], [`ResourceInfo::parent`], or
-/// [`ResourceInfo::agent`] is non-default:
-///
-/// ```text
-/// facet_row = id: ResourceId
-///          || kind: u8
-///          || parent: optional<ResourceId>
-///          || agent: optional<provider: str || native_id: optional<str> || state: str>
-/// ```
-///
-/// The list is written only when it would be non-empty, so a Terminal-only
-/// snapshot is byte-identical to one encoded before it existed. A decoder
-/// reads it only when bytes remain in the enclosing field (`at_body_end`),
-/// so a snapshot from an older peer decodes with every entry at the defaults,
-/// and an older decoder stops at `focused_resource` and never sees the list.
-/// Rows are joined onto `resources` by id on decode; a row naming no entry is
-/// ignored. This is the trailing-additive convention of
-/// `docs/spec/appendix-encoding.md` §2 applied at the one place in the
-/// snapshot where a trailing value is unambiguous: a per-entry suffix would
-/// not be, because the next entry's id tag follows it.
-///
-/// # The trailing host-session inventory
-///
-/// After the facet list an encoder appends a second `u32`-counted list,
-/// [`Self::hosts`], one row per federation satellite
-/// (`ServerFeature::HostSessions`):
-///
-/// ```text
-/// host_row     = host: str || unreachable: optional<str>
-///             || sessions: u32-counted list of host_session
-/// host_session = id: u32 || name: str || created_at_unix_secs: i64
-///             || window_count: u16 || pane_count: u16
-///             || attached_client_count: u16 || active_resource: optional<ResourceId>
-/// ```
-///
-/// # The trailing session facets
-///
-/// After the host inventory an encoder appends a third `u32`-counted list,
-/// the *session facets* (ADR-0105, `ServerFeature::KeepEmptySessions`), one
-/// row per `sessions` entry whose [`SessionInfo::keep_empty`] is set:
-///
-/// ```text
-/// session_row = id: SessionId (u32) || flags: u8   // bit 0 = keep_empty
-/// ```
-///
-/// # The trailing remote-listeners report
-///
-/// After the session facets an encoder appends an optional length-prefixed
-/// JSON object, [`Self::listeners`] (phux-kyna): the server's remote
-/// listener bind outcomes (`wss` / `quic` / `wt`). Absent means the serving
-/// peer did not fill the report (an older server, or nothing to say yet).
-///
-/// # Order of the trailing lists
-///
-/// The order is fixed: resource facets, then hosts, then session facets,
-/// then the optional listeners JSON. Each list is written only when it or a
-/// later list is non-empty, and every earlier list is then written
-/// explicitly, with a zero count when it has no rows, so a later list never
-/// aliases an earlier one. A decoder reads each list only while bytes remain.
-/// A snapshot with no later list is therefore byte-identical to one encoded
-/// before that list existed, and an older decoder that stops after the
-/// facets, after the hosts, or after the session facets is still correct.
-/// Unknown session-facet flag bits and rows naming no session are ignored.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+/// Positional (`docs/spec/L1.md` §9.1): three `u32`-counted lists, the focus
+/// triple, then trailing elements in fixed order: resource facets
+/// (`kind`/`parent`/`agent` rows joined by id), [`Self::hosts`], session
+/// facets (`id: u32 || flags: u8`, bit 0 = `keep_empty`), the optional
+/// listeners JSON, and the field-tagged extension block. Each element is
+/// written only when it or a later one is non-empty (earlier ones then get a
+/// zero count), and read only while bytes remain, so older peers stay
+/// byte-compatible. Rows naming no entry and unknown flag bits are ignored.
 ///
 /// # Example
 ///
@@ -820,19 +607,12 @@ pub struct SessionSnapshot {
     pub focused_window: WindowId,
     /// The attaching client's initial focused pane.
     pub focused_resource: ResourceId,
-    /// Host-session inventory and remote-listener report, boxed together.
-    ///
-    /// Read hosts through [`Self::hosts`] and listeners through
-    /// [`Self::listeners`]. Absent when both are empty, so a Terminal-only
-    /// snapshot stays byte-identical to one encoded before either trailing
-    /// field existed. Boxing them together (rather than as two `Option`s)
-    /// keeps `CommandResult` under the large-`Err` size the server's
-    /// `Result<_, CommandResult>` helpers are held to.
+    /// Hosts, listeners, and journal head, boxed together (absent when all
+    /// are empty) to keep `CommandResult` small.
     trail: Option<Box<SessionSnapshotTrail>>,
 }
 
-/// Trailing additive payload for [`SessionSnapshot`]: hosts inventory plus
-/// the remote-listeners report, sharing one optional allocation.
+/// Trailing additive payload for [`SessionSnapshot`].
 #[derive(Debug, Clone, PartialEq, Default)]
 struct SessionSnapshotTrail {
     hosts: Box<[HostInventory]>,
@@ -848,9 +628,7 @@ impl SessionSnapshotTrail {
 }
 
 impl SessionSnapshot {
-    /// Construct a `SessionSnapshot` from the attaching client's initial
-    /// focus triple. Lists default to empty; populate them via the `with_*`
-    /// setters.
+    /// An empty snapshot with the attaching client's focus triple.
     #[must_use]
     pub const fn new(
         focused_session: SessionId,
@@ -868,8 +646,7 @@ impl SessionSnapshot {
         }
     }
 
-    /// The host-session inventory (see the field docs): one row per
-    /// federation satellite, empty unless a hub filled it.
+    /// The host-session inventory, one row per satellite; empty off a hub.
     #[must_use]
     pub fn hosts(&self) -> &[HostInventory] {
         self.trail
@@ -877,8 +654,7 @@ impl SessionSnapshot {
             .map_or(&[], |trail| trail.hosts.as_ref())
     }
 
-    /// Builder setter for the hosts inventory. An empty list with no
-    /// listeners clears the trail.
+    /// Builder setter for the hosts inventory.
     #[must_use]
     pub fn with_hosts(mut self, hosts: Vec<HostInventory>) -> Self {
         self.set_hosts(hosts);
@@ -915,21 +691,15 @@ impl SessionSnapshot {
         self.edit_trail(|trail| trail.journal_head = journal_head);
     }
 
-    /// Apply `edit` to the trail, allocating it when absent and dropping it
-    /// when the edit leaves it empty, so a snapshot with nothing trailing
-    /// compares equal however it was built.
+    /// Edit the trail, dropping it when left empty so equality is canonical.
     fn edit_trail(&mut self, edit: impl FnOnce(&mut SessionSnapshotTrail)) {
         let mut trail = self.trail.take().map(|trail| *trail).unwrap_or_default();
         edit(&mut trail);
         self.trail = (!trail.is_empty()).then(|| Box::new(trail));
     }
 
-    /// The newest event-journal `seq` when the snapshot was cut (L1 §7.3),
-    /// or `None` from a peer that does not advertise `EVENT_JOURNAL`.
-    ///
-    /// A consumer that subscribed with a cursor on the same connection
-    /// before reading the snapshot has not necessarily seen every event up
-    /// to it yet: the replay is pumped as the connection takes it.
+    /// The newest event-journal `seq` at the cut (L1 §7.3), or `None` from a
+    /// peer without `EVENT_JOURNAL`.
     #[must_use]
     pub fn journal_head(&self) -> Option<u64> {
         self.trail.as_ref().and_then(|trail| trail.journal_head)
@@ -964,10 +734,7 @@ impl SessionSnapshot {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Encoding helpers. Positional; same conventions as `wire::frame`.
-// docs/spec/appendix-encoding.md mandates TLV — tracked in phux-i58.
-// -----------------------------------------------------------------------------
+// Positional encoding helpers.
 
 pub(super) const fn encode_split_dir(dir: SplitDir) -> u8 {
     match dir {
@@ -980,15 +747,11 @@ pub(super) fn decode_split_dir(tag: u8) -> Result<SplitDir, DecodeError> {
     match tag {
         SPLIT_DIR_HORIZONTAL => Ok(SplitDir::Horizontal),
         SPLIT_DIR_VERTICAL => Ok(SplitDir::Vertical),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "SplitDir",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("SplitDir", other)),
     }
 }
 
-/// Encode a layout subtree. Tag byte selects `Leaf` (0) vs `Split` (1);
-/// `Split` recurses into both children.
+/// Encode a layout subtree (tag, then leaf id or split fields and children).
 pub(super) fn encode_layout_node(node: &LayoutNode, enc: &mut Encoder<'_>) {
     match node {
         LayoutNode::Leaf(pane) => {
@@ -1010,22 +773,13 @@ pub(super) fn encode_layout_node(node: &LayoutNode, enc: &mut Encoder<'_>) {
     }
 }
 
-/// Maximum nesting depth the layout-tree decoder will follow before
-/// rejecting the input with [`DecodeError::LayoutTooDeep`].
-///
-/// The codec is recursive (`Split` carries two child subtrees), so an
-/// unbounded tree of attacker-controlled bytes would overflow the stack and
-/// abort the process — a 16 MiB frame admits millions of `Split` levels at
-/// roughly six bytes each. A real terminal layout nests only as deep as the
-/// user has split resources (tens at the very most); `64` is comfortably above
-/// any legitimate value while keeping the worst-case decode recursion shallow
-/// enough to never approach the stack limit.
+/// Maximum layout-tree depth the decoder follows before
+/// [`DecodeError::LayoutTooDeep`], so hostile nesting cannot overflow the
+/// stack; real layouts nest tens deep at most.
 pub const MAX_LAYOUT_DEPTH: usize = 64;
 
-/// Decode a layout subtree. Validates `Split.ratio` to reject NaN, infinite,
-/// or out-of-range values that would otherwise round-trip but be useless, and
-/// bounds recursion at [`MAX_LAYOUT_DEPTH`] so a pathologically deep tree
-/// errors cleanly instead of overflowing the stack.
+/// Decode a layout subtree, validating ratios and bounding depth at
+/// [`MAX_LAYOUT_DEPTH`].
 pub(super) fn decode_layout_node(dec: &mut Decoder<'_>) -> Result<LayoutNode, DecodeError> {
     decode_layout_node_depth(dec, 0)
 }
@@ -1058,34 +812,7 @@ fn decode_layout_node_depth(
                 right,
             })
         }
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "LayoutNode",
-            value: u32::from(other),
-        }),
-    }
-}
-
-pub(super) fn encode_option_layout_node(node: Option<&LayoutNode>, enc: &mut Encoder<'_>) {
-    match node {
-        None => enc.write_u8(0),
-        Some(n) => {
-            enc.write_u8(1);
-            encode_layout_node(n, enc);
-        }
-    }
-}
-
-pub(super) fn decode_option_layout_node(
-    dec: &mut Decoder<'_>,
-) -> Result<Option<LayoutNode>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => Ok(Some(decode_layout_node(dec)?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<LayoutNode> tag",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("LayoutNode", other)),
     }
 }
 
@@ -1123,7 +850,7 @@ pub(super) fn encode_window_info(info: &WindowInfo, enc: &mut Encoder<'_>) {
     enc.write_u16_be(info.index);
     enc.write_str(&info.name);
     encode_option_terminal_id(info.active_resource.as_ref(), enc);
-    encode_option_layout_node(info.layout.as_ref(), enc);
+    enc.write_option(info.layout.as_ref(), |e, n| encode_layout_node(n, e));
 }
 
 pub(super) fn decode_window_info(dec: &mut Decoder<'_>) -> Result<WindowInfo, DecodeError> {
@@ -1132,7 +859,7 @@ pub(super) fn decode_window_info(dec: &mut Decoder<'_>) -> Result<WindowInfo, De
     let index = dec.read_u16_be()?;
     let name = dec.read_str()?.to_owned();
     let active_resource = decode_option_terminal_id(dec)?;
-    let layout = decode_option_layout_node(dec)?;
+    let layout = dec.read_option("Option<LayoutNode> tag", decode_layout_node)?;
     Ok(WindowInfo {
         id,
         session_id,
@@ -1193,15 +920,11 @@ fn encode_resource_facets(resources: &[ResourceInfo], more_follow: bool, enc: &m
         encode_terminal_id(&pane.id, enc);
         enc.write_u8(pane.kind.as_wire());
         encode_option_terminal_id(pane.parent.as_ref(), enc);
-        match &pane.agent {
-            None => enc.write_u8(0),
-            Some(agent) => {
-                enc.write_u8(1);
-                enc.write_str(&agent.provider);
-                encode_option_str(agent.native_id.as_deref(), enc);
-                enc.write_str(&agent.state);
-            }
-        }
+        enc.write_option(pane.agent.as_ref(), |e, agent| {
+            e.write_str(&agent.provider);
+            encode_option_str(agent.native_id.as_deref(), e);
+            e.write_str(&agent.state);
+        });
     }
 }
 
@@ -1219,25 +942,13 @@ fn decode_resource_facets(
         let id = decode_terminal_id(dec)?;
         let kind = ResourceKind::from_wire(dec.read_u8()?);
         let parent = decode_option_terminal_id(dec)?;
-        let agent = match dec.read_u8()? {
-            0 => None,
-            1 => {
-                let provider = dec.read_str()?.to_owned();
-                let native_id = decode_option_str(dec)?.map(str::to_owned);
-                let state = dec.read_str()?.to_owned();
-                Some(AgentFacet {
-                    provider,
-                    native_id,
-                    state,
-                })
-            }
-            other => {
-                return Err(DecodeError::UnknownEnumValue {
-                    field: "Option<AgentFacet> tag",
-                    value: u32::from(other),
-                });
-            }
-        };
+        let agent = dec.read_option("Option<AgentFacet> tag", |d| {
+            Ok(AgentFacet {
+                provider: d.read_str()?.to_owned(),
+                native_id: decode_option_str(d)?.map(str::to_owned),
+                state: d.read_str()?.to_owned(),
+            })
+        })?;
         if let Some(pane) = resources.iter_mut().find(|p| p.id == id) {
             pane.kind = kind;
             pane.parent = parent;
@@ -1360,7 +1071,7 @@ fn decode_snapshot_extension(
         match id {
             field::snapshot_extension::RESOURCE_STATE => apply_resource_state(value, resources)?,
             field::snapshot_extension::JOURNAL_HEAD => {
-                journal_head = Some(Decoder::new(value).read_u64_be()?)
+                journal_head = Some(Decoder::new(value).read_u64_be()?);
             }
             _ => {}
         }
@@ -1384,7 +1095,7 @@ fn apply_resource_state(value: &[u8], resources: &mut [ResourceInfo]) -> Result<
         match field_id {
             field::resource_state::VIEWER => viewers.push(decode_client_id(&mut v)?),
             field::resource_state::LIFECYCLE => {
-                lifecycle = ResourceLifecycle::from_u8(v.read_u8()?).unwrap_or_default()
+                lifecycle = ResourceLifecycle::from_u8(v.read_u8()?).unwrap_or_default();
             }
             field::resource_state::EXIT => exit = Some(decode_exit_facet(&mut v)?),
             field::resource_state::INPUT_HOLDER => input_holder = Some(decode_client_id(&mut v)?),
@@ -1598,79 +1309,38 @@ pub(super) fn decode_session_snapshot(
     Ok(snapshot)
 }
 
-// -----------------------------------------------------------------------------
-// Small option-of-id and list-length helpers. Mirror the conventions used in
-// `wire::frame` (presence byte + body, u32 length-prefixed lists).
-// -----------------------------------------------------------------------------
+// Presence-byte option and `u32` list-length helpers.
 
 pub(super) fn encode_option_window_id(value: Option<WindowId>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(id) => {
-            enc.write_u8(1);
-            enc.write_u32_be(id.get());
-        }
-    }
+    enc.write_option(value, |e, id| e.write_u32_be(id.get()));
 }
 
 pub(super) fn decode_option_window_id(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<WindowId>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => Ok(Some(WindowId::new(dec.read_u32_be()?))),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<WindowId> tag",
-            value: u32::from(other),
-        }),
-    }
+    dec.read_option("Option<WindowId> tag", |d| {
+        Ok(WindowId::new(d.read_u32_be()?))
+    })
 }
 
 pub(super) fn encode_option_terminal_id(value: Option<&ResourceId>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(id) => {
-            enc.write_u8(1);
-            encode_terminal_id(id, enc);
-        }
-    }
+    enc.write_option(value, |e, id| encode_terminal_id(id, e));
 }
 
 pub(super) fn decode_option_terminal_id(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<ResourceId>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => Ok(Some(decode_terminal_id(dec)?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<ResourceId> tag",
-            value: u32::from(other),
-        }),
-    }
+    dec.read_option("Option<ResourceId> tag", decode_terminal_id)
 }
 
-pub(super) fn encode_option_str(value: Option<&str>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(s) => {
-            enc.write_u8(1);
-            enc.write_str(s);
-        }
-    }
+pub(in crate::wire) fn encode_option_str(value: Option<&str>, enc: &mut Encoder<'_>) {
+    enc.write_option(value, Encoder::write_str);
 }
 
-pub(super) fn decode_option_str<'a>(dec: &mut Decoder<'a>) -> Result<Option<&'a str>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => Ok(Some(dec.read_str()?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<str> tag",
-            value: u32::from(other),
-        }),
-    }
+pub(in crate::wire) fn decode_option_str<'a>(
+    dec: &mut Decoder<'a>,
+) -> Result<Option<&'a str>, DecodeError> {
+    dec.read_option("Option<str> tag", Decoder::read_str)
 }
 
 pub(super) fn encode_list_len(len: usize, enc: &mut Encoder<'_>) {
@@ -1687,11 +1357,7 @@ pub(super) fn decode_list_len(dec: &mut Decoder<'_>) -> Result<usize, DecodeErro
     usize::try_from(len).map_err(|_| DecodeError::LengthOverflow)
 }
 
-// -----------------------------------------------------------------------------
-// ClientId option encoding — used in ATTACHED for `initial_client_id` once
-// the server starts allocating, but the field itself is required, not optional,
-// per SPEC §13. Kept here as a single source of truth for ClientId on the wire.
-// -----------------------------------------------------------------------------
+// The one `ClientId` wire codec.
 
 pub(super) fn encode_client_id(id: ClientId, enc: &mut Encoder<'_>) {
     enc.write_u32_be(id.get());
