@@ -878,7 +878,7 @@ impl FrameKind {
                 rows,
                 base_seq,
             } => {
-                Self::encode_bootstrap_begin_stream(enc, terminal_id, *stream_id, *bootstrap_id);
+                generation_fields(enc, terminal_id, *stream_id, *bootstrap_id);
                 Self::encode_bootstrap_begin_profile(enc, *profile, *cols, *rows, *base_seq);
             }
             Self::BootstrapChunk {
@@ -933,7 +933,7 @@ impl FrameKind {
                 payload,
                 rows,
             } => {
-                Self::encode_history_page_stream(enc, terminal_id, *stream_id, *bootstrap_id);
+                generation_fields(enc, terminal_id, *stream_id, *bootstrap_id);
                 Self::encode_history_page_body(
                     enc,
                     cursor,
@@ -980,7 +980,7 @@ impl FrameKind {
                 required_bytes,
                 required_rows,
             } => {
-                Self::encode_history_rejected_stream(enc, terminal_id, *stream_id, *bootstrap_id);
+                generation_fields(enc, terminal_id, *stream_id, *bootstrap_id);
                 Self::encode_history_rejected_reason(
                     enc,
                     cursor,
@@ -1270,9 +1270,7 @@ impl FrameKind {
         seq: u64,
         bytes: &[u8],
     ) {
-        enc.write_field_with(field::terminal_output::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::terminal_output::TERMINAL_ID, terminal_id);
         u64_field(enc, field::terminal_output::SEQ, seq);
         enc.write_field(field::terminal_output::BYTES, bytes);
         u64_field(enc, field::terminal_output::STREAM_ID, stream_id.get());
@@ -1326,41 +1324,31 @@ impl FrameKind {
 
     /// Write the `INPUT_KEY` payload.
     fn encode_input_key(enc: &mut Encoder<'_>, terminal_id: &ResourceId, event: &KeyEvent) {
-        enc.write_field_with(field::input_key::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::input_key::TERMINAL_ID, terminal_id);
         enc.write_field_with(field::input_key::EVENT, |e| encode_key_event(event, e));
     }
 
     /// Write the `INPUT_MOUSE` payload.
     fn encode_input_mouse(enc: &mut Encoder<'_>, terminal_id: &ResourceId, event: &MouseEvent) {
-        enc.write_field_with(field::input_mouse::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::input_mouse::TERMINAL_ID, terminal_id);
         enc.write_field_with(field::input_mouse::EVENT, |e| encode_mouse_event(event, e));
     }
 
     /// Write the `INPUT_FOCUS` payload.
     fn encode_input_focus(enc: &mut Encoder<'_>, terminal_id: &ResourceId, event: FocusEvent) {
-        enc.write_field_with(field::input_focus::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::input_focus::TERMINAL_ID, terminal_id);
         u8_field(enc, field::input_focus::EVENT, encode_focus_event(event));
     }
 
     /// Write the `INPUT_PASTE` payload.
     fn encode_input_paste(enc: &mut Encoder<'_>, terminal_id: &ResourceId, event: &PasteEvent) {
-        enc.write_field_with(field::input_paste::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::input_paste::TERMINAL_ID, terminal_id);
         enc.write_field_with(field::input_paste::EVENT, |e| encode_paste_event(event, e));
     }
 
     /// Write the `INPUT_TERMINAL_REPLY` payload.
     fn encode_input_terminal_reply(enc: &mut Encoder<'_>, terminal_id: &ResourceId, bytes: &[u8]) {
-        enc.write_field_with(field::input_terminal_reply::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::input_terminal_reply::TERMINAL_ID, terminal_id);
         enc.write_field(field::input_terminal_reply::BYTES, bytes);
     }
 
@@ -1372,9 +1360,7 @@ impl FrameKind {
         bootstrap_id: BootstrapId,
         seq: u64,
     ) {
-        enc.write_field_with(field::frame_ack::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::frame_ack::TERMINAL_ID, terminal_id);
         u64_field(enc, field::frame_ack::SEQ, seq);
         u64_field(enc, field::frame_ack::STREAM_ID, stream_id.get());
         u64_field(enc, field::frame_ack::BOOTSTRAP_ID, bootstrap_id.get());
@@ -1406,24 +1392,6 @@ impl FrameKind {
     /// Write the `ATTACH_READY` payload.
     fn encode_attach_ready(enc: &mut Encoder<'_>, attach_id: u32) {
         u32_field(enc, field::attach_ready::ATTACH_ID, attach_id);
-    }
-
-    /// Write the generation binding that opens the `BOOTSTRAP_BEGIN` payload.
-    fn encode_bootstrap_begin_stream(
-        enc: &mut Encoder<'_>,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-    ) {
-        enc.write_field_with(field::bootstrap_begin::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
-        u64_field(enc, field::bootstrap_begin::STREAM_ID, stream_id.get());
-        u64_field(
-            enc,
-            field::bootstrap_begin::BOOTSTRAP_ID,
-            bootstrap_id.get(),
-        );
     }
 
     /// Write the profile half of `BOOTSTRAP_BEGIN`: codec, geometry, base seq.
@@ -1473,15 +1441,7 @@ impl FrameKind {
         chunk_seq: u32,
         payload: &[u8],
     ) {
-        enc.write_field_with(field::bootstrap_chunk::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
-        u64_field(enc, field::bootstrap_chunk::STREAM_ID, stream_id.get());
-        u64_field(
-            enc,
-            field::bootstrap_chunk::BOOTSTRAP_ID,
-            bootstrap_id.get(),
-        );
+        generation_fields(enc, terminal_id, stream_id, bootstrap_id);
         u32_field(enc, field::bootstrap_chunk::CHUNK_SEQ, chunk_seq);
         enc.write_field(field::bootstrap_chunk::PAYLOAD, payload);
     }
@@ -1494,15 +1454,7 @@ impl FrameKind {
         bootstrap_id: BootstrapId,
         history_cursor: Option<&[u8]>,
     ) {
-        enc.write_field_with(field::bootstrap_ready::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
-        u64_field(enc, field::bootstrap_ready::STREAM_ID, stream_id.get());
-        u64_field(
-            enc,
-            field::bootstrap_ready::BOOTSTRAP_ID,
-            bootstrap_id.get(),
-        );
+        generation_fields(enc, terminal_id, stream_id, bootstrap_id);
         if let Some(cursor) = history_cursor {
             enc.write_field(field::bootstrap_ready::HISTORY_CURSOR, cursor);
         }
@@ -1518,32 +1470,10 @@ impl FrameKind {
         max_bytes: u32,
         max_rows: u32,
     ) {
-        enc.write_field_with(field::history_request::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
-        u64_field(enc, field::history_request::STREAM_ID, stream_id.get());
-        u64_field(
-            enc,
-            field::history_request::BOOTSTRAP_ID,
-            bootstrap_id.get(),
-        );
+        generation_fields(enc, terminal_id, stream_id, bootstrap_id);
         enc.write_field(field::history_request::CURSOR, cursor);
         u32_field(enc, field::history_request::MAX_BYTES, max_bytes);
         u32_field(enc, field::history_request::MAX_ROWS, max_rows);
-    }
-
-    /// Write the generation binding that opens the `HISTORY_PAGE` payload.
-    fn encode_history_page_stream(
-        enc: &mut Encoder<'_>,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-    ) {
-        enc.write_field_with(field::history_page::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
-        u64_field(enc, field::history_page::STREAM_ID, stream_id.get());
-        u64_field(enc, field::history_page::BOOTSTRAP_ID, bootstrap_id.get());
     }
 
     /// Write the page half of `HISTORY_PAGE`: cursors, payload, and counts.
@@ -1573,15 +1503,7 @@ impl FrameKind {
         reason: TombstoneReason,
         last_valid_seq: u64,
     ) {
-        enc.write_field_with(field::bootstrap_tombstone::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
-        u64_field(enc, field::bootstrap_tombstone::STREAM_ID, stream_id.get());
-        u64_field(
-            enc,
-            field::bootstrap_tombstone::BOOTSTRAP_ID,
-            bootstrap_id.get(),
-        );
+        generation_fields(enc, terminal_id, stream_id, bootstrap_id);
         u8_field(enc, field::bootstrap_tombstone::REASON, reason.as_wire());
         u64_field(
             enc,
@@ -1599,35 +1521,9 @@ impl FrameKind {
         cursor: &[u8],
         reason: HistoryTombstoneReason,
     ) {
-        enc.write_field_with(field::history_tombstone::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
-        u64_field(enc, field::history_tombstone::STREAM_ID, stream_id.get());
-        u64_field(
-            enc,
-            field::history_tombstone::BOOTSTRAP_ID,
-            bootstrap_id.get(),
-        );
+        generation_fields(enc, terminal_id, stream_id, bootstrap_id);
         enc.write_field(field::history_tombstone::CURSOR, cursor);
         u8_field(enc, field::history_tombstone::REASON, reason.as_wire());
-    }
-
-    /// Write the generation binding that opens the `HISTORY_REJECTED` payload.
-    fn encode_history_rejected_stream(
-        enc: &mut Encoder<'_>,
-        terminal_id: &ResourceId,
-        stream_id: StreamId,
-        bootstrap_id: BootstrapId,
-    ) {
-        enc.write_field_with(field::history_rejected::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
-        u64_field(enc, field::history_rejected::STREAM_ID, stream_id.get());
-        u64_field(
-            enc,
-            field::history_rejected::BOOTSTRAP_ID,
-            bootstrap_id.get(),
-        );
     }
 
     /// Write why `HISTORY_REJECTED` refused the cursor, and what it would need.
@@ -1646,9 +1542,7 @@ impl FrameKind {
 
     /// Write the `BELL` payload.
     fn encode_bell(enc: &mut Encoder<'_>, terminal_id: &ResourceId) {
-        enc.write_field_with(field::bell::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::bell::TERMINAL_ID, terminal_id);
     }
 
     /// Write the `ERROR` payload.
@@ -1791,9 +1685,7 @@ impl FrameKind {
             enc.write_field(field::spawn_terminal::SATELLITE, host.as_str().as_bytes());
         }
         if let Some(owner) = owner_terminal {
-            enc.write_field_with(field::spawn_terminal::OWNER_TERMINAL, |e| {
-                encode_terminal_id(owner, e);
-            });
+            id_field(enc, field::spawn_terminal::OWNER_TERMINAL, owner);
         }
         if let Some(value) = agent_session {
             enc.write_field(field::spawn_terminal::AGENT_SESSION, value);
@@ -1817,9 +1709,7 @@ impl FrameKind {
             enc.write_field(field::spawn_terminal::KIND, &[resource.kind.as_wire()]);
         }
         if let Some(parent) = &resource.parent {
-            enc.write_field_with(field::spawn_terminal::PARENT, |e| {
-                encode_terminal_id(parent, e);
-            });
+            id_field(enc, field::spawn_terminal::PARENT, parent);
         }
         if let Some(provider) = &resource.provider {
             enc.write_field(field::spawn_terminal::PROVIDER, provider.as_bytes());
@@ -1864,12 +1754,8 @@ impl FrameKind {
         owner_terminal: &ResourceId,
     ) {
         u32_field(enc, field::move_terminal::REQUEST_ID, request_id);
-        enc.write_field_with(field::move_terminal::TERMINAL, |e| {
-            encode_terminal_id(terminal, e);
-        });
-        enc.write_field_with(field::move_terminal::OWNER_TERMINAL, |e| {
-            encode_terminal_id(owner_terminal, e);
-        });
+        id_field(enc, field::move_terminal::TERMINAL, terminal);
+        id_field(enc, field::move_terminal::OWNER_TERMINAL, owner_terminal);
     }
 
     /// Write the `RESOURCE_MOVED` payload.
@@ -1887,9 +1773,7 @@ impl FrameKind {
         exit_status: Option<i32>,
         reason: CloseReason,
     ) {
-        enc.write_field_with(field::terminal_closed::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::terminal_closed::TERMINAL_ID, terminal_id);
         // Optional exit status: absent field = signal / unknown.
         if let Some(status) = exit_status {
             u32_field(
@@ -1912,9 +1796,7 @@ impl FrameKind {
         cols: u16,
         rows: u16,
     ) {
-        enc.write_field_with(field::terminal_resize::TERMINAL_ID, |e| {
-            encode_terminal_id(terminal_id, e);
-        });
+        id_field(enc, field::terminal_resize::TERMINAL_ID, terminal_id);
         u16_field(enc, field::terminal_resize::COLS, cols);
         u16_field(enc, field::terminal_resize::ROWS, rows);
     }
@@ -1937,16 +1819,14 @@ impl FrameKind {
     fn encode_subscribe_events(enc: &mut Encoder<'_>, terminal: Option<&ResourceId>) {
         // Optional terminal scope: absent field = server-scoped None.
         if let Some(t) = terminal {
-            enc.write_field_with(field::subscribe_events::TERMINAL, |e| {
-                encode_terminal_id(t, e);
-            });
+            id_field(enc, field::subscribe_events::TERMINAL, t);
         }
     }
 
     /// Write the `EVENT` payload's scope and event (fields 1-2).
     fn encode_event(enc: &mut Encoder<'_>, terminal: Option<&ResourceId>, event: &AgentEvent) {
         if let Some(t) = terminal {
-            enc.write_field_with(field::event::TERMINAL, |e| encode_terminal_id(t, e));
+            id_field(enc, field::event::TERMINAL, t);
         }
         enc.write_field_with(field::event::EVENT, |e| encode_agent_event(event, e));
     }
@@ -1967,6 +1847,28 @@ impl FrameKind {
     ) -> Result<(Self, &[u8]), DecodeError> {
         Decoder::with_bootstrap_limits(input, limits).read_frame()
     }
+}
+
+/// Write one tagged `ResourceId` field.
+fn id_field(enc: &mut Encoder<'_>, field_id: u32, id: &ResourceId) {
+    enc.write_field_with(field_id, |e| encode_terminal_id(id, e));
+}
+
+/// Write fields 1-3 (resource, stream, generation) that open every
+/// bootstrap and history frame (`docs/spec/L1.md` §4.3).
+fn generation_fields(
+    enc: &mut Encoder<'_>,
+    terminal_id: &ResourceId,
+    stream_id: StreamId,
+    bootstrap_id: BootstrapId,
+) {
+    id_field(enc, field::bootstrap_begin::TERMINAL_ID, terminal_id);
+    u64_field(enc, field::bootstrap_begin::STREAM_ID, stream_id.get());
+    u64_field(
+        enc,
+        field::bootstrap_begin::BOOTSTRAP_ID,
+        bootstrap_id.get(),
+    );
 }
 
 /// Write one fixed-width `u8` field.
