@@ -9,6 +9,7 @@ import type {
   DesktopClient,
   DesktopEvent,
   DesktopPane,
+  DesktopPathAnswer,
   DesktopServerInfo,
   DesktopSession,
   DesktopSpawnOptions,
@@ -59,6 +60,8 @@ export interface Bridge {
   panes(): DesktopPane[];
   spawn(options: Omit<DesktopSpawnOptions, "identity" | "sessionId">): number | undefined;
   onEvents(listener: (events: DesktopEvent[]) => void): void;
+  /** Host path answers (`PATH_QUERY`), drained on the same wake as events. */
+  onPathAnswers(listener: (answers: DesktopPathAnswer[]) => void): void;
 }
 
 export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
@@ -72,6 +75,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   let owner: DesktopClient | undefined;
   let closed = false;
   let listener: (events: DesktopEvent[]) => void = () => {};
+  let pathListener: (answers: DesktopPathAnswer[]) => void = () => {};
 
   function client(): DesktopClient {
     if (!owner) throw new Error("Desktop client is not connected");
@@ -125,8 +129,12 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     if (closed || !owner || from !== owner.handle) return;
     // One drain per wake, even when empty: the drain rearms notification.
     const events = owner.takeEvents();
+    // Drain every wake: the runtime's answer queue is bounded, and a full
+    // queue refuses the next query.
+    const answers = owner.takePathAnswers();
     batch(() => {
       accept(events);
+      if (answers.length > 0) pathListener(answers);
       snapshot();
     });
   }
@@ -199,6 +207,9 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     spawn,
     onEvents: (next) => {
       listener = next;
+    },
+    onPathAnswers: (next) => {
+      pathListener = next;
     },
   };
 }

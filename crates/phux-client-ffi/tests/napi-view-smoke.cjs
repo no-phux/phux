@@ -130,6 +130,51 @@ async function geometrySmoke(view, pane) {
   client.destroyView(otherView);
 }
 
+// Host PATH_QUERY through the addon: negotiated, answered from the server's
+// filesystem, and drained with takePathAnswers. Nothing here types input.
+async function pathQuerySmoke() {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  assert.ok(client.serverInfo().features.includes('path-query'));
+  assert.equal(client.serverInfo().featureExtBits & 1, 1);
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'phux-path-')));
+  fs.writeFileSync(path.join(root, "it's here.txt"), '');
+  fs.mkdirSync(path.join(root, 'sub'));
+  const answers = [];
+  async function answer(id, description) {
+    assert.ok(id > 0, `${description}: no request sent`);
+    await until(() => {
+      answers.push(...client.takePathAnswers());
+      return answers.some(item => item.requestId === id);
+    }, description);
+    return answers.find(item => item.requestId === id);
+  }
+  try {
+    const browse = await answer(client.pathQuery(root, '', false, null), 'path browse');
+    assert.equal(browse.error, undefined, browse.message);
+    assert.equal(browse.root, root);
+    assert.equal(browse.parent, path.dirname(root));
+    assert.equal(browse.status, 'complete');
+    assert.deepEqual(
+      browse.rows.map(row => [row.path, row.kind]).sort(),
+      [[path.join(root, "it's here.txt"), 'file'], [path.join(root, 'sub'), 'directory']],
+    );
+    const search = await answer(client.pathQuery(root, 'here', true, null), 'path search');
+    assert.deepEqual(search.rows.map(row => row.path), [path.join(root, "it's here.txt")]);
+    const relative = await answer(client.pathQuery('relative', '', false, null), 'relative root');
+    assert.equal(relative.error, 'other');
+    assert.equal(relative.rows.length, 0);
+    const missing = await answer(client.pathQuery(path.join(root, 'gone'), '', false, null), 'missing root');
+    assert.equal(missing.error, 'not-found');
+    const routed = await answer(client.pathQuery(root, '', false, 'nowhere'), 'unrouted satellite');
+    assert.equal(routed.error, 'other');
+    assert.match(routed.message, /nowhere/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   client.connect({ socketPath, cols: 80, rows: 24, sessionName: 'napi-view-smoke' }, () => {
     if (!closed) events.push(...client.takeEvents());
@@ -254,6 +299,7 @@ async function main() {
   client.clearViewSelection(second);
   assert.equal(client.viewDocumentText(second, false), screen, 'reading selects nothing');
   assert.throws(() => client.viewSelectionText(second), /SelectionUnavailable/);
+  await pathQuerySmoke();
   const replacement = client.createView(pane.terminalId);
   assert.notEqual(replacement, first);
   assert.notEqual(replacement, second);
@@ -264,7 +310,7 @@ async function main() {
   closed = true;
   client.close();
   assert.throws(() => client.viewInfo(second), /StaleHandle/);
-  console.log('NAPI view smoke passed: shared PTY views, independent scroll/selection/search/gestures, prompt jumps, select-all and document text, input, bounded copy, stale handles, sibling lifetime, targeted two-PTY geometry, preserving subscription and observer refusal');
+  console.log('NAPI view smoke passed: shared PTY views, independent scroll/selection/search/gestures, prompt jumps, select-all and document text, input, host path query, bounded copy, stale handles, sibling lifetime, targeted two-PTY geometry, preserving subscription and observer refusal');
 }
 
 main().catch(error => {

@@ -850,6 +850,14 @@ export declare class DesktopClient {
   constructor()
   get handle(): string
   /**
+   * Host browse/search. Zero means the extended feature was unavailable
+   * or the bounded queue needs draining; no frame was sent. No pane input
+   * or focus change happens here.
+   */
+  pathQuery(root: string, query: string, recursive: boolean, host?: string | undefined | null): number
+  /** Drain correlated answers and disconnect cancellations. */
+  takePathAnswers(): Array<DesktopPathAnswer>
+  /**
    * Register the sole notification owner and begin dialing. Success means
    * the runtime started; observe status/events for negotiation or failure.
    */
@@ -1011,6 +1019,24 @@ export interface DesktopPane {
   isFocused: boolean
 }
 
+/** A complete, warming, truncated, refused, or cancelled search answer. */
+export interface DesktopPathAnswer {
+  requestId: number
+  root: string
+  parent?: string
+  rows: Array<DesktopPathRow>
+  status?: string
+  error?: string
+  message: string
+}
+
+/** One absolute host path returned by `PATH_QUERY`. */
+export interface DesktopPathRow {
+  path: string
+  /** "file", "directory", or "symlink"; do not infer from the basename. */
+  kind: string
+}
+
 /** Local request disposition, never a server acknowledgement. */
 export declare const enum DesktopResizeOutcome {
   Queued = 'Queued',
@@ -1047,6 +1073,8 @@ export interface DesktopServerInfo {
   profile: DesktopBootstrapProfile
   /** Full advertised feature set, preserving bits without a product name. */
   featureBits: number
+  /** Advertised extended feature word; `PATH_QUERY` is bit zero. */
+  featureExtBits: number
   /** The shared projection's named product capabilities. */
   features: Array<string>
   layerBits: number
