@@ -14,7 +14,6 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -22,7 +21,6 @@ use std::time::{Duration, Instant};
 use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, CommandValue, StateScope};
 use phux_protocol::wire::info::ResourceInfo;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
@@ -111,82 +109,16 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 /// A real `phux attach` in a pseudoterminal, killed on drop.
-struct AttachedClient {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    writer: Box<dyn Write + Send>,
-    _config: tempfile::TempDir,
-}
-
-impl Drop for AttachedClient {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl AttachedClient {
-    fn start(server: &ServerGuard, role_flag: &str) -> Self {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: 30,
-                cols: 110,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open attach PTY");
-        let config = tempfile::tempdir().expect("isolated config dir");
-        let mut command = CommandBuilder::new(PHUX);
-        command.args([
-            "attach",
-            role_flag,
-            "--socket",
-            server.socket.to_str().expect("UTF-8 socket"),
-            SESSION,
-        ]);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        command.env("RUST_LOG", "off");
-        command.env("XDG_CONFIG_HOME", config.path());
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .expect("spawn attached TUI");
-        drop(pair.slave);
-        // Drain the paint stream so a full PTY buffer never stalls the TUI.
-        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        std::thread::spawn(move || {
-            let mut bytes = [0u8; 8192];
-            while let Ok(read) = reader.read(&mut bytes) {
-                if read == 0 {
-                    break;
-                }
-            }
-        });
-        let writer = pair.master.take_writer().expect("PTY writer");
-        Self {
-            child,
-            writer,
-            _config: config,
-        }
-    }
-
-    fn type_line(&mut self, line: &str) {
-        self.writer
-            .write_all(format!("{line}\r").as_bytes())
-            .expect("type into the attached TUI");
-        self.writer.flush().expect("flush typed line");
-    }
-}
-
 #[test]
 #[ignore = "spawns a real phux server and attached PTY clients; run via `just e2e`."]
 fn attach_take_seizes_and_attach_viewer_cannot_type() {
     let server = ServerGuard::start();
 
-    let mut viewer = AttachedClient::start(&server, "--viewer");
+    let mut viewer =
+        common::PtyAttach::start(&server.socket, &["--viewer", SESSION], (110, 30), &[]);
     wait_until("the viewer is listed", || !server.pane().viewers.is_empty());
     assert_eq!(server.pane().input_holder, None, "a viewer takes no lease");
-    viewer.type_line("echo VIEWER_$((6*7))");
+    viewer.send(b"echo VIEWER_$((6*7))\r");
     std::thread::sleep(SETTLE);
     assert!(
         !server.screen().contains("VIEWER_42"),
@@ -194,11 +126,11 @@ fn attach_take_seizes_and_attach_viewer_cannot_type() {
          subscription's input"
     );
 
-    let mut taker = AttachedClient::start(&server, "--take");
+    let mut taker = common::PtyAttach::start(&server.socket, &["--take", SESSION], (110, 30), &[]);
     wait_until("the taker holds the lease", || {
         server.pane().input_holder.is_some()
     });
-    taker.type_line("echo TAKER_$((6*7))");
+    taker.send(b"echo TAKER_$((6*7))\r");
     wait_until("the taker's line runs", || {
         server.screen().contains("TAKER_42")
     });

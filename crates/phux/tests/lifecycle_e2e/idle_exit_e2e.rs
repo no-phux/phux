@@ -23,46 +23,20 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// The pre-seeded session name every server here starts with.
 const SESSION: &str = "work";
 
-/// The lifetime under test, in seconds — the unit the flag takes.
-///
-/// NOT the CLI minimum of 1, and the reason is worth writing down because
-/// the 1s version was written first and flaked. The idle clock starts when
-/// the server starts, so every second of harness setup — fork/exec, bind,
-/// spawning a PTY and its shell — is spent against it. At 1s a loaded box
-/// could reach the deadline before the seed pane had run a single command,
-/// and the failure read "the pane never started", which is a statement
-/// about the machine and not about the feature. Five seconds is two orders
-/// of magnitude above a healthy pane bring-up (~50ms), so setup cannot
-/// plausibly consume it, while still being short enough to gate on twice.
+/// The lifetime under test, in seconds. Not 1: the idle clock starts with the
+/// server, and a loaded box could spend 1s on setup before the pane ran.
 const IDLE_SECS: u64 = 5;
 
-/// Ceiling on "the daemon process is gone", as a HANG detector rather than a
-/// timing gate.
-///
-/// The real number is `IDLE_SECS` plus one watchdog re-check plus process
-/// teardown. This is well over twice that, per the reasoning in
-/// `phux-server/tests/concurrent_attach_no_lag.rs`: under `just e2e` these
-/// run alongside PTY-backed servers on a contended box, and a tight bound
-/// would measure the scheduler instead of the feature. It can only elapse if
-/// the server never intended to exit.
+/// Hang detector for the daemon exiting (the real number is `IDLE_SECS` plus
+/// a watchdog re-check and teardown).
 const EXIT_HANG_CEILING: Duration = Duration::from_secs(45);
 
-/// How long an auto-spawned server without an idle-limit environment variable
-/// is observed before it counts as persistent.
-///
-/// A multiple of `IDLE_SECS`, because the claim is "it does not exit", not
-/// "it had not exited yet". This is the guard test's whole budget and the
-/// slowest thing in the file, so it is kept to the smallest multiple that
-/// still makes the statement.
+/// How long an auto-spawned server without an idle limit is observed before
+/// it counts as persistent: a multiple of `IDLE_SECS`.
 const NO_LIFETIME_OBSERVATION: Duration = Duration::from_secs(3 * IDLE_SECS);
 
-/// Wait for the seed pane's first heartbeat tick.
-///
-/// Deliberately shorter than the 30s server-bind hang ceiling: a pane that
-/// has not run a command within this window on a server whose own idle limit
-/// is `IDLE_SECS` will never produce one, because the server is about to
-/// leave. Failing here quickly names the real problem instead of spending
-/// half a minute confirming it.
+/// Wait for the seed pane's first heartbeat; a pane silent this long on a
+/// server about to leave never will speak.
 const PANE_LIVE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Poll cadence for every wait loop in this file.
@@ -72,21 +46,15 @@ const POLL: Duration = Duration::from_millis(50);
 /// below would catch several ticks from a survivor.
 const HEARTBEAT_TICK: &str = "0.2";
 
-/// How long to watch the heartbeat file after the server is gone.
-///
-/// Generously many `HEARTBEAT_TICK`s: a surviving child would advance the
-/// counter several times inside it, so "unchanged" is a strong statement and
-/// not a race we happened to win.
+/// How long to watch the heartbeat after the server is gone: many ticks, so
+/// "unchanged" is a strong statement.
 const HEARTBEAT_SETTLE: Duration = Duration::from_secs(2);
 
 /// Monotonic counter so concurrent tests never collide on a socket path.
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// A running `phux server` child plus its private socket and scratch dir.
-///
-/// The `Drop` kill stays even though the direct-process test ends with the
-/// server gone by design: a panicking assertion must not leak a daemon, which
-/// is the failure mode this whole feature exists to prevent. Belt and braces.
+/// A running `phux server` child plus its private socket and scratch dir;
+/// `Drop` still kills it so a failed assertion cannot leak a daemon.
 struct ServerGuard {
     inner: common::ServerGuard,
     /// Owns the scratch directory `heartbeat` lives in. Never read — held
@@ -198,32 +166,15 @@ fn ephemeral_server_exits_unattended_and_reaps_its_pane() {
          harder to find",
     );
 
-    // The interval was honoured at all, measured from the spawn — the same
-    // origin the server's own clock uses. This is a floor, not a perf gate:
-    // it catches "the watchdog fired immediately", which would make the flag
-    // a footgun rather than a lifetime. `POLL` of slack absorbs the
-    // difference between our `Instant` and the server's.
+    // A floor, not a perf gate: catches a watchdog that fired immediately.
     assert!(
         lifetime >= Duration::from_secs(IDLE_SECS).saturating_sub(POLL),
         "server lived {lifetime:?}, less than its {IDLE_SECS}s idle limit",
     );
 }
 
-/// An **auto-spawned** daemon, which no test can pass a flag to.
-///
-/// `ServerGuard` starts `phux server` directly, so it can hand it
-/// `--exit-after-idle`. The auto-spawn path cannot be driven that way: it is
-/// what a naked `phux` (or any client verb) does for you, it builds its own
-/// argv, and it deliberately drops the `Child` because the server owns its
-/// lifecycle from then on. There is therefore no handle to wait on and no
-/// flag to pass.
-///
-/// That is precisely the hole phux-nbam names: an auto-spawned daemon had no
-/// owner *and* no timer, and the last-pane self-exit only arms once a client
-/// has attached, so one that never served a client never left at all.
-///
-/// Liveness is therefore observed through the socket rather than through a
-/// pid, which is what a user (or a leaked-server sweep) would do anyway.
+/// An auto-spawned daemon (a naked `phux` builds its own argv and drops the
+/// `Child`), so liveness is observed through the socket, not a pid.
 struct AutoSpawned {
     socket: PathBuf,
     _server: common::AutoSpawnedServer,
@@ -281,30 +232,15 @@ impl AutoSpawned {
         }
     }
 
-    /// Whether the socket answers a connect, right now.
-    ///
-    /// **Costs one connection**, which re-arms the idle clock — see
-    /// [`Self::wait_until_gone`]. Call it to establish a premise, never in a
-    /// loop.
+    /// Whether the socket answers right now. Costs one connection, which
+    /// re-arms the idle clock: establish a premise with it, never poll.
     fn is_answering(&self) -> bool {
         UnixStream::connect(&self.socket).is_ok()
     }
 
-    /// Poll until the server is gone. `None` if it still was at the deadline.
-    ///
-    /// Gates on the socket **file** disappearing, not on a connect failing,
-    /// and the distinction is load-bearing rather than stylistic. Every
-    /// `UnixStream::connect` is a client connection, and `--exit-after-idle`
-    /// counts from the moment the last one goes away — so a loop that probed
-    /// by connecting would postpone the exit it was waiting for, once per
-    /// `POLL`, forever. The first draft of this did exactly that and sat
-    /// through the entire hang ceiling watching a server it was itself
-    /// keeping alive.
-    ///
-    /// File absence is also the stronger assertion: the socket is unlinked by
-    /// `unlink_socket_if_ours` on the root-token shutdown path, so its
-    /// disappearance proves the *graceful* exit ran rather than merely that
-    /// the process stopped answering (phux-1wka).
+    /// Poll until the socket file is gone (`None` at the deadline). Gating on
+    /// the file, not a connect, is load-bearing: each connect re-arms the idle
+    /// clock. Unlinking also proves the graceful shutdown path ran.
     fn wait_until_gone(&self, within: Duration) -> Option<Duration> {
         let start = Instant::now();
         while start.elapsed() < within {
@@ -317,13 +253,8 @@ impl AutoSpawned {
     }
 }
 
-/// phux-nbam: an auto-spawned daemon honours the idle limit it is given.
-///
-/// Without this seam every explicitly-spawned test server carried
-/// `--exit-after-idle` as its survives-a-SIGKILLed-runner backstop while
-/// every auto-spawned one carried nothing — so a suite that died between
-/// setup and teardown left an immortal daemon holding a PTY, findable only
-/// with `ps`.
+/// An auto-spawned daemon honours the idle limit it is given, so a suite
+/// killed mid-run cannot leave an immortal daemon.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn an_auto_spawned_server_honours_the_environment_idle_limit() {
@@ -345,11 +276,8 @@ fn an_auto_spawned_server_honours_the_environment_idle_limit() {
         });
 }
 
-/// The guard: WITHOUT the variable, auto-spawn is unchanged.
-///
-/// That contract belongs to the auto-spawn path — it is the one a naked
-/// `phux` uses, which is to say the one a human's session actually runs on.
-/// A default lifetime here would end sessions while their owner was at lunch.
+/// Without the variable, auto-spawn has no lifetime: a default would end a
+/// human's sessions while they were away.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn auto_spawn_has_no_idle_limit_unless_asked() {

@@ -118,11 +118,8 @@ fn rec_records_a_live_pane_to_a_playable_cast() {
     let out = server.out("live.cast");
     let (cols, rows) = server.pane_size();
 
-    // Start the recorder before producing output, then keep producing the
-    // marker for as long as the recorder is alive. Its one-second capture
-    // window starts only after ATTACH_RESOURCE establishes the subscription,
-    // so repeated writes guarantee a streamed delta without betting half the
-    // shortened window on an arbitrary scheduler delay.
+    // Keep writing the marker while the recorder lives: its window opens
+    // only once the subscription is up, so no single write is a safe bet.
     let mut recorder = server
         .cmd(&[
             "rec",
@@ -173,25 +170,13 @@ fn rec_records_a_live_pane_to_a_playable_cast() {
     );
 }
 
-/// The observer guarantee, proved against a real server. This is the reason
-/// `phux rec` speaks `ATTACH_RESOURCE` and not `ATTACH`; see `phux-client`'s
-/// `record` module docs.
+/// The observer guarantee: `phux rec` subscribes with `ATTACH_RESOURCE`, so
+/// it never resizes the pane; and `--duration` bounds the capture.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn rec_does_not_resize_the_recorded_pane() {
     let server = ServerGuard::start();
-    // Move the pane off the no-TTY default first. This is not decoration: a
-    // headless caller's `current_viewport()` reports 80x24, so against an
-    // 80x24 pane an errant ATTACH would resize it to the size it already was
-    // and this test would pass while the bug shipped. The assertion below
-    // only has teeth because the pane is somewhere else.
-    //
-    // This used to require standing up a real `phux attach` on a real PTY
-    // purely for its side effect on the grid, because there was no headless
-    // way to make a pane a non-default size. `phux resize` is that way
-    // (phux-h5hj.5), and it is strictly better scaffolding here: nothing is
-    // attached, so nothing but `phux rec` can be holding the pane's size
-    // when the assertion runs.
+    // Off the 80x24 no-TTY default, or an errant ATTACH would be a no-op.
     server.success(&["resize", SESSION, "120x40"]);
     let before = server.pane_size();
     assert_ne!(
@@ -202,6 +187,7 @@ fn rec_does_not_resize_the_recorded_pane() {
     );
 
     let out = server.out("observer.cast");
+    let started = Instant::now();
     server.success(&[
         "rec",
         SESSION,
@@ -210,28 +196,28 @@ fn rec_does_not_resize_the_recorded_pane() {
         "--duration",
         "1",
     ]);
+    let elapsed = started.elapsed();
+    assert!(
+        (Duration::from_millis(900)..Duration::from_secs(4)).contains(&elapsed),
+        "`--duration 1` took {elapsed:?}"
+    );
+    assert!(
+        out.exists(),
+        "a bounded capture must still write its output"
+    );
 
     let after = server.pane_size();
     assert_eq!(
         after, before,
-        "`phux rec` RESIZED the pane it was recording, from {before:?} to \
-         {after:?}. The recorder must speak ATTACH_RESOURCE (L1 §5.1), a \
-         non-resizing observer subscription. A session-scoped ATTACH \
-         instead runs the server's `apply_attach_viewport`, which drives \
-         TIOCSWINSZ on every pane in the session under the default \
-         `WindowSize::Smallest` policy — and a headless recorder has no \
-         TTY, so the viewport it contributes to that minimum is the 80x24 \
-         fallback. The consequence is that running `phux rec` against a \
-         session a human is working in SHRINKS THEIR PANES OUT FROM UNDER \
-         THEM, reflowing and truncating live output. Look for a \
-         FrameKind::Attach or FrameKind::ViewportResize that has crept into \
-         phux-client's `record` module."
+        "`phux rec` resized the pane from {before:?} to {after:?}: the recorder \
+         must use ATTACH_RESOURCE, never ATTACH or ViewportResize, or it \
+         shrinks a human's live panes to 80x24"
     );
 }
 
 #[test]
 #[ignore = "renders the committed demo asset; grouped with the rest of the rec lane."]
-fn rec_from_cast_renders_a_gif_and_emits_one_json_object() {
+fn rec_from_cast_renders_gif_and_apng_and_emits_one_json_object() {
     let dir = tempfile::tempdir().expect("temp dir");
     let out = dir.path().join("demo.gif");
     let output = Command::new(PHUX)
@@ -247,9 +233,7 @@ fn rec_from_cast_renders_a_gif_and_emits_one_json_object() {
         .expect("run phux rec --from --json");
     assert!(output.status.success());
 
-    // A consumer pipes this straight into `jq`, so a progress spinner or a
-    // second line would break the contract even though both would still be
-    // "valid JSON somewhere in there".
+    // Exactly one one-line object: consumers pipe it into `jq`.
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
     let values: Vec<serde_json::Value> = serde_json::Deserializer::from_str(&stdout)
         .into_iter::<serde_json::Value>()
@@ -314,62 +298,16 @@ fn rec_from_cast_renders_a_gif_and_emits_one_json_object() {
         "the GIF trailer byte must be present, or a strict decoder \
          (Preview, Safari) treats the file as truncated"
     );
-}
 
-#[test]
-#[ignore = "renders the committed demo asset; grouped with the rest of the rec lane."]
-fn rec_from_cast_renders_an_apng() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let out = dir.path().join("demo.apng");
-    let result = render(&out, &["--fps", "10"]);
-
+    let apng = dir.path().join("demo.apng");
+    let result = render(&apng, &["--fps", "10"]);
     assert_eq!(result["format"], "apng");
     assert!(result["frames"].as_u64().expect("frames") > 0);
-
-    let bytes = read_bytes(&out);
-    assert_eq!(
-        &bytes[..8],
-        b"\x89PNG\r\n\x1a\n",
-        "APNG is a PNG: the eight-byte signature is mandatory"
-    );
+    let bytes = read_bytes(&apng);
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
     assert!(
         bytes.windows(4).any(|chunk| chunk == b"acTL"),
-        "no acTL chunk: without the animation control chunk every decoder \
-         renders this as a single still image"
-    );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn rec_duration_flag_bounds_the_capture() {
-    let server = ServerGuard::start();
-    let out = server.out("bounded.cast");
-    let started = Instant::now();
-    server.success(&[
-        "rec",
-        SESSION,
-        "-o",
-        out.to_str().expect("UTF-8 out"),
-        "--duration",
-        "1",
-    ]);
-    let elapsed = started.elapsed();
-
-    // `--duration` is the ONLY stop condition for a live pane that never
-    // exits, so an off-by-one here is the difference between a demo script
-    // and a process that runs until the disk fills.
-    assert!(
-        elapsed >= Duration::from_millis(900),
-        "`--duration 1` returned after {elapsed:?}; it must actually record \
-         for the requested window, not return early"
-    );
-    assert!(
-        elapsed < Duration::from_secs(4),
-        "`--duration 1` took {elapsed:?}; the deadline is not being honoured"
-    );
-    assert!(
-        out.exists(),
-        "a bounded capture must still write its output"
+        "without acTL every decoder shows a still image"
     );
 }
 
@@ -424,10 +362,7 @@ fn rec_max_bytes_reports_truncated_rather_than_filling_the_disk() {
          {short} vs {full}"
     );
 
-    // The cap is a stop condition, not a hard ceiling: the encoder finishes
-    // the frame it is on and writes the trailer, so the file lands slightly
-    // over. What matters is that it stops there instead of running to the
-    // full size.
+    // A stop condition, not a ceiling: the current frame and trailer finish.
     let bytes = read_bytes(&capped);
     assert!(
         bytes.len() < read_bytes(&whole).len(),

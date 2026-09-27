@@ -9,8 +9,6 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::io::Read;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
@@ -18,25 +16,18 @@ use phux_client::layout::Workspace;
 use phux_client::layout_ops::layout_key;
 use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// The session the client attaches to, listed in the Sessions panel like
 /// every other session since ADR-0112.
 const SESSION: &str = "work";
 /// The session it does NOT attach to, whose row must carry the swept
 /// histogram.
 const PEER: &str = "scratch";
-/// How many session ids to probe when locating the peer's persisted layout.
-/// This file's server holds two sessions; the margin covers id allocation that
-/// does not start at 1 without pinning it to any particular scheme.
+/// How many session ids to probe for the peer's persisted layout.
 const SESSION_ID_SCAN: u32 = 8;
 /// How long to wait for the briefly attached peer client to write its layout.
 const LAYOUT_DEADLINE: Duration = Duration::from_secs(20);
-/// Generous on purpose: the roster is deliberately allowed to arrive late now,
-/// so this is a liveness bound, not a latency assertion. The latency half of
-/// phux-k0cw.10's acceptance is structural (the sweep is issued from the
-/// repaint drain, not from bootstrap) and is not what this test measures.
+/// A liveness bound: the roster is allowed to arrive late.
 const ROSTER_DEADLINE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
@@ -69,22 +60,10 @@ impl ServerGuard {
         ResourceId::local(pane)
     }
 
-    /// Wait until SOME session has persisted a layout naming `pane`.
-    ///
-    /// A headlessly created session has no persisted layout: writing one is an
-    /// attached TUI client's job. The roster's counts iterate the leaves of
-    /// the peer's fetched layout, so until one exists the peer is a
-    /// legitimately undescribed session with a legitimately empty histogram —
-    /// and this test could not tell a working sweep from a missing one.
-    ///
-    /// The peer's layout is therefore persisted by briefly attaching a real
-    /// client to it (see [`AttachedClient::persist_layout_for`]) rather than
-    /// seeded through a hand-built key. That is the point of scanning for the
-    /// id here instead of assuming one: `phux ls --json` exposes no session
-    /// id, and a test that hardcodes "the peer is session 2" silently stops
-    /// testing anything the day allocation changes — it would seed a key
-    /// nobody reads, and the assertion would fail for a reason that has
-    /// nothing to do with the sweep.
+    /// Wait until some session's persisted layout names `pane`; without one
+    /// the peer's histogram is legitimately empty and the test could not tell
+    /// a working sweep from a missing one. Session ids are scanned because no
+    /// JSON surface exposes them.
     fn wait_for_persisted_layout(&self, pane: &ResourceId) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -133,95 +112,33 @@ impl ServerGuard {
     }
 }
 
-/// An attached TUI client whose paint output is retained for assertions.
-///
-/// The reader thread keeps draining regardless — a PTY that fills up
-/// backpressures the real client, which would stall exactly the repaint drain
-/// this test is here to observe.
-struct AttachedClient {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    transcript: Arc<Mutex<Vec<u8>>>,
-    _config: tempfile::TempDir,
-}
-
-impl Drop for AttachedClient {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+/// An attached TUI client on a fresh `default` profile with onboarding
+/// already complete, so neither a developer's config nor the onboarding
+/// overlay decides whether the roster paints. 120x40 keeps the Sessions panel
+/// from being yielded away.
+struct AttachedClient(common::PtyAttach);
 
 impl AttachedClient {
     fn start(server: &ServerGuard) -> Self {
-        Self::start_on(server, SESSION)
-    }
-
-    fn start_on(server: &ServerGuard, session: &str) -> Self {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                // Tall and wide enough that the Sessions panel is not yielded
-                // away: the strip drops Sessions first when the rows run out,
-                // and a narrow terminal yields the sidebar entirely.
-                rows: 40,
-                cols: 120,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open attach PTY");
-        let config = tempfile::tempdir().expect("isolated config dir");
-        let state_dir = config.path().join("phux");
-        std::fs::create_dir_all(&state_dir).expect("create isolated state dir");
-        std::fs::write(
-            state_dir.join("onboarding.json"),
-            r#"{"version":1,"stage":"complete"}"#,
-        )
-        .expect("preseed completed onboarding state");
-        let mut command = CommandBuilder::new(PHUX);
-        command.args([
-            "attach",
-            "--socket",
-            server.socket.to_str().expect("UTF-8 socket"),
-            session,
-        ]);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        command.env("RUST_LOG", "off");
-        // A fresh profile keeps both config and first-run state hermetic. The
-        // sidebar ships enabled, and neither a developer's config nor the
-        // onboarding overlay may decide whether this test reaches its paint.
-        command.env("PHUX_PROFILE", "default");
-        command.env("XDG_CONFIG_HOME", config.path());
-        command.env("XDG_STATE_HOME", config.path());
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .expect("spawn attached TUI");
-        drop(pair.slave);
-
-        let transcript = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&transcript);
-        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        std::thread::spawn(move || {
-            let mut bytes = [0u8; 8192];
-            while let Ok(count) = reader.read(&mut bytes) {
-                if count == 0 {
-                    break;
-                }
-                sink.lock()
-                    .expect("transcript lock")
-                    .extend_from_slice(&bytes[..count]);
-            }
-        });
-
-        Self {
-            child,
-            transcript,
-            _config: config,
-        }
+        Self(common::PtyAttach::start_with(
+            &server.socket,
+            &[SESSION],
+            (120, 40),
+            |config, command| {
+                std::fs::create_dir_all(config.join("phux")).expect("state dir");
+                std::fs::write(
+                    config.join("phux/onboarding.json"),
+                    r#"{"version":1,"stage":"complete"}"#,
+                )
+                .expect("preseed completed onboarding state");
+                command.env("PHUX_PROFILE", "default");
+                command.env("XDG_STATE_HOME", config);
+            },
+        ))
     }
 
     fn painted(&self) -> String {
-        common::strip_terminal_controls(&self.transcript.lock().expect("transcript lock"))
+        self.0.painted()
     }
 
     /// Wait until every phrase has been painted at some point in the
@@ -247,13 +164,9 @@ impl AttachedClient {
     }
 }
 
-/// Find the most recently painted Sessions roster cell for `name`.
-///
-/// The stripped PTY transcript retains sidebar separators but not cursor
-/// movement. Splitting on the separator isolates painted cells without relying
-/// on the last `Sessions` text, which may be the status-bar shortcut. Agent
-/// rows share the badge and session name prefix, so their prose suffixes are
-/// rejected in favor of the roster's optional state histogram.
+/// The most recently painted Sessions roster cell for `name`: cells split on
+/// the sidebar separator, rejecting agent rows (prose suffixes) in favor of
+/// the optional state histogram.
 fn latest_roster_cell<'a>(painted: &'a str, name: &str) -> Option<&'a str> {
     painted.rsplit('│').map(str::trim).find(|cell| {
         ["● ", "○ ", "◆ ", "◐ "].iter().any(|badge| {
@@ -278,42 +191,22 @@ fn roster_cell_parser_ignores_agent_rows_and_status_shortcuts() {
     assert_eq!(latest_roster_cell(painted, "work"), Some("○ work"));
 }
 
-/// phux-k0cw.10: the peer sweep still describes the roster after moving off
-/// the bootstrap path.
-///
-/// Everything the peer needs is in place BEFORE the client attaches, so the
-/// only thing standing between a fully described peer and a bare row is the
-/// deferred sweep itself. If the deferral ever stops firing — a drain that is
-/// never reached, a flag cleared without the send — the peer still gets its
-/// row from the session graph, but its histogram never arrives and this fails.
-///
-/// Verified to discriminate rather than assumed to: it passes against the
-/// pre-deferral driver, passes against the deferred one, and fails when the
-/// deferred send alone is stubbed out. That last run also settled a real
-/// question — the in-loop session-graph sweep does NOT happen to cover a plain
-/// attach, so the deferred send is load-bearing and not a redundant second
-/// path.
+/// Everything the peer needs exists before the client attaches, so only the
+/// deferred sweep stands between the peer row and its histogram (verified to
+/// fail with the deferred send stubbed out).
 #[test]
 #[ignore = "spawns a real server and attached PTY client; run in the e2e lane"]
 fn deferred_peer_sweep_still_describes_the_spaces_roster() {
     let server = ServerGuard::start();
-    // `--json` is the headless form (bare `phux new` would try to attach, and
-    // this process has no TTY); it requires the name in `-s` flag form.
     server.success(&["new", "--json", "-s", PEER]);
 
     let peer_pane = server.peer_pane();
     let peer_selector = format!("@{}", peer_pane.local_id().expect("local peer pane"));
-    // A headless layout op on the peer is what puts a layout under the peer's
-    // key. `spawn --target` resolves the owning session itself, so the test
-    // never has to name a session id that no JSON surface exposes.
+    // A placed spawn persists a layout under the peer's key.
     server.success(&["spawn", "--target", &peer_selector]);
     server.wait_for_persisted_layout(&peer_pane);
 
-    // `blocked` is the top rung, so it renders as `●1` and also puts the pane
-    // in zone 1. Any other state would either render nothing (`unknown` and
-    // `idle` are omitted from the histogram by design, so the calm case adds
-    // no noise) or share a glyph with a less specific rung. Targeted at the
-    // exact pane rather than the session, which now has two.
+    // `blocked` renders as `●1` (idle/unknown render nothing).
     server.success(&[
         "agent",
         "set",
@@ -328,20 +221,9 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
 
     let client = AttachedClient::start(&server);
 
-    // `●1` is the whole point: one blocked pane in the peer session, a count
-    // the client can only know by fetching that peer's layout and then that
-    // pane's agent record. The Sessions header and the peer name come free
-    // with the session graph and are asserted only to keep a failure legible.
     let painted = client.wait_for_all(&["Sessions", PEER, "●1"]);
 
-    // ADR-0112 lists the attached session in the same panel, so the peer's
-    // histogram must land on the peer's OWN row: a sweep that leaked the
-    // peer's counts into the current session's row would also double every
-    // local layout broadcast. The stripped transcript concatenates each
-    // frame's cells with `│`, and the Agents panel carries its own
-    // "● scratch blocked - claude" row, so rows are matched as semantic
-    // badge-plus-name cells rather than by whole lines or a header position.
-    // The status bar also says "Sessions" after the panel has painted.
+    // The histogram must land on the peer's own row, not the attached one.
     let peer_row = latest_roster_cell(&painted, PEER)
         .unwrap_or_else(|| panic!("no Sessions row for {PEER}:\n{painted}"));
     assert!(

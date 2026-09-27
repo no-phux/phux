@@ -1,12 +1,7 @@
-//! Black-box acceptance proof for the first-five-minutes journey (phux-4gju.4).
-//!
-//! This test deliberately starts at an install-shaped prefix rather than at
-//! Cargo's target directory: both built release payload binaries are copied
-//! into a fresh `bin/`, and every invocation resolves `phux` from there.
-//! Publication mechanics are a separate concern. `scripts/test-install.sh`
-//! already proves archive layout, checksums, PATH guidance, atomic publish,
-//! and rollback, so reproducing a synthetic release archive here would make
-//! this slower without strengthening the interactive contract.
+//! Black-box acceptance of the first-five-minutes journey from an
+//! install-shaped prefix: both release binaries copied into a fresh `bin/`.
+//! Archive layout, checksums, and publishing are `scripts/test-install.sh`'s
+//! job.
 
 #![allow(clippy::expect_used, reason = "acceptance harness")]
 #![allow(clippy::panic, reason = "acceptance harness")]
@@ -91,20 +86,9 @@ impl Harness {
         }
     }
 
-    /// The hermetic environment, once.
-    ///
-    /// Both spawn paths — `std::process::Command` for the captured verbs and
-    /// `portable_pty::CommandBuilder` for the interactive attach — `env_clear()`
-    /// and then set exactly this table. Writing it twice, in the two crates'
-    /// two syntaxes, is why the idle backstop had to be added twice and why
-    /// nothing would have caught its absence from one of them: a divergence
-    /// between the Command path and the PTY path is precisely the class of
-    /// bug that leaked servers here (phux-8y3o).
-    ///
-    /// `AutoSpawnedServer::IDLE_BACKSTOP` is the one entry that is not about
-    /// isolation: the justfile's e2e recipe exports it, `env_clear()` wipes
-    /// it, and the daemon this harness auto-spawns needs it to bound its own
-    /// life if the harness dies before reaping it.
+    /// The hermetic environment, shared by the `Command` and PTY spawn paths so
+    /// they cannot diverge (including the idle backstop the auto-spawned daemon
+    /// needs if the harness dies).
     fn hermetic_env(&self) -> [(&'static str, OsString); 15] {
         let (backstop_key, backstop_secs) = common::AutoSpawnedServer::IDLE_BACKSTOP;
         [
@@ -287,18 +271,9 @@ impl PtyClient {
         strip_terminal_controls(&self.transcript.lock().expect("transcript lock"))
     }
 
-    /// [`Self::visible_text`] read back as flowing prose: box-drawing rules
-    /// become spaces and every run of whitespace — including the renderer's
-    /// line breaks — collapses to one.
-    ///
-    /// An overlay wraps its prose to the content rect, and the content rect
-    /// narrows when chrome is docked (the window sidebar ships enabled, so
-    /// it is, by default). A sentence therefore breaks mid-phrase with the
-    /// modal's own border between the halves. A first-run assertion is about
-    /// whether the promise was MADE, not about which column it happened to
-    /// break at, so reading the prose back out of the box keeps the test
-    /// honest about the former without pinning the latter — and stops it
-    /// failing on any future chrome that changes the available width.
+    /// [`Self::visible_text`] as flowing prose (box rules to spaces, whitespace
+    /// collapsed), so an overlay sentence wrapped around docked chrome still
+    /// matches.
     fn flowed_text(&self) -> String {
         let visible = self.visible_text();
         let unboxed: String = visible
@@ -433,11 +408,7 @@ fn run_journey(harness: &mut Harness) {
     );
 
     let mut first = PtyClient::naked(harness, "first-attach");
-    // Remember the daemon PID now that attach has auto-spawned it. Drop reaps
-    // via the live socket even without this (phux-e4qx); capturing here still
-    // arms the SIGTERM/SIGKILL fallback without a status round-trip at Drop.
-    // The idle backstop armed in `apply_pty_env` covers the residue Drop
-    // cannot: a runner killed outright (SIGKILL / nextest hard timeout).
+    // Capture the auto-spawned daemon's PID to arm Drop's signal fallback.
     harness.server.capture_pid();
     first.wait_for("the first-use title", |text| {
         text.contains("Your session is live")

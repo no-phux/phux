@@ -28,11 +28,8 @@ use phux_record::Replayer;
 use phux_server::grid::SnapshotSynthesizer;
 use phux_tui::attach::render::{ReplicaWalk, TerminalRenderer};
 
-/// One corpus entry: a grid size plus the VT byte sequence to feed it.
-///
-/// `bytes` is a `&str` rather than a `&[u8]` so escape sequences and the
-/// non-ASCII cases (CJK, combining marks, ZWJ emoji) can sit side by side in
-/// one literal; every projection receives `bytes.as_bytes()`.
+/// One corpus entry: a grid size plus the VT bytes to feed it (a `&str` so
+/// escapes and non-ASCII cases share one literal).
 struct Case {
     /// Names the failure. Printed in every assertion message.
     name: &'static str,
@@ -44,28 +41,16 @@ struct Case {
     bytes: &'static str,
 }
 
-/// Scrollback for every terminal in this file.
-///
-/// Zero, matching `Replayer::new`, which hard-codes it: an export shows the
-/// viewport and retaining history would cost memory for pixels never drawn.
-/// The other two projections must be given the same budget or a case that
-/// scrolls would compare a grid that kept history against one that did not.
-/// Only the viewport is under test here; `ScreenState::scrollback` has its
-/// own coverage in the synthesizer's unit tests.
+/// Scrollback for every terminal: zero, matching `Replayer::new`, so all three
+/// compare the same viewport.
 const MAX_SCROLLBACK: usize = 0;
 
-/// The shared corpus. Every case runs through all three projections.
-///
-/// Ordered roughly by what it exercises: styling, then Unicode width and
-/// clustering, then screen/scroll/wrap modes, then the cursor, then the
-/// degenerate cases. Anything added here is automatically covered by every
-/// comparison below, which is the point — a new VT feature gets conformance
-/// coverage by appending one row.
+/// The shared corpus, run through all three projections: styling, Unicode
+/// width and clustering, screen/scroll/wrap modes, cursor, degenerate cases.
+/// A new VT feature gets conformance coverage by appending one row.
 const CORPUS: &[Case] = &[
-    // The settled screen. A recording that opens on an idle terminal, an
-    // agent polling a pane nothing has written to. All three must agree that
-    // nothing is there, which is a weaker claim than it sounds: it pins the
-    // blank-cell grapheme (`" "`, not `""`) and the default style.
+    // The settled screen: pins the blank-cell grapheme (`" "`) and default
+    // style.
     Case {
         name: "settled_empty",
         cols: 20,
@@ -89,21 +74,16 @@ const CORPUS: &[Case] = &[
         rows: 3,
         bytes: "\x1b[38;2;255;128;0m\x1b[48;2;0;32;64mTRUE\x1b[0m plain",
     },
-    // SGR 38;5 / 48;5 palette. The projections must keep the INDEX, not the
-    // RGB the terminal would resolve it to; `palette_identity_survives_all_three`
-    // asserts that directly. Covers a cube index (196), a low ANSI index via
-    // the 256 form (9), and the bright-ANSI shorthand (SGR 91), which
-    // libghostty also reports as a palette color.
+    // 256-palette colors (cube 196, low 9, bright SGR 91): projections keep the
+    // index, not RGB.
     Case {
         name: "sgr_palette_256",
         cols: 24,
         rows: 3,
         bytes: "\x1b[38;5;196m\x1b[48;5;21mPAL\x1b[0m\x1b[38;5;9mA\x1b[0m\x1b[91mB\x1b[0m",
     },
-    // Every boolean attribute `CellStyle` carries, each isolated to its own
-    // column so a projection that dropped one is localised to a single cell.
-    // Order: bold, faint, italic, underline, blink, inverse, invisible,
-    // strikethrough, overline.
+    // Every boolean attribute, one per column: bold, faint, italic, underline,
+    // blink, inverse, invisible, strikethrough, overline.
     Case {
         name: "sgr_attributes",
         cols: 24,
@@ -120,31 +100,24 @@ const CORPUS: &[Case] = &[
         rows: 3,
         bytes: "\x1b[21mD\x1b[4:3mC\x1b[4:4mT\x1b[4:5mA\x1b[24mN",
     },
-    // Wide CJK glyphs. The base cell carries the cluster; its SpacerTail
-    // column is the EMPTY STRING in the dense projections and absent from the
-    // sparse one. Trailing ASCII proves column accounting survives the width-2
-    // advance.
+    // Wide CJK: the tail column is `""` in dense projections and absent from
+    // the sparse one; trailing ASCII checks column accounting.
     Case {
         name: "wide_cjk",
         cols: 20,
         rows: 3,
         bytes: "日本語 ok",
     },
-    // A styled wide glyph: the background must reach the tail column too, so
-    // this is where a projection that forgot to style tails would show up.
-    // The trailing "X" carries its own (different) style deliberately — an
-    // unstyled one is dropped by the server's sparse filter and could not
-    // witness that both shapes put it at column 2.
+    // A styled wide glyph: the background must reach the tail; the styled `X`
+    // proves both shapes put it at column 2.
     Case {
         name: "wide_cjk_styled",
         cols: 20,
         rows: 3,
         bytes: "\x1b[41m\x1b[1m語\x1b[0m\x1b[4mX\x1b[0m",
     },
-    // A wide glyph that does not fit in the last column: libghostty parks a
-    // `SpacerHead` (width 1, empty grapheme) in the vacated column and moves
-    // the glyph to column 0 of the next row. SpacerHead is NOT SpacerTail —
-    // it is a real column in all three projections.
+    // A wide glyph that does not fit the last column: a `SpacerHead` (a real
+    // column) is parked and the glyph wraps.
     Case {
         name: "wide_glyph_soft_wraps_at_margin",
         cols: 4,
@@ -258,10 +231,8 @@ const CORPUS: &[Case] = &[
         rows: 3,
         bytes: "\x1b[41mfilled\x1b[0m\x1b[2J\x1b[Hafter",
     },
-    // OSC-133 shell-integration marks, with styling on top. The semantic
-    // marks are server-only (see the module docs); this case is here so the
-    // STYLE comparison runs with them present, and so
-    // `osc133_semantics_are_server_only` has a case to point at.
+    // OSC-133 marks with styling on top: the style comparison runs with them
+    // present (the marks are server-only).
     Case {
         name: "osc133_prompt_and_input",
         cols: 20,
@@ -270,11 +241,8 @@ const CORPUS: &[Case] = &[
     },
 ];
 
-/// A fresh terminal of `case`'s dimensions with `case`'s bytes written in.
-///
-/// Every caller gets its OWN terminal; see the dirty-bit rule in the module
-/// docs. `vt_write` is infallible by libghostty's contract (malformed input
-/// is logged, not rejected).
+/// A fresh terminal with `case`'s bytes written in; every caller gets its own
+/// (see the dirty-bit rule in the module docs).
 fn fed_terminal(case: &Case) -> GhosttyTerminal<'static, 'static> {
     let mut term = {
         let mut terminal =
@@ -288,24 +256,14 @@ fn fed_terminal(case: &Case) -> GhosttyTerminal<'static, 'static> {
     term
 }
 
-/// Projection 1: the client's dense `RenderedFrame` (`phux snapshot --rendered`).
-///
-/// Rendered at origin `(0, 0)` with the clip set to the full grid, which is
-/// the single-pane composition — the multi-pane offsets are the compositor's
-/// job (`attach::rendered`), not this projection's, and adding them here
-/// would test the compositor instead of the cell walk.
+/// Projection 1: the client's dense `RenderedFrame` (`snapshot --rendered`),
+/// single-pane at origin; multi-pane offsets are the compositor's concern.
 fn client_frame(case: &Case) -> RenderedFrame {
     let term = fed_terminal(case);
     let mut renderer = TerminalRenderer::new().expect("terminal renderer");
     let mut frame = RenderedFrame::blank(case.cols, case.rows);
-    // `render_at_cells` returns the cursor rather than storing it: the
-    // compositor elects which pane's cursor becomes the frame's. With one
-    // pane, that election is the identity.
-    //
-    // The walk-identity token (phux-994s) is a fixed constant here: this
-    // fixture builds one terminal per case and walks it once, so there is no
-    // replica generation to track. Production pairs terminal and token in a
-    // `ReplicaWalk` from `attach::pane_state::published_replica`.
+    // With one pane the cursor election is the identity, and the walk-identity
+    // token is a fixed constant (one terminal, walked once).
     frame.cursor = renderer
         .render_at_cells(
             ReplicaWalk::for_test(&term),
@@ -317,10 +275,7 @@ fn client_frame(case: &Case) -> RenderedFrame {
     frame
 }
 
-/// Projection 2: the server's sparse `ScreenState` (`phux snapshot --cells`).
-///
-/// `cells = true` is required — without it the styles are never collected and
-/// there is nothing to compare.
+/// Projection 2: the server's sparse `ScreenState` (`snapshot --cells`).
 fn server_state(case: &Case) -> ScreenState {
     let term = fed_terminal(case);
     let synth = SnapshotSynthesizer::new().expect("snapshot synthesizer");
@@ -330,44 +285,23 @@ fn server_state(case: &Case) -> ScreenState {
 }
 
 /// Projection 3: the recorder's dense `RenderedFrame` (`phux rec`).
-///
-/// The `Replayer` owns its terminal and never lends it out, so this is the
-/// one projection that could not share a grid even if this file wanted it to.
 fn replay_frame(case: &Case) -> RenderedFrame {
     let mut replayer = Replayer::new(case.cols, case.rows).expect("replayer");
     replayer.feed(case.bytes.as_bytes());
     replayer
         .sample()
         .expect("sample")
-        // The first sample never returns `None`, whatever the dirty bit says
-        // — rule 2 of `phux-record`'s replay module docs, which exists so a
-        // recording that opens on a settled screen still renders a frame.
-        // `settled_empty` is the corpus case that would catch its loss.
+        // The first sample always yields a frame (`settled_empty` guards it).
         .expect("the first sample always yields a frame")
         .frame
 }
 
-/// Bridge the dense shape to the sparse one: what `ScreenState` the server
-/// MUST produce for a grid that renders as `frame`.
-///
-/// This is the declared translation between the two projections' shapes, and
-/// the only place the structural asymmetry is allowed to live:
-///
-///   * **Lines** are the row's graphemes concatenated and right-trimmed. A
-///     wide glyph's tail contributes the empty string and a blank cell
-///     contributes `" "`, which is exactly what the server's own walk builds
-///     (it skips tails and pushes `' '` for an empty grapheme).
-///   * **Cells** are sparse: a cell is emitted only when its style is
-///     non-default, and never for a tail column. `semantic` is always `None`
-///     here because a `RenderedCell` structurally cannot carry it;
-///     [`styled_cells_only`] reduces the server's list to the same dimension
-///     before matching, and `osc133_semantics_are_server_only` covers what
-///     that reduction sets aside.
-///   * **Columns** are dense-frame column indices, which already equal the
-///     server's `col_index`: the server advances by 2 across a wide base and
-///     skips its tail, while the dense frame spends one index on each. Both
-///     land on the same next column, and that shared coordinate space is what
-///     `cursor.x` lives in too.
+/// Bridge the dense shape to the sparse one: the `ScreenState` the server
+/// must produce for `frame`. Lines are graphemes concatenated and
+/// right-trimmed (tails `""`, blanks `" "`); cells are emitted only for a
+/// non-default style and never for a tail, with `semantic` always `None` (see
+/// [`styled_cells_only`]); columns already coincide with the server's
+/// `col_index`.
 fn dense_as_screen_state(frame: &RenderedFrame, pane: u32) -> ScreenState {
     let mut lines: Vec<String> = Vec::with_capacity(usize::from(frame.rows));
     let mut cells: Vec<CellInfo> = Vec::new();
@@ -406,21 +340,9 @@ fn dense_as_screen_state(frame: &RenderedFrame, pane: u32) -> ScreenState {
     }
 }
 
-/// Reduce the server's cells to the dimension the dense projections can
-/// express: styled cells, with the semantic mark stripped.
-///
-/// The filter is the second half of asymmetry (2) and is NOT a convenience.
-/// The server's sparse filter admits a cell when it has a non-default style
-/// **or** a semantic mark, so an OSC-133 shell emits `CellInfo`s for
-/// otherwise-plain prompt and input glyphs. Those cells describe something
-/// real that simply is not visible, and a dense frame — which records what
-/// the glass shows — has no way to report them. Dropping them here is the
-/// only honest comparison; keeping them would fail `osc133_prompt_and_input`
-/// for a reason that is a design decision, not drift.
-///
-/// What this deliberately does NOT relax: any server cell with a non-default
-/// style survives the filter and must match the dense frame exactly. A
-/// projection that started dropping styles would still fail.
+/// Reduce the server's cells to what a dense frame can express: styled cells,
+/// semantic mark stripped. OSC-133 emits cells for plain marked glyphs that
+/// the glass cannot show; any styled server cell still must match exactly.
 fn styled_cells_only(cells: &[CellInfo]) -> Vec<CellInfo> {
     cells
         .iter()
@@ -446,12 +368,8 @@ fn debug_rows(frame: &RenderedFrame) -> Vec<String> {
         .collect()
 }
 
-/// The two dense projections must be identical, whole struct and all.
-///
-/// This is the strongest of the three comparisons and the one to read first
-/// on a failure: client and recorder produce the same type, so there is no
-/// shape difference to explain away. Equality includes `schema_version`,
-/// dimensions, every cell's grapheme and style, and the cursor.
+/// The two dense projections must be identical, whole struct and all (the
+/// strongest comparison; read it first on a failure).
 #[test]
 fn client_and_replay_frames_are_identical() {
     for case in CORPUS {
@@ -542,13 +460,8 @@ fn server_state_matches_the_dense_projections() {
     }
 }
 
-/// The recorder's frame must satisfy the same server bridge the client's
-/// does.
-///
-/// Implied by the two tests above by transitivity, and kept anyway: it makes
-/// the triangle explicit, so a future change that weakens
-/// `client_and_replay_frames_are_identical` cannot quietly leave the
-/// recorder unchecked against the server.
+/// The recorder satisfies the server bridge too, so the triangle stays
+/// explicit even if the client comparison weakens.
 #[test]
 fn replay_frame_matches_the_server_projection() {
     for case in CORPUS {
@@ -580,15 +493,9 @@ fn replay_frame_matches_the_server_projection() {
     }
 }
 
-/// A 256-palette color must stay a palette INDEX in all three projections.
-///
-/// This is a deliberate choice, not an accident of the walk, and it is
-/// load-bearing at both ends: the client keeps the index so a re-themed
-/// terminal repaints correctly, and `phux-record`'s rasterizer resolves
-/// `CellColor::Palette` through the *recording's* theme so a cast exported
-/// under two themes paints each correctly. Flattening to RGB at any one of
-/// the three boundaries would bake the capture-time palette in — and would
-/// still look plausible, which is why it needs a test rather than a review.
+/// A 256-palette color stays a palette index in all three: re-themed
+/// terminals and per-theme exports depend on it, and flattening to RGB would
+/// still look plausible.
 #[test]
 fn palette_identity_survives_all_three() {
     let case = CORPUS
@@ -636,15 +543,8 @@ fn palette_identity_survives_all_three() {
     );
 }
 
-/// A wide glyph's tail column: dense projections carry it as the EMPTY
-/// STRING; the sparse one omits it entirely.
-///
-/// This is asymmetry (1) from the module docs, asserted rather than assumed.
-/// The empty string is not cosmetic — emitting `" "` there instead would
-/// shift every later column of any line containing CJK, and emitting nothing
-/// would break the `cells[row * cols + col]` indexing contract
-/// `RenderedFrame` documents. The server, whose consumer indexes by the
-/// `(row, col)` it is handed, has no such column to describe.
+/// A wide glyph's tail is `""` in dense projections (preserving
+/// `cells[row * cols + col]` indexing) and absent from the sparse one.
 #[test]
 fn wide_tail_is_dense_only_and_the_server_omits_it() {
     let case = CORPUS
@@ -705,15 +605,8 @@ fn wide_tail_is_dense_only_and_the_server_omits_it() {
     );
 }
 
-/// OSC-133 semantic marks are the server's alone, by construction.
-///
-/// This is asymmetry (2) from the module docs. `RenderedCell` has no
-/// `semantic` field and should not grow one: a rendered frame answers "what
-/// does the glass show", and a prompt mark shows nothing. The agent surface
-/// (ADR-0022) is where the distinction between prompt, input, and output
-/// earns its keep. Pinning it here means a future attempt to align the three
-/// projections by deleting the server's semantic collection fails loudly
-/// instead of passing as "now they match".
+/// OSC-133 semantic marks are the server's alone: a rendered frame shows
+/// what the glass shows, and a mark shows nothing.
 #[test]
 fn osc133_semantics_are_server_only() {
     let case = CORPUS
@@ -739,13 +632,8 @@ fn osc133_semantics_are_server_only() {
         "the server projection must surface the OSC-133 ;B input region, got {cells:?}",
     );
 
-    // The concrete shape of the divergence: the "ls -l" input glyphs are
-    // plain text — no SGR at all — and appear in the sparse projection ONLY
-    // because they carry a mark. A dense frame cannot report them, because
-    // there is nothing about those cells to report; they look exactly like
-    // any other letter on the glass. This is what `styled_cells_only` sets
-    // aside, and asserting it here is what makes that filter a declared
-    // decision rather than a way to get the loop green.
+    // The marked `ls -l` input glyphs are plain text, present in the sparse
+    // projection only because of their mark.
     let semantic_only: Vec<&CellInfo> = cells
         .iter()
         .filter(|cell| cell.style == CellStyle::default())
@@ -761,10 +649,8 @@ fn osc133_semantics_are_server_only() {
          one without a mark means the sparse filter changed, got {semantic_only:?}",
     );
 
-    // Every one of those cells is a glyph the dense frame DOES draw — the
-    // asymmetry is in the annotation, not the content. Cross-checking the
-    // grapheme is what proves the two projections are describing the same
-    // screen while disagreeing about how much they can say about it.
+    // The dense frame draws the same glyphs: the asymmetry is in annotation,
+    // not content.
     let frame = client_frame(case);
     for cell in &semantic_only {
         let dense = frame

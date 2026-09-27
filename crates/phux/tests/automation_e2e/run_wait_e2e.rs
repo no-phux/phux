@@ -117,14 +117,9 @@ impl ServerGuard {
     }
 }
 
-/// Build a `phux <verb> --socket <sock> <rest...>` command, where
-/// `args[0]` is the verb. `--socket` is injected right after the verb,
-/// NOT appended: `run`/`wait`/`send-keys` use `trailing_var_arg`, so a
-/// `--socket` placed after the positional command would be swallowed
-/// into that command (and the verb would fall back to the user's real
-/// default socket — verified the hard way). Verb-specific flags
-/// (`--json`, `--until`, `--timeout`) must therefore also precede the
-/// trailing positional in `args`.
+/// `phux <verb> --socket <sock> <rest...>`: `--socket` goes right after the
+/// verb because `run`/`wait`/`send-keys` take a trailing command that would
+/// swallow it.
 fn phux_command(socket: &Path, args: &[&str]) -> Command {
     let (verb, rest) = args.split_first().expect("at least a verb");
     let mut command = Command::new(PHUX);
@@ -138,9 +133,7 @@ fn phux_command(socket: &Path, args: &[&str]) -> Command {
     command
 }
 
-/// Run a verb to completion, returning its raw exit code (the value a
-/// shell would see in `$?`). Panics if the process was killed by a
-/// signal rather than exiting normally.
+/// Run a verb to completion and return its exit code.
 fn run_status(server: &ServerGuard, args: &[&str]) -> i32 {
     let status = server
         .cmd(args)
@@ -167,32 +160,51 @@ fn run_stdout(server: &ServerGuard, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// `run` mirrors the command's exit code (a subshell keeps the pane's shell
+/// alive), resolves every selector form to the one seeded pane, and reports
+/// an unknown session as `no such target`.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_mirrors_command_exit_codes() {
+fn run_mirrors_exit_codes_and_resolves_selectors() {
     let server = ServerGuard::start();
-    assert_eq!(
-        run_status(&server, &["run", SESSION, "true"]),
-        0,
-        "`phux run work true` should exit 0"
+    for (command, code) in [("true", 0), ("false", 1), ("(exit 7)", 7), ("true", 0)] {
+        assert_eq!(
+            run_status(&server, &["run", SESSION, command]),
+            code,
+            "`phux run work {command:?}`"
+        );
+    }
+    for selector in ["work:0", "work:0.0", "@1"] {
+        assert_eq!(
+            run_status(&server, &["run", "--timeout", "15", selector, "true"]),
+            0,
+            "`phux run {selector}` must resolve"
+        );
+    }
+    let (code, stderr) = run_status_and_stderr(
+        &server.socket,
+        &["run", "--timeout", "5", "no-such-session-qzx", "true"],
     );
-    assert_eq!(
-        run_status(&server, &["run", SESSION, "false"]),
-        1,
-        "`phux run work false` should mirror false's exit 1"
-    );
-    // A subshell preserves the interactive shell while exercising an
-    // arbitrary nonzero status.
-    assert_eq!(
-        run_status(&server, &["run", SESSION, "(exit 7)"]),
-        7,
-        "`phux run work '(exit 7)'` should mirror the subshell's exit 7"
-    );
-    assert_eq!(
-        run_status(&server, &["run", SESSION, "true"]),
-        0,
-        "session should survive a subshell `(exit 7)` and still run commands"
-    );
+    assert_eq!(code, 1, "an unresolvable target exits 1");
+    assert!(stderr.contains("no such target"), "{stderr}");
+}
+
+/// `send-keys` to a pane selector lands on that pane, and `wait --until` on
+/// its `@id` exits 0 once the marker shows and 124 on timeout.
+#[test]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
+fn wait_until_meets_the_marker_or_times_out() {
+    let server = ServerGuard::start();
+    let send = ["send-keys", "work:0.0", "echo WAIT_MARKER_XYZ", "Enter"];
+    assert_eq!(run_status(&server, &send), 0);
+    let wait = |marker: &str, timeout: &str| {
+        run_status(
+            &server,
+            &["wait", "@1", "--until", marker, "--timeout", timeout],
+        )
+    };
+    assert_eq!(wait("WAIT_MARKER_XYZ", "5"), 0);
+    assert_eq!(wait("STRING_THAT_NEVER_APPEARS_QZX", "1"), 124);
 }
 
 #[test]
@@ -215,37 +227,6 @@ fn run_json_reports_output_and_clean_exit() {
     assert!(
         output.contains("HELLO_E2E"),
         "captured output should contain the echoed marker; got {output:?}"
-    );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn wait_until_succeeds_when_marker_appears() {
-    let server = ServerGuard::start();
-    // Inject a marker into the pane, then wait for it. `--until` also
-    // matches the command echo, which is fine for asserting exit 0.
-    assert_eq!(
-        run_status(
-            &server,
-            &["send-keys", SESSION, "echo WAIT_MARKER_XYZ", "Enter"],
-        ),
-        0,
-        "send-keys should succeed"
-    );
-    assert_eq!(
-        run_status(
-            &server,
-            &[
-                "wait",
-                SESSION,
-                "--until",
-                "WAIT_MARKER_XYZ",
-                "--timeout",
-                "5"
-            ],
-        ),
-        0,
-        "`phux wait --until` should exit 0 once the marker is visible"
     );
 }
 
@@ -276,27 +257,6 @@ fn headless_watch_json_receives_repeatable_dirty_idle_cycles() {
     });
 }
 
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn wait_until_times_out_when_marker_never_appears() {
-    let server = ServerGuard::start();
-    assert_eq!(
-        run_status(
-            &server,
-            &[
-                "wait",
-                SESSION,
-                "--until",
-                "STRING_THAT_NEVER_APPEARS_QZX",
-                "--timeout",
-                "1",
-            ],
-        ),
-        124,
-        "`phux wait` should exit 124 on timeout"
-    );
-}
-
 /// Run a verb capturing exit code and stderr together — for asserting the
 /// diagnostic on a selector that fails to parse or resolve.
 fn run_status_and_stderr(socket: &Path, args: &[&str]) -> (i32, String) {
@@ -310,27 +270,6 @@ fn run_status_and_stderr(socket: &Path, args: &[&str]) -> (i32, String) {
         .code()
         .unwrap_or_else(|| panic!("phux {args:?} terminated by signal: {:?}", out.status));
     (code, String::from_utf8_lossy(&out.stderr).into_owned())
-}
-
-// --- Selector grammar across run + send-keys (phux-n95) ----------------
-//
-// run/send-keys take the SAME `TARGET` grammar as snapshot/wait/kill, and
-// resolve it client-side to the selected pane. The seeded server has one
-// session ("work") with one window (index 0) holding one pane (local id 1),
-// so every form below names that same pane; the test asserts each resolves
-// (run mirrors `true`'s exit 0) rather than failing as "no such target".
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_accepts_successful_selector_forms() {
-    let server = ServerGuard::start();
-    for selector in ["work:0", "work:0.0", "@1"] {
-        assert_eq!(
-            run_status(&server, &["run", "--timeout", "15", selector, "true"]),
-            0,
-            "`phux run {selector}` should resolve the selector and mirror exit 0",
-        );
-    }
 }
 
 #[test]
@@ -349,61 +288,7 @@ fn run_rejects_malformed_selector_before_touching_server() {
 
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_reports_no_such_target_for_unknown_session() {
-    let server = ServerGuard::start();
-    // Well-formed but nonexistent: parses fine, then misses at resolution.
-    let (code, stderr) = run_status_and_stderr(
-        &server.socket,
-        &["run", "--timeout", "5", "no-such-session-qzx", "true"],
-    );
-    assert_eq!(code, 1, "an unresolvable target should exit 1");
-    assert!(
-        stderr.contains("no such target"),
-        "expected a 'no such target' resolution diagnostic, got: {stderr}",
-    );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn send_keys_pane_selector_routes_to_that_pane() {
-    let server = ServerGuard::start();
-    // Address the pane explicitly (window 0, pane 0) and inject a marker.
-    assert_eq!(
-        run_status(
-            &server,
-            &[
-                "send-keys",
-                "work:0.0",
-                "echo PANE_SELECTOR_MARK_QZX",
-                "Enter"
-            ],
-        ),
-        0,
-        "send-keys with a pane selector should resolve and route",
-    );
-    // The marker must land on that very pane, observable via the same
-    // selector form (here the opaque id of the seed pane).
-    assert_eq!(
-        run_status(
-            &server,
-            &[
-                "wait",
-                "@1",
-                "--until",
-                "PANE_SELECTOR_MARK_QZX",
-                "--timeout",
-                "5",
-            ],
-        ),
-        0,
-        "the marker should be visible on the pane the selector named",
-    );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn tag_round_trips_and_drives_the_hash_selector() {
-    // phux-f8wi: tag a pane, read it back, then address it by `#tag`.
     let server = ServerGuard::start();
 
     // Tag the seed pane (resolving the whole session to its panes).
@@ -420,10 +305,7 @@ fn tag_round_trips_and_drives_the_hash_selector() {
         "`phux tag ls work` should list the tags; got: {listed}",
     );
 
-    // `tag ls --json` emits the documented schema_version-1 document
-    // (agents.md §4.17) against a live server: `schema_version` 1 and one
-    // row per Terminal, the canonical selector under `terminal` and the
-    // full tag list under `tags` (phux-i0e8.8.5).
+    // The live `--json` document (shape pinned in `commands::tag` tests).
     let json_listed = run_stdout(&server, &["tag", "ls", SESSION, "--json"]);
     let doc: serde_json::Value =
         serde_json::from_str(&json_listed).expect("`phux tag ls --json` should emit valid JSON");
@@ -431,17 +313,8 @@ fn tag_round_trips_and_drives_the_hash_selector() {
     let terminals = doc["terminals"]
         .as_array()
         .expect("`terminals` should be an array");
-    assert_eq!(
-        terminals.len(),
-        1,
-        "one seed pane means one row; document: {doc}"
-    );
-    let row = &terminals[0];
-    assert!(
-        row["terminal"].as_str().is_some_and(|t| !t.is_empty()),
-        "each row names its Terminal by canonical selector; document: {doc}"
-    );
-    let tags: Vec<&str> = row["tags"]
+    assert_eq!(terminals.len(), 1, "one seed pane; document: {doc}");
+    let tags: Vec<&str> = terminals[0]["tags"]
         .as_array()
         .expect("`tags` should be an array")
         .iter()
@@ -452,14 +325,7 @@ fn tag_round_trips_and_drives_the_hash_selector() {
         ["build", "ci"],
         "the stored tags come back sorted; document: {doc}"
     );
-    assert_eq!(
-        doc.as_object().map(serde_json::Map::len),
-        Some(2),
-        "exactly the two documented top-level keys; document: {doc}"
-    );
 
-    // The `#tag` selector resolves the tagged pane — `wait` against it sees
-    // the live shell (a wait on `#build` for a prompt-ish idle settles).
     assert_eq!(
         run_status(&server, &["tag", "ls", "#build"]),
         0,
@@ -482,24 +348,14 @@ fn tag_round_trips_and_drives_the_hash_selector() {
     );
 }
 
-/// `phux snapshot --format html|vt` end to end: the real binary against a
-/// real server, through libghostty-vt's own Formatter (D9, fallback rung
-/// three — `docs/consumers/agents.md`). HTML must carry the pane's styled
-/// text as a markup document; VT must write a non-empty raw byte capture;
-/// `--json` must keep emitting the whole `ScreenState` document with
-/// `rendered` populated instead of the raw capture.
+/// `snapshot --format html|vt` through libghostty's Formatter (D9): HTML is a
+/// markup document with the text, VT a raw capture re-emitting SGR, and
+/// `--json` carries it under `rendered`.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn snapshot_format_html_writes_a_document() {
     let server = ServerGuard::start();
-    // `%s%s ... SNAPSHOT_FORMAT _MARK` (two shell words, space-separated)
-    // rather than the marker typed verbatim: the raw typed command line
-    // is echoed to the pane the instant it's typed, before Enter is even
-    // processed, so a marker present in the *source* text can make `wait
-    // --until` match on the still-unexecuted command line rather than its
-    // output. `printf` concatenates the two words with no space, so
-    // "SNAPSHOT_FORMAT_MARK" (no space) only ever appears in the actual
-    // executed output.
+    // Split so the marker appears only in the output, not the echoed line.
     assert_eq!(
         run_status(
             &server,
@@ -548,9 +404,6 @@ fn snapshot_format_html_writes_a_document() {
         vt.contains("SNAPSHOT_FORMAT_MARK"),
         "the VT capture must carry the pane's text, got: {vt:?}",
     );
-    // The marker was written bold-red (`\033[1;31m`); a faithful VT
-    // capture must re-emit an SGR escape (`ESC [ ... m`) to reproduce
-    // that styling, not just the plain characters.
     assert!(
         vt.as_bytes().windows(2).any(|pair| pair == [0x1b, b'[']) && vt.contains('m'),
         "the VT capture must carry at least one SGR escape sequence, got: {vt:?}",

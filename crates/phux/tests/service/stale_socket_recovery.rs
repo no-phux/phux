@@ -16,27 +16,15 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
 
-/// Kill whatever server ended up on `socket`, so a failing assertion cannot
-/// leak a daemon holding a PTY.
-///
-/// The server is auto-spawned and daemonised, so there is no `Child` to
-/// reap — its pid comes back over the wire in `phux status --json` (the
-/// server reads it from `SO_PEERCRED`). There is deliberately no
-/// "stop the server" verb to lean on here; `phux kill` takes a session
-/// selector, and killing sessions is not the same as ending the daemon.
+/// Kill whatever server ended up on `socket` (its pid comes from
+/// `phux status --json`), so a failed assertion cannot leak a daemon.
 struct Cleanup {
     _server: common::AutoSpawnedServer,
     _dir: tempfile::TempDir,
 }
 
-/// A socket file with no listener — exactly what a `SIGKILL`ed server leaves.
-///
-/// The refusal is *polled*, not asserted once. Closing a listening Unix socket
-/// is not instantaneous from a connecting peer's point of view, so on a loaded
-/// machine a connect issued immediately after `drop` can still be accepted off
-/// the backlog. Asserting once made this helper flaky under test parallelism —
-/// and the whole point of the helper is to hand the test a socket that is
-/// genuinely dead, so "eventually refuses" is the property that matters.
+/// A socket file with no listener, as a `SIGKILL`ed server leaves; refusal
+/// is polled because a just-closed listener can still accept off the backlog.
 fn leave_stale_socket(path: &Path) {
     let listener = UnixListener::bind(path).expect("bind the doomed listener");
     drop(listener);
@@ -94,12 +82,8 @@ fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
     );
 }
 
-/// The same path, twice: the second invocation must reuse the live server
-/// rather than reaping a socket that is now healthy.
-///
-/// Guards the direction the fix could over-correct in. "Always unlink before
-/// spawning" would also cure the wedge — by killing a working server's socket
-/// on every subsequent command.
+/// A second invocation reuses the live server rather than reaping a healthy
+/// socket.
 #[test]
 fn a_second_invocation_reuses_the_live_server() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -145,19 +129,8 @@ fn a_second_invocation_reuses_the_live_server() {
     );
 }
 
-/// phux-1wka: SIGTERM must route through the graceful shutdown, so the socket
-/// is unlinked on the way out.
-///
-/// Until this landed the server registered no SIGTERM handler at all -- the
-/// whole shutdown future was `tokio::signal::ctrl_c()`, which is SIGINT only.
-/// A supervisor stopping the server, `phux service install --restore`'s
-/// wrapper trap, and every test guard in this repo all send SIGTERM, so all of
-/// them killed the process on the default disposition: `unlink_socket_if_ours`
-/// never ran, panes never got `shutdown_pty`'s SIGHUP-grace-reap, and the next
-/// client tripped over exactly the stale entry this module is about.
-///
-/// Deliberately the mirror image of `leave_stale_socket`: that helper
-/// manufactures the wreckage a SIGKILL leaves; this asserts SIGTERM does not.
+/// SIGTERM runs the graceful shutdown, so the socket is unlinked (supervisors
+/// and test guards send SIGTERM).
 #[test]
 fn sigterm_unlinks_the_socket_instead_of_leaving_a_stale_entry() {
     let dir = tempfile::tempdir().expect("tempdir");

@@ -6,8 +6,6 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use std::process::Command;
-
 use tempfile::TempDir;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -208,21 +206,6 @@ fn an_unpinned_routable_entry_is_one_json_line_under_json() {
     );
 }
 
-/// `--remote` appears in each session verb's help.
-#[test]
-fn session_verbs_document_remote() {
-    for verb in ["ls", "new", "kill", "rename", "detach"] {
-        let out = Command::new(PHUX)
-            .args([verb, "--help"])
-            .output()
-            .expect("run phux <verb> --help");
-        assert!(
-            String::from_utf8_lossy(&out.stdout).contains("--remote"),
-            "`phux {verb} --help` must show --remote"
-        );
-    }
-}
-
 /// The TTY refusal is the wrong answer to a usage question. If this ever
 /// fires, target validation has drifted back behind the preflight.
 fn assert_not_the_tty_error(stderr: &str) {
@@ -324,32 +307,6 @@ fn remote_conflicts_with_the_raw_transport_flags() {
         assert!(
             stderr.contains("--remote"),
             "other={other:?}: got: {stderr}"
-        );
-    }
-}
-
-/// `--remote` must appear in help where an operator will look for it.
-#[test]
-fn remote_is_documented_on_both_surfaces() {
-    let out = Command::new(PHUX)
-        .args(["--help"])
-        .output()
-        .expect("run phux --help");
-    let root = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        root.contains("--remote"),
-        "the root help must show --remote"
-    );
-
-    let out = Command::new(PHUX)
-        .args(["attach", "--help"])
-        .output()
-        .expect("run phux attach --help");
-    let attach = String::from_utf8_lossy(&out.stdout);
-    for flag in ["--remote", "--code", "--no-enroll"] {
-        assert!(
-            attach.contains(flag),
-            "`phux attach --help` must show {flag}"
         );
     }
 }

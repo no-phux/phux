@@ -21,15 +21,8 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-/// The marker `phux service install` writes into the generated unit's
-/// environment (`crates/phux/src/commands/service.rs::SERVICE_MANAGED_ENV`).
-/// Duplicated here as a literal rather than imported: this file spawns the
-/// compiled binary as a black-box subprocess (the established pattern in
-/// this directory, e.g. `idle_exit_e2e.rs`), so it has no dependency on
-/// `phux`'s internal `pub(crate)` items — matching how every other
-/// service-unit env var name (`PHUX_WS_ADDR`, `PHUX_SOCKET`, …) is already
-/// duplicated as a literal across this codebase rather than shared via a
-/// cross-module constant.
+/// The marker `phux service install` writes into the generated unit (a
+/// literal: this suite drives the binary as a black box).
 const SERVICE_MANAGED_ENV: &str = "PHUX_SERVICE_MANAGED";
 
 /// launchd's own default `PATH` for an agent with no `EnvironmentVariables`
@@ -37,24 +30,13 @@ const SERVICE_MANAGED_ENV: &str = "PHUX_SERVICE_MANAGED";
 /// minimal — not artificially empty — service environment.
 const LAUNCHD_DEFAULT_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
-/// Wait for the seed pane to run its command and write the result file.
-///
-/// The command itself resolves in milliseconds; the margin is generous
-/// (matching `idle_exit_e2e.rs`'s `EXIT_HANG_CEILING` philosophy) because
-/// under `just e2e`'s full parallel run this competes with every other
-/// PTY-spawning, real-subprocess integration test on the box for CPU and
-/// fork/exec bandwidth. This is a HANG detector, not a timing gate.
+/// Hang detector for the seed pane to write its result file.
 const RESULT_DEADLINE: Duration = Duration::from_secs(20);
 
 /// Poll cadence for every wait loop in this file.
 const POLL: Duration = Duration::from_millis(50);
 
 /// A running `phux server` child plus its private socket.
-///
-/// Sockets live at the root of `/tmp` (matching `idle_exit_e2e.rs` /
-/// `rec_e2e.rs`): macOS caps `sun_path` at 104 bytes and this crate runs
-/// from deep worktree paths that can already exceed it before adding a
-/// filename.
 struct ServerGuard(common::ServerGuard);
 
 impl std::ops::Deref for ServerGuard {
@@ -65,20 +47,10 @@ impl std::ops::Deref for ServerGuard {
 }
 
 impl ServerGuard {
-    /// Start `phux server` with a from-scratch environment: `env_clear()`
-    /// then exactly `HOME` (the caller's fixture directory) and `PATH`
-    /// (launchd's own default) — no inherited `$SHELL`, no inherited
-    /// Homebrew/Nix PATH entries from whatever shell is running this test
-    /// suite (relevant since `just ci` and this repo's dev shell both run
-    /// under `nix develop`, which is exactly the transient-PATH shape
-    /// phux-87rr's acceptance criterion 4 is about — see
-    /// `crates/phux/src/commands/service.rs`'s
-    /// `install_never_captures_the_process_path` test for that half).
-    ///
-    /// `service_managed` stamps [`SERVICE_MANAGED_ENV`] when `true`,
-    /// mirroring exactly what `phux service install` writes into the
-    /// generated unit; absent, this is indistinguishable from a server a
-    /// human started directly from their own terminal.
+    /// Start `phux server` from a cleared environment: only `HOME` (the fixture)
+    /// and launchd's default `PATH`, so nothing from the test's own (often
+    /// `nix develop`) shell leaks in. `service_managed` stamps
+    /// [`SERVICE_MANAGED_ENV`] exactly as `phux service install` would.
     fn start(home: &Path, seed_command: &str, service_managed: bool) -> Self {
         let mut spawn = common::ServerGuard::builder("login")
             .session("svc")
@@ -93,11 +65,9 @@ impl ServerGuard {
     }
 }
 
-/// Build a fixture `$HOME` whose `~/.profile` prepends `$HOME/bin` to
-/// `PATH` and drops an executable marker script there — the minimal
-/// stand-in for what a Homebrew or Nix installer's profile snippet does.
-/// Read only by a shell invoked in *login* mode; a plain `sh -c` never
-/// sources it, which is exactly the behavior under test.
+/// A fixture `$HOME` whose `~/.profile` prepends `$HOME/bin` (holding an
+/// executable marker) to `PATH`, as Homebrew/Nix profile snippets do. Only a
+/// login shell sources it.
 fn write_profile_fixture() -> TempDir {
     let home = TempDir::new().expect("tempdir");
     let bin = home.path().join("bin");
@@ -124,14 +94,8 @@ fn write_profile_fixture() -> TempDir {
 /// is complete. See [`read_result_file`].
 const RESULT_TERMINATOR: &str = "PHUX_RESULT_END";
 
-/// The seed command every case in this file runs: report `PATH`, try the
-/// `~/.profile`-provided command, then mark the record finished.
-///
-/// The terminator is a separate `printf` rather than part of the marker's own
-/// output because the marker is exactly the thing that may not resolve — when
-/// it does not, the shell's "not found" goes to the same file via `2>&1` and
-/// execution continues, so the terminator still lands. That is what makes it a
-/// completeness signal rather than a second thing to race on.
+/// The seed command: report `PATH`, try the profile-provided command, then
+/// print a terminator (which still lands when the marker is not found).
 fn seed_command(result_path: &Path) -> String {
     format!(
         "{{ printf '%s\\n' \"$PATH\"; phux-profile-marker; printf '%s\\n' \
@@ -140,19 +104,9 @@ fn seed_command(result_path: &Path) -> String {
     )
 }
 
-/// Poll `path` until the seed shell's record is **complete**, or panic at
-/// `deadline`.
-///
-/// Completeness is the terminator line, not a non-empty file. The seed writes
-/// its record with several sequential commands sharing one redirection
-/// (`{ printf; marker; printf; } >file`); the redirection truncates once, but
-/// the writes land at different times, so a read taken between them returns a
-/// prefix. The earlier version of this returned on the first non-empty read
-/// and therefore raced: it usually caught the whole record, and occasionally
-/// caught only the `PATH` line, which then failed the marker assertion and
-/// looked exactly like a real login-shell regression. It was a flake on every
-/// lane that ran this suite before anyone read the seed closely enough to
-/// notice that "one shot" described the truncation, not the writes.
+/// Poll `path` until the record is complete (its terminator line), or panic
+/// at `deadline`: the writes share one truncating redirection but land at
+/// different times, so a non-empty read can be a prefix.
 fn read_result_file(path: &Path, deadline: Duration) -> String {
     let end = Instant::now() + deadline;
     let mut last = String::new();
@@ -172,30 +126,11 @@ fn read_result_file(path: &Path, deadline: Duration) -> String {
     );
 }
 
-/// phux-87rr acceptance criterion 5: an end-to-end regression that starts
-/// the service under a minimal environment and proves the seed pane got
-/// login-shell treatment.
-///
-/// The assertion is "the pane's `PATH` is the one a login `/bin/sh` produces
-/// on this host, and not the one a plain `/bin/sh` produces" — measured
-/// against this host rather than assumed. The older form asserted a fixed
-/// outcome instead (a `~/.profile`-provided command must resolve), which
-/// silently encoded an assumption about the host: that nothing between
-/// `/etc/profile` and `$HOME/.profile` interferes with the fixture.
-///
-/// That assumption broke on a CI image whose `/etc/profile.d` exports
-/// `HOME=/home/runner`. `/etc/profile` runs BEFORE `$HOME/.profile`, so dash
-/// then expanded `$HOME/.profile` to the runner's profile and never read the
-/// fixture's — producing a failure that looked exactly like phux forgetting
-/// the login flag, and cost a five-run CI bisect to tell apart. No behaviour
-/// of phux's can survive that, and no assertion phrased as a fixed outcome
-/// can distinguish it from a real regression.
-///
-/// Comparing against the host's own login shell keeps the full end-to-end
-/// path (real binary, real env detection, real `-l` argv, real PTY, real
-/// shell) while testing only the part phux owns. Where the host does let the
-/// fixture through, the stronger original assertion still runs — see
-/// [`fixture_profile_is_reachable`].
+/// A service-managed server's pane gets the `PATH` a login `/bin/sh` produces
+/// on this host, not a plain one's. Compared against the host's own login
+/// shell because a CI image's `/etc/profile` can redirect `$HOME` before the
+/// fixture is read; where the fixture is reachable, the marker must resolve
+/// too (see [`fixture_profile_is_reachable`]).
 #[test]
 fn service_managed_pane_resolves_a_profile_provided_command() {
     let home = write_profile_fixture();
@@ -234,12 +169,7 @@ fn service_managed_pane_resolves_a_profile_provided_command() {
     }
 }
 
-/// Whether this host's login shell actually reached the fixture's
-/// `~/.profile` — true when the login `PATH` contains the fixture's `bin`.
-///
-/// False on a host whose `/etc/profile` interferes with `$HOME` before dash
-/// expands `$HOME/.profile`; there the fixture cannot be observed at all and
-/// the marker assertion would be testing the image, not phux.
+/// Whether this host's login shell reached the fixture's `~/.profile`.
 fn fixture_profile_is_reachable(home: &Path, login_probe: &str) -> bool {
     login_probe.contains(&home.join("bin").display().to_string())
 }
@@ -274,14 +204,8 @@ fn diagnostics(home: &Path, login: &str, plain: &str) -> String {
     )
 }
 
-/// Run `/bin/sh [-l] -c` against the fixture `$HOME` under exactly the
-/// environment [`ServerGuard::start`] gives the server, and return what the
-/// shell expanded `expr` to.
-///
-/// This is the reference the pane is compared against: it isolates "what does
-/// a login shell do on THIS host" from "what did phux ask for", two questions
-/// whose answers used to be conflated in one assertion. Telling them apart
-/// once cost a five-run CI bisect.
+/// Run `/bin/sh [-l] -c expr` under the server's exact environment and
+/// return the expansion: the host reference the pane is compared against.
 fn probe_shell(home: &Path, login: bool, expr: &str) -> String {
     let mut cmd = Command::new("/bin/sh");
     cmd.env_clear();
@@ -321,11 +245,8 @@ fn probe_system_profile() -> String {
     }
 }
 
-/// phux-87rr acceptance criterion 6: existing direct/server-in-terminal
-/// pane startup remains regression-free. Same profile fixture, same
-/// command, only the service marker is missing — the command must NOT
-/// resolve, proving login-shell treatment stayed conditional rather than
-/// becoming the new default for every server.
+/// A server without the marker keeps plain shells: the profile command must
+/// not resolve.
 #[test]
 fn ordinary_pane_does_not_source_the_profile_twice() {
     let home = write_profile_fixture();

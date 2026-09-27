@@ -125,15 +125,8 @@ fn live_server() -> (PathBuf, Cleanup) {
     (socket, cleanup)
 }
 
-/// The promise, end to end: the policy is corrected, the operator's flags
-/// survive, and the server that was running is still running.
-///
-/// Each of the three is a distinct historical failure. The policy is
-/// phux-zomb.4. The surviving flags are phux-l1yx obstacle 1 — a reinstall
-/// re-renders from a fresh `ServicePlan`, so a `--hub`/`--socket` the operator
-/// does not retype is dropped without a word. The live server is phux-nvi2:
-/// `phux doctor` recommended the reinstall in a Warn that exits 0 and reads as
-/// routine housekeeping, and following it ended every pane.
+/// The policy is corrected, the operator's flags (`--hub`, `--socket`)
+/// survive, and the running server is still running.
 #[test]
 fn reconcile_corrects_the_policy_without_stopping_the_server() {
     let (socket, _cleanup) = live_server();
@@ -194,15 +187,8 @@ fn reconcile_corrects_the_policy_without_stopping_the_server() {
     );
 }
 
-/// The per-platform honesty requirement, asserted rather than trusted.
-///
-/// systemd re-reads a unit file without touching the running service, so the
-/// corrected policy is genuinely in force. launchd cannot: a loaded job keeps
-/// the policy it was bootstrapped with, and the only way to replace it stops
-/// the job. The output has to say which of those two worlds the user is in.
-///
-/// A command that reports a fix it did not make is worse than one that admits
-/// the limit and names the cost of working around it, so this pins the admission.
+/// The output says whether the new policy is in force: systemd re-reads the
+/// unit live; launchd keeps the bootstrapped policy until the job restarts.
 #[test]
 fn reconcile_says_whether_the_new_policy_is_actually_in_force() {
     let (socket, _cleanup) = live_server();
@@ -244,13 +230,7 @@ fn reconcile_says_whether_the_new_policy_is_actually_in_force() {
     );
 }
 
-/// `--print` is a dry run, on the same terms as `install --print`: it renders
-/// what would land and writes nothing.
-///
-/// Without this, "reconcile rewrites the unit" could reasonably be implemented
-/// as write-then-print, and the one mode that exists so an operator can review
-/// a rewrite of a hand-tuned unit *before* it happens would not be a review at
-/// all.
+/// `--print` renders what would land and writes nothing.
 #[test]
 fn print_renders_the_reconciled_unit_without_writing_it() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -285,17 +265,8 @@ fn print_renders_the_reconciled_unit_without_writing_it() {
     );
 }
 
-/// The journey phux-nvi2 documented, closed at its other end.
-///
-/// A user with a legacy unit reads `phux doctor`, is told to re-run `phux
-/// service install`, does so, and lands on the phux-67wg refusal ("a server is
-/// already running"). At that point the only remaining instruction is "stop
-/// the running server", which costs them everything. The refusal has to say
-/// that the thing they were actually trying to do — correct the restart policy
-/// — no longer requires any of that.
-///
-/// This only fires when the installed unit really is legacy, so a plain
-/// "install over a live server" refusal stays as short as it was.
+/// `install` over a live server with a legacy unit points at the
+/// non-destructive `reconcile` instead of "stop the server".
 #[test]
 fn install_over_a_live_server_points_at_the_non_destructive_path() {
     let (socket, _cleanup) = live_server();
@@ -326,12 +297,7 @@ fn install_over_a_live_server_points_at_the_non_destructive_path() {
     );
 }
 
-/// With no unit installed there is nothing to reconcile, and saying so is not
-/// the same as claiming success.
-///
-/// `phux service reconcile && <next step>` must not run its right-hand side
-/// when nothing was reconciled — the same contract `install` keeps on a
-/// platform with no generator.
+/// With no unit installed, reconcile fails rather than claiming success.
 #[test]
 fn reconcile_reports_a_missing_unit_instead_of_claiming_success() {
     let home = tempfile::tempdir().expect("sandboxed home");

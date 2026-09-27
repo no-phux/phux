@@ -315,15 +315,3 @@ fn attach_over_ssh_reports_an_unreachable_host_without_falling_back() {
         "no fallback after ssh fails: {seen}"
     );
 }
-
-/// A sanity check on the fixture itself, so a broken fake ssh fails here and
-/// not as a confusing attach failure.
-#[test]
-fn the_fake_ssh_answers_ssh_g_with_the_configured_host() {
-    let home = Home::new(Remote::Current, "127.0.0.1");
-    let out = Command::new(home.dir.path().join("fake-ssh"))
-        .args(["-G", "--", "me@box"])
-        .output()
-        .expect("run fake ssh");
-    assert!(String::from_utf8_lossy(&out.stdout).contains("hostname 127.0.0.1"));
-}

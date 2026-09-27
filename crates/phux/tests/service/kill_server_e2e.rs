@@ -58,13 +58,8 @@ fn status_pid(socket: &Path) -> u32 {
         .expect("server pid fits u32")
 }
 
-/// The contract: the server stops, and the socket is gone when the command
-/// returns.
-///
-/// Asserting on the socket rather than on the exit code is deliberate. The
-/// caller's next act is usually to start a replacement, and a command that
-/// returns while the old server still holds the socket makes that fail —
-/// which is the bug `phux service install` hits (phux-67wg).
+/// The server stops and the socket is gone when the command returns, so a
+/// replacement can start immediately.
 #[test]
 fn kill_server_stops_the_server_and_frees_the_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -99,11 +94,8 @@ fn kill_server_stops_the_server_and_frees_the_socket() {
     );
 }
 
-/// Stopping something already stopped is success.
-///
-/// "Make it not be running" is the caller's actual intent, and a script that
-/// stops a server it is not sure is up should not need to branch. This is
-/// also what lets the `Cleanup` guard above run unconditionally.
+/// Stopping something already stopped is success (the intent is "not
+/// running").
 #[test]
 fn kill_server_is_idempotent() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -156,11 +148,8 @@ fn kill_server_reaps_a_stale_socket() {
     );
 }
 
-/// `--server` and a selector are mutually exclusive, and one is required.
-///
-/// Guards the direction this could regress in: `kill` previously took a
-/// required positional, so making it optional to admit `--server` must not
-/// turn a bare `phux kill` into a no-op that exits 0.
+/// `--server` and a selector are exclusive and one is required: a bare
+/// `phux kill` must not become an exit-0 no-op.
 #[test]
 fn kill_requires_exactly_one_of_target_or_server() {
     let bare = Command::new(PHUX)

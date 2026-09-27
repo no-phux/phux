@@ -25,15 +25,9 @@ struct Cleanup {
     _dir: tempfile::TempDir,
 }
 
-/// Every unit path `phux service install` could write, under a sandboxed home.
-///
-/// Both platforms' paths are checked regardless of which one this build
-/// targets, so the assertion does not silently become a no-op on the other.
-///
-/// Both *profiles* are checked for the same reason (phux-gyza): the unit name
-/// is scoped by the ADR-0080 profile, and a test binary resolves to `dev`, so
-/// checking only the default-profile names would let a regression write the
-/// file this suite exists to prove is never written.
+/// Every unit path `phux service install` could write under a sandboxed home:
+/// both platforms and both profiles (a test binary resolves `dev`), so the
+/// absence check can never become a no-op.
 fn unit_paths_under(home: &Path) -> [std::path::PathBuf; 4] {
     [
         home.join("Library/LaunchAgents/com.phux.server.plist"),
@@ -43,23 +37,9 @@ fn unit_paths_under(home: &Path) -> [std::path::PathBuf; 4] {
     ]
 }
 
-/// Redirect a child `phux` at a sandboxed home, so nothing it writes can
-/// land in the developer's real one. See this module's header.
-///
-/// `XDG_STATE_HOME` is redirected for the same reason as the other two, and it
-/// is load-bearing for `--adopt`: that path writes an adoption marker into the
-/// state directory, and a marker in the *developer's real* state directory
-/// would make their next cold `phux` try to bootstrap a service unit
-/// (ADR-0088). Sandboxing the state dir keeps the marker inside the tempdir
-/// that is deleted with the test.
-///
-/// `PHUX_TAILSCALE` names a program that cannot exist, which turns overlay
-/// detection off (setting the variable also suppresses the CGNAT route
-/// heuristic). Redirecting the XDG dirs sandboxes *files*; it does nothing
-/// about the one check in `phux doctor` that leaves the machine, and this
-/// file runs `doctor --json` twice (phux-vlv1). A nonexistent program
-/// rather than a stub script: a failed `execve` cannot blow the 2s
-/// detection deadline the way a `/bin/sh` stub can on a loaded box.
+/// A `phux` command confined to a sandboxed home: `HOME`, XDG config, and XDG
+/// state (where `--adopt` writes its marker) all point into the tempdir, and a
+/// nonexistent `PHUX_TAILSCALE` keeps `doctor` off the network.
 fn sandboxed(home: &Path) -> Command {
     let mut cmd = Command::new(PHUX);
     cmd.env("HOME", home)
@@ -133,12 +113,7 @@ fn install_refuses_while_a_server_holds_the_socket() {
     }
 }
 
-/// The direction the fix could over-correct in: a `--print` dry run touches
-/// nothing and must keep working regardless of what is running.
-///
-/// Without this, "refuse when a server is live" could reasonably be
-/// implemented one step too early and break the one subcommand whose entire
-/// purpose is to be safe to run at any time.
+/// `--print` is a dry run and must keep working whatever is running.
 #[test]
 fn print_still_renders_while_a_server_holds_the_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -184,22 +159,9 @@ fn print_still_renders_while_a_server_holds_the_socket() {
     }
 }
 
-/// The way past the refusal that costs neither the panes nor a crash-loop
-/// (phux-m3ot, ADR-0088).
-///
-/// Three properties, and all three are the point:
-///
-///   1. **The unit is written.** Unlike every other test here, `--adopt`
-///      commits the supervision — so this asserts the file exists rather than
-///      that it does not.
-///   2. **The incumbent is untouched.** No signal, no `bootout`, no
-///      `enable --now`; the server that held the socket before the install
-///      still answers on it afterwards, with its panes.
-///   3. **The output does not claim more than it did.** An adopt install that
-///      printed the ordinary "phux service installed." banner would leave the
-///      user believing their running server is now restart-supervised, which
-///      is the one wrong belief this path exists to prevent — no supervisor
-///      can adopt a pid it did not start.
+/// `--adopt` (ADR-0088): the unit is written, the incumbent server keeps its
+/// socket and panes (no signal, bootout, or `enable --now`), and the output
+/// does not claim the running server is now supervised.
 #[test]
 fn adopt_installs_over_a_live_server_without_stopping_it() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -274,14 +236,8 @@ fn adopt_installs_over_a_live_server_without_stopping_it() {
          'your running server is supervised now'.\nstdout: {stdout}"
     );
 
-    // (4) The armed state is scoped to the socket the unit was armed against.
-    //
-    // `phux doctor` reports armed supervision (ADR-0088, phux-8514), and its
-    // reader had dropped the socket guard `complete_pending_adoption` keeps —
-    // so a marker armed for *this* socket would have warned on every other
-    // instance diagnosed from the same home, describing a server that is not
-    // the one the rest of the run is about. Both directions are asserted,
-    // because a guard that says "no" to everything would also pass the first.
+    // (4) The armed state is scoped to the socket it was armed against: doctor
+    // warns for this socket and not for another from the same home.
     let elsewhere = home.path().join("unrelated.sock");
     let unrelated = sandboxed(home.path())
         .args(["doctor", "--json", "--socket"])

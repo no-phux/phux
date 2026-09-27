@@ -10,11 +10,8 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -70,82 +67,11 @@ const ATTACH_PTY: (u16, u16) = (100, 24);
 /// How long an attach gets to hand the server its post-chrome pane size.
 const ATTACH_DEADLINE: Duration = Duration::from_secs(20);
 
-/// A real `phux attach` running in a pseudoterminal, killed on drop.
-///
-/// Nothing is typed into it: the whole point is what the client does on its
-/// own between `ATTACH` and the first idle frame.
-struct AttachedClient {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    _config: tempfile::TempDir,
-}
-
-impl Drop for AttachedClient {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl AttachedClient {
-    /// Attach to `server` through a `cols x rows` PTY under an empty
-    /// `XDG_CONFIG_HOME`, so the client runs on the embedded `default.toml` —
-    /// which ships a bottom `[status]` bar. That default is load-bearing here:
-    /// with no bar there is no reserved row and nothing to get wrong.
-    fn start(server: &ServerGuard, (cols, rows): (u16, u16)) -> Self {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open attach PTY");
-        let config = tempfile::tempdir().expect("isolated config dir");
-        let mut command = CommandBuilder::new(PHUX);
-        command.args([
-            "attach",
-            "--socket",
-            server.socket.to_str().expect("UTF-8 socket"),
-            SESSION,
-        ]);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        command.env("RUST_LOG", "off");
-        command.env("XDG_CONFIG_HOME", config.path());
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .expect("spawn attached TUI");
-        drop(pair.slave);
-
-        // Drain the paint stream so a full PTY buffer can never backpressure
-        // the client into stalling before it emits its reflow.
-        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        std::thread::spawn(move || {
-            let mut bytes = [0u8; 8192];
-            while let Ok(read) = reader.read(&mut bytes) {
-                if read == 0 {
-                    break;
-                }
-            }
-        });
-        Self {
-            child,
-            _config: config,
-        }
-    }
-}
-
 #[test]
 #[ignore = "spawns a real phux server and an attached PTY client; run via `just e2e`."]
 fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
-    // phux-e9fd. The server sizes each pane from `ATTACH.viewport`, which is
-    // the client's OUTER terminal — status bar included. The client paints
-    // panes into the content rect, one row shorter. Nothing reconciled the
-    // two at attach, so the pane's bottom line lived on a row the client
-    // never painted and the bar appeared to have eaten it. It "fixed itself"
-    // on the next resize/split/sidebar toggle purely because those paths do
-    // emit `RESIZE_TERMINAL`.
+    // `ATTACH.viewport` is the outer terminal; the client must resize the
+    // pane to the content rect, one row shorter for the status bar.
     let server = ServerGuard::start();
     assert_eq!(
         server.pane_size(),
@@ -154,7 +80,8 @@ fn attach_sizes_the_pane_to_the_viewport_minus_the_status_bar() {
          below could pass without the attach doing anything"
     );
 
-    let _client = AttachedClient::start(&server, ATTACH_PTY);
+    // An empty config runs the embedded defaults, which ship the status bar.
+    let _client = common::PtyAttach::start(&server.socket, &[SESSION], ATTACH_PTY, &[]);
 
     let (cols, rows) = ATTACH_PTY;
     // phux-k0cw: the content rect is narrower as well as shorter now — the

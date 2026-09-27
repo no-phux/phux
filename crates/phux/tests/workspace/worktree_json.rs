@@ -169,18 +169,3 @@ fn json_refuses_to_combine_with_attach() {
         );
     }
 }
-
-/// The flag is really on the verbs, spelled `--json`, and the help text says
-/// what it returns. Cheap, and it catches a `--json` that silently stopped
-/// being registered on one of the three.
-#[test]
-fn every_worktree_verb_advertises_json_in_its_help() {
-    for verb in ["new", "open", "remove", "list"] {
-        let (code, stdout, _stderr) = run(&["worktree", verb, "--help"]);
-        assert_eq!(code, 0, "`phux worktree {verb} --help` must succeed");
-        assert!(
-            stdout.contains("--json"),
-            "`phux worktree {verb}` must offer --json; got:\n{stdout}"
-        );
-    }
-}

@@ -14,9 +14,7 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
     let out = crate::common::phux_cmd(PHUX)
-        // The allowlist is env-extensible on purpose; a developer who has
-        // this set must not turn `target/debug` into a "recognized" install
-        // and quietly disarm the unknown-source scenarios below.
+        // A developer's allowlist must not make `target/` a recognized install.
         .env_remove("PHUX_INSTALL_DIR")
         .args(args)
         .output()
@@ -56,34 +54,27 @@ fn an_unrecognized_install_location_is_refused_not_overwritten() {
     );
 }
 
-/// The same refusal, as the machine contract: one JSON object on stderr,
-/// stdout empty, the closed-vocabulary code, and the exit code embedded.
+/// The same refusal as the JSON contract, also for `--rollback` (before it
+/// looks for a backup) and `--channel next`.
 #[test]
 fn the_unknown_source_refusal_follows_the_json_error_contract() {
-    let (code, stdout, stderr) = run(&["update", "--json"]);
-    assert_eq!(code, 2);
-    assert!(stdout.is_empty(), "stdout must stay empty: {stdout}");
-    let doc = json_error(&stderr);
-    assert_eq!(doc["schema_version"], 1);
-    assert_eq!(doc["error"]["code"], "update_source_unsupported");
-    assert_eq!(doc["exit_code"], 2);
-    assert!(
-        doc["remedy"].as_str().is_some_and(|r| !r.is_empty()),
-        "a refusal with no remedy is a dead end: {doc}"
-    );
-}
-
-/// `--rollback` is refused by the same source check, before it goes looking
-/// for a backup directory to move files out of.
-#[test]
-fn rollback_is_refused_on_an_install_phux_does_not_own() {
-    let (code, stdout, stderr) = run(&["update", "--rollback", "--json"]);
-    assert_eq!(code, 2);
-    assert!(stdout.is_empty());
-    assert_eq!(
-        json_error(&stderr)["error"]["code"],
-        "update_source_unsupported"
-    );
+    for args in [
+        &["update", "--json"][..],
+        &["update", "--rollback", "--json"][..],
+        &["update", "--channel", "next", "--json"][..],
+    ] {
+        let (code, stdout, stderr) = run(args);
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+        assert!(stdout.is_empty(), "{args:?}: {stdout}");
+        let doc = json_error(&stderr);
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["error"]["code"], "update_source_unsupported");
+        assert_eq!(doc["exit_code"], 2);
+        assert!(
+            doc["remedy"].as_str().is_some_and(|r| !r.is_empty()),
+            "{doc}"
+        );
+    }
 }
 
 /// A bad `--version` is diagnosed offline: tag validation runs before the
@@ -121,19 +112,6 @@ fn a_channel_that_is_not_stable_or_next_is_refused_without_network() {
     );
 }
 
-/// `--channel next` on an unrecognized install is still a source refusal,
-/// before anything reaches the network.
-#[test]
-fn next_channel_does_not_bypass_the_unknown_source_refusal() {
-    let (code, stdout, stderr) = run(&["update", "--channel", "next", "--json"]);
-    assert_eq!(code, 2, "stderr:\n{stderr}");
-    assert!(stdout.is_empty());
-    assert_eq!(
-        json_error(&stderr)["error"]["code"],
-        "update_source_unsupported"
-    );
-}
-
 /// `--check` reports; `--dry-run` and `--rollback` act. Combining them is a
 /// usage error caught by clap rather than a silently-ignored flag.
 #[test]
@@ -168,32 +146,5 @@ fn upgrade_remains_the_local_re_exec_primitive() {
     assert!(
         stderr.contains("no server running"),
         "upgrade must still name the missing server:\n{stderr}"
-    );
-}
-
-/// Both verbs are in the help tree and each points at the other's job, so a
-/// user who reaches for the wrong one is told which one they wanted.
-#[test]
-fn help_distinguishes_update_from_upgrade() {
-    let (code, stdout, _) = run(&["update", "--help"]);
-    assert_eq!(code, 0);
-    // usage-rs wraps long help to the terminal width, so match on
-    // whitespace-normalized text rather than a single source line.
-    let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        flat.contains("verifies it against the checksum"),
-        "`update --help` must teach the checksum step:\n{stdout}"
-    );
-    assert!(stdout.contains("--rollback"));
-
-    let (code, stdout, _) = run(&["upgrade", "--help"]);
-    assert_eq!(code, 0);
-    assert!(
-        stdout.contains("downloads nothing"),
-        "`upgrade --help` must say it does not fetch:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("phux update"),
-        "`upgrade --help` must point at the verb that does:\n{stdout}"
     );
 }

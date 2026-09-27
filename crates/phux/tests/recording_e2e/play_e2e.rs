@@ -14,19 +14,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-/// The seed pane's id. Every server here starts with exactly one pane, so
-/// this is the pane `.` resolves to and the pane playback is placed beside.
+/// The seed pane: the one pane every server here starts with.
 const SEED_PANE: &str = "@1";
 
-/// The grid a pane gets with nobody attached. Every geometry assertion below
-/// is written against a size that is NOT this, so none can pass by accident.
+/// The grid a pane gets with nobody attached; the fixture sizes differ.
 const NO_TTY_DEFAULT: (u64, u64) = (80, 24);
 
-/// The fixture's header grid — deliberately unlike [`NO_TTY_DEFAULT`].
+/// The fixture's header grid.
 const FIXTURE_HEADER: (u64, u64) = (100, 30);
 
-/// The grid the fixture's mid-stream `r` event asks for — unlike both of the
-/// above, so observing it can only mean the resize event was honored.
+/// The grid the fixture's mid-stream `r` event asks for.
 const FIXTURE_RESIZED: (u64, u64) = (64, 18);
 
 /// Text the fixture paints before its resize event.
@@ -35,19 +32,13 @@ const MARKER_ONE: &str = "PHUX-PLAYBACK-MARKER-ONE";
 /// Text the fixture paints after its resize event.
 const MARKER_TWO: &str = "PHUX-PLAYBACK-MARKER-TWO";
 
-/// The fixture's bare-line-feed probe: five columns of text, a lone `\n`
-/// (NOT `\r\n`), then one more character. See
-/// `recorded_bytes_reach_the_pane_untranslated`.
+/// The fixture's bare-line-feed probe: `LFCOL`, a lone `\n`, then `X`.
 const LF_PROBE: &str = "LFCOL";
 
-/// What the probe must paint on the following row: the `X` stays in the
-/// column the line feed left it in, five cells across.
+/// The probe's next row: the `X` keeps its column.
 const LF_PROBE_NEXT_ROW: &str = "     X";
 
-/// Ceiling on any "the pane reached this state" poll.
-///
-/// A HANG detector, not a timing gate: this is far above every fixture's
-/// timeline and can only elapse if the state is never coming.
+/// Hang detector for every "the pane reached this state" poll.
 const STATE_DEADLINE: Duration = Duration::from_secs(45);
 
 /// Poll cadence for every wait loop in this file.
@@ -56,9 +47,7 @@ const POLL: Duration = Duration::from_millis(100);
 /// Monotonic counter so concurrent tests never collide on a socket path.
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-/// The committed demo recording — a real 80x24 phux session, not a
-/// synthetic file. Playing it is the closest this lane gets to what a user
-/// will actually do.
+/// The committed demo recording, a real 80x24 phux session.
 fn demo_cast() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/assets/recording-demo.cast")
@@ -66,10 +55,8 @@ fn demo_cast() -> PathBuf {
         .expect("the committed demo cast must exist")
 }
 
-/// The committed asciicast **v3** recording that backs
-/// `docs/pi-live-fleet-proof.md`. Produced by asciinema itself, not by phux,
-/// which is what makes it worth playing: v3 stores event times as relative
-/// intervals rather than absolute offsets.
+/// A committed asciicast v3 recording made by asciinema (relative event
+/// intervals, grid nested under `term`).
 fn v3_cast() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/assets/pi-live-fleet.cast")
@@ -77,13 +64,10 @@ fn v3_cast() -> PathBuf {
         .expect("the committed v3 cast must exist")
 }
 
-/// That recording's grid, which v3 nests under `term` rather than putting
-/// flat on the header.
 const V3_HEADER: (u64, u64) = (140, 40);
 
-/// The purpose-built fixture: a 100x30 header, a marker, a mid-stream resize
-/// to 64x18, and a second marker. Three geometries that cannot be confused
-/// with each other, which is what makes the fit assertions falsifiable.
+/// The fixture: a 100x30 header, a marker, a resize to 64x18, a second
+/// marker, and the line-feed probe.
 fn fixture_cast() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/play-fit.cast")
@@ -106,10 +90,7 @@ impl ServerGuard {
         Self(common::ServerGuard::start("play"))
     }
 
-    /// Start a playback and return the pane it created, from `--json`.
-    ///
-    /// The positional order is the verb's own — `phux play FILE [TARGET]` —
-    /// so `target` goes after the cast, not into `extra`.
+    /// Start a playback (`phux play FILE [TARGET]`) and return its pane.
     fn play(&self, extra: &[&str], cast: &Path, target: Option<&str>) -> String {
         let cast = cast.to_string_lossy().into_owned();
         let mut args = vec!["play", "--json"];
@@ -125,10 +106,7 @@ impl ServerGuard {
         format!("@{id}")
     }
 
-    /// A pane's screen as `GET_SCREEN` projects it: `(cols, rows, lines)`.
-    ///
-    /// `None` when the pane is gone, which is how the `--close` test tells
-    /// "playback ended and closed" from "playback is still running".
+    /// A pane's `(cols, rows, lines)`, or `None` once it is gone.
     fn screen(&self, pane: &str) -> Option<(u64, u64, Vec<String>)> {
         let (code, stdout, _) = self.run(&["snapshot", "--json", pane]);
         if code != 0 {
@@ -187,31 +165,35 @@ impl ServerGuard {
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn playback_paints_the_recorded_screen_into_a_real_pane() {
     let server = ServerGuard::start();
-    // Played fast, because this assertion is about *what* landed on the
-    // grid, not when. Speed scales the deadlines and nothing else — no event
-    // is dropped, merged, or resampled — so the final screen is identical to
-    // the one a real-time playback would leave.
-    let pane = server.play(&["--speed", "50"], &demo_cast(), None);
+    // Speed scales deadlines only, so the final screen is the real-time one.
+    let pane = server.play(&["--speed", "50"], &demo_cast(), Some(SEED_PANE));
+    assert_ne!(pane, SEED_PANE, "playback must create its own pane");
 
-    // These are lines the demo recording actually painted, read back out of
-    // the pane's own libghostty grid. Nothing in the playback path invents
-    // them and nothing but a working PTY write can put them there.
-    for line in [
+    let recorded = [
         "recdemo: 1 window",
         "$ phux rec work -o /tmp/inner.cast --duration 6",
         "phux: wrote /tmp/inner.gif (5.6 KiB, 5 frames, 3.8s)",
-    ] {
+    ];
+    for line in recorded {
         server.wait_for(&pane, line, |server, pane| server.text(pane).contains(line));
     }
-
-    // The recording is 80x24 and so is a no-TTY pane, so this says only that
-    // the fit did not *break* anything. The fixture test is what proves the
-    // fit moves a grid.
     assert_eq!(server.size(&pane), Some(NO_TTY_DEFAULT));
 
-    // Wait for the writer's completion signal rather than guessing how long
-    // persistence ought to take. The writer sets this title only after the
-    // final event, immediately before entering its hold.
+    // TARGET says where the pane goes, never what is overwritten (ADR-0064).
+    let target = server.text(SEED_PANE);
+    for line in recorded {
+        assert!(
+            !target.contains(line),
+            "leaked {line:?} into TARGET: {target:?}"
+        );
+    }
+    assert_eq!(
+        server.size(SEED_PANE),
+        Some(NO_TTY_DEFAULT),
+        "fitting the playback pane must not resize TARGET"
+    );
+
+    // The writer sets the ended title after the final event, then holds.
     server.wait_for(&pane, "the playback's ended title", |server, pane| {
         server
             .title(pane)
@@ -220,43 +202,6 @@ fn playback_paints_the_recorded_screen_into_a_real_pane() {
     assert!(
         server.screen(&pane).is_some(),
         "the playback pane must hold its final frame until it is killed"
-    );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn never_writes_into_the_target_pane() {
-    let server = ServerGuard::start();
-    let pane = server.play(&["--speed", "50"], &demo_cast(), Some(SEED_PANE));
-    assert_ne!(pane, SEED_PANE, "playback must create its own pane");
-    server.wait_for(&pane, "the recording's first line", |server, pane| {
-        server.text(pane).contains("recdemo: 1 window")
-    });
-
-    // TARGET says WHERE the playback pane goes, never what gets overwritten
-    // (ADR-0064 decision 4). The seed pane has a live shell in it; if
-    // playback could reach an existing pane, this is where the recording's
-    // text would show up.
-    //
-    // Stated as "none of the recording's lines appear here" rather than
-    // "this pane's screen never changed": the target holds a real
-    // interactive shell, which paints its own prompt on its own schedule,
-    // and an equality assertion would be testing the user's zsh config.
-    let target = server.text(SEED_PANE);
-    for line in [
-        "recdemo: 1 window",
-        "$ phux rec work -o /tmp/inner.cast --duration 6",
-        "phux: wrote /tmp/inner.gif (5.6 KiB, 5 frames, 3.8s)",
-    ] {
-        assert!(
-            !target.contains(line),
-            "playback leaked {line:?} into the TARGET pane: {target:?}"
-        );
-    }
-    assert_eq!(
-        server.size(SEED_PANE),
-        Some(NO_TTY_DEFAULT),
-        "fitting the playback pane to the recording must not resize TARGET"
     );
 }
 
@@ -271,24 +216,15 @@ fn the_pane_is_fitted_to_the_recording_and_to_its_resize_events() {
          geometry assertions below could pass without a resize happening"
     );
 
-    // Real speed: the fixture holds 100x30 for three seconds before its
-    // resize event, and that hold is what makes the two states observable in
-    // sequence rather than as a single end state.
+    // Real speed: the fixture's 3s hold makes both grids observable.
     let pane = server.play(&[], &fixture_cast(), None);
 
-    // 1. The header's grid, applied before the first byte — this is the fit
-    //    that keeps a recording from wrapping in the wrong places.
     server.wait_for(&pane, "the recording's header grid", |server, pane| {
         server.size(pane) == Some(FIXTURE_HEADER)
     });
-    // 2. The `r` event's grid. Neither 80x24 nor 100x30, so nothing but the
-    //    recorded resize can produce it.
     server.wait_for(&pane, "the recorded resize", |server, pane| {
         server.size(pane) == Some(FIXTURE_RESIZED)
     });
-    // 3. The bytes *after* the resize, which arrive 100 ms behind it —
-    //    waited for rather than assumed, because reading the grid the
-    //    instant the size changes is a race this test lost once already.
     server.wait_for(&pane, "the post-resize marker", |server, pane| {
         server.text(pane).contains(MARKER_TWO)
     });
@@ -310,11 +246,7 @@ fn the_pane_is_fitted_to_the_recording_and_to_its_resize_events() {
 fn recorded_bytes_reach_the_pane_untranslated() {
     let server = ServerGuard::start();
     let pane = server.play(&["--idle-limit", "0.2"], &fixture_cast(), None);
-    // Waited for as "the row after the probe is non-empty", NOT as "some row
-    // contains an X": every other marker on this screen contains one (`PHUX`),
-    // so the obvious predicate is satisfied before the probe has painted
-    // anything and the assertion below then reads a blank row. That is
-    // exactly how this test failed under parallel load the first time.
+    // Wait on the probe's next row itself: other markers also contain `X`.
     server.wait_for(&pane, "the probe's second row", |server, pane| {
         server.screen(pane).is_some_and(|(_, _, lines)| {
             lines
@@ -325,14 +257,8 @@ fn recorded_bytes_reach_the_pane_untranslated() {
         })
     });
 
-    // The probe writes `LFCOL`, then a BARE line feed, then `X`. A line feed
-    // moves down a row and leaves the column alone, so the `X` must land in
-    // column 5. If it lands in column 0, the pane's line discipline rewrote
-    // the recording's `\n` into `\r\n` on the way through (`ONLCR`) and
-    // playback is delivering a translation of the cast rather than the cast.
-    // That is the entire reason the in-pane writer clears `OPOST`, and it is
-    // invisible to every other assertion in this file because ordinary
-    // recorded output already carries its own carriage returns.
+    // A bare line feed keeps the column; column 0 would mean `ONLCR`
+    // rewrote the recording (the writer clears `OPOST` to prevent it).
     let (_, _, lines) = server.screen(&pane).expect("the pane is alive");
     let probe_row = lines
         .iter()
@@ -349,13 +275,6 @@ fn recorded_bytes_reach_the_pane_untranslated() {
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn an_asciicast_v3_recording_plays_too() {
     let server = ServerGuard::start();
-    // v3 is not a variant of v2: its header nests the grid under `term` and
-    // its event times are relative intervals, so a reader that tolerated a
-    // v3 header while treating the intervals as absolute offsets would play
-    // a four-minute recording in a fraction of a second. Both halves are
-    // observable here — the grid, because the fit uses the parsed header,
-    // and the timebase, because a mis-read one would finish before the first
-    // poll rather than painting progressively.
     let pane = server.play(&["--speed", "50", "--idle-limit", "0.1"], &v3_cast(), None);
     server.wait_for(&pane, "the v3 header's grid", |server, pane| {
         server.size(pane) == Some(V3_HEADER)
@@ -371,16 +290,11 @@ fn an_asciicast_v3_recording_plays_too() {
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn no_fit_leaves_the_grid_alone() {
     let server = ServerGuard::start();
-    // `--idle-limit` collapses the fixture's three-second hold, because this
-    // test only cares about the end state.
     let pane = server.play(&["--no-fit", "--idle-limit", "0.2"], &fixture_cast(), None);
     server.wait_for(&pane, "the end of the recording", |server, pane| {
         server.text(pane).contains(MARKER_TWO)
     });
 
-    // Both the header fit AND the mid-stream resize event are suppressed: a
-    // caller that pinned the grid meant it, and honoring one but not the
-    // other would be the worst of both.
     assert_eq!(
         server.size(&pane),
         Some(NO_TTY_DEFAULT),
@@ -407,15 +321,7 @@ fn close_ends_the_pane_when_playback_ends() {
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn loop_replays_the_recording_more_than_once() {
     let server = ServerGuard::start();
-    // Counted, not inferred from elapsed playback time. `phux rec` subscribes
-    // to the playback pane as a pure observer and writes every byte it sees
-    // into a cast; the marker appears once per pass, so its count is a hard
-    // statement about how many passes ran.
-    //
-    // An open-ended loop lets the recorder establish its subscription before
-    // the one-second observation window begins. Collapsing the fixture's long
-    // idle gap then fits several complete passes in that window without
-    // weakening the marker-count assertion.
+    // Passes are counted from a `phux rec` observer: one marker per pass.
     let pane = server.play(
         &["--loop", "--speed", "3", "--idle-limit", "0.2"],
         &fixture_cast(),
@@ -458,9 +364,6 @@ fn a_file_that_is_not_a_cast_fails_before_any_pane_is_created() {
         stderr.contains("not-a-cast") || stderr.contains(&junk.display().to_string()),
         "the diagnostic must name the file: {stderr}"
     );
-    // Validation happens in the caller's terminal, before the spawn — the
-    // failure must not leave a pane behind that flashed an error at a grid
-    // nobody was watching.
     assert_eq!(
         server.size("@2"),
         None,
@@ -496,9 +399,7 @@ fn json_names_the_pane_and_the_recording() {
     assert_eq!(doc["events"], 5);
     assert_eq!(doc["passes"], 1);
     assert_eq!(doc["idle_limit"], 0.5);
-    // The fixture's 3s gap clamped to 0.5s, then 200ms of tail events,
-    // halved by --speed 2: 350ms. The reported duration is the wait the
-    // caller is actually in for, which is the only version worth printing.
+    // 3s gap clamped to 0.5s, plus 200ms of tail, halved by --speed 2.
     assert_eq!(doc["duration_ms"], 350);
     assert_eq!(
         doc["path"],

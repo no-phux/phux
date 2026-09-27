@@ -20,12 +20,8 @@ const SERVER_DEADLINE: Duration = Duration::from_secs(30);
 const GRACEFUL_DEADLINE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(50);
 
-/// Poll `socket` until a Unix stream connect succeeds, or `SERVER_DEADLINE`
-/// elapses.
-///
-/// Waiting on accept rather than on the file existing is the property the
-/// service suites need: a stale socket file is exactly the case those tests
-/// distinguish. Four suites used to copy this loop (phux-n0du).
+/// Poll `socket` until a connect succeeds (not merely until the file exists:
+/// a stale file is what the service suites distinguish), or time out.
 pub fn wait_until_accepting(socket: &Path) -> bool {
     let deadline = Instant::now() + SERVER_DEADLINE;
     while Instant::now() < deadline {
@@ -108,21 +104,9 @@ pub struct AutoSpawnedServer {
 }
 
 impl AutoSpawnedServer {
-    /// The environment pair that bounds a daemon this type could not reap.
-    ///
-    /// It lives here, on the type whose existence *is* the hazard —
-    /// constructing one means an auto-spawned daemon can outlive the harness
-    /// if the runner is killed outright (SIGKILL / a nextest hard timeout) —
-    /// rather than in whichever harness happens to build a `Command`. Drop
-    /// reaps a daemon whose socket is already live even when `capture_pid`
-    /// never ran (phux-e4qx). The justfile's e2e recipe exports the same
-    /// backstop, but every hermetic harness calls `env_clear()`, which wipes
-    /// it before it can reach the daemon; that is exactly how this lane leaked
-    /// immortal servers (phux-8y3o). Any harness that clears the environment
-    /// re-arms it from here.
-    ///
-    /// The key is the server's own constant, not a second spelling of it, so
-    /// a rename cannot leave the backstop silently disarmed.
+    /// The environment pair that bounds a daemon this type could not reap (a
+    /// runner killed outright). Hermetic harnesses `env_clear()` and must re-arm
+    /// it from here; the key is the server's own constant.
     pub const IDLE_BACKSTOP: (&'static str, &'static str) =
         (phux::AUTO_SPAWN_IDLE_ENV, SERVER_IDLE_LIMIT_SECS);
 
@@ -254,13 +238,8 @@ pub fn terminate(pid: u32) {
     signal(pid, libc::SIGTERM).expect("SIGTERM test server");
 }
 
-/// Remove ECMA-48 control sequences while retaining printable transcript
-/// bytes. This is intentionally a transcript view, not a screen emulator:
-/// predicates must prove that a phrase was visibly painted at some point,
-/// including renderers that put an SGR sequence between every character.
-///
-/// phux-k0cw.10: promoted here from `first_five_minutes_e2e` so a second PTY
-/// test can read painted text without a second copy of the parser (phux-wcdq).
+/// Remove ECMA-48 control sequences, keeping the printable transcript: proof
+/// a phrase was painted at some point, even with SGR between characters.
 pub fn strip_terminal_controls(bytes: &[u8]) -> String {
     let mut printable = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -304,17 +283,8 @@ pub fn strip_terminal_controls(bytes: &[u8]) -> String {
 }
 
 /// A live `phux watch --json` child whose NDJSON stdout is captured
-/// off-thread.
-///
-/// A watch is the one surface that has to already be RUNNING when the thing
-/// it observes happens, so it cannot be a one-shot `output()` call like every
-/// other verb — and a state edge that a server publishes and then supersedes
-/// milliseconds later is observable *only* here, never by polling a reporting
-/// verb. The reader thread owns the pipe; the test reads the accumulated
-/// lines under the mutex.
-///
-/// Lives here rather than in one suite because two suites now need it: the
-/// agent-session lane and the Claude-shim scenario in `agent_record_e2e`.
+/// off-thread: a watch must already be running when the edge happens, and an
+/// edge superseded milliseconds later is visible only here.
 pub struct WatchChild {
     child: Child,
     lines: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -325,10 +295,6 @@ pub struct WatchChild {
 
 impl WatchChild {
     /// Start `phux --socket <socket> watch TARGET --json <extra...>`.
-    ///
-    /// `--socket` precedes the verb: it is the root global (ADR-0065), so
-    /// this form is safe even for verbs whose trailing positional would
-    /// otherwise swallow it.
     pub fn start(
         phux: &Path,
         socket: &Path,
@@ -424,17 +390,115 @@ pub fn first_index(
     lines.iter().position(want)
 }
 
+/// A real `phux attach` TUI on a pseudo-terminal: `/bin/sh` panes, a private
+/// empty config dir (so the embedded defaults apply), every painted byte
+/// drained into `transcript` so the PTY never backpressures the client.
+/// Killed on drop.
+pub struct PtyAttach {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    writer: Box<dyn std::io::Write + Send>,
+    transcript: Arc<Mutex<Vec<u8>>>,
+    pub config: tempfile::TempDir,
+}
+
+impl PtyAttach {
+    /// `phux attach --socket SOCKET <args...>` at `cols x rows`, with `env`
+    /// set after the defaults (`XDG_CONFIG_HOME` is `self.config`).
+    pub fn start(
+        socket: &Path,
+        args: &[&str],
+        size: (u16, u16),
+        env: &[(&str, &std::ffi::OsStr)],
+    ) -> Self {
+        Self::start_with(socket, args, size, |_, command| {
+            for (key, value) in env {
+                command.env(key, value);
+            }
+        })
+    }
+
+    /// As [`Self::start`], with `configure` given the config dir and the
+    /// command to adjust before the spawn.
+    pub fn start_with(
+        socket: &Path,
+        args: &[&str],
+        (cols, rows): (u16, u16),
+        configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
+    ) -> Self {
+        use std::io::Read as _;
+
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("open attach PTY");
+        let config = tempfile::tempdir().expect("isolated config dir");
+        let mut command = portable_pty::CommandBuilder::new(env!("CARGO_BIN_EXE_phux"));
+        command.arg("attach");
+        command.arg("--socket");
+        command.arg(socket);
+        command.args(args);
+        command.env("SHELL", "/bin/sh");
+        command.env("TERM", "xterm-256color");
+        command.env("RUST_LOG", "off");
+        command.env("XDG_CONFIG_HOME", config.path());
+        configure(config.path(), &mut command);
+        let child = pair
+            .slave
+            .spawn_command(command)
+            .expect("spawn attached TUI");
+        drop(pair.slave);
+        let transcript = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&transcript);
+        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
+        std::thread::spawn(move || {
+            let mut bytes = [0u8; 8192];
+            while let Ok(count) = reader.read(&mut bytes) {
+                if count == 0 {
+                    break;
+                }
+                sink.lock()
+                    .expect("transcript lock")
+                    .extend_from_slice(&bytes[..count]);
+            }
+        });
+        let writer = pair.master.take_writer().expect("take PTY writer");
+        Self {
+            child,
+            writer,
+            transcript,
+            config,
+        }
+    }
+
+    pub fn send(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).expect("write to attach PTY");
+        self.writer.flush().expect("flush attach PTY");
+    }
+
+    /// Everything painted so far, with terminal control sequences removed.
+    pub fn painted(&self) -> String {
+        strip_terminal_controls(&self.transcript.lock().expect("transcript lock"))
+    }
+}
+
+impl Drop for PtyAttach {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::AutoSpawnedServer;
 
-    /// The backstop has to be the variable the server actually reads. Pinning
-    /// the spelling here closes the string-drift hole the two hand-written
-    /// copies used to leave open: a harness arming `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE`
-    /// by literal would keep passing after the server renamed it, and the
-    /// only symptom would be a daemon nobody reaped.
+    /// The backstop must be the variable the server actually reads.
     #[test]
     fn the_idle_backstop_names_the_variable_the_server_reads() {
         let (key, value) = AutoSpawnedServer::IDLE_BACKSTOP;
