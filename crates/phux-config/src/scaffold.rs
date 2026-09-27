@@ -52,7 +52,7 @@ pub enum ScaffoldOutcome {
     Skipped(PathBuf),
 }
 
-/// The commented starter config: [`SCAFFOLD_HEADER`] plus the projection.
+/// The commented starter config: a user header plus the projection.
 #[must_use]
 pub fn reference_config() -> String {
     let mut out = String::from(SCAFFOLD_HEADER);

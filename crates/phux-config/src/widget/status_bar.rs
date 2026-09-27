@@ -204,7 +204,7 @@ impl StatusBar {
     ///    affordance survives on small terminals).
     /// 2. **Left** (the tab bar you navigate by) gets the rest.
     /// 3. **Center** gets the surviving gap less a one-column gutter each
-    ///    side, or nothing below [`CENTER_SLOT_MIN`].
+    ///    side, or nothing below eight columns.
     ///
     /// On a row that fits, the leftover width is split across every `spacer`
     /// in the bar (row-wide, not per slot). Spacers have no natural width, so
