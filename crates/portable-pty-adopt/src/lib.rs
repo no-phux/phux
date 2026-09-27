@@ -1,43 +1,16 @@
 //! Re-adopt an existing PTY into [`portable-pty`](portable_pty)'s trait
 //! objects from a bare master file descriptor and a child process id.
 //!
-//! # The gap this fills
+//! `portable-pty` only hands out [`MasterPty`] / [`Child`] for PTYs it
+//! creates. A process that `execve`s itself for a graceful restart keeps the
+//! master fd (with `FD_CLOEXEC` cleared) and its children, but cannot rebuild
+//! those trait objects. [`AdoptedMaster`] and [`AdoptedChild`] are that
+//! missing constructor, so resumed PTYs drop into the same code paths.
 //!
-//! `portable-pty` can hand you a [`MasterPty`] / [`Child`] only by *creating*
-//! the PTY: [`PtySystem::openpty`](portable_pty::PtySystem::openpty) mints a
-//! fresh master+slave pair, and
-//! [`SlavePty::spawn_command`](portable_pty::SlavePty::spawn_command) forks the
-//! child.
-//! The concrete Unix types are private and expose no `from_raw_fd` /
-//! `from_pid` constructor. So once a PTY exists, there is no supported way to
-//! rebuild those trait objects from the raw `(master_fd, child_pid)` you can
-//! recover with [`MasterPty::as_raw_fd`] and [`Child::process_id`].
-//!
-//! That matters for **graceful, in-place restarts**. The standard reload
-//! primitive (nginx, `HAProxy`, systemd socket activation) is to clear
-//! `FD_CLOEXEC` on the descriptors you want to keep and `execve` the new
-//! binary: open fds survive the exec, and because `execve` preserves the
-//! process identity, the children stay alive and stay *your* children
-//! (`waitpid` keeps working). The new image inherits the PTY master as a bare
-//! fd and knows the child PID from a handoff blob — but with `portable-pty`
-//! alone it cannot turn those back into the `MasterPty`/`Child` its plumbing
-//! is written against.
-//!
-//! [`AdoptedMaster`] and [`AdoptedChild`] are that missing constructor. They
-//! implement the same traits over an inherited fd / PID, so a resumed process
-//! drops them into the exact code paths it already drives for freshly-spawned
-//! PTYs.
-//!
-//! # Scope and caveats
-//!
-//! - **Unix only.** PTYs, `waitpid`, and `tcgetpgrp` are POSIX concepts.
-//! - **You must own the descriptor.** [`AdoptedMaster`] takes an [`OwnedFd`]
-//!   and closes it on drop, exactly like the real master.
-//! - **You must be the child's parent.** `waitpid`/`kill` target the PID
-//!   directly; this is sound after an `execve` (same process, same children)
-//!   but not if the child was re-parented (e.g. across a `fork`).
-//! - **`Child::kill` sends `SIGKILL`,** matching `portable-pty`'s own
-//!   `std::process::Child`-backed implementation.
+//! Unix only. [`AdoptedMaster`] owns (and closes) its fd; [`AdoptedChild`]
+//! is sound only while this process is the child's parent (true across
+//! `execve`, not across `fork`). `Child::kill` sends `SIGKILL`, matching
+//! `portable-pty`.
 
 #![cfg(unix)]
 
@@ -51,11 +24,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
-/// The master end of an inherited PTY, exposed as a [`MasterPty`].
-///
-/// Construct one in a resumed process from the master fd you kept open across
-/// the `execve` (see [the crate docs](crate)). It owns the descriptor and
-/// closes it on drop, just like a `portable-pty`-created master.
+/// The master end of an inherited PTY, exposed as a [`MasterPty`]. Owns the
+/// descriptor and closes it on drop.
 #[derive(Debug)]
 pub struct AdoptedMaster {
     fd: OwnedFd,
@@ -144,11 +114,8 @@ impl MasterPty for AdoptedMaster {
     }
 }
 
-/// A reader over a PTY master that maps the slave-closed `EIO` to clean EOF.
-///
-/// Mirrors `portable-pty`'s own master reader: once the last slave fd closes,
-/// `read(2)` on the master returns `EIO`, which we translate to `Ok(0)` so
-/// `read`-loop callers terminate gracefully instead of erroring.
+/// A PTY master reader that maps the slave-closed `EIO` to clean EOF, like
+/// `portable-pty`'s own.
 struct PtyReader(File);
 
 impl Read for PtyReader {
@@ -160,43 +127,25 @@ impl Read for PtyReader {
     }
 }
 
-/// Signal name carried by the [`ExitStatus`] an [`AdoptedChild`] reports when
-/// `waitpid` fails with `ECHILD`: the process is gone from our view, but how it
-/// ended is unknown.
+/// Signal name of the [`ExitStatus`] an [`AdoptedChild`] reports when
+/// `waitpid` fails with `ECHILD`: gone, cause unknown.
 ///
-/// It is not a real signal name, so a consumer mapping names to signal numbers
-/// finds no match and reports "unknown" — exactly the truth. `success()` is
-/// `false` for it, and `exit_code()` is `portable-pty`'s signal placeholder
-/// (`1`), which callers must not read as an exit code.
+/// Not a real signal name,
+/// so name-to-number mapping finds nothing; `success()` is `false` and
+/// `exit_code()` (`1`) must not be read as an exit code.
 pub const ECHILD_EXIT_SIGNAL_NAME: &str = "unknown (ECHILD: not our child)";
 
 /// A child process re-adopted by PID, exposed as a [`Child`].
 ///
-/// Sound only when the current process is the child's parent — true across an
-/// `execve` (the process and its children are preserved). `waitpid` results
-/// are cached so repeated `try_wait`/`wait` after exit keep returning the
-/// status instead of failing with `ECHILD`.
+/// `waitpid` results are cached so polls after exit keep returning the
+/// status. Like [`std::process::Child`] it does not reap on `Drop`; call
+/// `wait` on teardown. A resuming process must not set `SIGCHLD` to
+/// `SIG_IGN` (it survives `execve` and turns every `waitpid` into `ECHILD`).
 ///
-/// # Reaping and zombies
-///
-/// Like [`std::process::Child`], this does **not** reap on `Drop`: a child
-/// dropped without a prior [`Child::try_wait`]/[`Child::wait`] that observed
-/// its exit stays a zombie until this process exits. Call `wait` on teardown.
-/// Reaping is by explicit poll only — there is deliberately no `SIGCHLD`
-/// handler involved (and note `SIG_IGN` on `SIGCHLD` survives `execve` and
-/// would make every `waitpid` here return `ECHILD`, so a resuming process must
-/// not set it).
-///
-/// `ECHILD` (the PID is not our child — already reaped, or never ours) is
-/// reported as a terminal status so callers stop polling, but as an
-/// *unknown* one: an [`ExitStatus`] whose signal name is
-/// [`ECHILD_EXIT_SIGNAL_NAME`], never a fabricated `exit 0`. Nothing was
-/// observed about how the process ended, so claiming success would be a lie
-/// an exit-code reader cannot detect. The corollary is a caveat for `execve`
-/// handoffs: only adopt PIDs you captured as *live* in the same process
-/// lineage. A PID that already exited and was reaped before the exec could in
-/// principle be recycled by the OS; carry per-child liveness in the handoff
-/// blob rather than blindly adopting every recorded PID.
+/// `ECHILD` reports a terminal but unknown status
+/// ([`ECHILD_EXIT_SIGNAL_NAME`]), never a fabricated `exit 0`. Only adopt
+/// PIDs captured as live in the same process lineage, since a reaped PID can
+/// be recycled.
 #[derive(Debug)]
 pub struct AdoptedChild {
     pid: libc::pid_t,
@@ -210,13 +159,8 @@ impl AdoptedChild {
         Self { pid, exited: None }
     }
 
-    /// `waitpid(self.pid, _, flags)`, retrying on `EINTR`.
-    ///
-    /// Returns `Ok(None)` when `WNOHANG` finds the child still running,
-    /// `Ok(Some(status))` once it is reaped, and treats `ECHILD` (not our
-    /// child / already reaped elsewhere) as an unknown terminal status
-    /// ([`ECHILD_EXIT_SIGNAL_NAME`]) so callers stop polling rather than spin
-    /// on an error, without claiming the child exited cleanly.
+    /// `waitpid(self.pid, _, flags)`, retrying on `EINTR`: `Ok(None)` while
+    /// running under `WNOHANG`, and `ECHILD` as an unknown terminal status.
     fn waitpid(&self, flags: libc::c_int) -> io::Result<Option<ExitStatus>> {
         loop {
             let mut status: libc::c_int = 0;
@@ -279,9 +223,8 @@ impl Child for AdoptedChild {
     }
 }
 
-/// A detached killer for an [`AdoptedChild`], as returned by
-/// [`ChildKiller::clone_killer`]. Sends signals to the PID without holding the
-/// `Child`, so a thread blocked in `wait` can still be interrupted.
+/// A detached killer for an [`AdoptedChild`], usable while another thread
+/// blocks in `wait`.
 #[derive(Debug)]
 struct AdoptedChildKiller {
     pid: libc::pid_t,

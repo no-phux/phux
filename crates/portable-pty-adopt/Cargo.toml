@@ -1,10 +1,5 @@
-# TODO(extract): this crate has no phux-specific dependencies — only
-# `portable-pty`, `libc`, and `anyhow` (the trait's own error type). It fills a
-# genuine upstream gap (portable-pty can construct a `MasterPty`/`Child` only
-# via `openpty()`/`spawn_command()`; there is no way to rebuild those trait
-# objects from an *inherited* master fd + child PID — e.g. across an `execve`
-# graceful restart). It is intended to be split into its own repository and
-# published to crates.io. Keep it dependency-clean so the move is a copy.
+# No phux-specific dependencies: a candidate to extract and publish. Keep it
+# dependency-clean so the move is a copy.
 [package]
 name = "portable-pty-adopt"
 version.workspace = true
