@@ -25,6 +25,18 @@ pub const Presentation = provider_contract.Presentation;
 pub const Phase = provider_contract.Phase;
 
 pub const phux_enabled = phux_options.enabled;
+pub const path_queries = if (phux_enabled) @import("phux_provider").path_queries else struct {
+    pub const Entry = struct { path: []const u8, kind: u32 };
+    pub const Info = struct {
+        status: u32 = 0,
+        request_id: u32 = 0,
+        result_status: u32 = 0,
+        entry_count: usize = 0,
+        root: []const u8 = "",
+        parent: ?[]const u8 = null,
+        message: []const u8 = "",
+    };
+};
 
 /// The derived lifecycle vocabulary, restated for the build with no Phux in
 /// it. Same words, no derivation: without a provider there is no resource

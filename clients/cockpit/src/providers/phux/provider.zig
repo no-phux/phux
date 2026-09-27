@@ -4,6 +4,7 @@ const std = @import("std");
 const native_sdk = @import("native_sdk");
 const provider = @import("provider_contract");
 const host_mod = @import("phux_host");
+pub const path_queries = host_mod.path_queries;
 const transport = @import("phux_transport");
 const extension = @import("phux_extension");
 pub const machines = @import("machines.zig");

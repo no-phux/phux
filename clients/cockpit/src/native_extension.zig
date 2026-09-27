@@ -581,6 +581,10 @@ const Bridge = struct {
             self.requestDirectory(key, payload);
             return true;
         }
+        if (std.mem.eql(u8, name, cockpit.path_picker.request_name)) {
+            self.requestPath(key, payload);
+            return true;
+        }
         if (std.mem.eql(u8, name, cockpit.session_commands.request_name)) {
             self.requestSession(key, payload);
             return true;
@@ -924,6 +928,26 @@ const Bridge = struct {
         // snapshot shows, and the listing's arrival announces by itself.
         const decoded = cockpit.directory_picker.decode(payload) catch return;
         if (decoded.kind == .here) self.announce(engine);
+    }
+
+    fn requestPath(self: *Bridge, key: u64, payload: []const u8) void {
+        self.directory_pending = true;
+        self.directory_key = key;
+        self.directory_ok = false;
+        const engine = self.engine orelse {
+            self.directory_len = copyInto(&self.directory_buffer, "engine unavailable");
+            return;
+        };
+        const answered = if (engineFx()) |fx|
+            cockpit.path_picker.handle(engine, fx, payload, &self.directory_buffer)
+        else
+            cockpit.path_picker.handle(engine, &cockpit.NoShells{}, payload, &self.directory_buffer);
+        const bytes = answered catch |err| {
+            self.directory_len = copyInto(&self.directory_buffer, @errorName(err));
+            return;
+        };
+        self.directory_ok = true;
+        self.directory_len = bytes.len;
     }
 
     /// A rename is sent on the owning coordinator's connection; its outcome

@@ -14,6 +14,8 @@ const c = @import("abi.zig").c;
 const operations = @import("operations.zig");
 const workspace_bridge = @import("workspace_bridge.zig");
 const agent_sessions = @import("agent_sessions.zig");
+const path_query = @import("path_query.zig");
+pub const path_queries = path_query;
 
 test {
     // Zig runs the tests of an imported file only where it is referenced
@@ -364,6 +366,7 @@ pub const Host = struct {
     attach_barrier_seen: bool = false,
     client_generation: u64 = 1,
     operation_ledger: operations.Ledger(max_terminals) = .{},
+    path_results: path_query.State = .{},
     disconnected: bool = false,
     color_policy: ColorPolicy = .{},
     metadata_changed: bool = false,
@@ -423,6 +426,7 @@ pub const Host = struct {
     }
 
     pub fn destroy(host: *Host) void {
+        host.path_results.deinit();
         host.agents.deinit(host.gpa);
         host.workspace_store.deinit(host.gpa);
         host.clearSearchResults(null);
@@ -1167,7 +1171,8 @@ pub const Host = struct {
         // Do not re-publish the old C snapshot/READY while an explicit resync
         // is still crossing the runtime thread. The epoch releases this gate.
         if (host.awaitingConnectionPublication()) return delta;
-        delta.directory_changed = host.directoryStatusRaw() != directory_before;
+        const path_changed = try path_query.drain(host);
+        delta.directory_changed = path_changed or host.directoryStatusRaw() != directory_before;
         if ((query_before == session_query_pending or host.sessions_generation != host.client_generation) and host.sessionQueryStatus() == session_query_ok)
             delta.sessions_listed = try host.adoptListedSessions();
         delta.sessions_renamed = try host.adoptRenamedSessions();
@@ -2396,7 +2401,7 @@ pub const Host = struct {
         return cId(&terminal.id);
     }
 
-    fn stageOutgoing(host: *Host) !void {
+    pub fn stageOutgoing(host: *Host) !void {
         // Nothing to stage: releasing the ABI's control guard already woke
         // the runtime's driver, which writes the queued frames itself. A
         // drain here would take them off the socket.

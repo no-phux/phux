@@ -66,6 +66,8 @@ import {
   DIR_KIND_PARENT,
   DIR_KIND_HERE,
   DIR_STATUS_PENDING,
+  DIR_STATUS_LISTED,
+  DIR_SCOPE_SATELLITE,
   DIR_HERE,
   DIR_UP,
   NO_DIRECTORY_REQUEST,
@@ -345,6 +347,11 @@ export interface Model {
   /// `dirAwaiting` polls on each invalidation until that listing settles;
   /// `dirClosing` closes the picker once Open Here is accepted.
   readonly dirOpen: boolean;
+  readonly dirInsert: boolean;
+  readonly dirSearching: boolean;
+  readonly dirPlaceholder: Uint8Array;
+  readonly dirHereLabel: Uint8Array;
+  readonly dirHasParent: boolean;
   readonly mainDirOpen: boolean;
   readonly window1DirOpen: boolean;
   readonly window2DirOpen: boolean;
@@ -615,10 +622,13 @@ export type Msg =
   | { readonly kind: "host_disconnect" }
   | { readonly kind: "host_disconnect_all" }
   | { readonly kind: "dir_open" }
+  | { readonly kind: "path_open" }
+  | { readonly kind: "dir_retry" }
   | { readonly kind: "dir_close" }
   | { readonly kind: "dir_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "dir_submit" }
   | { readonly kind: "dir_pick"; readonly index: number }
+  | { readonly kind: "dir_parent" }
   | { readonly kind: "dir_here" }
   | { readonly kind: "dir_previous" }
   | { readonly kind: "dir_next" }
@@ -785,6 +795,8 @@ export const viewUnbound = [
   "remote_loaded",
   "remote_failed",
   "dirOpen",
+  "dirInsert",
+  "dirSearching",
   "dirAnchor",
   "dirFocus",
   "dirRequest",
@@ -795,6 +807,7 @@ export const viewUnbound = [
   "dirCursor",
   "dirOffset",
   "dir_open",
+  "path_open",
   "directory_loaded",
   "directory_failed",
   "renameOpen",
@@ -1222,6 +1235,7 @@ export interface DirRow {
   readonly index: number;
   readonly label: Uint8Array;
   readonly highlighted: boolean;
+  readonly directory: boolean;
 }
 
 const NO_DIR_ROWS: readonly DirRow[] = [];
@@ -1233,7 +1247,7 @@ function copyDirRow(row: DirRow, highlighted: boolean): DirRow {
   return {
     id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
     index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
-    label: row.label, highlighted,
+    label: row.label, highlighted, directory: row.directory === true,
   };
 }
 
@@ -1268,16 +1282,28 @@ function pageDirectory(model: Model, offset: number): DirectoryDecision {
   return directoryDecision(next, directoryRequest(DIR_KIND_PAGE, next.dirRequest, at, 0, next.dirQuery), false);
 }
 
+function directoryTransport(model: Model): string {
+  return model.dirInsert ? "cockpit.path" : "cockpit.directory";
+}
+
+function directoryKind(model: Model, ordinary: number, path: number): number {
+  return model.dirInsert ? path : ordinary;
+}
+
 /// Go to Directory takes the one modal slot: the switcher, Connect to Host
 /// and Settings give way to it as they do to each other.
-function openDirectory(model: Model): DirectoryDecision {
+function openDirectory(model: Model, insert: boolean): DirectoryDecision {
   if (model.dirOpen) return unchangedDirectory(model);
   const base = model.paletteOpen ? closePalette(model) : model;
-  const next = scopeOverlays({ ...base, dirOpen: true, hostOpen: false, hostAwaiting: false, settingsOpen: false, renameOpen: false,
+  const next = scopeOverlays({ ...base, dirOpen: true, dirInsert: insert, dirSearching: false,
+    dirPlaceholder: asciiBytes(insert ? "Search files and directories recursively" : "Filter directories"),
+    dirHereLabel: asciiBytes(insert ? "Insert This Directory" : "Open Here"),
+    dirHasParent: false,
+    hostOpen: false, hostAwaiting: false, settingsOpen: false, renameOpen: false,
     dirQuery: NO_BYTES, dirAnchor: 0, dirFocus: 0, dirRequest: NO_DIRECTORY_REQUEST, dirStarting: true,
     dirAwaiting: false, dirClosing: false, dirBusy: true, dirRows: NO_DIR_ROWS, dirCursor: 0, dirOffset: 0,
     dirPrevious: false, dirNext: false, dirPath: NO_BYTES, dirNotice: asciiBytes("Listing..."),
-    dirTitle: asciiBytes("Go to Directory"), dirOpenHere: true });
+    dirTitle: asciiBytes(insert ? "Insert Path" : "Go to Directory"), dirOpenHere: true });
   return directoryDecision(next, directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES), true);
 }
 
@@ -1366,7 +1392,7 @@ function closeRename(model: Model): RenameDecision {
 /// Another modal opening while Rename Session is up takes its slot.
 function displaceRename(model: Model, msg: Msg): Model {
   if (!model.renameOpen) return model;
-  if (msg.kind !== "palette_open" && msg.kind !== "agents_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "dir_open") return model;
+  if (msg.kind !== "palette_open" && msg.kind !== "agents_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "dir_open" && msg.kind !== "path_open") return model;
   return closeRename(model).model;
 }
 
@@ -1482,6 +1508,7 @@ function receiveEmpty(model: Model, body: Uint8Array): Model {
 /// the old connection. Withdraw them; once connected again, list afresh.
 function relistDirectory(model: Model, connected: boolean): Model {
   return { ...model, dirRows: NO_DIR_ROWS, dirPrevious: false, dirNext: false, dirAwaiting: false, dirClosing: false,
+    dirHasParent: false,
     dirStarting: connected, dirBusy: connected, dirRequest: NO_DIRECTORY_REQUEST, dirQuery: NO_BYTES, dirAnchor: 0,
     dirFocus: 0, dirOffset: 0, dirCursor: 0,
     dirNotice: connected ? asciiBytes("Reconnected. Listing again...") : asciiBytes("Waiting for the connection...") };
@@ -1492,9 +1519,22 @@ function directoryRows(page: DirectoryPage): readonly DirRow[] {
   for (const row of page.rows) {
     const rawIndex = row.index;
     const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
-    rows.push({ id: index, index, label: directoryRowLabel(row), highlighted: false });
+    rows.push({ id: index, index, label: directoryRowLabel(row), highlighted: false, directory: true });
   }
   return rows.length === 0 ? NO_DIR_ROWS : rows;
+}
+
+function pathRows(page: DirectoryPage): readonly DirRow[] {
+  const rows: DirRow[] = [];
+  for (const row of page.rows) {
+    const label = row.directory ? joinBytes(row.name, asciiBytes("/"), NO_BYTES) :
+      row.symlink ? joinBytes(row.name, asciiBytes("  (link)"), NO_BYTES) : row.name;
+    const rawIndex = row.index;
+    const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
+    rows.push({ id: index, index, label,
+      directory: row.directory, highlighted: false });
+  }
+  return rows.length > 0 ? rows : NO_DIR_ROWS;
 }
 
 function highlightDirectory(model: Model, next: number): Model {
@@ -1510,12 +1550,34 @@ function highlightDirectory(model: Model, next: number): Model {
 
 function showDirectory(model: Model, page: DirectoryPage): Model {
   const total = page.total >= 0 && page.total <= 65535 ? Math.trunc(page.total) : 0;
-  const rows = directoryRows(page);
+  const rows = model.dirInsert ? pathRows(page) : directoryRows(page);
   const shown: Model = { ...model, dirRequest: page.request, dirStarting: false, dirBusy: false,
     dirAwaiting: page.status === DIR_STATUS_PENDING, dirRows: rows, dirCursor: 0,
-    dirPath: page.path.length > 0 ? page.path : model.dirPath, dirTitle: directoryTitle(page), dirOpenHere: page.openHere,
-    dirPrevious: page.offset > 0, dirNext: page.offset + page.rows.length < total, dirNotice: directoryNotice(page) };
+    dirPath: page.path.length > 0 ? page.path : model.dirPath,
+    dirTitle: model.dirInsert ? pathTitle(page) : directoryTitle(page), dirOpenHere: page.openHere,
+    dirHasParent: model.dirInsert && page.hasParent,
+    dirPrevious: page.offset > 0, dirNext: page.offset + page.rows.length < total,
+    dirNotice: model.dirInsert ? pathNotice(page, model.dirSearching) : directoryNotice(page) };
   return highlightDirectory(shown, Math.min(model.dirCursor, rows.length - 1));
+}
+
+function pathNotice(page: DirectoryPage, searching: boolean): Uint8Array {
+  if (page.status === DIR_STATUS_PENDING) return asciiBytes("Finding paths on the host...");
+  if (page.status !== DIR_STATUS_LISTED) return page.message.length > 0 ? page.message : asciiBytes("Path query unavailable. Update phux on this host.");
+  if (page.total === 0) return asciiBytes("No matching paths");
+  if (page.truncated) return asciiBytes("Results truncated. Narrow the search.");
+  if (page.warming) return asciiBytes("Search still warming. Refresh Results to see more.");
+  return asciiBytes(searching ? "Enter inserts the selected path without running it." :
+    "Enter opens directories or inserts files. Insert This Directory uses the current folder.");
+}
+
+function pathTitle(page: DirectoryPage): Uint8Array {
+  if (page.scope === DIR_SCOPE_SATELLITE && page.host.length > 0) {
+    return joinBytes(asciiBytes("Insert Path on "), page.host,
+      page.via.length > 0 ? joinBytes(asciiBytes(" via "), page.via, NO_BYTES) : NO_BYTES);
+  }
+  if (page.via.length > 0) return joinBytes(asciiBytes("Insert Path on "), page.via, NO_BYTES);
+  return asciiBytes("Insert Path");
 }
 
 /// A reply counts only while the picker is open, for the listing it shows
@@ -1531,10 +1593,17 @@ function receiveDirectory(model: Model, body: Uint8Array): DirectoryDecision {
   }
   if (!model.dirStarting && !sameBytes(page.request, model.dirRequest)) return unchangedDirectory(model);
   if (model.dirClosing) return closeDirectory(model);
+  if (model.dirInsert && !sameBytes(page.query, model.dirQuery) && page.status !== DIR_STATUS_PENDING) return restartPathSearch(model, page);
   if (page.offset !== model.dirOffset || !sameBytes(page.query, model.dirQuery)) {
     return unchangedDirectory({ ...model, dirRequest: page.request, dirStarting: false });
   }
   return unchangedDirectory(showDirectory(model, page));
+}
+
+function restartPathSearch(model: Model, page: DirectoryPage): DirectoryDecision {
+  return directoryDecision({ ...model, dirRequest: page.request, dirStarting: true, dirAwaiting: false,
+    dirSearching: model.dirQuery.length > 0, dirRows: NO_DIR_ROWS, dirBusy: true, dirOffset: 0 },
+    directoryRequest(3, page.request, 0, 0, model.dirQuery), false);
 }
 
 /// Open Here refused keeps the picker for another try. A refused descend or
@@ -1571,13 +1640,23 @@ function editDirectory(model: Model, edit: TextInputEvent): DirectoryDecision {
   if (next === null) return unchangedDirectory(model);
   const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 64 ? Math.trunc(next.selection.anchor) : 0;
   const focus = next.selection.focus >= 0 && next.selection.focus <= 64 ? Math.trunc(next.selection.focus) : 0;
-  return pageDirectory({ ...model, dirQuery: next.text, dirAnchor: anchor, dirFocus: focus, dirCursor: 0 }, 0);
+  const changed = { ...model, dirQuery: next.text, dirAnchor: anchor, dirFocus: focus, dirCursor: 0 };
+  if (!model.dirInsert) return pageDirectory(changed, 0);
+  if (model.dirStarting || model.dirAwaiting) return unchangedDirectory(changed);
+  return refreshPath(changed);
+}
+
+function refreshPath(model: Model): DirectoryDecision {
+  if (!model.dirInsert || model.dirStarting || model.dirAwaiting) return unchangedDirectory(model);
+  return directoryDecision({ ...model, dirSearching: model.dirQuery.length > 0, dirStarting: true, dirBusy: true,
+    dirRows: NO_DIR_ROWS, dirOffset: 0 }, directoryRequest(3, model.dirRequest, 0, 0, model.dirQuery), false);
 }
 
 /// Descend or go up: a new listing under a new request ID, which the next
 /// reply names and the core adopts.
 function startDirectoryListing(model: Model, kind: number, index: number): DirectoryDecision {
   return directoryDecision({ ...model, dirStarting: true, dirBusy: true, dirAwaiting: false, dirQuery: NO_BYTES,
+    dirSearching: false, dirHasParent: false,
     dirAnchor: 0, dirFocus: 0, dirOffset: 0, dirCursor: 0, dirRows: NO_DIR_ROWS, dirPrevious: false, dirNext: false,
     dirNotice: asciiBytes("Listing...") }, directoryRequest(kind, model.dirRequest, 0, index, NO_BYTES), false);
 }
@@ -1585,7 +1664,8 @@ function startDirectoryListing(model: Model, kind: number, index: number): Direc
 function activateDirectory(model: Model, index: number): DirectoryDecision {
   if (model.dirBusy || model.dirStarting) return unchangedDirectory(model);
   const row = index >= 0 && index <= 65535 ? Math.trunc(index) : 0;
-  if (row === DIR_UP) return startDirectoryListing(model, DIR_KIND_PARENT, 0);
+  if (row === DIR_UP) return startDirectoryListing(model, directoryKind(model, DIR_KIND_PARENT, 5), 0);
+  if (model.dirInsert) return activatePath(model, row);
   // A listing whose coordinator cannot take a tab now: say so, send nothing.
   if (row === DIR_HERE && !model.dirOpenHere) return unchangedDirectory({ ...model, dirNotice: asciiBytes(DIR_OPEN_HERE_UNAVAILABLE_NOTICE) });
   if (row === DIR_HERE) {
@@ -1593,6 +1673,19 @@ function activateDirectory(model: Model, index: number): DirectoryDecision {
       directoryRequest(DIR_KIND_HERE, model.dirRequest, model.dirOffset, DIR_HERE, model.dirQuery), false);
   }
   return startDirectoryListing(model, DIR_KIND_DESCEND, row);
+}
+
+function activatePath(model: Model, row: number): DirectoryDecision {
+  if (row === DIR_UP) return startDirectoryListing(model, 5, 0);
+  let selected: DirRow | null = null;
+  for (const entry of model.dirRows) {
+    if (entry.index === row) selected = entry;
+  }
+  if (row !== DIR_HERE && selected === null) return unchangedDirectory(model);
+  // Browse a directory only when not searching. Search results can be inserted.
+  if (selected?.directory === true && !model.dirSearching) return startDirectoryListing(model, 4, row);
+  return directoryDecision({ ...model, dirBusy: true, dirClosing: true, dirNotice: asciiBytes("Inserting quoted path...") },
+    directoryRequest(6, model.dirRequest, model.dirOffset, row, model.dirQuery), false);
 }
 
 function submitDirectory(model: Model): DirectoryDecision {
@@ -1614,8 +1707,10 @@ function openDirectoryTransition(model: Model, msg: Msg): DirectoryDecision | nu
     case "palette_close": return closeDirectory(model);
     case "palette_move": return moveDirectory(model, msg.delta);
     case "dir_edit": return editDirectory(model, msg.edit);
+    case "dir_retry": return refreshPath(model);
     case "dir_submit": return submitDirectory(model);
     case "dir_pick": return activateDirectory(model, msg.index);
+    case "dir_parent": return activateDirectory(model, DIR_UP);
     case "dir_here": return activateDirectory(model, DIR_HERE);
     case "dir_previous": return browseDirectory(model, false);
     case "dir_next": return browseDirectory(model, true);
@@ -1624,7 +1719,8 @@ function openDirectoryTransition(model: Model, msg: Msg): DirectoryDecision | nu
 }
 
 function directoryTransition(model: Model, msg: Msg): DirectoryDecision | null {
-  if (msg.kind === "dir_open") return openDirectory(model);
+  if (msg.kind === "dir_open") return openDirectory(model, false);
+  if (msg.kind === "path_open") return openDirectory(model, true);
   if (msg.kind === "directory_loaded") return receiveDirectory(model, msg.body);
   if (msg.kind === "directory_failed") return failedDirectory(model);
   if (!model.dirOpen) return null;
@@ -2321,6 +2417,7 @@ function creationCommandMsg(name: string): Msg | null {
   if (name === "app.update") return { kind: "update_check" };
   if (name === "remote.connect") return { kind: "host_open" };
   if (name === "directory.open") return { kind: "dir_open" };
+  if (name === "path.insert") return { kind: "path_open" };
   if (name === "session.rename") return { kind: "rename_open" };
   if (name === "tabs.toggle-placement") return { kind: "toggle_tab_placement" };
   return null;
@@ -2489,6 +2586,11 @@ export function initialModel(): [Model, Cmd<Msg>] {
       window3HostOpen: false,
       window4HostOpen: false,
       dirOpen: false,
+      dirInsert: false,
+      dirSearching: false,
+      dirPlaceholder: asciiBytes("Filter directories"),
+      dirHereLabel: asciiBytes("Open Here"),
+      dirHasParent: false,
       mainDirOpen: false,
       window1DirOpen: false,
       window2DirOpen: false,
@@ -3910,7 +4012,7 @@ function openingSurface(msg: Msg): number {
   const view = navigatorDestination(msg);
   if (view >= 1 && view <= 3) return view + 1;
   let index = 1;
-  for (const kind of ["palette_open", "sessions_open", "machines_open", "windows_open", "commands_open", "new_session_open", "add_machine_open", "dir_open", "rename_open", "host_open"]) {
+  for (const kind of ["palette_open", "sessions_open", "machines_open", "windows_open", "commands_open", "new_session_open", "add_machine_open", "dir_open", "rename_open", "host_open", "path_open"]) {
     if (msg.kind === kind) return index;
     index += 1;
   }
@@ -3956,6 +4058,7 @@ function toolSurfaceMessage(surface: number): Msg {
   if (surface === 7) return { kind: "add_machine_open" };
   if (surface === 8) return { kind: "dir_open" };
   if (surface === 9) return { kind: "rename_open" };
+  if (surface === 11) return { kind: "path_open" };
   return { kind: "host_open" };
 }
 
@@ -4560,7 +4663,7 @@ function navigatorUpdate(decision: NavigatorDecision): UpdatePlan {
 }
 
 function directoryUpdate(decision: DirectoryDecision): UpdatePlan {
-  const request = plannedRequest("cockpit.directory", decision.request, "cockpit-directory", "directory_loaded", "directory_failed");
+  const request = plannedRequest(directoryTransport(decision.model), decision.request, "cockpit-directory", "directory_loaded", "directory_failed");
   if (decision.request.length > 0 && decision.committed) return committedRequestPlan(decision.model, request);
   if (decision.request.length > 0) return requestPlan(decision.model, request);
   if (decision.committed) return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
@@ -4720,7 +4823,7 @@ function snapshotWithoutNavigator(model: Model, routed: SnapshotRouting): Update
   if (model.renameAwaiting) return requestPlan(routed.scoped, session);
   if (!routed.askRemote) return modelPlan(routed.scoped);
   if (routed.directoryRelists) return twoRequestPlan(routed.scoped, remote,
-    plannedRequest("cockpit.directory", directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES),
+    plannedRequest(directoryTransport(routed.scoped), directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES),
       "cockpit-directory", "directory_loaded", "directory_failed"));
   return requestPlan(routed.scoped, remote);
 }
@@ -4785,7 +4888,7 @@ function eventRequests(next: Model, resultRequest: Uint8Array, directoryPoll: Ui
   const snapshotRequest = plannedRequest("cockpit.snapshot", NO_BYTES, "cockpit-snapshot", "snapshot_loaded", "snapshot_failed");
   const results = plannedRequest("cockpit.command-results", resultRequest,
     "cockpit-command-results", "command_result_loaded", "command_result_failed");
-  const directory = plannedRequest("cockpit.directory", directoryPoll, "cockpit-directory", "directory_loaded", "directory_failed");
+  const directory = plannedRequest(directoryTransport(next), directoryPoll, "cockpit-directory", "directory_loaded", "directory_failed");
   if (resultRequest.length > 0 && pollDirectory) return threeRequestPlan(next, snapshotRequest, results, directory);
   if (resultRequest.length > 0) return twoRequestPlan(next, snapshotRequest, results);
   if (pollDirectory) return twoRequestPlan(next, snapshotRequest, directory);

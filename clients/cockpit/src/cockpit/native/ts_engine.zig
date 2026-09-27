@@ -305,6 +305,7 @@ pub const Engine = struct {
     remote_pointer: @import("shipping_pointer.zig").State = .{},
     /// Go to Directory's listed host, fixed when the picker opens.
     directory_origin: @import("directory_picker.zig").Origin = .{},
+    path_origin: @import("path_picker.zig").Origin = .{},
     /// Edits of a showing peer's tabs, queued to that coordinator alone.
     peer_edits: peer_edits.Edits = .{},
     /// Shipping startup shares one wake channel across dynamically owned
