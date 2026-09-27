@@ -2197,13 +2197,12 @@ async fn dispatch_terminal_reply(
     out_tx: &mpsc::Sender<Outbound>,
 ) {
     if !selection.accepts_terminal_reply() {
-        let _ = out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: ErrorCode::UnknownMessageType,
-                message: "INPUT_TERMINAL_REPLY was not advertised for this connection".to_owned(),
-            }))
-            .await;
+        super::send_error(
+            out_tx,
+            ErrorCode::UnknownMessageType,
+            "INPUT_TERMINAL_REPLY was not advertised for this connection",
+        )
+        .await;
         return;
     }
     handle_terminal_reply(client_id, terminal_id, &bytes);
@@ -2904,6 +2903,9 @@ where
     // Absolute from admission: pre-HELLO PINGs must not keep a peer alive.
     let hello_deadline = tokio::time::sleep(crate::transport::HANDSHAKE_DEADLINE);
     tokio::pin!(hello_deadline);
+    let route_input = |terminal_id, input| {
+        route_client_input(&state, input_lane.as_ref(), client_id, terminal_id, input);
+    };
 
     let ending = 'conn: loop {
         // Cancellation preempts a slow read. The frame arm precedes the
@@ -3034,15 +3036,14 @@ where
                 match classify_attach_id(attach_id, &mut used_attach_ids, client_id) {
                     AttachIdVerdict::Fresh => {}
                     AttachIdVerdict::Reused => {
-                        let _ = plumbing.out_tx
-                            .send(Outbound::Frame(FrameKind::Error {
-                                request_id: None,
-                                code: ErrorCode::MalformedMessage,
-                                message: format!(
-                                    "ATTACH attach_id {attach_id} was already used on this connection"
-                                ),
-                            }))
-                            .await;
+                        super::send_error(
+                            &plumbing.out_tx,
+                            ErrorCode::MalformedMessage,
+                            &format!(
+                                "ATTACH attach_id {attach_id} was already used on this connection"
+                            ),
+                        )
+                        .await;
                         continue;
                     }
                     AttachIdVerdict::Reserved => {
@@ -3109,20 +3110,16 @@ where
                 handle_viewport_resize(&state, client_id, &viewport);
             }
             FrameKind::InputKey { terminal_id, event } => {
-                let input = TerminalInput::Key(event);
-                route_client_input(&state, input_lane.as_ref(), client_id, terminal_id, input);
+                route_input(terminal_id, TerminalInput::Key(event));
             }
             FrameKind::InputMouse { terminal_id, event } => {
-                let input = TerminalInput::Mouse(event);
-                route_client_input(&state, input_lane.as_ref(), client_id, terminal_id, input);
+                route_input(terminal_id, TerminalInput::Mouse(event));
             }
             FrameKind::InputFocus { terminal_id, event } => {
-                let input = TerminalInput::Focus(event);
-                route_client_input(&state, input_lane.as_ref(), client_id, terminal_id, input);
+                route_input(terminal_id, TerminalInput::Focus(event));
             }
             FrameKind::InputPaste { terminal_id, event } => {
-                let input = TerminalInput::Paste(event);
-                route_client_input(&state, input_lane.as_ref(), client_id, terminal_id, input);
+                route_input(terminal_id, TerminalInput::Paste(event));
             }
             FrameKind::InputTerminalReply { terminal_id, bytes } => {
                 let Some(selection) = negotiated.as_ref() else {
@@ -3142,27 +3139,22 @@ where
             FrameKind::FrameAck {
                 ref terminal_id, ..
             } if is_agent_session(&state, terminal_id) => {
-                let _ = plumbing
-                    .out_tx
-                    .send(Outbound::Frame(FrameKind::Error {
-                        request_id: None,
-                        code: ErrorCode::MalformedMessage,
-                        message: "FRAME_ACK is not valid on an agent-session stream".to_owned(),
-                    }))
-                    .await;
+                super::send_error(
+                    &plumbing.out_tx,
+                    ErrorCode::MalformedMessage,
+                    "FRAME_ACK is not valid on an agent-session stream",
+                )
+                .await;
             }
             FrameKind::HistoryRequest {
                 ref terminal_id, ..
             } if is_agent_session(&state, terminal_id) => {
-                let _ = plumbing
-                    .out_tx
-                    .send(Outbound::Frame(FrameKind::Error {
-                        request_id: None,
-                        code: ErrorCode::WrongResourceKind,
-                        message: "an agent-session stream retains no history beyond its bootstrap"
-                            .to_owned(),
-                    }))
-                    .await;
+                super::send_error(
+                    &plumbing.out_tx,
+                    ErrorCode::WrongResourceKind,
+                    "an agent-session stream retains no history beyond its bootstrap",
+                )
+                .await;
             }
             FrameKind::FrameAck {
                 terminal_id,
@@ -3528,14 +3520,12 @@ async fn handle_stream_failure(
             format!("Terminal QUIC stream failed: {message}"),
         ),
     };
-    let _ = plumbing
-        .out_tx
-        .send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code,
-            message: format!("{terminal_id:?} stream {stream_id:?}: {message}"),
-        }))
-        .await;
+    super::send_error(
+        &plumbing.out_tx,
+        code,
+        &format!("{terminal_id:?} stream {stream_id:?}: {message}"),
+    )
+    .await;
     teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
 }
 
@@ -3583,14 +3573,12 @@ async fn bind_terminal_stream(
     });
     if !subscribed {
         refuse_terminal_stream(send, recv);
-        let _ = plumbing
-            .out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: ErrorCode::TerminalNotFound,
-                message: format!("STREAM_BIND for unsubscribed terminal: {terminal_id:?}"),
-            }))
-            .await;
+        super::send_error(
+            &plumbing.out_tx,
+            ErrorCode::TerminalNotFound,
+            &format!("STREAM_BIND for unsubscribed terminal: {terminal_id:?}"),
+        )
+        .await;
         return;
     }
     let writer = QuicWriter::from_terminal_stream(send, window);
@@ -3609,14 +3597,12 @@ async fn bind_terminal_stream(
         let mut recv = recv;
         let _ = recv.stop(0x10_u32.into());
         plumbing.drop_stream_binding(&terminal_id).await;
-        let _ = plumbing
-            .out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: ErrorCode::TerminalNotFound,
-                message: format!("STREAM_BIND raced terminal death: {terminal_id:?}"),
-            }))
-            .await;
+        super::send_error(
+            &plumbing.out_tx,
+            ErrorCode::TerminalNotFound,
+            &format!("STREAM_BIND raced terminal death: {terminal_id:?}"),
+        )
+        .await;
         return;
     };
     tokio::spawn(pump_terminal_stream(
@@ -3647,14 +3633,7 @@ async fn bind_terminal_stream(
     .await
     {
         plumbing.drop_stream_binding(&terminal_id).await;
-        let _ = plumbing
-            .out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: failure.code,
-                message: failure.message,
-            }))
-            .await;
+        super::send_error(&plumbing.out_tx, failure.code, &failure.message).await;
     } else {
         diagnostics.record_ready_latency(
             crate::stream_diagnostics::ReadyKind::Initial,
@@ -4509,16 +4488,16 @@ fn refuse_satellite_metadata_scope(
         %key,
         "SUBSCRIBE_METADATA refused: L3 metadata has no satellite route"
     );
-    let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
-        request_id: None,
-        code: ErrorCode::UnsupportedSatelliteRoute,
-        message: format!(
+    push_error(
+        out_tx,
+        ErrorCode::UnsupportedSatelliteRoute,
+        format!(
             "L3 metadata does not federate: no subscription to key '{key}' on \
              {host}/@{id}. The record lives on that satellite's own server; run \
              the command there.",
             host = host.as_str(),
         ),
-    }));
+    );
     true
 }
 
@@ -4608,21 +4587,21 @@ fn subscribe_via_hub(
             satellite = %host,
             "SUBSCRIBE_EVENTS: no route to satellite; refusing subscription"
         );
-        let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            message: format!(
+        push_error(
+            out_tx,
+            ErrorCode::UnsupportedSatelliteRoute,
+            format!(
                 "no satellite route to {host:?}: this server is not a federation hub for that host"
             ),
-        }));
+        );
         return;
     };
     let Some(consumer_cancel) = state.with(|s| s.client_connection_cancellation(client_id)) else {
-        let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code: ErrorCode::InternalError,
-            message: "client connection cancellation is unavailable".to_owned(),
-        }));
+        push_error(
+            out_tx,
+            ErrorCode::InternalError,
+            "client connection cancellation is unavailable",
+        );
         return;
     };
     let change = state.with_mut(|s| {
@@ -4658,6 +4637,15 @@ fn subscribe_via_hub(
         return;
     }
     ensure_event_pump(state, client_id);
+}
+
+/// Push an uncorrelated `ERROR` without waiting; a full mailbox drops it.
+fn push_error(out_tx: &mpsc::Sender<Outbound>, code: ErrorCode, message: impl Into<String>) {
+    let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
+        request_id: None,
+        code,
+        message: message.into(),
+    }));
 }
 
 /// Whether `terminal_id` resolves, on this server, to an agent session;
@@ -4934,6 +4922,16 @@ mod outbound_generation_fence_tests {
         })
     }
 
+    fn tombstone(bootstrap_id: BootstrapId, reason: TombstoneReason) -> Outbound {
+        Outbound::Frame(FrameKind::BootstrapTombstone {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id,
+            reason,
+            last_valid_seq: 1,
+        })
+    }
+
     fn output(bootstrap_id: BootstrapId) -> Outbound {
         Outbound::Frame(FrameKind::ResourceOutput {
             terminal_id: terminal(),
@@ -4963,15 +4961,7 @@ mod outbound_generation_fence_tests {
         };
         assert!(fence.admits(&begin(initial)));
         assert!(fence.admits(&output(initial)));
-        assert!(
-            fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
-                terminal_id: terminal(),
-                stream_id: stream(),
-                bootstrap_id: initial,
-                reason: TombstoneReason::Resize,
-                last_valid_seq: 1,
-            },))
-        );
+        assert!(fence.admits(&tombstone(initial, TombstoneReason::Resize)));
 
         assert!(!fence.admits(&Outbound::Frame(FrameKind::HistoryPage {
             terminal_id: terminal(),
@@ -4993,15 +4983,7 @@ mod outbound_generation_fence_tests {
         assert!(!fence.admits(&output(initial)));
         assert!(!fence.admits(&begin(initial)));
 
-        assert!(
-            fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
-                terminal_id: terminal(),
-                stream_id: stream(),
-                bootstrap_id: initial,
-                reason: TombstoneReason::OutboundGap,
-                last_valid_seq: 1,
-            }))
-        );
+        assert!(fence.admits(&tombstone(initial, TombstoneReason::OutboundGap)));
         assert_eq!(
             diagnostics.snapshot().streams[0].resync_reason,
             Some(ResyncReason::Resize)
@@ -5010,15 +4992,7 @@ mod outbound_generation_fence_tests {
         assert!(fence.admits(&begin(replacement)));
         assert!(fence.admits(&output(replacement)));
         assert!(!fence.admits(&output(initial)));
-        assert!(
-            !fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
-                terminal_id: terminal(),
-                stream_id: stream(),
-                bootstrap_id: initial,
-                reason: TombstoneReason::OutboundGap,
-                last_valid_seq: 1,
-            }))
-        );
+        assert!(!fence.admits(&tombstone(initial, TombstoneReason::OutboundGap)));
         assert_eq!(
             diagnostics.snapshot().streams[0].resync_reason,
             Some(ResyncReason::Resize)
@@ -5954,24 +5928,8 @@ mod fatal_preflight_close_tests {
                 control: mpsc::channel(8).0,
                 facet: crate::resource::ResourceFacetHandle::Terminal(
                     crate::terminal_actor::TerminalHandle {
-                        input: mpsc::channel(8).0,
-                        encoded_input: mpsc::channel(8).0,
-                        input_snapshot: tokio::sync::watch::channel(
-                            crate::input::InputEncoderSnapshot::default(),
-                        )
-                        .1,
-                        snapshot: mpsc::channel(8).0,
                         native_bootstrap,
-                        native_publication: mpsc::channel(8).0,
-                        native_history: mpsc::channel(8).0,
-                        native_release: mpsc::channel(8).0,
-                        set_default_colors: mpsc::channel(8).0,
-                        screen: mpsc::channel(8).0,
-                        pwd: mpsc::channel(8).0,
-                        process: mpsc::channel(8).0,
-                        resize: mpsc::channel(8).0,
-                        cols: 80,
-                        rows: 24,
+                        ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
                     },
                 ),
             },
