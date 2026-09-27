@@ -41,6 +41,13 @@ pub const max_notices: usize = 64;
 pub const max_search_results: usize = 4096;
 pub const max_sessions: usize = 256;
 pub const max_title_bytes: usize = 4096;
+/// Keys typed while a terminal reconnects wait on it, bounded, and replay
+/// once the same terminal is live again.
+pub const max_held_keys: usize = 64;
+pub const max_held_key_text_bytes: usize = 4096;
+// ponytail: fixed freshness window; replaying older blind typing into a
+// shell is riskier than losing it. Make it a setting if users ask.
+pub const max_held_key_age_ns: u64 = 2 * std.time.ns_per_s;
 pub const max_session_name_bytes: usize = 4096;
 pub const max_notice_bytes: usize = 64 * 1024;
 /// One live ResourceOutput, bounded by phux-protocol::wire::frame::MAX_FRAME_LEN.
@@ -178,6 +185,13 @@ fn ranLongEnough(started: ?u64, now: u64) bool {
     return now -| from >= min_command_notice_ns;
 }
 
+/// A held key; its text is `held_text[text_start..][0..text_len]`.
+const HeldKey = struct {
+    input: provider.KeyInput,
+    text_start: usize,
+    text_len: usize,
+};
+
 const Terminal = struct {
     measured_cell: ?provider.MeasuredCell = null,
     id: RemoteId,
@@ -216,8 +230,15 @@ const Terminal = struct {
     /// The bell's latch for command completions: one notification per
     /// replica until the terminal is attended or the app regains focus.
     command_owner: ?provider.ReplicaOwner = null,
+    /// Keys typed while this terminal was not live, in order. Each text is
+    /// a range of `held_text`, which may reallocate.
+    held_keys: std.ArrayListUnmanaged(HeldKey) = .empty,
+    held_text: std.ArrayListUnmanaged(u8) = .empty,
+    held_since_ns: u64 = 0,
 
     fn deinit(terminal: *Terminal, gpa: std.mem.Allocator) void {
+        terminal.held_keys.deinit(gpa);
+        terminal.held_text.deinit(gpa);
         terminal.canvas.deinit(gpa);
         terminal.title.deinit(gpa);
         terminal.pending_title.deinit(gpa);
@@ -1275,7 +1296,58 @@ pub const Host = struct {
     }
 
     pub fn sendKey(host: *Host, owner_value: provider.ReplicaOwner, input: *const provider.KeyInput) !void {
-        const id = try host.currentCId(owner_value);
+        const id = host.currentCId(owner_value) catch |err| {
+            if (try host.holdKey(owner_value, input)) return;
+            return err;
+        };
+        try host.queueKey(&id, input);
+        try host.stageOutgoing();
+    }
+
+    /// A reconnect keeps the terminal's entry but not its owner
+    /// generation, so a key typed meanwhile waits on the entry. Only the
+    /// owner the pane last presented may hold, so a replaced or ended
+    /// terminal never receives it.
+    fn holdKey(host: *Host, owner_value: provider.ReplicaOwner, input: *const provider.KeyInput) !bool {
+        // Only a reconnect in flight holds. A detached host or a frozen
+        // canvas has no recovery under way to replay into.
+        if (host.disconnected or host.operation_ledger.detaching(owner_value.terminal_ref)) return false;
+        const terminal = host.findTerminal(owner_value.terminal_ref) orelse return false;
+        switch (terminal.phase) {
+            .attaching, .reconnecting => {},
+            else => return false,
+        }
+        if (!terminal.owner().eql(owner_value)) return false;
+        if (terminal.held_keys.items.len >= max_held_keys) return false;
+        if (terminal.held_text.items.len + input.text.len > max_held_key_text_bytes) return false;
+        try terminal.held_keys.ensureUnusedCapacity(host.gpa, 1);
+        try terminal.held_text.ensureUnusedCapacity(host.gpa, input.text.len);
+        if (terminal.held_keys.items.len == 0) terminal.held_since_ns = host.now_ns();
+        var held: HeldKey = .{ .input = input.*, .text_start = terminal.held_text.items.len, .text_len = input.text.len };
+        held.input.text = &.{};
+        terminal.held_text.appendSliceAssumeCapacity(input.text);
+        terminal.held_keys.appendAssumeCapacity(held);
+        return true;
+    }
+
+    /// Replay what was typed during the reconnect, before any later key.
+    /// The drain that published the terminal stages the frames.
+    fn releaseHeldKeys(host: *Host, terminal: *Terminal) void {
+        defer {
+            terminal.held_keys.clearRetainingCapacity();
+            terminal.held_text.clearRetainingCapacity();
+        }
+        if (terminal.held_keys.items.len == 0) return;
+        if (host.now_ns() -| terminal.held_since_ns > max_held_key_age_ns) return;
+        const id = cId(&terminal.id);
+        for (terminal.held_keys.items) |held| {
+            var input = held.input;
+            input.text = terminal.held_text.items[held.text_start..][0..held.text_len];
+            host.queueKey(&id, &input) catch return;
+        }
+    }
+
+    fn queueKey(host: *Host, id: *const c.PhuxResourceId, input: *const provider.KeyInput) !void {
         try outboundSize(input.text.len);
         const event: c.PhuxKeyEvent = .{
             .size = @sizeOf(c.PhuxKeyEvent),
@@ -1294,8 +1366,7 @@ pub const Host = struct {
             .has_unshifted_codepoint = input.unshifted_codepoint != null,
             .unshifted_codepoint = if (input.unshifted_codepoint) |cp| cp else 0,
         };
-        try resultError(c.phux_client_send_key(host.client, &id, &event));
-        try host.stageOutgoing();
+        try resultError(c.phux_client_send_key(host.client, id, &event));
     }
 
     pub fn sendMouse(host: *Host, owner_value: provider.ReplicaOwner, input: *const provider.MouseInput) !void {
@@ -2214,7 +2285,10 @@ pub const Host = struct {
         terminal.history_pages_loaded = view.history_pages_loaded;
         terminal.history_unread_rows = view.history_unread_rows;
         // An ended shell stays ended; a late grid publication is not a restart.
-        if (terminal.phase != .ended) terminal.phase = .live;
+        if (terminal.phase != .ended) {
+            terminal.phase = .live;
+            host.releaseHeldKeys(terminal);
+        }
         terminal.published = true;
         terminal.dirty = false;
         if (!was_published) delta.added_count += 1;
@@ -3909,6 +3983,69 @@ fn expectPartialStagingCannotReplay(caller: PartialStagingCaller) !void {
     try std.testing.expectEqual(operations.types.Status.unknown_outcome, unknown.status);
     try std.testing.expect(host.takeOperationResult() == null);
     try std.testing.expectEqual(@as(usize, 0), c.phux_client_operation_count(host.client));
+}
+
+var held_key_test_now_ns: u64 = 0;
+
+fn heldKeyTestClock() u64 {
+    return held_key_test_now_ns;
+}
+
+/// Reconnect an attached host, optionally typing into terminal 7 while it
+/// reconnects, and count what the reattach drain sends.
+fn reattachOutgoingAfterHeldKey(hold: bool, age_ns: u64) !usize {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    host.now_ns = &heldKeyTestClock;
+    held_key_test_now_ns = 1;
+    try test_support.attachHost(host);
+    const ref = try statusRef(7);
+    const owner_value = host.owner(ref).?;
+
+    try host.reconnect("operations-test");
+    try test_support.stageFixture(&bridge, "hello.bin");
+    _ = try host.drainReadiness();
+    try host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
+    try std.testing.expectEqual(provider.Phase.reconnecting, host.presentation(ref).?.phase);
+    if (hold) try host.sendKey(owner_value, &.{ .action = .press, .physical = @enumFromInt(0), .text = "x" });
+
+    held_key_test_now_ns += age_ns;
+    bridge.outgoing.reset();
+    try test_support.stageFixture(&bridge, "attached.bin");
+    try std.testing.expect((try host.drainReadiness()).ready_published);
+    try std.testing.expectEqual(provider.Phase.live, host.presentation(ref).?.phase);
+    try std.testing.expectEqual(@as(usize, 0), host.terminals.items[0].held_keys.items.len);
+    var count: usize = 0;
+    while (bridge.outgoing.take()) |frame| {
+        bridge.outgoing.release(frame);
+        count += 1;
+    }
+    return count;
+}
+
+test "a key typed while reconnecting reaches the same terminal once it is live" {
+    const baseline = try reattachOutgoingAfterHeldKey(false, 0);
+    try std.testing.expectEqual(baseline + 1, try reattachOutgoingAfterHeldKey(true, 0));
+}
+
+test "a key held past its freshness window is discarded, not replayed" {
+    const baseline = try reattachOutgoingAfterHeldKey(false, 0);
+    try std.testing.expectEqual(baseline, try reattachOutgoingAfterHeldKey(true, max_held_key_age_ns + 1));
+}
+
+test "a key for a replaced owner is refused, not held" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    var stale = host.owner(try statusRef(7)).?;
+    stale.generation.stream_id +%= 1;
+    try host.reconnect("operations-test");
+    try std.testing.expectError(error.InvalidState, host.sendKey(stale, &.{ .action = .press, .physical = @enumFromInt(0), .text = "x" }));
+    try std.testing.expectEqual(@as(usize, 0), host.terminals.items[0].held_keys.items.len);
 }
 
 test "key partial outgoing staging cannot replay after allocator recovery" {

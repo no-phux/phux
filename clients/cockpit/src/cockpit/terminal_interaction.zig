@@ -294,7 +294,8 @@ pub fn remoteText(model: *Model, ref: TerminalRef, event: Event) void {
     if (state.selecting) return;
     const remote = model.phuxForOwner(state.owner) orelse return;
     update.remote_selection.clear(model, state);
-    remote.scrollViewport(state.owner, .{ .kind = .bottom }) catch return;
+    // A reconnecting terminal cannot scroll yet but still holds the text.
+    remote.scrollViewport(state.owner, .{ .kind = .bottom }) catch {};
     remote.sendKey(state.owner, &.{
         .action = .press,
         .physical = @enumFromInt(0),
