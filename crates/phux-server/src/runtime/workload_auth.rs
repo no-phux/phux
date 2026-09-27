@@ -177,8 +177,10 @@ mod tests {
                 .build()
                 .unwrap();
             let _entered = runtime.enter();
-            let (listener, slot) =
-                super::super::build_quic_listener("127.0.0.1:0".parse().unwrap());
+            let (listener, slot) = super::super::build_quic_listener_for(
+                "127.0.0.1:0".parse().unwrap(),
+                workload_mode(),
+            );
             assert!(
                 listener.is_none(),
                 "failed explicit mTLS must never fall back to bearer or anonymous QUIC"
