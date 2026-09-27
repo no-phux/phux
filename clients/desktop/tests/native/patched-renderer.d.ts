@@ -11,7 +11,3 @@ declare module "@gpuix/native" {
     getWindowTitle(): string;
   }
 }
-
-declare module "@gpuix/native/host" {
-  export function registerCustomElementType(type: string): string;
-}

@@ -3,8 +3,8 @@
 **TL;DR.** This is the integrated production-bundle fixture, not product UI.
 Its acceptance path is two Solid `<phux-terminal>` surfaces, one native client,
 one owned Bash PTY, real Vim input, Metal captures, and explicit teardown.
-The integrated gate remains **unpassed** until the patched GPUIX JavaScript
-custom-element creation export and clean native process exit are available.
+It needs source-built GPUIX with patches 3 and 4 (custom-element admission and
+close-before-exit); no passing run is recorded in-tree.
 
 ## Run
 
@@ -60,42 +60,3 @@ the PNGs for actual terminal output; metadata and retained-tree assertions
 alone do not establish Metal glyph fidelity. Resize negotiation, native
 keyboard/IME routing, and pixel-fidelity acceptance belong to their respective
 gates and are not claimed by this toolbar-driven fixture.
-
-## Integration receipt (2026-09-23)
-
-- `doctor desktop`: passed, zero prerequisite problems.
-- TS7 strict typecheck: passed.
-- Scoped type-aware Oxc with Solid and anti-slop rules: passed without casts
-  or suppressions.
-- Standalone Rust harness Clippy (`-D warnings`), rustfmt, shell syntax, and
-  the repository documentation gate: passed.
-- Full desktop lint on this branch is blocked by pre-existing
-  `tests/native/terminal-painter.mjs` diagnostics; that file has another owner.
-- The standalone Rust harness compiled and started the actual server, PTY,
-  native client, and window. It exposed an initial attach-before-replica race;
-  the fixture now waits on declared `inputReadiness` before creating views.
-- The next run failed deterministically in published GPUIX 0.10.0:
-  `Unsupported GPUIX element <phux-terminal>`. Published
-  `solid/dist/host.js:58-80` validates against a built-in-only switch, even
-  though `customPropAllowed` already accepts custom native properties.
-- The latest attempt successfully verifies the parent-owned patched source
-  and rebuilds its native/Solid JavaScript through `desktop-bundle.ts`, then
-  fails at bundle time: no matching `registerHostElement` export yet in the
-  source-built Solid `dist/index.js`. The public registration patch is still
-  a parent integration dependency. The fixture requires
-  string `clientHandle`, `terminalId`, and `viewId` props, numeric
-  `paintRevision`, and boolean `focused`, unchanged through that seam.
-- No successful integrated screenshots or complete gate pass are claimed by
-  this receipt. Rerun the exact command after that source integration.
-- The failure-path receipt confirms terminal `local:1`, views `1`/`2`, and
-  consumption of the final `StatusChanged: Closed` batch. The combined addon
-  subsequently panics during process exit with `cannot access a Thread Local
-Storage value during or after destruction`. The runner reaps the process;
-  successful interaction cannot count as a pass if native teardown aborts.
-
-All functions here are new, so the baseline is not applicable. An Oxc
-`complexity` measurement during implementation identified `discoverViews` at
-10; using initial session targeting instead of late attachment reduced it to 7.
-`separateViews` is 6, `observe` is 5, and other TypeScript functions are 3 or
-less. The watch-band functions directly express fixture discovery and
-assertions; no product service abstraction was added.
