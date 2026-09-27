@@ -91,9 +91,11 @@ pub fn hook_context_keys(event: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-/// Whether a hook action can ever execute server-side: only `run` with a
-/// non-blank string or non-empty all-string `command` does. Everything else
-/// (including the deliberate `noop`) consumes the event and runs nothing.
+/// Whether a hook action can ever execute server-side.
+///
+/// Only `run` with a non-blank string or non-empty all-string `command`
+/// does; everything else (including the deliberate `noop`) consumes the
+/// event and runs nothing.
 #[must_use]
 pub fn hook_action_is_executable(action: &Action) -> bool {
     let Action::Parameterized(parameterized) = action else {
