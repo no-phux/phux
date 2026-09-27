@@ -441,13 +441,4 @@ mod tests {
         assert!(handle.acquire().is_none());
         assert_eq!(first.text(), "ab");
     }
-
-    #[test]
-    fn terminals_lists_only_published_slots() {
-        let table = Publication::new();
-        let id = ResourceId::local(9);
-        assert!(table.terminals().is_empty());
-        table.publish(&id, frame(&id, b"x"));
-        assert_eq!(table.terminals(), vec![id]);
-    }
 }

@@ -56,19 +56,6 @@ impl Ladder {
     }
 }
 
-/// The first reconnect delay on the interactive lane, and the delay a
-/// connection that re-attaches resets to.
-pub const BACKOFF_FLOOR: Duration = Ladder::INTERACTIVE.floor;
-
-/// The longest reconnect delay on the interactive lane: doubling stops here.
-pub const BACKOFF_CEILING: Duration = Ladder::INTERACTIVE.ceiling;
-
-/// [`Ladder::INTERACTIVE`]'s [`Ladder::next`].
-#[must_use]
-pub fn next_backoff(current: Duration) -> Duration {
-    Ladder::INTERACTIVE.next(current)
-}
-
 /// Whether retrying with the same credentials cannot change this refusal:
 /// a QUIC [`DialError::AuthRefused`] or an ADR-0031 401/403 on the
 /// WebSocket upgrade. Everything else may heal and is retried.
@@ -98,15 +85,9 @@ mod tests {
 
     #[test]
     fn backoff_doubles_to_the_ceiling() {
-        let mut delay = BACKOFF_FLOOR;
-        let mut ladder = vec![delay];
-        for _ in 0..6 {
-            delay = next_backoff(delay);
-            ladder.push(delay);
-        }
         assert_eq!(
-            ladder.iter().map(Duration::as_millis).collect::<Vec<_>>(),
-            vec![500, 1000, 2000, 4000, 8000, 8000, 8000],
+            schedule(Ladder::INTERACTIVE, 6),
+            vec![500, 1000, 2000, 4000, 8000, 8000, 8000]
         );
     }
 
@@ -118,18 +99,6 @@ mod tests {
             out.push(delay.as_millis());
         }
         out
-    }
-
-    /// The plain-function API is the interactive preset, so a consumer that
-    /// uses either sees the same ladder.
-    #[test]
-    fn the_free_functions_are_the_interactive_preset() {
-        assert_eq!(BACKOFF_FLOOR, Ladder::INTERACTIVE.floor);
-        assert_eq!(BACKOFF_CEILING, Ladder::INTERACTIVE.ceiling);
-        assert_eq!(
-            next_backoff(Duration::from_secs(3)),
-            Ladder::INTERACTIVE.next(Duration::from_secs(3))
-        );
     }
 
     /// The agent-verb lane keeps `phux resource wait`'s 50 ms..1 s cadence
@@ -157,7 +126,10 @@ mod tests {
     /// holds at the ceiling.
     #[test]
     fn next_saturates_at_the_ceiling() {
-        assert_eq!(Ladder::INTERACTIVE.next(Duration::MAX), BACKOFF_CEILING);
+        assert_eq!(
+            Ladder::INTERACTIVE.next(Duration::MAX),
+            Ladder::INTERACTIVE.ceiling
+        );
     }
 
     /// A seed below the floor (usually `Duration::ZERO`) lands on the floor.

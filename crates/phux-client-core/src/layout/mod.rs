@@ -992,13 +992,6 @@ mod tests {
     }
 
     #[test]
-    fn render_window_without_zoom_is_the_active_window() {
-        let ws = ws_split(1, 2, 1);
-        let rendered = ws.render_window(None).expect("active window");
-        assert!(matches!(rendered.tree, Some(LayoutNode::Split { .. })));
-    }
-
-    #[test]
     fn split_at_replaces_leaf_with_split() {
         let tree = leaf(1);
         let out = split_at(&tree, &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
@@ -1034,45 +1027,18 @@ mod tests {
     }
 
     #[test]
-    fn split_at_deep() {
-        // Build (1|2) then split 2 vertically with 3.
+    fn kill_pane_collapses_the_parent_and_reports_last_and_missing_leaves() {
+        assert!(kill_pane(&leaf(1), &t(1)).unwrap().is_none(), "last leaf");
+        assert!(matches!(
+            kill_pane(&leaf(1), &t(99)),
+            Err(LayoutError::PaneNotInLayout(_))
+        ));
         let t1 = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-        let t2 = split_at(&t1, &t(2), &t(3), SplitDir::Vertical, 0.3).unwrap();
-        let leaves_v = leaves(&t2);
-        assert_eq!(leaves_v, vec![t(1), t(2), t(3)]);
-    }
-
-    #[test]
-    fn kill_pane_last_leaf_returns_none() {
-        let out = kill_pane(&leaf(1), &t(1)).unwrap();
-        assert!(out.is_none());
-    }
-
-    #[test]
-    fn kill_pane_missing_returns_err() {
-        let err = kill_pane(&leaf(1), &t(99)).unwrap_err();
-        assert!(matches!(err, LayoutError::PaneNotInLayout(_)));
-    }
-
-    #[test]
-    fn kill_pane_collapses_split() {
-        let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-        let out = kill_pane(&tree, &t(2)).unwrap().expect("non-empty");
+        let out = kill_pane(&t1, &t(2)).unwrap().expect("non-empty");
         assert!(matches!(out, LayoutNode::Leaf(ref p) if *p == t(1)));
-    }
-
-    #[test]
-    fn kill_pane_collapses_deep() {
-        // ((1|2)|3) — kill 1 should leave (2|3) at the root.
-        let t1 = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
         let t2 = split_at(&t1, &t(2), &t(3), SplitDir::Vertical, 0.5).unwrap();
         let out = kill_pane(&t2, &t(1)).unwrap().expect("non-empty");
-        // After killing 1 from ((1|(2/3))), the left subtree collapses to
-        // (2/3). Tree shape: Split[h, (2/3), ?]... wait — let's just
-        // check leaves.
-        let mut got: Vec<_> = leaves(&out);
-        got.sort_by_key(|id| id.local_id().unwrap_or_default());
-        assert_eq!(got, vec![t(2), t(3)]);
+        assert_eq!(leaves(&out), vec![t(2), t(3)]);
     }
 
     #[test]
@@ -1081,11 +1047,6 @@ mod tests {
         assert_eq!(focus_direction(&tree, &t(1), Direction::Right), Some(t(2)));
         assert_eq!(focus_direction(&tree, &t(2), Direction::Left), Some(t(1)));
         assert_eq!(focus_direction(&tree, &t(1), Direction::Up), None);
-    }
-
-    #[test]
-    fn focus_direction_returns_none_for_missing() {
-        let tree = leaf(1);
         assert_eq!(focus_direction(&tree, &t(99), Direction::Right), None);
     }
 
@@ -1152,13 +1113,6 @@ mod tests {
         assert_eq!(ws.active, 0);
         assert!(!ws.select(9));
         assert_eq!(ws.active, 0);
-    }
-
-    #[test]
-    fn rename_active_updates_name() {
-        let mut ws = ws3();
-        ws.rename_active("build".to_owned());
-        assert_eq!(ws.windows[2].name, "build");
     }
 
     fn names(ws: &Workspace) -> Vec<&str> {

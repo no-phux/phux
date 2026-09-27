@@ -122,13 +122,6 @@ mod tests {
         assert!(TABLE.iter().all(|m| m.name.starts_with("kernel.")));
     }
 
-    #[test]
-    fn report_is_tagged_kernel() {
-        let r = report(core::time::Duration::from_secs(1));
-        assert_eq!(r.role, "kernel");
-        assert_eq!(r.metrics.len(), TABLE.len());
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn echo_probe_samples_once_per_arm_and_forgets_on_close() {

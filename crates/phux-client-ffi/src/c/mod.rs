@@ -3047,7 +3047,7 @@ mod tests {
         apply_engine_event(
             unsafe { &mut (*client).inner },
             EngineEvent::Output {
-                terminal_id: terminal_id.clone(),
+                terminal_id,
                 stream_id,
                 bootstrap_id,
                 seq: 1,

@@ -695,12 +695,6 @@ impl<E: EngineAdapter> ClosedReplica<E> {
     pub const fn engine_mut(&mut self) -> &mut E::Replica {
         &mut self.engine
     }
-
-    /// Consume the wrapper and retain only the engine replica.
-    #[must_use]
-    pub fn into_engine(self) -> E::Replica {
-        self.engine
-    }
 }
 
 /// Borrowed staging state, exposed for diagnostics without publication.
