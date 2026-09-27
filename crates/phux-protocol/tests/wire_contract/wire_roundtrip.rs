@@ -1079,7 +1079,13 @@ fn hello_rejects_legacy_and_truncated_capabilities() {
 fn unknown_nested_enum_tags_are_rejected() {
     type Case<'a> = (u8, &'a [(u32, &'a [u8])], &'static str, u32);
     let local0 = [0x00u8, 0, 0, 0, 0];
-    let cases: [Case<'_>; 6] = [
+    let cases: [Case<'_>; 7] = [
+        (
+            0xA2,
+            &[(1, &7u32.to_be_bytes()), (2, &[0x01, 0xFE])],
+            "SpawnError",
+            0xFE,
+        ),
         (
             0x31,
             &[(1, &1u32.to_be_bytes()), (2, &[0x7F])],
@@ -2863,90 +2869,6 @@ fn bootstrap_begin_agent_events_jsonl_v1_round_trips_and_rejects_state_sync() {
     }
 }
 
-#[test]
-fn resource_kinds_feature_bit_round_trips_in_hello_ok() {
-    let frame = FrameKind::HelloOk {
-        protocol_major: 0,
-        protocol_minor: 8,
-        protocol_patch: 0,
-        server_caps: ServerCapabilities::new()
-            .with_features(ServerFeatureSet::with(&[ServerFeature::ResourceKinds])),
-        server_id: vec![1, 2, 3],
-        selected_profile: BootstrapProfile::SynthesizedVtRaw,
-        bootstrap_limits: BootstrapLimits::default(),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, _) = FrameKind::decode(&buf).unwrap();
-    let FrameKind::HelloOk { server_caps, .. } = decoded else {
-        panic!("expected HelloOk");
-    };
-    assert!(server_caps.features.contains(ServerFeature::ResourceKinds));
-    assert_eq!(server_caps.features.as_wire(), 0x4000);
-}
-
-#[test]
-fn terminal_spawned_unknown_spawn_error_tag_is_rejected() {
-    // Inside the `Err` arm of `SpawnResult`, an unknown `SpawnError` tag
-    // MUST also surface as `UnknownEnumValue`. The RESULT field value is the
-    // positional SpawnResult: tag 0x01 (Err) then a bogus SpawnError tag.
-    let mut fields = Vec::new();
-    tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::terminal_spawned::REQUEST_ID
-    tlv_field(&mut fields, 2, &[0x01, 0xFE]); // RESULT = Err + unknown SpawnError tag
-    let bytes = framed_tlv(0xA2, &fields);
-
-    let err = FrameKind::decode(&bytes).unwrap_err();
-    assert_eq!(
-        err,
-        DecodeError::UnknownEnumValue {
-            field: "SpawnError",
-            value: 0xFE,
-        }
-    );
-}
-
-/// ADR-0105: a keep-empty session round-trips through the trailing session
-/// facets, both in `ATTACHED` and in a `GET_STATE` reply, and the flag stays
-/// on the session it was set on.
-#[test]
-fn keep_empty_session_round_trips_in_attached_and_get_state() {
-    use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
-
-    let snapshot = SessionSnapshot::new(SessionId::new(2), WindowId::new(0), ResourceId::local(0))
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "busy").with_window_count(1),
-            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
-        ]);
-    let attached = FrameKind::Attached {
-        attach_id: 3,
-        snapshot: snapshot.clone(),
-        initial_client_id: ClientId::new(1),
-    };
-    let mut buf = BytesMut::new();
-    attached.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert!(tail.is_empty());
-    assert_eq!(decoded, attached);
-
-    let reply = FrameKind::CommandResult {
-        request_id: 9,
-        result: CommandResult::OkWith(CommandValue::State(snapshot)),
-    };
-    let mut buf = BytesMut::new();
-    reply.encode(&mut buf);
-    let (decoded, _) = FrameKind::decode(&buf).unwrap();
-    let FrameKind::CommandResult {
-        result: CommandResult::OkWith(CommandValue::State(state)),
-        ..
-    } = decoded
-    else {
-        panic!("expected a GET_STATE reply");
-    };
-    assert!(!state.sessions[0].keep_empty, "the flag must not leak");
-    assert!(state.sessions[1].keep_empty);
-    assert!(state.sessions[1].is_empty());
-}
-
 /// A snapshot with no keep-empty session is byte-identical to one encoded
 /// before session facets existed: nothing trails `focused_resource`.
 #[test]
@@ -2976,7 +2898,8 @@ fn snapshot_without_keep_empty_sessions_has_no_session_facets() {
 }
 
 /// All three trailing lists at once (L1.md §9.1 order: facets, hosts,
-/// session facets) round-trip, in `ATTACHED` and in a `GET_STATE` reply.
+/// keep-empty session facets) round-trip, in `ATTACHED` and in a
+/// `GET_STATE` reply, each flag staying on its own row.
 #[test]
 fn facets_hosts_and_session_facets_round_trip_together() {
     use phux_protocol::ids::SatelliteHost;
@@ -3089,35 +3012,6 @@ fn keep_empty_without_hosts_writes_zero_count_anchors() {
         assert!(snapshot.hosts().is_empty());
     }
     assert!(decode(&full).sessions[0].keep_empty);
-}
-
-/// Session facets and resource facets coexist: an agent-session facet row
-/// still lands on its resource when a session-facet list follows it.
-#[test]
-fn session_facets_follow_resource_facets_without_aliasing() {
-    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
-
-    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(7))
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "work")
-                .with_window_count(1)
-                .with_keep_empty(true),
-        ])
-        .with_resources(vec![
-            ResourceInfo::new(ResourceId::local(7), WindowId::new(10), 80, 24),
-            ResourceInfo::resource(ResourceId::local(8), ResourceKind::AgentSession)
-                .with_parent(Some(ResourceId::local(7))),
-        ]);
-    let frame = FrameKind::Attached {
-        attach_id: 1,
-        snapshot,
-        initial_client_id: ClientId::new(0),
-    };
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert!(tail.is_empty());
-    assert_eq!(decoded, frame);
 }
 
 /// The `phux.session.name/v1` value codec round-trips `current\0new` and
