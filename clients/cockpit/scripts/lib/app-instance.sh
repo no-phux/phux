@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Bind a live-app automation run to ONE process, and refuse - loudly - every
-# state in which the run would otherwise measure someone else.
-#
-# Source it; it defines functions and no side effects:
+# Bind a live-app automation run to ONE process and refuse every state in
+# which it would silently measure another. Source it (no side effects):
 #
 #     . "${ROOT}/scripts/lib/app-instance.sh"
 #     app_instance_require_free                 # before launching
@@ -11,56 +9,12 @@
 #     snap="$(app_instance_snapshot)"           # guarded on every read
 #     app_instance_activate                     # pid-targeted, never by name
 #
-# WHY THIS EXISTS
-# ---------------
-# phux-cockpit-2ml.10. Live-app automation on this repo is serial-only, and
-# both ways it goes wrong are SILENT - they do not produce an error, they
-# produce a clean transcript about the wrong process.
-#
-#   1. ACTIVATION IS GLOBAL AND NAME-BASED. The only reliable way to front
-#      this app is System Events (`tell application "Phux Cockpit" to
-#      activate` does NOT reliably work for a bundle launched by its inner
-#      binary), and System Events targets a process BY NAME. With two
-#      instances live, `process "phux-cockpit"` resolves to an arbitrary one,
-#      so a test needing OS focus measures a window it never launched and says
-#      nothing about it.
-#
-#   2. INSTANCE CONFUSION IS NOT REPORTED. On 2026-08-12 one instance logged
-#      `event=stop` and `window_closed` mid-sequence while a DIFFERENT pid
-#      kept answering the dropbox. The snapshot came back with a `ready=true`
-#      header and ZERO widget lines. Nothing failed. A test reads that as "the
-#      UI vanished" - a product bug - when it actually means "you are talking
-#      to a corpse". That is worse than a crash: it manufactures a finding.
-#
-# So the guard is three separate refusals, because they have three different
-# causes and a reader who sees the wrong one goes looking in the wrong place:
-# a second instance is live; the dropbox publisher is not our pid; the tree is
-# empty. Each prints what it saw and what to do about it.
-#
-# WHY A SHARED FILE AND NOT A COPY PER SCRIPT
-# --------------------------------------------
-# There were three copies before this file, and they had already drifted:
-# drive-shell-ceiling.sh and drive-backing-scale.sh each refused a
-# pre-existing instance and each asserted publisher_pid ONCE at startup;
-# automate-smoke.sh - the script most likely to be run by hand, mid-swarm -
-# did neither. None of the three could catch the mid-sequence swap in (2),
-# because none of them looked again after the first assertion. One definition
-# means the next script gets the guard by sourcing it rather than by
-# remembering to reimplement it.
-#
-# WHAT THIS DOES NOT DO
-# ---------------------
-# It does not make concurrent runs work. The automation dropbox is per-user,
-# not per-process: a second bundle steals the channel no matter how carefully
-# each side checks. This turns a silent wrong answer into a refusal, which is
-# the whole of the available fix short of a per-instance dropbox.
-#
-# A locally built app run through scripts/dev-run.sh takes the process name
-# `phux-cockpit-dev`, which removes the dev-versus-installed collision by
-# construction (phux-cockpit-g2x). It does NOT remove the case this guard is
-# for - two agents each driving their own bundle, both named `phux-cockpit`.
-# Set PHUX_COCKPIT_PROCESS_NAME to point the guard at a differently-named
-# build; the default is what `zig build package` produces.
+# Activation is global and name-based, and the automation dropbox is per-user,
+# so a second live instance makes results silently belong to the wrong
+# process. The guard refuses, separately and loudly: a second instance is
+# live; the dropbox publisher is not our pid; the UI tree is empty. It does
+# not make concurrent runs work. Set PHUX_COCKPIT_PROCESS_NAME for a
+# differently named build (dev runs use `phux-cockpit-dev`).
 
 # The executable name `pgrep -x` and System Events both match on. Overridable
 # for a build staged under another identity (scripts/dev-run.sh).
@@ -70,13 +24,8 @@ APP_INSTANCE_NAME="${PHUX_COCKPIT_PROCESS_NAME:-phux-cockpit}"
 APP_INSTANCE_PID=""
 APP_INSTANCE_NATIVE=""
 
-# Every live pid carrying our process name, one per line, newest last.
-#
-# `pgrep -x` and not `pgrep -f`: `-f` matches against the whole command line,
-# which includes the command line of the shell running the pgrep itself, so it
-# self-matches and reports a hit every single time. That is not a hypothetical
-# - it is why a wait loop written with `-f` can never exit. `-x` matches the
-# executable name, which cannot self-match from a shell.
+# Every live pid carrying our process name, one per line, newest last
+# (`pgrep -x`, since `-f` self-matches).
 app_instance_pids() {
     pgrep -x "$APP_INSTANCE_NAME" 2>/dev/null || true
 }
@@ -96,9 +45,7 @@ app_instance_check_free() {
     return 1
 }
 
-# Refuse unless EXACTLY the pid we launched is live. Used after launching and
-# again mid-sequence: the failure this exists for appeared in the MIDDLE of a
-# sequence that started clean, so checking only at startup cannot see it.
+# Refuse unless exactly the expected pid is live; checked mid-sequence too.
 # Arguments: expected pid, then the live pids.
 app_instance_check_only() {
     local expected="$1"; shift
@@ -129,14 +76,8 @@ app_instance_check_only() {
     return 0
 }
 
-# Refuse unless SNAPSHOT was published by EXPECTED pid and describes a UI that
-# still exists. Arguments: expected pid, snapshot text.
-#
-# The three failures are kept apart on purpose. "No header" means the dropbox
-# answered nothing; "wrong publisher" means another instance owns the channel;
-# "empty tree" means the publisher is ours but its window is gone - and that
-# last one is the case that used to be reported as a product bug, because an
-# empty widget list is exactly what a healthy app with no UI would print.
+# Refuse unless SNAPSHOT was published by EXPECTED pid and still describes a
+# UI; no header, wrong publisher and empty tree are reported separately.
 app_instance_check_snapshot() {
     local expected="$1" snapshot="$2"
     local publisher windows views
@@ -157,10 +98,7 @@ app_instance_check_snapshot() {
         return 1
     fi
 
-    # A `ready=true` header with nothing under it is the corpse. Windows and
-    # views are the two things every live UI publishes (snapshot.zig writes
-    # `window @wN ...` then indented `view @wN/... kind=...` lines), so zero of
-    # either means the process is answering but has no UI to describe.
+    # A ready header with no windows or views is a process with no UI left.
     windows="$(printf '%s\n' "$snapshot" | grep -c '^window @w' || true)"
     views="$(printf '%s\n' "$snapshot" | grep -c 'kind=[a-z_]* role=' || true)"
     if [[ "$windows" -eq 0 || "$views" -eq 0 ]]; then
@@ -219,23 +157,9 @@ app_instance_snapshot() {
     printf '%s\n' "$snapshot"
 }
 
-# End PID and do not return until the process is actually gone.
-#
-# `kill` only REQUESTS termination. A cleanup trap that kills and returns
-# leaves the app dying in the background, and because these runs are serial the
-# very next script starts while it is still listed - so the guard above refuses
-# a machine that is, a quarter of a second later, completely idle.
-#
-# That is not hypothetical: it was measured on 2026-08-12 running
-# drive-shell-ceiling.sh straight after automate-smoke.sh. Smoke's trap killed
-# without waiting, the ceiling script refused with "phux-cockpit is already
-# running (pid 73200)", and by the time the pid was inspected it had exited.
-# drive-shell-ceiling.sh had `wait` and automate-smoke.sh did not, which is the
-# per-script drift this shared file exists to end.
-#
-# `wait` handles the common case where the pid is our own child; the poll after
-# it covers a pid that is not (an app relaunched by something else), where
-# `wait` returns immediately with an error.
+# End PID and wait until it is actually gone, so the next serial run's guard
+# does not refuse a dying process. `wait` covers our own child; the poll
+# covers any other pid.
 app_instance_stop() {
     local pid="${1:-}" timeout_s="${2:-10}" deadline state
     [[ -n "$pid" ]] || return 0
@@ -267,25 +191,10 @@ app_instance_frontmost_pid() {
     osascript -e 'tell application "System Events" to get unix id of first process whose frontmost is true' 2>/dev/null || true
 }
 
-# Decide whether activation actually took. Pure; arguments are the pid we
-# wanted fronted and the pid that is actually frontmost.
-#
-# THIS IS THE POINT OF THE ACTIVATION HELPER, and it is worth being explicit
-# about why, because the bead assumed the opposite. Measured on this machine
-# 2026-08-12, from a non-interactive shell:
-#
-#   osascript -e 'tell application "System Events" to set frontmost of
-#                 process "phux-cockpit" to true'          -> exit 0, no effect
-#   osascript -e 'tell application "System Events" to set frontmost of
-#                 (first process whose unix id is N) to true' -> exit 0, no effect
-#   osascript -e 'tell application "Finder" to activate'   -> exit 0, no effect
-#
-# Fronting FINDER fails the same way, so this is not a property of this app or
-# of how its bundle was launched - it is the environment declining to let a
-# background shell change the frontmost app, and osascript reporting success
-# anyway. An exit code from osascript is therefore NOT evidence that a window
-# was fronted, and any test that treated it as evidence measured whatever
-# happened to be in front. Read the frontmost pid back and compare.
+# Decide whether activation took, by comparing the frontmost pid read back
+# with the one we wanted. osascript reports success even when a background
+# shell is not allowed to change the frontmost app, so its exit code proves
+# nothing. Pure.
 app_instance_check_frontmost() {
     local expected="$1" actual="$2"
     if [[ -z "$actual" ]]; then
@@ -307,16 +216,9 @@ app_instance_check_frontmost() {
     return 0
 }
 
-# Front the bound instance's window, targeting it BY PID, and PROVE it worked.
-#
-# Targeting by unix id rather than by name is what makes this safe to call with
-# siblings around: `process "phux-cockpit"` resolves to an arbitrary instance,
-# which is failure mode (1) in the bead. The sole-instance check still runs
-# first - if a second instance is live the run is compromised beyond
-# activation, because the dropbox is shared too.
-#
-# Retried to a deadline because System Events does not see a process the
-# instant `pgrep` does; it was measured several seconds late here.
+# Front the bound instance by pid (never by name), after the sole-instance
+# check, and prove it worked. Retried to a deadline because System Events
+# sees a new process late.
 app_instance_activate() {
     local deadline_s="${1:-15}"
     app_instance_assert || return 1

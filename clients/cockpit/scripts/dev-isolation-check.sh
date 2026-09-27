@@ -1,39 +1,15 @@
 #!/usr/bin/env bash
-# Drive the installed Phux Cockpit and a locally built one AT THE SAME TIME and
-# prove they cannot be confused -- by macOS, by `pgrep`, by System Events, or by
-# each other's config and layout files.
+# Run the installed Phux Cockpit and a local build at the same time and prove
+# macOS, `pgrep`, System Events and config/layout files cannot confuse them.
 #
 #   ./scripts/dev-isolation-check.sh              # build, then check
 #   ./scripts/dev-isolation-check.sh --no-build   # check what is already built
 #
-# This is the evidence behind scripts/dev-run.sh. Reasoning about bundle
-# identity is exactly the kind of argument that sounds complete and is not: the
-# packaged bundle carries the SAME CFBundleIdentifier and the SAME executable
-# name as the installed app, and three days of bug reports went to the wrong
-# binary while everyone involved believed otherwise.
-#
-# EVERY ASSERTION HERE HAS A NEGATIVE CONTROL, for the reason
-# scripts/automate-smoke.sh states at greater length: an assertion never seen to
-# fail is not evidence, it is decoration.
-#
-#   * The identity comparison is first pointed at the UNSTAGED packaged bundle,
-#     where it must report a CLASH on all three fields. Only then is it pointed
-#     at the staged one, where it must report none. The same comparison,
-#     distinguishing the two states.
-#   * The config isolation run is paired with a run that removes ONLY the
-#     PHUX_COCKPIT_CONFIG/STATE variables, and that run must reach the "real"
-#     config. Without that half, "the real config was not touched" is equally
-#     consistent with a config file the app never looks at.
-#
-# NOTHING HERE TOUCHES YOUR REAL FILES. The "real user" side of the experiment
-# is a fake HOME and a fake XDG_CONFIG_HOME under a scratch directory, so the
-# unisolated arm can genuinely reach a real-shaped config without that config
-# being yours. Your actual config and workspace state are fingerprinted at the
-# start and re-checked at the end, and the run fails if either moved.
-#
-# SERIAL ONLY (phux-cockpit-2ml.10). It refuses to start if any instance is
-# already running: `pgrep -x <name>` returning exactly one pid is half of what
-# is being proved, and it cannot mean anything with somebody else's app up.
+# Every assertion has a negative control: the identity comparison must first
+# report a clash on the unstaged bundle, and the config check is paired with a
+# run lacking PHUX_COCKPIT_CONFIG/STATE that must reach the "real" config (a
+# fake HOME/XDG under scratch). Your actual config and state are fingerprinted
+# and must not move. Serial only (refuses if any instance is running).
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,15 +23,12 @@ PIDS=()
 FAILURES=0
 BUILD=1
 
-# --no-build: check the bundle already in zig-out/package instead of making a
-# new one. Every property this script checks belongs to the BUNDLE -- its plist,
-# its executable name, which files it opens -- and none of them depend on the
-# source compiling right now. That matters in a shared worktree, where the tree
-# can be mid-edit and uncompilable while the question here is still answerable.
+# --no-build: check the existing bundle; every property checked belongs to the
+# bundle, not the source.
 for arg in "$@"; do
     case "$arg" in
         --no-build) BUILD=0 ;;
-        -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/!p; }' "$0"; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$arg" >&2; exit 2 ;;
     esac
 done
@@ -220,14 +193,8 @@ else
     bad 'pgrep -x phux-cockpit-dev did not resolve to exactly the dev pid'
 fi
 
-# LaunchServices' own answer, not the plist read back to itself: this is what
-# the Dock, the app switcher and `open -b` are keying off for the LIVE process.
-#
-# POLLED, not read once. A process exists (pgrep sees it) well before
-# LaunchServices has registered it, and reading too early returns
-# `"CFBundleIdentifier"=[ NULL ]` for both -- which compares equal and reads as
-# "one bundle id for two processes". That is a false failure of the strongest
-# assertion in this script, and it happened on the second run of it.
+# LaunchServices' bundle id for the live process, polled: it registers a
+# process after pgrep sees it (reading early returns NULL for both).
 registered_bundle_id() {
     local raw
     raw="$(lsappinfo info -only bundleid "$1" 2>/dev/null || true)"
@@ -252,14 +219,9 @@ else
     bad 'LaunchServices sees one bundle id for both processes'
 fi
 
-# System Events is the surface phux-cockpit-2ml.10 is about: activation is
-# global and BY NAME. A grant-less machine cannot answer, which is a skip, not a
-# pass -- saying so is the difference between evidence and an empty result.
-# Membership on the split list, not a substring test: "phux-cockpit" is a prefix
-# of "phux-cockpit-dev", so a substring test passes on a list that contains only
-# the dev build -- an assertion that cannot fail for the reason it claims to
-# check. Polled for the same reason as lsappinfo above: a process appears in
-# System Events only once it has a UI session, which is after pgrep can see it.
+# System Events process list (skipped, not passed, without the grant).
+# Exact membership, since "phux-cockpit" prefixes "phux-cockpit-dev"; polled
+# because a process appears there only once it has a UI session.
 system_events_phux() {
     osascript -e 'tell application "System Events" to get name of every process whose name contains "phux"' 2>/dev/null |
         tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' || true
@@ -348,12 +310,7 @@ else
     ok 'the user-level config was NOT read'
 fi
 
-# The layout is written on SHUTDOWN, not while running: an app killed here after
-# 30s of uptime still has no state file, and the file appears within a second of
-# the SIGTERM. (Measured both ways: waiting 30s with the app up fails, waiting
-# after the kill passes.) So settle, kill, then look -- and give the look a real
-# deadline rather than a fixed sleep, which is what made an earlier version of
-# this assertion fail intermittently.
+# Layout is written on shutdown: settle, kill, then poll for the file.
 sleep 3
 kill "$ARM_A_PID" 2>/dev/null || true
 PIDS=()

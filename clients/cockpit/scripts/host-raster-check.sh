@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Rasterizer-fidelity check: does the SDK host still ink glyphs as thickly as
-# it did when the baseline was pinned?
+# when the baseline was pinned?
 #
 #   ./scripts/host-raster-check.sh                 # measure and report
 #   ./scripts/host-raster-check.sh --min-solid N   # ...and fail below N
@@ -8,37 +8,11 @@
 #   PHUX_COCKPIT_SDK_SRC=<dir> ./scripts/host-raster-check.sh   # a different SDK
 # measures: pinned SDK host/CoreText glyph rasterization
 #
-# WHAT THIS IS FOR
-# ----------------
-# `native automate screenshot` is rendered by the SDK's deterministic CPU
-# reference renderer, which fills glyph outlines with a bundled std-only
-# TrueType rasterizer and never calls CoreText. A defect in the REAL macOS
-# rasterizer therefore cannot appear in a reference screenshot.
-#
-# phux-cockpit-aht (the report that all terminal text looked ~35% too thin) is
-# the worked example. The original smoothing diagnosis was wrong: the calls
-# were absent in the shipped "before" commit, and that CGBitmapContext already
-# defaulted to smoothing enabled. This check measures the host path directly;
-# it does not credit smoothing for a change that moved zero pixels.
-#
-# scripts/measure-host-raster.m closes that gap by #including the pinned SDK's
-# own appkit_host.m and rasterizing a terminal row through the host's real
-# raster builder. No window, no focus, no Screen Recording permission, so it
-# runs in CI where screen capture cannot.
-#
-# WHAT IT IS NOT
-# --------------
-# It is not a screenshot of the app. It proves the RASTERIZER, not the frame:
-# it cannot see a layout mistake, a wrong colour chosen upstream, or a command
-# that was never emitted. Reference screenshots remain the instrument for
-# those. See docs/RENDER_FIDELITY.md for what each instrument can and cannot
-# see, for the evidence behind that split, and for how the CI floor was derived.
-#
-# .github/workflows/ci.yml runs this on every push and pull request, and
-# .github/workflows/sdk-head.yml runs it after repointing at the fork's branch
-# head. Both use `--min-solid 4000` after
-# `scripts/build-automation-cli.sh --checkout-only` materializes the pin this
-# script insists on below.
+# Reference screenshots use the SDK's CPU renderer and never CoreText, so
+# scripts/measure-host-raster.m #includes the pinned appkit_host.m and
+# rasterizes a terminal row through the host's real raster builder (no window
+# or permissions, so it runs in CI with `--min-solid 4000`). It proves the
+# rasterizer, not the frame. See docs/RENDER_FIDELITY.md.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,7 +23,7 @@ ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --min-solid|--png-prefix) ARGS+=("$1" "$2"); shift 2 ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/!p; }' "$0"; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
 done

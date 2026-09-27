@@ -1,43 +1,15 @@
 #!/usr/bin/env bash
-# Does the minimum-contrast floor change what reaches the GLASS, and by how
+# Does the minimum-contrast floor change what reaches the glass, and by how
 # much?
 #
 #   ./scripts/contrast-floor-check.sh
 #
-# TWO HALVES, NEITHER OF THEM AUTHORED HERE
-# -----------------------------------------
-# The first half asks THIS BUILD what colour it projects for each low-contrast
-# SGR case, at each floor. That is a MEASURED test in
-# src/tests/minimum_contrast_tests.zig which paints a real session through
-# `grid.paint` and reads the resolved foreground off the display list; this
-# script only greps its `CONTRAST-FLOOR` lines.
-#
-# The second half feeds those colours to scripts/measure-cell-contrast.m, which
-# `#include`s the PINNED SDK's own appkit_host.m and inks a terminal row
-# through the host's real CoreText rasterizer.
-#
-# So both columns come out of code that shipped. Flip `minimum-contrast` and
-# the whole table moves on its own. This is the rule phux-cockpit-aht was
-# merged and retracted for breaking: a "fix" was validated against a
-# hand-edited SDK state no build was ever in, and against the commit that
-# actually shipped it moved zero pixels.
-#
-# WHAT IT CAN AND CANNOT SEE
-# --------------------------
-# It proves the rasterizer's response to the colour the projection chose. It is
-# NOT a screenshot of the app: it cannot see a layout mistake or a command that
-# was never emitted. `zig build test` covers the projection-to-display-list
-# wire (including the one through terminal_painter.zig); this covers
-# display-list-to-pixels. See docs/RENDER_FIDELITY.md for why no single
-# instrument covers both without the Screen Recording permission.
-#
-# READING THE NUMBERS
-# -------------------
-# `solid` and `lit` are absolute luminance thresholds and are BLIND to the
-# defect: dark ink on a dark ground is ink that no absolute threshold counts,
-# so unreadable text and blank space both score zero. `distinct` (pixels more
-# than one 8-bit step from the row's own background) and `peak_delta` are the
-# statistics that separate them, and they are what to read here.
+# Half one greps the `CONTRAST-FLOOR` lines of the measured test in
+# src/tests/minimum_contrast_tests.zig (the colour this build projects per
+# floor); half two inks those colours through the pinned SDK's real CoreText
+# host path (scripts/measure-cell-contrast.m). Both come from shipped code.
+# Read `distinct` and `peak_delta`: absolute `solid`/`lit` thresholds cannot
+# tell dark ink on a dark ground from blank space. See docs/RENDER_FIDELITY.md.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

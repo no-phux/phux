@@ -845,38 +845,10 @@ existing draft tag.
 
 ## Project background
 
-Cockpit began as a standalone spike on 2026-07-27 asking whether phux could have
-several independent terminal panes beside ordinary native widgets in one GPU
-surface without making the native layer understand terminals.
-
-**Verdict: GO, with caveats.** [`FINDINGS.md`](FINDINGS.md) records what was
-built, what broke, what it cost, and how each claim was established. The spike
-forked native-sdk's `examples/terminal` at `a7509a7`, grew it into a two-pane
-cockpit, and was then ported to the framework's first-party
-`canvas.terminal_grid` painter. The old forked painter remains in history at
-`git show d4ccb84^:src/box.zig`.
-
-The rendering seam remains deliberately small (`src/terminal/grid.zig`):
-
-```zig
-pub fn feed(session: *Session, bytes: []const u8) void {
-    session.stream.nextSlice(bytes);
-}
-```
-
-The rendering spike is complete and closed out. All four steps of `FINDINGS.md`
-section 8 were finished, migrated here as PR #7, and developed further since;
-Cockpit is the shipping product, not a validation fixture. Its standalone Git
-history was imported under `clients/cockpit` when it joined the Phux monorepo;
-the spike
-branch was removed on 2026-08-09 and its history preserved at the annotated tag
-`spike/first-party-terminal-grid` — `git show spike/first-party-terminal-grid`
-for the audit that established nothing was left behind.
-
-The section 7 `phux-client-ffi` sketch is historical. The implemented stable C
-ABI now links Cockpit to `phux-client-core` without exposing Rust internals.
-Workspace snapshots, shared layout projection, and any thinner VT-byte handoff
-belong in explicit follow-up changes rather than the repository migration.
+Cockpit began on 2026-07-27 as a spike asking whether phux could host several
+independent terminal panes beside native widgets in one GPU surface.
+[`FINDINGS.md`](FINDINGS.md) records that spike (verdict: GO, with caveats);
+its history is preserved at the tag `spike/first-party-terminal-grid`.
 
 ## License
 

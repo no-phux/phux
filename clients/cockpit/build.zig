@@ -1,34 +1,14 @@
-// The local Cockpit remains the default APP graph. The production Phux lane is
-// materialized into the app under -Dphux-enabled=true, so default `zig build`
-// and `zig build run` never resolve its C header, static archive, Objective-C
-// source, or AppKit, and never swap the local terminal provider out.
-//
-// `zig build test` is deliberately different. Independently of -Dphux-enabled,
-// it compiles and runs the phux provider's own modules whenever the phux client
-// FFI can be found on this machine (see resolvePhuxFfi). Before that, a
-// signature change to PhuxProvider.search and Host.search passed a local
-// `zig build test` cleanly while never being compiled at all, because
-// -Dphux-enabled defaults to false. CI caught it later; the local run had
-// reported a false green.
-//
-// Whatever the outcome of that lookup, the test step ends by printing a verdict
-// naming exactly what was compiled -- see addTestVerdict. The exit code is
-// still the only authority on pass/fail; the verdict answers "was the run
-// real", which the exit code cannot.
+// The default app graph uses the local provider; -Dphux-enabled=true
+// materializes the Phux lane (C header, static archive, Objective-C, AppKit).
+// `zig build test` compiles and runs the Phux modules whenever the client FFI
+// is found, independent of -Dphux-enabled, and ends with a verdict naming
+// what was compiled (the exit code stays authoritative).
 const std = @import("std");
 const native_sdk = @import("native_sdk");
 
-/// The TypeScript-core graph: the root runner extension fronts a real Cockpit
-/// engine, and a Zig module may only import files
-/// below its own root, so the engine is handed to each extension instance
-/// (exe, app tests, extension tests) as a module rooted at `src/ts_engine.zig`
-/// carrying the same imports the Zig app root gets, including the production
-/// Phux provider when selected.
-/// The SDK package's TypeScript frontend needs its compiler (`scriptc`) under
-/// packages/core/node_modules, and the tarball pin does not carry it: every
-/// pin bump used to stop at "cannot resolve its TypeScript toolchain" until
-/// someone ran `npm ci` in a cache directory by hand. Install it once, at
-/// configure time, for the package this build actually resolved.
+/// The SDK package's TypeScript frontend needs `scriptc`, which the tarball
+/// pin does not carry; install it once at configure time for the resolved
+/// package.
 fn ensureTsToolchain(b: *std.Build, dependency: *std.Build.Dependency) void {
     const root = dependency.builder.build_root.path orelse return;
     const core_dir = b.pathJoin(&.{ root, "packages", "core" });
@@ -168,9 +148,8 @@ fn addDisabledProviderCompileCheck(
     test_step.dependOn(&compiled.step);
 }
 
-/// Keep the native engine's broad pre-cutover regression suite while the
-/// shipped app has exactly one coordinator (`src/core.ts`). The facade has no
-/// `main` and cannot become an app graph; it only exposes native seams to tests.
+/// The native engine's unit and regression tests, rooted at a test-only facade
+/// with no `main`.
 fn addNativeRegressionTests(
     b: *std.Build,
     artifacts: native_sdk.AppArtifacts,
@@ -259,13 +238,9 @@ fn addNativeRegressionTests(
 
 // ---------------------------------------------------------------- phux FFI
 
-/// ring 0.17's Apple ARM64 P-256 wrappers (`_p256_mul_mont`, `_p256_sqr_mont`)
-/// `bl` file-local helpers. Mach-O `.subsections_via_symbols` plus dead_strip
-/// drops those helpers and leaves the wrappers' PC-relative `bl` pointing at
-/// zeros (`udf #0`). QUIC TLS 1.3 then SIGILL in `verify_tls13_signature` on
-/// `phux-remote-tunnel`; Zig's segfault handler aborts. Confirmed Cockpit
-/// 0.23.3 DiagnosticReports 2026-09-15. `catch_unwind` cannot contain SIGILL.
-/// Pin vs skip-verify does not avoid this: both still run ring ECDSA.
+/// ring's Apple ARM64 P-256 wrappers `bl` file-local helpers that dead_strip
+/// removes (leaving `udf #0`), which SIGILLs QUIC TLS in `phux-remote-tunnel`.
+/// Keep the helpers.
 fn keepRingP256Helpers(compile: *std.Build.Step.Compile) void {
     compile.link_gc_sections = false;
 }
@@ -301,16 +276,11 @@ fn ffiComplete(b: *std.Build, include_dir: []const u8, lib_dir: []const u8) bool
         fileExists(b, b.pathJoin(&.{ lib_dir, "libphux_client_ffi.a" }));
 }
 
-/// Where the phux client FFI can be, in precedence order. Every entry is
-/// validated by ffiComplete before it is accepted, so a half-present checkout
-/// is treated as absent rather than exploding mid-build.
-///
+/// Where the phux client FFI can be, in precedence order; each candidate is
+/// validated by ffiComplete:
 ///   1. -Dphux-client-ffi-include-dir / -Dphux-client-ffi-lib-dir
 ///   2. $PHUX_CLIENT_FFI_INCLUDE_DIR / $PHUX_CLIENT_FFI_LIB_DIR
-///      (the pair scripts/package-macos.sh and both workflows already use)
-///   3. ../../target/<profile> -- the Phux monorepo root, ffi-release by default
-///      (-Dphux-client-ffi-profile=ffi-dev selects the iteration archive).
-/// Explicit directory pairs keep precedence over the profile's default path.
+///   3. ../../target/<profile> (ffi-release by default)
 fn resolvePhuxFfi(
     b: *std.Build,
     opt_include: ?[]const u8,
@@ -369,11 +339,8 @@ fn createPhuxModules(
     provider_contract: *std.Build.Module,
     ffi: PhuxFfi,
 ) PhuxModules {
-    // ref.zig is shared by every module below and must be a MODULE, not a
-    // relative @import. These files are compiled into several artifacts at
-    // once, and a plain `@import("ref.zig")` from two of them puts the same
-    // file in two modules, which Zig rejects with
-    // "file exists in modules 'root' and 'phux_transport'".
+    // ref.zig is shared by several modules, so it must be a module itself;
+    // a relative @import from two modules is rejected by Zig.
     const ref_module = b.createModule(.{
         .root_source_file = b.path("src/providers/phux/ref.zig"),
         .target = target,
@@ -416,10 +383,8 @@ fn createPhuxModules(
         .cwd_relative = b.pathJoin(&.{ ffi.lib_dir, "libphux_client_ffi.a" }),
     });
     host_module.linkSystemLibrary("c", .{});
-    // The archive's remote-host tunnel reads the phux CLI's registry through
-    // phux-config, whose clock dependency (chrono, via iana-time-zone) asks
-    // CoreFoundation for the system time zone on macOS. The app graph gets
-    // it through AppKit; the standalone phux test artifacts need it named.
+    // phux-config's time zone lookup needs CoreFoundation in the standalone
+    // phux test artifacts.
     if (target.result.os.tag == .macos) {
         for ([_]*std.Build.Module{ host_module, extension_module }) |module| {
             if (b.sysroot) |sysroot| module.addFrameworkPath(.{
@@ -474,38 +439,21 @@ fn attachPhuxModules(b: *std.Build, root: *std.Build.Module, modules: PhuxModule
     root.linkSystemLibrary("c", .{});
 }
 
-/// Names of the phux modules whose own tests the `test` step runs, in the
-/// order they are added. Reported verbatim in the test verdict, so the verdict
-/// cannot claim more coverage than this list delivers.
-///
-/// extension.zig is now rooted too. It was held out because rooting it hung the
-/// build indefinitely inside extension.writeExact: that function's 1s deadline
-/// is only evaluated between send() calls, and macOS ignores MSG_DONTWAIT on an
-/// AF_UNIX socket that is blocking at the descriptor level, so send() slept
-/// forever and the deadline was unreachable (phux-cockpit-iwf). writeExact now
-/// forces O_NONBLOCK for the duration of the write -- see the derivation in
-/// scripts/measure-send-blocking.c -- so the deadline is enforceable and these
-/// six tests, which had never executed anywhere including CI, run every build.
+/// The phux modules whose own tests `test` runs, reported verbatim in the
+/// verdict.
 const phux_test_module_names = "transport, host, provider, pointer, extension";
 
-/// Compile src/providers/phux/ and run its tests as part of `zig build test`,
-/// regardless of -Dphux-enabled.
-///
-/// Zig runs tests only from a compilation's ROOT module, so importing these
-/// modules into the app graph -- which is all -Dphux-enabled=true did -- type
-/// checks them but runs only host.zig's tests. Rooting a test artifact at each
-/// module both compiles the whole provider and runs the tests in transport.zig,
-/// provider.zig and pointer.zig, which never ran anywhere, including CI.
+/// Root a test artifact at each phux module so its tests run as part of
+/// `zig build test` regardless of -Dphux-enabled (Zig only runs tests from a
+/// compilation's root module).
 fn addPhuxGraphTests(
     b: *std.Build,
     artifacts: native_sdk.AppArtifacts,
     test_step: *std.Build.Step,
     ffi: PhuxFfi,
 ) void {
-    // The TEST root, not the exe root: these artifacts must be built the way
-    // the rest of `zig build test` is built. The exe root is optimized for
-    // shipping, and compiling tests that way silently drops the safety checks
-    // the assertions are relying on.
+    // Built like the rest of `test` (not the shipping exe root), keeping
+    // safety checks.
     const root = artifacts.tests.root_module;
     const target = root.resolved_target.?;
     const optimize = root.optimize.?;
@@ -556,20 +504,9 @@ fn addPhuxGraphTests(
 
 // --------------------------------------------------------------- verdict
 
-/// Print, as the last thing `zig build test` does, an unambiguous statement of
-/// (a) that the run passed and (b) what was actually compiled.
-///
-/// This step is wired to depend on every step `test` already depended on, and
-/// `test` is then made to depend on it. So it runs last, and it runs ONLY if
-/// everything before it succeeded -- which is what licenses it to print PASS.
-/// The corollary is the important half: no verdict line means the run was not
-/// green. The process exit code remains the authority either way.
-///
-/// stdio is .inherit on purpose. A run step's captured output lands in
-/// `Step.result_stderr`, and Zig 0.16's build runner prints a step-failure
-/// report -- including `failed command: ...` -- for any step with non-empty
-/// result_stderr, pass or fail (build_runner.zig:1381). Capturing the verdict
-/// would make the verdict itself look like a failure.
+/// Print, last, what `zig build test` compiled. It runs only if every other
+/// step succeeded, so no verdict means not green. stdio is inherited because
+/// captured stderr makes Zig report the step as failed.
 fn addTestVerdict(b: *std.Build, test_step: *std.Build.Step, verdict: []const u8) void {
     const previous = b.allocator.dupe(*std.Build.Step, test_step.dependencies.items) catch @panic("OOM");
     const run = b.addSystemCommand(&.{ "/usr/bin/printf", "%s\n", verdict });
@@ -579,31 +516,13 @@ fn addTestVerdict(b: *std.Build, test_step: *std.Build.Step, verdict: []const u8
     test_step.dependOn(&run.step);
 }
 
-/// Which Zig global cache this run used, and whether anybody else is in it.
-///
-/// The other half of phux-cockpit-2ml.11. A cache entry is guarded by an
-/// EXCLUSIVE lock on its manifest in `<global cache>/h/<hash>.txt`, held for as
-/// long as the entry takes to produce, and the manifests that land there are
-/// project-independent -- a hello-world and this repo were measured writing the
-/// same one. So with the default `~/.cache/zig`, every worktree on the machine
-/// queues on the same file, and a build runner that outlives its session holds
-/// it forever. Measured: a deliberately held lock blocked a shared-cache build
-/// past 45s while an isolated-cache build finished in 3s.
-///
-/// This line does not prevent that -- `scripts/zig-build.sh` does, by giving
-/// each worktree its own cache with only the package directory shared. What
-/// this line does is make the exposure legible in the log of every run,
-/// including the ones that call `zig build` directly.
+/// Which Zig global cache this run used. A shared cache's manifest locks can
+/// starve other worktrees; `scripts/zig-build.sh` isolates it, and this line
+/// makes the exposure visible in every log.
 fn globalCacheNote(b: *std.Build, source_root: []const u8) []const u8 {
     const reported = b.graph.global_cache_root.path orelse return "(unknown)";
 
-    // Zig hands this back RELATIVE to the build root whenever the cache lives
-    // under it -- `--global-cache-dir <abs path>/.zig-global-cache` came back
-    // as plain `.zig-global-cache`. The first version of this function compared
-    // the reported string against the absolute source root, so the one
-    // configuration it was written to certify -- a worktree-private cache --
-    // was the one it called SHARED. Caught by reading the output of the first
-    // run that used it, which is the only reason it is not still wrong.
+    // Zig reports a cache under the build root as a relative path.
     const absolute = if (std.fs.path.isAbsolute(reported)) reported else b.pathFromRoot(reported);
     if (std.mem.startsWith(u8, absolute, source_root)) return b.fmt("{s} (worktree-private)", .{absolute});
     const path = absolute;
@@ -618,18 +537,7 @@ fn buildVerdict(
 ) []const u8 {
     const rule = "------------------------------------------------------------------";
 
-    // Which TREE this exit code describes.
-    //
-    // Not decoration. On 2026-08-12 a subagent's `zig build test` silently ran
-    // in a sibling git worktree instead of its own: the exit code was real, it
-    // just described somebody else's code. Nothing in the output distinguished
-    // it, and it surfaced only because a later run happened to starve on the
-    // shared Zig cache lock. That is the same failure class this whole verdict
-    // exists for — a green result that does not describe what you changed —
-    // and it is the harder one to spot, because a correct-looking PASS from
-    // the wrong tree is identical to a correct one. Printing the resolved
-    // build root costs a line and makes it visible in every future log.
-    // See phux-cockpit-2ml.11.
+    // Print the build root so a result from the wrong worktree is visible.
     const source_root = b.build_root.path orelse ".";
     const global_cache = globalCacheNote(b, source_root);
 
