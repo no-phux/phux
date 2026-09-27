@@ -29,10 +29,43 @@ pub fn default_socket_path() -> PathBuf {
     instance::runtime_dir().join("phux.sock")
 }
 
-/// The day-to-day installation's socket in this environment.
+/// Where the day-to-day installation's socket can live on this machine.
+///
+/// Deliberately not "the default profile's path in this environment": test
+/// harnesses pin `PHUX_PROFILE=default` inside a sandboxed `XDG_RUNTIME_DIR`
+/// to exercise the released layout, and that sandbox is not production. So
+/// this names the real locations: the `/tmp/phux-$USER` fallback, the
+/// `XDG_RUNTIME_DIR` a login session provides (`/run/user/<uid>`), and an
+/// inherited `XDG_RUNTIME_DIR` unless it sits inside the temp directory.
 #[must_use]
-pub fn production_socket_path() -> PathBuf {
-    instance::default_profile_runtime_dir().join("phux.sock")
+pub fn production_socket_candidates() -> Vec<PathBuf> {
+    let mut candidates =
+        vec![PathBuf::from(format!("/tmp/phux-{}", instance::user_segment())).join("phux.sock")];
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        let dir = PathBuf::from(dir);
+        if !is_inside(&dir, &std::env::temp_dir()) {
+            candidates.push(dir.join("phux").join("phux.sock"));
+        }
+    }
+    candidates
+}
+
+/// A login session's runtime directory: `/run/user/<uid>/phux/phux.sock`.
+fn is_login_runtime_socket(socket: &Path) -> bool {
+    let Ok(rest) = socket.strip_prefix("/run/user") else {
+        return false;
+    };
+    let mut parts = rest.iter();
+    let numeric_uid = parts
+        .next()
+        .and_then(|uid| uid.to_str())
+        .is_some_and(|uid| !uid.is_empty() && uid.bytes().all(|b| b.is_ascii_digit()));
+    numeric_uid && parts.as_path() == Path::new("phux/phux.sock")
+}
+
+fn is_inside(path: &Path, dir: &Path) -> bool {
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canonical(path).starts_with(canonical(dir))
 }
 
 /// Refuse to let a development build touch the day-to-day server.
@@ -51,39 +84,50 @@ pub fn refuse_dev_on_production(socket: &Path) -> Result<(), String> {
     if instance::build_kind() != instance::BuildKind::Dev {
         return Ok(());
     }
-    refuse_if_same_socket(socket, &production_socket_path())
+    if is_login_runtime_socket(&resolved_socket(socket)) {
+        return Err(refusal(socket));
+    }
+    for production in production_socket_candidates() {
+        refuse_if_same_socket(socket, &production)?;
+    }
+    Ok(())
 }
 
 fn refuse_if_same_socket(socket: &Path, production: &Path) -> Result<(), String> {
-    if !same_socket(socket, production) {
-        return Ok(());
+    if same_socket(socket, production) {
+        return Err(refusal(production));
     }
-    Err(format!(
+    Ok(())
+}
+
+fn refusal(production: &Path) -> String {
+    format!(
         "refusing to use the production phux socket {} from a development build; \
          dev builds run their own server under the `{}` profile. Use `phux` from \
          the installed release for the production server, and never copy a dev \
          build over the installed binary",
         production.display(),
         instance::DEV_PROFILE,
-    ))
+    )
 }
 
 /// Whether two socket paths name the same file, resolving symlinked
 /// directories (`/tmp` is `/private/tmp` on macOS). The socket itself may
 /// not exist yet, so only its directory is canonicalised.
 fn same_socket(a: &Path, b: &Path) -> bool {
-    fn resolved(path: &Path) -> PathBuf {
-        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
-            return path.to_path_buf();
-        };
-        let dir = if dir.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            dir
-        };
-        std::fs::canonicalize(dir).map_or_else(|_| path.to_path_buf(), |dir| dir.join(name))
-    }
-    a == b || resolved(a) == resolved(b)
+    a == b || resolved_socket(a) == resolved_socket(b)
+}
+
+fn resolved_socket(path: &Path) -> PathBuf {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return path.to_path_buf();
+    };
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    std::fs::canonicalize(dir).map_or_else(|_| path.to_path_buf(), |dir| dir.join(name))
 }
 
 /// The advisory lock serialising server auto-spawn within one profile.
@@ -219,9 +263,30 @@ mod tests {
     #[test]
     fn test_binaries_may_not_use_the_production_socket() {
         // Tests are dev builds, so the live guard applies to them too.
-        assert!(refuse_dev_on_production(&production_socket_path()).is_err());
+        for production in production_socket_candidates() {
+            assert!(refuse_dev_on_production(&production).is_err());
+        }
+        assert!(refuse_dev_on_production(Path::new("/run/user/1000/phux/phux.sock")).is_err());
+        // A sandbox that pins the released layout under a temp runtime dir
+        // is not production.
         let dir = tempfile::tempdir().unwrap();
-        assert!(refuse_dev_on_production(&dir.path().join("phux.sock")).is_ok());
+        assert!(refuse_dev_on_production(&dir.path().join("run/phux/phux.sock")).is_ok());
+    }
+
+    #[test]
+    fn only_the_login_runtime_layout_matches() {
+        assert!(is_login_runtime_socket(Path::new(
+            "/run/user/501/phux/phux.sock"
+        )));
+        assert!(!is_login_runtime_socket(Path::new(
+            "/run/user/501/phux-dev/phux.sock"
+        )));
+        assert!(!is_login_runtime_socket(Path::new(
+            "/run/user/x/phux/phux.sock"
+        )));
+        assert!(!is_login_runtime_socket(Path::new(
+            "/tmp/run/user/501/phux/phux.sock"
+        )));
     }
 
     #[test]

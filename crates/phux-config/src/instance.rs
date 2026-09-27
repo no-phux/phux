@@ -182,24 +182,14 @@ fn exe_is_under_cargo_target(exe: &Path) -> bool {
 /// unsuffixed so paths created by earlier releases stay valid.
 #[must_use]
 pub fn runtime_dir() -> PathBuf {
-    runtime_dir_for(&profile())
-}
-
-/// The runtime directory the day-to-day installation uses in this
-/// environment, whatever profile this process resolved.
-#[must_use]
-pub fn default_profile_runtime_dir() -> PathBuf {
-    runtime_dir_for(DEFAULT_PROFILE)
-}
-
-fn runtime_dir_for(profile: &str) -> PathBuf {
+    let profile = profile();
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         let mut path = PathBuf::from(dir);
-        path.push(suffixed("phux", profile));
+        path.push(suffixed("phux", &profile));
         return path;
     }
     let mut path = PathBuf::from("/tmp");
-    path.push(suffixed(&format!("phux-{}", user_segment()), profile));
+    path.push(suffixed(&format!("phux-{}", user_segment()), &profile));
     path
 }
 
@@ -246,7 +236,7 @@ fn suffixed(stem: &str, profile: &str) -> String {
 ///
 /// Only needs to be unique per user on a shared machine; the directory is
 /// created `0700` and its ownership is verified before use.
-fn user_segment() -> String {
+pub(crate) fn user_segment() -> String {
     std::env::var("UID")
         .ok()
         .or_else(|| std::env::var("USER").ok())
