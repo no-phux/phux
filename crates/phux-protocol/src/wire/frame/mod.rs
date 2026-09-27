@@ -15,13 +15,8 @@
 //! ```
 //!
 //! `length` is at least `1` (the type byte) and at most `MAX_FRAME_LEN`.
-//!
-//! Under [ADR-0013] terminal content rides as raw VT bytes (`RESOURCE_OUTPUT`).
-//! There is no structured per-cell diff variant on this enum — earlier
-//! drafts carried `PaneDiff` at type byte `0x40`; that slot is retired
-//! and `RESOURCE_OUTPUT` (type `0x90` per SPEC §7.2) takes its place.
-//!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
+//! Terminal content is raw VT bytes in `RESOURCE_OUTPUT` (ADR-0013); the
+//! retired `PANE_DIFF` slot `0x40` stays unassigned.
 
 /// Maximum permitted value of the wire-frame `length` field, per `docs/spec/proto.md` §5
 /// ("at most `16_777_216` (16 MiB)").
@@ -30,21 +25,16 @@ pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 pub const MAX_HISTORY_CURSOR_BYTES: usize = 4 * 1024;
 /// Hard upper bound for rows requested or reported in one native history page.
 pub const MAX_HISTORY_PAGE_ROWS: u32 = 4 * 1024;
-/// Maximum bytes in one opaque client terminal-emulator PTY reply.
-///
-/// This matches the existing 64 KiB input-command bound and keeps a stateful
-/// reply below pre-auth buffering limits with ample TLV envelope headroom.
+/// Maximum bytes in one opaque client terminal-emulator PTY reply; matches
+/// the 64 KiB input-command bound.
 pub const MAX_INPUT_TERMINAL_REPLY_BYTES: usize = 64 * 1024;
-/// Maximum payload bytes in one [`Command::PutFile`] chunk. The 8 MiB ceiling
-/// leaves ample room below the 16 MiB frame cap for envelope and metadata.
+/// Maximum payload bytes in one [`Command::PutFile`] chunk, well under the
+/// 16 MiB frame cap.
 pub const MAX_FILE_UPLOAD_CHUNK: usize = 8 * 1024 * 1024;
 /// Maximum completed file size accepted by [`Command::PutFile`].
 pub const MAX_FILE_UPLOAD_SIZE: u64 = 64 * 1024 * 1024;
-/// Maximum payload bytes in one [`Command::AppendResourceOutput`] call.
-///
-/// Matches the 64 KiB input-command and terminal-reply bounds: one append is
-/// one or more complete records, never a bulk upload, so a producer with more
-/// to say sends more appends.
+/// Maximum payload bytes in one [`Command::AppendResourceOutput`] call: one
+/// or more complete records, never a bulk upload.
 pub const MAX_APPEND_BYTES: usize = 64 * 1024;
 /// Maximum bytes in a `SPAWN_RESOURCE.provider` string (field 13): the
 /// `integration_id` bound of the `phux.agent-session/v1` record
@@ -55,18 +45,9 @@ pub const MAX_RESOURCE_PROVIDER_BYTES: usize = 120;
 /// (`docs/spec/L3.md` §3.7.1).
 pub const MAX_RESOURCE_NATIVE_ID_BYTES: usize = 1024;
 
-// -----------------------------------------------------------------------------
-// Message discriminants from SPEC §7. Only the variants implemented in this
-// scaffold are exposed via `FrameKind`; the remaining IDs are recorded here so
-// sibling tasks can wire them up without re-deriving the catalog.
-// -----------------------------------------------------------------------------
-
-// Each declaration reserves its byte through a trait implementation. Reusing a
-// byte in the same namespace is a conflicting impl (E0119), even for a reserved
-// tag with no decoder arm. Keep declarations inside wire_tags!: the constants
-// and reservations are emitted together, with no secondary list to maintain.
-// `tests/wire_tag_registry.rs` compiles duplicate declarations to prove it.
-// FrameType / CommandTag remain the E0081 gate for those two catalogs.
+// Message discriminants (SPEC §7). Each `wire_tags!` declaration reserves its
+// byte through a trait impl, so reusing a byte in one namespace is a
+// conflicting impl (E0119); `tests/wire_tag_registry.rs` proves it.
 #[allow(dead_code)]
 mod tag_registry {
     pub(super) trait Allocated<const TAG: u8> {}
@@ -95,17 +76,9 @@ macro_rules! wire_tags {
     };
 }
 
-/// Wire type byte for one SPEC §7 message-catalog entry.
-///
-/// The public surface stays the `TYPE_*` consts below, each of which takes
-/// its value from a variant here. Declaring the catalog as a field-less
-/// `#[repr(u8)]` enum — the same protection [`ErrorCode`](super::ErrorCode)
-/// already has — makes a duplicated type byte compile error E0081, so two
-/// branches can no longer allocate the same discriminant and ship a silent
-/// protocol break (phux-ke0c). Retired slots stay out of the enum; their
-/// comments below keep the allocation history. A new allocation picks an
-/// open value from `docs/spec/appendix-reserved.md` §1 and adds the variant
-/// and its const in the same edit.
+/// Wire type byte for one SPEC §7 message-catalog entry. As a `#[repr(u8)]`
+/// enum a duplicated type byte is compile error E0081. New allocations come
+/// from `docs/spec/appendix-reserved.md` §1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 enum FrameType {
@@ -174,9 +147,7 @@ pub const TYPE_INPUT_PASTE: u8 = FrameType::InputPaste as u8;
 pub const TYPE_INPUT_MOUSE: u8 = FrameType::InputMouse as u8;
 /// Discriminant for `INPUT_FOCUS` (client to server, `docs/spec/input.md` §4).
 pub const TYPE_INPUT_FOCUS: u8 = FrameType::InputFocus as u8;
-// 0x15 was `INPUT_SELECTION`, removed in v0.5.0 (phux-q1ni, ADR-0030):
-// selection is a client-side projection over the consumer's own engine, not a
-// wire frame. The discriminant is left unassigned.
+// 0x15 (`INPUT_SELECTION`) was removed by ADR-0030 and stays unassigned.
 /// Discriminant for `HISTORY_REQUEST` (client to server, `docs/spec/L1.md` §4.5).
 pub const TYPE_HISTORY_REQUEST: u8 = FrameType::HistoryRequest as u8;
 /// Discriminant for `INPUT_TERMINAL_REPLY` (client to server,
@@ -188,13 +159,9 @@ pub const TYPE_INPUT_TERMINAL_REPLY: u8 = FrameType::InputTerminalReply as u8;
 /// Cumulative within one `(ResourceId, StreamId, BootstrapId)` after the
 /// client applies the acknowledged transition. Raw profiles never send it.
 pub const TYPE_FRAME_ACK: u8 = FrameType::FrameAck as u8;
-/// Discriminant for `VIEWPORT_RESIZE` (client to server, `docs/spec/proto.md` §7.1 / §10.5).
-///
-/// The client emits this when its outer terminal changes size (SIGWINCH on
-/// Unix, the GUI resize event on graphical hosts). Payload reuses the
-/// [`ViewportInfo`] shape carried by `ATTACH` (§13) — phux-4hp keeps the wire
-/// shape minimal and lets future tickets grow the per-cell pixel + padding
-/// metrics from SPEC §10.5 when the mouse-encoder needs them.
+/// Discriminant for `VIEWPORT_RESIZE` (client to server, `docs/spec/proto.md`
+/// §7.1 / §10.5): the outer terminal changed size; payload is the
+/// [`ViewportInfo`] shape `ATTACH` carries.
 pub const TYPE_VIEWPORT_RESIZE: u8 = FrameType::ViewportResize as u8;
 /// Discriminant for `PING` (client to server, `docs/spec/proto.md` §7.4).
 pub const TYPE_PING: u8 = FrameType::Ping as u8;
@@ -208,12 +175,8 @@ pub const TYPE_DETACHED: u8 = FrameType::Detached as u8;
 pub const TYPE_ATTACH_READY: u8 = FrameType::AttachReady as u8;
 /// Discriminant for `BELL` (server to client, `docs/spec/L1.md` §1.2).
 pub const TYPE_BELL: u8 = FrameType::Bell as u8;
-/// Discriminant for `ERROR` (server to client, `docs/spec/proto.md` §9).
-///
-/// Carries a structured [`ErrorCode`] plus a human-readable UTF-8 message
-/// and an optional `request_id` correlating the error with a prior
-/// `COMMAND` (per SPEC §14). Fatal errors MUST be followed by `DETACHED
-/// { reason: PROTOCOL_ERROR }` and transport close.
+/// Discriminant for `ERROR` (server to client, `docs/spec/proto.md` §9). Fatal
+/// errors MUST be followed by `DETACHED { PROTOCOL_ERROR }` and transport close.
 pub const TYPE_ERROR: u8 = FrameType::Error as u8;
 /// Discriminant for `PONG` (server to client, `docs/spec/proto.md` §7.4).
 pub const TYPE_PONG: u8 = FrameType::Pong as u8;
@@ -221,8 +184,7 @@ pub const TYPE_PONG: u8 = FrameType::Pong as u8;
 /// `docs/spec/L1.md` §4.1). Native-profile payloads are byte-identical raw PTY
 /// bytes and are never capability-rewritten.
 pub const TYPE_RESOURCE_OUTPUT: u8 = FrameType::ResourceOutput as u8;
-// 0x91 was `TERMINAL_SNAPSHOT` through protocol 0.6. It is permanently
-// retired by ADR-0070 and MUST NOT be decoded or reassigned.
+// 0x91 (`TERMINAL_SNAPSHOT`) is retired by ADR-0070; never decode or reassign it.
 /// Discriminant for `BOOTSTRAP_BEGIN` (server to client, `docs/spec/L1.md` §4.3).
 pub const TYPE_BOOTSTRAP_BEGIN: u8 = FrameType::BootstrapBegin as u8;
 /// Discriminant for `BOOTSTRAP_CHUNK` (server to client, `docs/spec/L1.md` §4.3).
@@ -239,26 +201,12 @@ pub const TYPE_HISTORY_TOMBSTONE: u8 = FrameType::HistoryTombstone as u8;
 /// Discriminant for retryable cursor-scoped `HISTORY_REJECTED` (server to
 /// client, `docs/spec/L1.md` §4.5).
 pub const TYPE_HISTORY_REJECTED: u8 = FrameType::HistoryRejected as u8;
-/// Discriminant for `FRAME_COMPRESSED` (server to client).
-///
-/// A negotiated envelope carrying one deflated inner frame
-/// (`docs/spec/proto.md` §6.4). Allocated from the `0x9A..=0x9F` hot-path
-/// reserve (`docs/spec/appendix-reserved.md` §1) because it wraps the hot
-/// path's largest frames.
+/// Discriminant for `FRAME_COMPRESSED` (server to client): a negotiated
+/// envelope carrying one deflated inner frame (`docs/spec/proto.md` §6.4).
 pub const TYPE_FRAME_COMPRESSED: u8 = FrameType::FrameCompressed as u8;
 }
 
-// -----------------------------------------------------------------------------
-// L3 metadata frame discriminants — SPEC §7.4 (phux-4li.2).
-//
-// Contiguous block 0x50..=0x54 for C→S commands; 0xD0 for the single S→C
-// notification. Sits between the L1 hot-path C→S range (0x10..=0x21) and
-// the proto SUBSCRIBE slot (0x40). There is no L2 tier (ADR-0030), so the
-// tail of the block stays L3: `LIST_DIRECTORY` takes 0x55 and 0x56..=0x5F
-// remain open. The S→C side uses 0xD0..=0xDF as a matching block
-// (`DIRECTORY_LISTING` takes 0xD3), with `BELL` (0xB0) / `ALERT` (0xB2) and
-// `ERROR` (0xC1) already on lower discriminants.
-// -----------------------------------------------------------------------------
+// L3 metadata discriminants (SPEC §7.4): C→S `0x50..=0x5F`, S→C `0xD0..=0xDF`.
 
 wire_tags! { Message;
 /// Discriminant for `GET_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
@@ -276,16 +224,9 @@ pub const TYPE_SUBSCRIBE_METADATA: u8 = FrameType::SubscribeMetadata as u8;
 pub const TYPE_METADATA_CHANGED: u8 = FrameType::MetadataChanged as u8;
 }
 
-/// Conventional L3 metadata key holding a session's human-readable name.
-///
-/// Introduced by the v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027): with
-/// the L2 collection tier dissolved and the `RENAME_SESSION` verb removed,
-/// a session rename is expressed as a `SET_METADATA` write of this key.
-/// The server is authoritative — it intercepts a write of this key under
-/// the appropriate scope and applies the registry rename so that `ls` /
-/// `attach` keep reading a single source of truth for the name — but the
-/// key is a stable, documented convention clients can rely on (the same way
-/// `phux.tui.layout/v1` is for TUI layout).
+/// Conventional L3 metadata key renaming a session (ADR-0019 / ADR-0027): the
+/// server intercepts a `SET_METADATA` of `current\0new` and applies the
+/// registry rename.
 pub const SESSION_NAME_KEY: &str = "phux.session.name/v1";
 
 /// Encode a [`SESSION_NAME_KEY`] value: `current\0new`.
@@ -311,48 +252,26 @@ pub fn decode_session_rename(value: &[u8]) -> Option<(&str, &str)> {
     Some((current, new_name))
 }
 
-/// Conventional L3 metadata key requesting creation of a named session
-/// *without* attaching.
+/// Conventional L3 metadata key creating a named session without attaching.
 ///
-/// Introduced by the v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) in
-/// place of the removed `CREATE_SESSION` verb. The value is a UTF-8 JSON
-/// object `{ "name": str, "command": [str]?, "cwd": str? }`. The server
-/// intercepts a `SET_METADATA` write of this key under `Scope::Global`,
-/// seeds the session + pane (the same machinery `ATTACH { CreateIfMissing }`
-/// uses), and records the result. Because `SET_METADATA` carries no reply
-/// frame, the caller follows with `GET_STATE` to read back the new session's
-/// seed-pane id (the create-without-attach path `phux new --json` and the
-/// MCP `phux_new` tool use).
+/// ADR-0019 / ADR-0027. Value: UTF-8 JSON `{ "name", "command"?, "cwd"? }`
+/// written under `Scope::Global`; the server seeds the session and pane as
+/// `ATTACH { CreateIfMissing }` would and records the result.
 pub const SESSION_CREATE_KEY: &str = "phux.session.create/v1";
 
-/// Conventional L3 metadata key under which the server publishes the result
-/// of the most recent [`SESSION_CREATE_KEY`] write for a given session name.
-///
-/// Because `SET_METADATA` carries no reply frame, the create-without-attach
-/// path needs a way to read back the freshly-seeded pane's id. The server
-/// writes a UTF-8 JSON object `{ "name": str, "terminal_id": u32 }` to this
-/// key (`Scope::Global`) after a successful create; the client `GET`s it and
-/// matches on `name`. Introduced by the v0.3.0 "Option B" re-tier (ADR-0019
-/// / ADR-0027).
+/// Global key where the server publishes the latest [`SESSION_CREATE_KEY`]
+/// result as JSON `{ "name", "terminal_id" }`, since `SET_METADATA` has no
+/// reply frame.
 pub const SESSION_CREATE_RESULT_KEY: &str = "phux.session.created/v1";
 
-/// Prefix for one-shot, nonce-correlated session-create result keys.
-///
-/// New clients include a UUID `request_token` in [`SESSION_CREATE_KEY`]'s
-/// JSON value, then read `"{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}"`.
-/// The server consumes this ephemeral Global value on the first GET. The
-/// legacy uncorrelated [`SESSION_CREATE_RESULT_KEY`] remains for old clients.
+/// Prefix for one-shot session-create result keys: a client that sends a
+/// `request_token` reads `"{prefix}{request_token}"`, consumed on first GET.
 pub const SESSION_CREATE_RESULT_KEY_PREFIX: &str = "phux.session.created/v1/";
 
-/// Conventional L3 metadata key that sets a session's keep-empty mark
-/// (ADR-0105).
+/// Global key setting a session's keep-empty mark (ADR-0105).
 ///
-/// Scope: `Global`. Value: `name\0true` or `name\0false` (NUL-separated
-/// UTF-8, the same shape as [`SESSION_NAME_KEY`]). The server intercepts the
-/// write, applies it to the named session, and broadcasts the applied value
-/// to subscribers when the mark actually changed; the value is not stored.
-/// Clearing the mark on a session that holds no windows removes that session,
-/// which is how an empty session is killed. Advertised by
+/// Value `name\0true` or `name\0false`, applied and broadcast, not stored. Clearing
+/// the mark on a windowless session removes it. Gated on
 /// [`ServerFeature::KeepEmptySessions`](crate::caps::ServerFeature::KeepEmptySessions).
 pub const SESSION_KEEP_EMPTY_KEY: &str = "phux.session.keep_empty/v1";
 
@@ -374,47 +293,19 @@ pub fn decode_session_keep_empty(value: &[u8]) -> Option<(&str, bool)> {
     }
 }
 
-/// Conventional L3 metadata key holding a Terminal's freeform string tags
-/// (ADR-0027 decision point 4, `phux-p0yq`).
-///
-/// Scope: the Terminal's [`ResourceId`](crate::ids::ResourceId). Value: a UTF-8 JSON array of
-/// non-empty, duplicate-free tag strings, e.g. `["build","ci"]`; an empty
-/// array or an absent key both mean "no tags". The server stores the bytes
-/// without interpreting them ([`docs/spec/L3.md`](../../../docs/spec/L3.md)
-/// §3.6); tag *meaning* is the normative client convention this key names, so
-/// the `#tag` selector ([ADR-0027](../../../../../docs/adr/0027-terminal-references-and-l3-links.md)
-/// decision point 5) resolves identically across consumers. Set via
-/// `SET_METADATA`, read via `GET_METADATA`/`LIST_METADATA`.
+/// Terminal-scoped key holding freeform tags as a JSON array of unique,
+/// non-empty strings (`docs/spec/L3.md` §3.6, ADR-0027). Stored opaquely.
 pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 
-/// Conventional L3 metadata key holding a Terminal's outgoing *link* edges
-/// (ADR-0027 decision point 4, `phux-p0yq`).
-///
-/// Scope: the source Terminal's [`ResourceId`](crate::ids::ResourceId). Value: a UTF-8 JSON array of
-/// link records `{ "target": u32, "kind": str }`, where `target` is the
-/// linked Terminal's local wire id and `kind` is an OPEN enum — v1 defines
-/// `"group"` (a soft grouping edge); unknown kinds are preserved, not
-/// rejected, so the vocabulary grows additively. The server stores the bytes
-/// opaquely; link *meaning* is the normative client convention this key
-/// names. A link is a metadata value, never a second wire identity
-/// ([ADR-0027](../../../../../docs/adr/0027-terminal-references-and-l3-links.md)).
+/// Terminal-scoped key holding outgoing link edges as a JSON array of
+/// `{ "target": u32, "kind": str }`; `kind` is an open enum (ADR-0027).
+/// Stored opaquely.
 pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 
-/// Conventional L3 metadata key holding a Terminal's declared agent
-/// identity and lifecycle record (ADR-0040, `phux-3ert`).
+/// Terminal-scoped key holding the declared agent identity and lifecycle.
 ///
-/// Scope: the Terminal the agent runs in. Value: a UTF-8 JSON object
-/// `{ "name": str, "kind"?: str, "state"?: str, "attention"?: str,
-/// "session"?: str }` where `state` and `attention` are OPEN string enums —
-/// a consumer reading an unrecognized value treats it as `unknown` /
-/// `normal` rather than failing the parse. The server stores the bytes
-/// without interpreting them ([`docs/spec/L3.md`](../../../docs/spec/L3.md)
-/// §3.7); the *schema* is the normative client convention this key names, so
-/// a record written by one integration (CLI, plugin, provider hook) reads
-/// identically in every consumer. A consumer that finds this record MUST
-/// prefer it over OSC-title or screen-scrape heuristics; heuristics remain
-/// the fallback when the key is absent. Set via `SET_METADATA`, cleared via
-/// `DELETE_METADATA`, observed via `GET_METADATA`/`SUBSCRIBE_METADATA`.
+/// `docs/spec/L3.md` §3.7, ADR-0040. A consumer that finds it MUST
+/// prefer it over title or screen heuristics. Stored opaquely.
 pub const RESOURCE_AGENT_KEY: &str = "phux.agent/v1";
 
 /// Server-owned projection of a pending `AgentEvent::Asked` (ADR-0035, ADR-0136).
@@ -441,22 +332,12 @@ pub const RESOURCE_PANE_OCCUPANT_KEY: &str = "phux.pane-occupant/v1";
 /// Maximum encoded `phux.agent-session/v1` record accepted by server mutations.
 pub const MAX_AGENT_SESSION_RECORD_BYTES: usize = 4 * 1024;
 
-/// Conventional L3 metadata key acting as the config-reload doorbell for
-/// attached consumers (phux-foz.5).
+/// Global config-reload doorbell.
 ///
-/// Scope: [`Scope::Global`]. Value: an opaque, writer-chosen nonce (the
-/// reference CLI writes a UTF-8 `unix-nanos-pid` string); its only job is
-/// to DIFFER from the previous value so the server's equal-bytes SET
-/// dedup does not swallow the broadcast. The server stores the bytes
-/// without interpreting them. A consumer subscribed to this key treats a
-/// non-tombstone `METADATA_CHANGED` as "re-read your local config now":
-/// it re-runs its own layered config load and rebuilds its config-derived
-/// state in place. The config itself NEVER crosses the wire — each
-/// consumer reads its own file — and a consumer whose re-read fails MUST
-/// keep its previous configuration (surface the error locally, never
-/// half-apply). Tombstones (`DELETE_METADATA`) are ignored. Set via
-/// `SET_METADATA`, observed via `SUBSCRIBE_METADATA`. Backs
-/// `phux config reload` and the TUI `reload-config` action.
+/// The value is a fresh nonce (so SET dedup
+/// does not swallow it); subscribers re-read their own local config on each
+/// non-tombstone change and MUST keep the previous config if the re-read
+/// fails. Config never crosses the wire.
 pub const CONFIG_RELOAD_KEY: &str = "phux.config.reload/v1";
 
 /// `Global`-scope key family of the server-owned approval records (ADR-0128).
@@ -487,114 +368,55 @@ pub fn is_approval_decision(value: &[u8]) -> bool {
 }
 
 wire_tags! { Message;
-/// Discriminant for `METADATA_VALUE` (server to client, `docs/spec/L3.md` §1).
-///
-/// Reply frame for `GET_METADATA`; correlated by `request_id`. Carries
-/// `Option<bytes>` — `Some(bytes)` when the key holds a value,
-/// `None` when the key is absent. Allocated by phux-4li.8.
+/// Discriminant for `METADATA_VALUE` (server to client, `docs/spec/L3.md` §1):
+/// the `GET_METADATA` reply, `None` when the key is absent.
 pub const TYPE_METADATA_VALUE: u8 = FrameType::MetadataValue as u8;
 
-/// Discriminant for `METADATA_KEYS` (server to client, `docs/spec/L3.md` §1).
-///
-/// Reply frame for `LIST_METADATA`; correlated by `request_id`. Carries
-/// the lexicographically sorted list of key names present in the
-/// requested scope (values are not included; LIST is by-key-name only).
-/// Allocated by phux-4li.8.
+/// Discriminant for `METADATA_KEYS` (server to client, `docs/spec/L3.md` §1):
+/// the `LIST_METADATA` reply, sorted key names only.
 pub const TYPE_METADATA_KEYS: u8 = FrameType::MetadataKeys as u8;
 
-/// Discriminant for `LIST_DIRECTORY` (client to server, `docs/spec/L3.md` §4).
-///
-/// A host query: list the child directories of a path on the serving host.
-/// Allocated from the open `0x55..=0x5F` tail of the L3 C→S block; gated on
-/// [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
+/// Discriminant for `LIST_DIRECTORY` (client to server, `docs/spec/L3.md` §4);
+/// gated on [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
 pub const TYPE_LIST_DIRECTORY: u8 = FrameType::ListDirectory as u8;
 
-/// Discriminant for `DIRECTORY_LISTING` (server to client, `docs/spec/L3.md` §4).
-///
-/// Reply frame for `LIST_DIRECTORY`; correlated by `request_id`. Carries
-/// either the listing or a typed refusal.
+/// Discriminant for `DIRECTORY_LISTING` (server to client, `docs/spec/L3.md`
+/// §4): the listing or a typed refusal.
 pub const TYPE_DIRECTORY_LISTING: u8 = FrameType::DirectoryListing as u8;
 }
 
-// -----------------------------------------------------------------------------
-// L1 Terminal lifecycle frame discriminants — SPEC §7.2 / §10.1 (phux-4li.10).
-//
-// Allocates the SPAWN / CLOSED / RESIZE wire-frames needed to lift split-pane
-// and kill-pane out of the `phux-4li.5` warn+bell stubs and to drive per-pane
-// `ioctl(TIOCSWINSZ)` from the post-SIGWINCH ReflowDiff (phux-4li.9). The
-// server-side handler + client-side emission land in follow-up tickets.
-//
-// C→S allocations slot into `0x22..=0x23`, the first free pair after
-// VIEWPORT_RESIZE (`0x20`) / FRAME_ACK (`0x21`). The 0x14..=0x1F
-// hot-path reservation in Appendix B is preserved by skipping past it.
-// S→C allocations honour the spec-only reservations carried in SPEC §7.2
-// (`0xA1 RESOURCE_CLOSED`) and extend by one (`0xA2 RESOURCE_SPAWNED`)
-// for the dedicated SPAWN reply — see SPEC Appendix C for the
-// 0.2.0-draft.2 entry.
-// -----------------------------------------------------------------------------
+// L1 resource lifecycle discriminants (SPEC §7.2 / §10.1).
 
 wire_tags! { Message;
-/// Discriminant for `SPAWN_RESOURCE` (client to server, `docs/spec/L1.md` §1 / §10.1).
-///
-/// Carries `{ request_id, group, command: Option<list<str>>,
-/// cwd: Option<str>, env: Option<list<(str, str)>> }`. The reply rides on
-/// [`TYPE_RESOURCE_SPAWNED`] correlated by `request_id`.
+/// Discriminant for `SPAWN_RESOURCE` (client to server, `docs/spec/L1.md` §1 /
+/// §10.1); answered by [`TYPE_RESOURCE_SPAWNED`].
 pub const TYPE_SPAWN_RESOURCE: u8 = FrameType::SpawnResource as u8;
-/// Discriminant for `RESIZE_TERMINAL` (client to server, `docs/spec/L1.md` §1 / §10.2).
-///
-/// Per-Terminal PTY resize. Drives `ioctl(TIOCSWINSZ)` server-side; the
-/// outer-viewport `VIEWPORT_RESIZE` (`0x20`) remains the
-/// minimum-bounding-box signal. Both flow from a single SIGWINCH on the
-/// client (phux-4li.9).
+/// Discriminant for `RESIZE_TERMINAL` (client to server, `docs/spec/L1.md` §1 /
+/// §10.2): a per-Terminal PTY resize.
 pub const TYPE_RESIZE_TERMINAL: u8 = FrameType::ResizeTerminal as u8;
 
-// ---------------------------------------------------------------------------
-// `0x24..=0x29` C→S and `0xA3..=0xA7` S→C stay unallocated. The PTY-less
-// process family and the port-forward family once pencilled into them are
-// subsumed by `ResourceKind` (`docs/spec/appendix-reserved.md` §1): a served
-// thing that is not a Terminal is a kind spoken through the existing spawn /
-// output / close frames, not a parallel frame family.
-// ---------------------------------------------------------------------------
+// `0x24..=0x29` and `0xA3..=0xA7` stay unallocated: non-Terminal things are a
+// `ResourceKind`, not a parallel frame family.
 
-/// Discriminant for `MOVE_RESOURCE` (client to server, `docs/spec/L1.md`
-/// §1 / §10.1; ADR-0056).
-///
-/// Re-parents a live Terminal into the window that currently owns
-/// `owner_terminal` — possibly in a different session — without touching
-/// its process, PTY, scrollback, or metadata. Ownership addressing only,
-/// exactly as `SPAWN_RESOURCE.owner_terminal`: no split direction, ratio,
-/// or focus. The reply rides on [`TYPE_RESOURCE_MOVED`] correlated by
-/// `request_id`. Gated on the `MOVE_RESOURCE` server feature bit
-/// (`crate::caps::MOVE_RESOURCE`); allocated at `0x2A`, past the
-/// unallocated `0x24..=0x29` block.
+/// Discriminant for `MOVE_RESOURCE` (client to server, `docs/spec/L1.md` §1 /
+/// §10.1, ADR-0056): re-parent a live Terminal into the window owning
+/// `owner_terminal`, leaving its process and state untouched. Gated on
+/// `MOVE_RESOURCE`; answered by [`TYPE_RESOURCE_MOVED`].
 pub const TYPE_MOVE_RESOURCE: u8 = FrameType::MoveResource as u8;
-/// Discriminant for `RESOURCE_MOVED` (server to client, `docs/spec/L1.md`
-/// §1 / §10.1; ADR-0056).
-///
-/// Reply frame for `MOVE_RESOURCE`; correlated by `request_id`. Carries a
-/// `Result<ResourceId, MoveError>` tagged union — see [`MoveResult`].
-/// Allocated at `0xA8`, past the unallocated `0xA3..=0xA7` block.
+/// Discriminant for `RESOURCE_MOVED` (server to client): the
+/// `MOVE_RESOURCE` reply carrying a [`MoveResult`].
 pub const TYPE_RESOURCE_MOVED: u8 = FrameType::ResourceMoved as u8;
 
-/// Discriminant for `RESOURCE_CLOSED` (server to client, `docs/spec/L1.md` §1 / §10.1).
-///
-/// Push notification when a Terminal's PTY exits, naturally or via
-/// `KILL_RESOURCE`. Honours the spec-only reservation at `0xA1`.
+/// Discriminant for `RESOURCE_CLOSED` (server to client, `docs/spec/L1.md` §1 /
+/// §10.1): a resource ended.
 pub const TYPE_RESOURCE_CLOSED: u8 = FrameType::ResourceClosed as u8;
-/// Discriminant for `RESOURCE_SPAWNED` (server to client, `docs/spec/L1.md` §1 / §10.1).
-///
-/// Reply frame for `SPAWN_RESOURCE`; correlated by `request_id`. Carries a
-/// `Result<ResourceId, SpawnError>` tagged union — see [`SpawnResult`].
+/// Discriminant for `RESOURCE_SPAWNED` (server to client): the
+/// `SPAWN_RESOURCE` reply carrying a [`SpawnResult`].
 pub const TYPE_RESOURCE_SPAWNED: u8 = FrameType::ResourceSpawned as u8;
 }
 
-// Wire tags for the `SpawnResult` tagged union (SPEC §7.2 / §10.1).
-//
-// Convention: `Ok = 0x00`, `Err = 0x01` — established here by phux-4li.10
-// and reusable by future `Result<T, E>`-shaped reply frames (e.g. when
-// `COMMAND_RESULT` lands per SPEC §11). The convention deliberately
-// matches the `Option` tag convention (`None = 0x00`, `Some = 0x01`) so
-// hex-dump readers do not have to remember a second per-shape table.
+// `Result`-shaped unions use `Ok = 0`, `Err = 1`, mirroring `Option`'s
+// `None = 0`, `Some = 1`.
 wire_tags! { SpawnResult;
 /// Wire tag for [`SpawnResult::Ok`].
 pub(crate) const SPAWN_RESULT_OK: u8 = 0;
@@ -608,9 +430,9 @@ wire_tags! { SpawnError;
 pub(crate) const SPAWN_ERROR_TAG_GROUP_NOT_FOUND: u8 = 0;
 /// Wire tag for [`SpawnError::SpawnFailed`].
 pub(crate) const SPAWN_ERROR_TAG_SPAWN_FAILED: u8 = 1;
-/// Wire tag for [`SpawnError::UnsupportedSatelliteRoute`] (phux-v45.6).
+/// Wire tag for [`SpawnError::UnsupportedSatelliteRoute`].
 pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 2;
-/// Wire tag for [`SpawnError::SatelliteUnreachable`] (phux-v45.6).
+/// Wire tag for [`SpawnError::SatelliteUnreachable`].
 pub(crate) const SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE: u8 = 3;
 /// Wire tag for [`SpawnError::UnsupportedKind`].
 pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_KIND: u8 = 4;
@@ -622,8 +444,7 @@ pub(crate) const SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH: u8 = 6;
 pub(crate) const SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT: u8 = 7;
 }
 
-// Wire tags for the `MoveResult` / `MoveError` tagged unions (ADR-0056),
-// following the `SpawnResult` convention above (`Ok = 0x00`, `Err = 0x01`).
+// `MoveResult` / `MoveError` tags (ADR-0056).
 wire_tags! { MoveResult;
 /// Wire tag for [`MoveResult::Ok`].
 pub(crate) const MOVE_RESULT_OK: u8 = 0;
@@ -647,16 +468,8 @@ pub(crate) const SCOPE_TAG_GROUP: u8 = 1;
 pub(crate) const SCOPE_TAG_GLOBAL: u8 = 2;
 }
 
-// -----------------------------------------------------------------------------
-// Control-plane frame discriminants — SPEC §5 (phux-k61 / ADR-0021).
-//
-// The generic command envelope. `COMMAND` (C→S) carries a typed `Command`
-// correlated by `request_id`; `COMMAND_RESULT` (S→C) carries the matching
-// `CommandResult`. Allocated from the control-plane ranges reserved in
-// Appendix B (`0x31..=0x3F` C→S, `0xC2..=0xCF` S→C; `0xC1` is ERROR).
-// ADR-0021 routes the CLI control verbs (`ls`, `kill`) through this rather
-// than minting per-verb frames.
-// -----------------------------------------------------------------------------
+// Control-plane command envelope (SPEC §5, ADR-0021): typed `Command`s
+// correlated by `request_id` instead of per-verb frames.
 
 wire_tags! { Message;
 /// Discriminant for `COMMAND` (client to server, `docs/spec/L1.md` §5).
@@ -665,19 +478,7 @@ pub const TYPE_COMMAND: u8 = FrameType::Command as u8;
 pub const TYPE_COMMAND_RESULT: u8 = FrameType::CommandResult as u8;
 }
 
-// -----------------------------------------------------------------------------
-// Agent-event frame discriminants — SPEC §7.5 (phux-y2t / ADR-0022 'events').
-//
-// The push half of the agent surface: a client SUBSCRIBES to a stream of
-// extensible tagged lifecycle/activity events, and the server PUSHES `EVENT`
-// frames as those events occur. This is an *additive accelerator* of the
-// CLI-side poll-floor `wait` (which already shipped over `GET_SCREEN`):
-// conditions stay matched client-side; events just cut polling latency.
-//
-// Allocated from the events reserved ranges in Appendix B: `0x41..=0x4F`
-// (C→S) and `0xB3..=0xBF` (S→C). `SUBSCRIBE_EVENTS` takes the first C→S
-// slot; `EVENT` takes the first S→C slot.
-// -----------------------------------------------------------------------------
+// Agent-event push stream (SPEC §7.5, ADR-0022).
 
 wire_tags! { Message;
 /// Discriminant for `SUBSCRIBE_EVENTS` (client to server, `docs/spec/L1.md` §7.5).
@@ -686,14 +487,8 @@ pub const TYPE_SUBSCRIBE_EVENTS: u8 = FrameType::SubscribeEvents as u8;
 pub const TYPE_EVENT: u8 = FrameType::Event as u8;
 }
 
-// Wire tags for the `AgentEvent` tagged union (SPEC §7.5 / §10.3).
-//
-// Each event rides inside the `EVENT` frame as a `tag: u8` followed by a
-// length-prefixed `body: bytes`. The length prefix is what makes the
-// taxonomy forward-compatible: a decoder that does not recognise `tag`
-// reads (and skips) the declared body length and yields
-// [`AgentEvent::Unknown`], so a v0.2.x server may add event kinds without
-// breaking an older client's frame parse. Tags are allocated sequentially.
+// `AgentEvent` tags (SPEC §7.5 / §10.3). Each event is `tag: u8` + a
+// length-prefixed body, so an unknown tag skips to [`AgentEvent::Unknown`].
 wire_tags! { Event;
 /// Wire tag for [`AgentEvent::CommandStarted`].
 pub(crate) const EVENT_TAG_COMMAND_STARTED: u8 = 0x00;
@@ -746,12 +541,9 @@ pub(crate) const EVENT_TAG_APPROVAL_REQUESTED: u8 = 0x0d;
 pub(crate) const EVENT_TAG_APPROVAL_DECIDED: u8 = 0x0e;
 }
 
-/// Wire tag for one [`Command`] variant inside the `COMMAND` envelope
-/// (SPEC §5.1), the same compile-time-unique discipline as [`FrameType`]:
-/// `docs/spec/appendix-reserved.md` §2 is this enum's allocation registry,
-/// and a duplicate tag is compile error E0081 rather than a silent protocol
-/// break (phux-ke0c). The freed `0x0a` / `0x0b` slots stay out of the enum;
-/// the const docs below keep their history.
+/// Wire tag for one [`Command`] variant inside the `COMMAND` envelope (SPEC
+/// §5.1); duplicates are E0081. Registry: `docs/spec/appendix-reserved.md`
+/// §2. `0x0a` / `0x0b` are freed and reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 enum CommandTag {
@@ -782,98 +574,40 @@ enum CommandTag {
     CloseTabResources = 0x1d,
 }
 
-// Wire tags for the `Command` tagged union (SPEC §5.1). Tags follow the
-// spec catalog order so the allocation is stable as later verbs land:
-// SPAWN=0x00, ATTACH_RESOURCE=0x01, DETACH_RESOURCE=0x02, KILL_RESOURCE=0x03,
-// RESIZE_TERMINAL=0x04, GET_STATE=0x05, RUN_HOOK=0x06. v0.1 implements only
-// KILL_RESOURCE and GET_STATE (ADR-0021 §3); the rest are reserved and
-// decode as `UnknownEnumValue` until wired.
+// `Command` tags (SPEC §5.1). `0x00`, `0x04`, and `0x06` are reserved catalog
+// slots and decode as `UnknownEnumValue`.
 wire_tags! { Command;
-/// Wire tag for [`Command::AttachResource`], taking the `0x01` slot the
-/// SPEC §5.1 catalog reserved for `ATTACH_RESOURCE` (phux-v45.7). The
-/// per-Terminal output-subscription verb: it wires the caller to receive a
-/// profile-selected bootstrap stream plus `RESOURCE_OUTPUT`.
-/// The catalog's `role_policy` field is not yet
-/// encoded — an absent policy decodes as
-/// `RolePolicy { requested_role: PRIMARY, takeover: NEVER }` per SPEC §8.1,
-/// which is exactly what this body-less-policy encoding means; the field
-/// lands additively behind its own wire bump.
+/// Wire tag for [`Command::AttachResource`].
 pub(crate) const COMMAND_TAG_ATTACH_RESOURCE: u8 = CommandTag::AttachResource as u8;
-/// Wire tag for [`Command::DetachResource`], taking the `0x02` slot the
-/// SPEC §5.1 catalog reserved for `DETACH_RESOURCE` (phux-v45.7). Drops the
-/// caller's per-Terminal output subscription (the `ATTACH_RESOURCE`
-/// counterpart) and its per-Terminal event-stream subscription; the
-/// Terminal itself is unaffected.
+/// Wire tag for [`Command::DetachResource`].
 pub(crate) const COMMAND_TAG_DETACH_RESOURCE: u8 = CommandTag::DetachResource as u8;
 /// Wire tag for [`Command::KillResource`].
 pub(crate) const COMMAND_TAG_KILL_RESOURCE: u8 = CommandTag::KillResource as u8;
 /// Wire tag for [`Command::GetState`].
 pub(crate) const COMMAND_TAG_GET_STATE: u8 = CommandTag::GetState as u8;
-/// Wire tag for [`Command::GetScreen`]. Appended after `RUN_HOOK`'s
-/// reserved `0x06` (SPEC §5.1 catalog order); `GET_SCREEN` is an additive
-/// agent-surface command (ADR-0022 §5), not part of the original catalog.
+/// Wire tag for [`Command::GetScreen`].
 pub(crate) const COMMAND_TAG_GET_SCREEN: u8 = CommandTag::GetScreen as u8;
-/// Wire tag for [`Command::RouteInput`]. Appended after `GET_SCREEN`'s
-/// `0x07`; `ROUTE_INPUT` is an additive agent-surface command (ADR-0022)
-/// that delivers an already-built input event to a Terminal without an
-/// attach, subscription, or resize — the write counterpart to the
-/// side-effect-free `GET_SCREEN` read.
+/// Wire tag for [`Command::RouteInput`].
 pub(crate) const COMMAND_TAG_ROUTE_INPUT: u8 = CommandTag::RouteInput as u8;
-/// Wire tag for [`Command::KillResources`]. Reuses the `0x09` slot freed
-/// when the L2 lifecycle verbs (`CREATE_SESSION` / `KILL_COLLECTION` /
-/// `RENAME_SESSION`) were dissolved in the v0.3.0 "Option B" re-tier
-/// (ADR-0019 / ADR-0027). `KILL_RESOURCES` is the one irreducible
-/// multi-terminal op the dissolved `KILL_COLLECTION` left behind: it
-/// destroys a *list* of Terminals atomically under the server's single
-/// state lock — all-or-nothing for a local server — replacing the
-/// per-session teardown verb with a pure L1 list operation. Grouping
-/// (which Terminals form a "session") is now client logic over L3
-/// metadata, so the server need only know the resolved ids. The reply
-/// rides `COMMAND_RESULT { Ok }` (the async `RESOURCE_CLOSED` frames
-/// confirm teardown), the same ack shape `KILL_RESOURCE` uses. Backs
-/// `phux kill SESSION`.
+/// Wire tag for [`Command::KillResources`], reusing the slot the dissolved
+/// L2 lifecycle verbs freed (ADR-0019 / ADR-0027).
 pub(crate) const COMMAND_TAG_KILL_RESOURCES: u8 = CommandTag::KillResources as u8;
-/// Wire tag for [`Command::GetTerminalState`]. Appended after
-/// `RENAME_SESSION`'s `0x0b`; `GET_TERMINAL_STATE` is an additive
-/// L2 Collection-aware query (ADR-0015 L2) that returns a comprehensive
-/// snapshot of a Terminal's full state: grid, scrollback, cursor, shell
-/// metadata, sequence number, and timestamp as a structured JSON
-/// object (built server-side; see `handle_get_terminal_state` in
-/// phux-server). Unlike `GET_SCREEN` (L1 raw
-/// grid), this returns structured state suitable for agent polling and
-/// change detection. The reply rides `COMMAND_RESULT { Ok_With(Json(..)) }`.
+/// Wire tag for [`Command::GetTerminalState`].
 pub(crate) const COMMAND_TAG_GET_TERMINAL_STATE: u8 = CommandTag::GetTerminalState as u8;
+/// Wire tag for [`Command::SubscribeResourceEvents`].
 pub(crate) const COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS: u8 =
     CommandTag::SubscribeResourceEvents as u8;
-/// Wire tag for [`Command::Upgrade`]. Appended after
-/// `SUBSCRIBE_RESOURCE_EVENTS`'s `0x0d`; `UPGRADE` is an additive control
-/// command (ADR-0032) that triggers a graceful in-place re-exec. It carries no
-/// payload — the handoff state blob is built and passed server-side.
+/// Wire tag for [`Command::Upgrade`].
 pub(crate) const COMMAND_TAG_UPGRADE: u8 = CommandTag::Upgrade as u8;
-/// Wire tag for [`Command::AcquireInput`]. The first of the three
-/// supervisory verbs (ADR-0033, "take the wheel + kill"): asserts an
-/// exclusive input lease over a Terminal so a human/operator can seize the
-/// stdin write path from whatever is driving the pane.
+/// Wire tag for [`Command::AcquireInput`].
 pub(crate) const COMMAND_TAG_ACQUIRE_INPUT: u8 = CommandTag::AcquireInput as u8;
-/// Wire tag for [`Command::ReleaseInput`]. Drops the input lease held over a
-/// Terminal, returning it to `Open` (any subscriber's input passes). ADR-0033.
+/// Wire tag for [`Command::ReleaseInput`].
 pub(crate) const COMMAND_TAG_RELEASE_INPUT: u8 = CommandTag::ReleaseInput as u8;
-/// Wire tag for [`Command::SignalTerminal`]. Delivers an explicit POSIX
-/// signal (interrupt / freeze / resume / terminate / kill) to the process
-/// group inside a Terminal — distinct from `KILL_RESOURCE`, which removes the
-/// pane. The reversible `Freeze`/`Resume` brake lives here. ADR-0033.
+/// Wire tag for [`Command::SignalTerminal`].
 pub(crate) const COMMAND_TAG_SIGNAL_TERMINAL: u8 = CommandTag::SignalTerminal as u8;
-/// Wire tag for [`Command::ReportAsked`]. This is the opt-in agent hook
-/// ingress for ADR-0036: configured integrations can report the same payload
-/// as `AgentEvent::Asked` without writing terminal-title escape sequences.
-/// The server validates and emits the normal `EVENT` frame; no new event kind
-/// or consumer surface is introduced.
+/// Wire tag for [`Command::ReportAsked`].
 pub(crate) const COMMAND_TAG_REPORT_ASKED: u8 = CommandTag::ReportAsked as u8;
-/// Wire tag for [`Command::DetachClients`]. Force-detaches the clients
-/// attached to a session (or every attached client when the target session
-/// is absent) from *outside* the attach UI — the `phux detach` verb. Unlike
-/// `FrameKind::Detach`, which detaches the sending connection, this targets
-/// other clients by session name.
+/// Wire tag for [`Command::DetachClients`].
 pub(crate) const COMMAND_TAG_DETACH_CLIENTS: u8 = CommandTag::DetachClients as u8;
 /// Wire tag for [`Command::ApplyInput`].
 pub(crate) const COMMAND_TAG_APPLY_INPUT: u8 = CommandTag::ApplyInput as u8;
@@ -885,38 +619,27 @@ pub const MAX_APPLY_INPUT_COMMAND_BODY: usize = 64 * 1024;
 wire_tags! { Command;
 /// Wire tag for [`Command::PutFile`].
 pub(crate) const COMMAND_TAG_PUT_FILE: u8 = CommandTag::PutFile as u8;
-/// Wire tag for [`Command::Shutdown`]. Appended after `PUT_FILE`'s `0x15`;
-/// `0x0a` and `0x0b` are freed-and-reserved and MUST NOT be reallocated
-/// without a `minor` bump (`appendix-reserved.md`).
+/// Wire tag for [`Command::Shutdown`].
 pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = CommandTag::Shutdown as u8;
 /// Wire tag for [`Command::ReportAgentState`].
 pub(crate) const COMMAND_TAG_REPORT_AGENT_STATE: u8 = CommandTag::ReportAgentState as u8;
-/// Wire tag for [`Command::GetPerf`]. Appended after `REPORT_AGENT_STATE`.
+/// Wire tag for [`Command::GetPerf`].
 pub(crate) const COMMAND_TAG_GET_PERF: u8 = CommandTag::GetPerf as u8;
-/// Wire tag for [`Command::Transcribe`]. Appended after `GET_PERF`.
+/// Wire tag for [`Command::Transcribe`].
 pub(crate) const COMMAND_TAG_TRANSCRIBE: u8 = CommandTag::Transcribe as u8;
-/// Wire tag for [`Command::AppendResourceOutput`]. Appended after
-/// `TRANSCRIBE`; the producer verb of a producer-fed resource, gated on
-/// `ServerFeature::ResourceKinds`.
+/// Wire tag for [`Command::AppendResourceOutput`].
 pub(crate) const COMMAND_TAG_APPEND_RESOURCE_OUTPUT: u8 = CommandTag::AppendResourceOutput as u8;
-/// Wire tag for [`Command::KillResourceIf`]. Appended after
-/// `APPEND_RESOURCE_OUTPUT`; gated on `ServerFeature::ConditionalKill`
-/// (ADR-0109). A new tag rather than a field on `KILL_RESOURCE`, so a peer
-/// without the feature fails to decode it instead of killing unconditionally.
+/// Wire tag for [`Command::KillResourceIf`]: a new tag rather than a field on
+/// `KILL_RESOURCE`, so a peer without `CONDITIONAL_KILL` fails to decode it
+/// instead of killing unconditionally (ADR-0109).
 pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = CommandTag::KillResourceIf as u8;
-/// Wire tag for [`Command::OpenListener`]. Appended after
-/// `KILL_RESOURCE_IF`; gated on `ServerFeature::OpenListener` (ADR-0120).
-/// Accepted on the Unix socket only: it opens a new door into the server.
+/// Wire tag for [`Command::OpenListener`].
 pub(crate) const COMMAND_TAG_OPEN_LISTENER: u8 = CommandTag::OpenListener as u8;
-/// Wire tag for [`Command::CloseTabResources`]. Appended after
-/// `OPEN_LISTENER`; gated on `ServerFeature::CloseTabResources`. Same body
-/// as `KILL_RESOURCES`, but a full-coverage batch does not release
-/// keep-empty (ADR-0105, ADR-0114). Tag `0x0a` stays reserved.
+/// Wire tag for [`Command::CloseTabResources`].
 pub(crate) const COMMAND_TAG_CLOSE_TAB_RESOURCES: u8 = CommandTag::CloseTabResources as u8;
 }
 
-// Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
-// mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).
+// `InputEvent` tags (`ROUTE_INPUT`), mirroring the `INPUT_*` frame atoms.
 wire_tags! { InputEvent;
 /// Wire tag for [`InputEvent::Key`].
 pub(crate) const INPUT_EVENT_TAG_KEY: u8 = 0x00;
@@ -927,9 +650,9 @@ pub(crate) const INPUT_EVENT_TAG_FOCUS: u8 = 0x02;
 /// Wire tag for [`InputEvent::Paste`].
 pub(crate) const INPUT_EVENT_TAG_PASTE: u8 = 0x03;
 }
-// 0x04 was the `Selection` input-event tag, removed in v0.5.0 (phux-q1ni).
+// 0x04 (`Selection`) was removed by ADR-0030.
 
-// Wire tags for the `StateScope` tagged union (SPEC §5.1, GET_STATE arg).
+// `StateScope` tags (SPEC §5.1).
 wire_tags! { StateScope;
 /// Wire tag for [`StateScope::Server`].
 pub(crate) const STATE_SCOPE_TAG_SERVER: u8 = 0x00;
@@ -1032,14 +755,9 @@ pub(in crate::wire) use directory::{decode_directory_listing, decode_list_direct
 mod tests {
     use std::collections::BTreeSet;
 
-    /// Every `u8` wire-tag const in this file is duplicate-proof at compile
-    /// time. `TYPE_` and `COMMAND_TAG_` consts must take their value from
-    /// the [`FrameType`] / [`CommandTag`] enums (a repeated enum
-    /// discriminant is compile error E0081) *and* be declared through
-    /// `wire_tags!` (a reused byte is E0119). Every other tag const must
-    /// keep a literal value only inside a `wire_tags!` family. A tag added
-    /// the old way, as a bare literal const, fails here instead of shipping
-    /// a silent duplicate (phux-ke0c).
+    /// Every `u8` wire-tag const here is declared through `wire_tags!`
+    /// (E0119 on reuse), and `TYPE_` / `COMMAND_TAG_` consts take their value
+    /// from [`FrameType`] / [`CommandTag`] (E0081 on reuse).
     #[test]
     fn wire_tag_consts_are_uniqueness_checked() {
         // Only the const-declaration half of the file is scanned; the test
