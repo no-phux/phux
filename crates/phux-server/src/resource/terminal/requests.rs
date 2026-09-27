@@ -1,9 +1,6 @@
 //! Request and reply types the Terminal engine serves, and the
-//! [`TerminalHandle`] facet that carries their senders.
-//!
-//! The backing-agnostic channel set (output broadcast, event subscription,
-//! control) and its payload types live in [`crate::resource`]; they are
-//! re-exported here so engine code and tests name them from one place.
+//! [`TerminalHandle`] facet. Backing-agnostic channels live in
+//! [`crate::resource`] and are re-exported here.
 
 use std::os::fd::OwnedFd;
 
@@ -20,47 +17,28 @@ pub use crate::resource::{
     ResyncTarget,
 };
 
-/// Request to register a new consumer with the actor.
-///
-/// Drives the ADR-0018 per-consumer state lifecycle. The caller is the
-/// runtime's ATTACH path, which has just installed the client in
-/// `ServerState`.
+/// Register a consumer with the actor (ADR-0018), sent by the ATTACH path.
 ///
 /// For state-sync consumers the actor synthesizes the bootstrap snapshot,
-/// primes the per-consumer reference from that exact canonical terminal cut,
-/// installs the lifecycle entry, and returns both snapshot and cut in one
-/// reply. No PTY event can run between those operations. Raw consumers retain
-/// the lightweight lifecycle-only path and return no synthesized bootstrap.
+/// primes the reference from the same terminal cut, and replies with both,
+/// with no PTY event in between. Raw consumers only get the lifecycle entry.
 #[derive(Debug)]
 pub struct ConsumerAttachRequest {
-    /// Identifier the actor will key the per-consumer state by. Must
-    /// match the `ClientId` the caller uses in subsequent
-    /// `ConsumerDetachRequest`s and `FRAME_ACK` routing.
+    /// Key for the per-consumer state; must match later detach and ack
+    /// routing.
     pub client_id: ClientId,
-    /// Per-consumer outbound mailbox. The actor stores a clone in the
-    /// per-consumer [`super::ConsumerSyncState`] and uses it on every tick
-    /// (phux-q0e.3) to push a `ResourceOutput` frame carrying the
-    /// incremental synthesis bytes.
+    /// Per-consumer outbound mailbox for tick-emitted frames.
     pub outbound: mpsc::Sender<Outbound>,
-    /// Wire-level terminal id (`u32`). The actor stamps it on every
-    /// emitted `ResourceOutput` frame. The runtime owns the mapping
-    /// from the actor's [`phux_core::ids::ResourceId`] to this wire id and
-    /// passes the resolved value here at ATTACH time.
+    /// Wire terminal id stamped on every emitted `ResourceOutput`.
     pub wire_terminal_id: u32,
     /// Logical protocol-0.7 subscription identity.
     pub stream_id: StreamId,
     /// Current replica generation for this subscription.
     pub bootstrap_id: BootstrapId,
-    /// Whether this consumer negotiated the synthesized state-sync tick
-    /// emitter (`OutputMode::StateSync`) at HELLO time (phux-fseo). When
-    /// `true` the actor's `tick_emit` serves this consumer and the runtime
-    /// suppresses its broadcast pump for it; when `false` the consumer
-    /// stays on the raw PTY broadcast (the human-TUI default).
+    /// Whether the consumer negotiated `OutputMode::StateSync`; if so the
+    /// tick serves it and the runtime suppresses its broadcast pump.
     pub wants_state_sync: bool,
-    /// Requested synthesized scrollback for the atomic state-sync bootstrap.
-    ///
-    /// Ignored when [`Self::wants_state_sync`] is false. `None` means the
-    /// state-sync snapshot contains only the active screen.
+    /// Scrollback for the state-sync bootstrap (ignored otherwise).
     pub state_sync_scrollback: Option<u32>,
     /// Maximum snapshot bytes this registration may allocate before replying.
     pub bootstrap_max_bytes: usize,
@@ -68,31 +46,17 @@ pub struct ConsumerAttachRequest {
     pub bootstrap_max_frames: usize,
     /// Negotiated maximum bytes per synthesized bootstrap chunk.
     pub bootstrap_chunk_bytes: usize,
-    /// Whether this consumer is on a lossy/forwarded leg and should use the
-    /// advance-on-ack loss-tolerant emission model (phux-v45.8, ADR-0042).
-    ///
-    /// Only meaningful together with `wants_state_sync` (a raw broadcast-pump
-    /// consumer has no per-consumer reference to make loss-tolerant). When
-    /// `true` the actor enables loss-tolerance right after registration: the
-    /// per-consumer reference then advances on `FRAME_ACK` rather than on emit,
-    /// so a frame the forwarded leg drops re-diffs against the last-acked
-    /// reference and self-heals. `false` (the default for a direct,
-    /// reliable-transport consumer) keeps the emit-once model.
+    /// Use the loss-tolerant model (ADR-0042): the reference advances on
+    /// `FRAME_ACK` instead of on emit, so dropped frames self-heal. Only
+    /// meaningful with `wants_state_sync`.
     pub loss_tolerant: bool,
-    /// Aggregate-attach publication gate. While false, the actor retains the
-    /// primed reference but emits no live state-sync frames.
+    /// Aggregate-attach gate: while false, no live state-sync frames.
     pub live_gate: watch::Receiver<bool>,
-    /// Channel the actor uses to acknowledge the lifecycle insertion.
-    /// `Ok(outcome)` on success (the outcome reports whether this actor
-    /// is tick-managing the consumer); `Err(...)` if the per-consumer
-    /// `SnapshotSynthesizer` or its priming pass could not be allocated.
-    /// Dropping the receiver on the caller side is benign — the actor
-    /// uses `send().ok()`.
+    /// Acknowledges the registration; dropping the receiver is benign.
     pub reply: oneshot::Sender<Result<ConsumerAttachOutcome, ConsumerAttachError>>,
 }
 
-/// Snapshot and exact actor cut produced atomically with state-sync
-/// registration.
+/// Snapshot and actor cut produced atomically with state-sync registration.
 #[derive(Debug)]
 pub struct StateSyncBootstrap {
     /// Synthesized VT snapshot captured from the canonical terminal.
@@ -101,12 +65,8 @@ pub struct StateSyncBootstrap {
     pub base_seq: u64,
 }
 
-/// Successful outcome of a [`ConsumerAttachRequest`].
-///
-/// phux-3uv: the runtime needs to know whether this actor will *emit*
-/// `RESOURCE_OUTPUT` for the consumer via the state-sync tick. If so, the
-/// runtime must suppress its own broadcast pump. State-sync registration also
-/// returns the snapshot captured in the same actor turn as its reference.
+/// Outcome of a [`ConsumerAttachRequest`]: whether the tick manages this
+/// consumer (so the runtime suppresses its pump), plus any bootstrap.
 #[derive(Debug)]
 pub struct ConsumerAttachOutcome {
     /// `true` when this actor's tick is the sole live emitter.
@@ -115,16 +75,13 @@ pub struct ConsumerAttachOutcome {
     pub state_sync_bootstrap: Option<StateSyncBootstrap>,
 }
 
-/// Errors surfaced by the private `TerminalActor::register_consumer`
-/// path in response to a [`ConsumerAttachRequest`].
+/// Errors from registering a consumer.
 #[derive(Debug, thiserror::Error)]
 pub enum ConsumerAttachError {
-    /// libghostty refused to allocate the one-shot `RenderState` used to
-    /// capture the consumer's initial cursor/mode state.
+    /// libghostty could not allocate the one-shot `RenderState`.
     #[error("libghostty allocation failed: {0}")]
     Ghostty(#[from] libghostty_vt::Error),
-    /// Priming the per-consumer reference grid
-    /// (`SnapshotSynthesizer::prime_reference`) failed.
+    /// Priming the per-consumer reference failed.
     #[error("reference priming failed: {0}")]
     Synth(#[from] crate::grid::SynthesisError),
     /// The actor-global sequence cannot represent a post-bootstrap frame.
@@ -132,33 +89,18 @@ pub enum ConsumerAttachError {
     SequenceExhausted,
 }
 
-/// Request to drop the per-consumer state for `client_id`.
-///
-/// Sent by the runtime's DETACH path (and the EOF cleanup path). Silent
-/// no-op if the consumer is not currently registered, matching
-/// `ServerState::detach`'s idempotent contract.
+/// Drop the per-consumer state for `client_id` (detach or EOF cleanup);
+/// idempotent.
 #[derive(Debug)]
 pub struct ConsumerDetachRequest {
     /// Identifier whose [`super::ConsumerSyncState`] entry to remove.
     pub client_id: ClientId,
-    /// Fired once the entry has been removed (or was already absent).
-    /// The caller can use this to sequence later operations against
-    /// the actor; dropping the receiver is benign.
+    /// Fired once the entry is gone; dropping the receiver is benign.
     pub reply: oneshot::Sender<()>,
 }
 
-/// Inbound `FRAME_ACK` request for the per-consumer state-sync loop
-/// (phux-q0e.4 / ADR-0018 addendum).
-///
-/// Routed by `runtime.rs::handle_frame_ack` after it has resolved the
-/// `wire_terminal_id` to a `TerminalActor`. The runtime is the only
-/// thing that knows the `(client_id, wire_terminal_id) -> actor` mapping,
-/// so it strips `terminal_id` before forwarding — the actor already
-/// knows which terminal it is.
-///
-/// Silent no-op if `client_id` is not currently registered (matches the
-/// idempotency of the rest of the consumer lifecycle). No reply: the
-/// actor does the work in-process and the runtime fires-and-forgets.
+/// Inbound `FRAME_ACK` for the state-sync loop, forwarded by the runtime
+/// (which strips the terminal id). Unknown clients are ignored; no reply.
 #[derive(Debug)]
 pub struct ConsumerAckRequest {
     /// Identifier whose [`super::ConsumerSyncState`]'s dirty cache to evict.
@@ -167,77 +109,34 @@ pub struct ConsumerAckRequest {
     pub stream_id: StreamId,
     /// Replica generation being acknowledged.
     pub bootstrap_id: BootstrapId,
-    /// Cumulative ack sequence (per SPEC §12.2): the highest `seq` from
-    /// `RESOURCE_OUTPUT` this consumer has applied. Strictly-monotonic
-    /// against the per-consumer `last_acked_seq` — older/duplicate acks
-    /// are silently dropped.
+    /// Cumulative ack `seq` (SPEC §12.2); stale acks are dropped.
     pub seq: u64,
 }
 
 /// Default depth of the per-pane input mailbox.
-///
-/// Small on purpose: keystrokes are tiny and the server drains them in
-/// the same event loop. A backed-up channel here would mean the actor
-/// has stalled, which is its own bug to investigate.
 pub const DEFAULT_INPUT_MAILBOX: usize = 64;
 
 /// Final disposition of a PTY write, reported on
 /// [`EncodedInputRequest::completion`].
-///
-/// A plain `bool` used to be enough ("delivered" or "not"), but phux-mjmc
-/// added a third, distinct outcome: the writer can now refuse a payload
-/// *before* touching the kernel at all, because writing it would silently
-/// truncate inside the pane's canonical-mode line discipline rather than
-/// fail loudly. That is neither "delivered" nor the old catch-all
-/// "something went wrong, indeterminate" — the caller knows exactly why and
-/// exactly nothing reached the child, so it gets its own variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WriteCompletion {
     /// `write_all` and `flush` both succeeded.
     Delivered,
-    /// A writer failure occurred after bytes may have partially landed;
-    /// delivery is indeterminate (matches the old `false`).
+    /// Failed after bytes may have landed; delivery is indeterminate.
     Failed,
-    /// Refused before any bytes were written: the pane's line discipline is
-    /// in canonical mode (`ICANON`) and `bytes` contains a line longer than
-    /// `limit` with no terminator to flush it, so the kernel would have
-    /// silently dropped the overflow (and, per phux-mjmc, potentially
-    /// wedged the pane permanently by also dropping the terminator that
-    /// would have completed the truncated line). `limit` is the pane's real
-    /// canonical-line byte limit as queried at refusal time.
+    /// Refused before writing: the canonical-mode line discipline would have
+    /// truncated a line longer than `limit` and possibly wedged the pane.
     CanonicalLimitExceeded { limit: usize },
-    /// phux-w7z2.60: the request never reached a live writer thread at all,
-    /// so `write(2)` was never invoked — proven, not inferred. Reported
-    /// explicitly (never via [`WriteCompletionSink`]'s `Drop` fallback) at
-    /// each site that can make that proof synchronously: the pane has no
-    /// PTY, the writer's queue is full, or the writer's channel is already
-    /// closed. Distinct from [`Self::Failed`], whose bytes may have already
-    /// left `write_all` before the error: a caller may resubmit this batch,
-    /// under the same operation id or a fresh one, with no risk of typing it
-    /// twice.
+    /// Never reached a live writer, so `write(2)` was provably not called
+    /// (no PTY, full or closed queue). Safe to resubmit.
     NotWritten,
 }
 
-/// One-shot report path for an acknowledged write's [`WriteCompletion`].
+/// One-shot report path for an acknowledged write's [`WriteCompletion`],
+/// tagging the outcome with its admission-queue ticket.
 ///
-/// This used to be a plain `std::sync::mpsc::Sender<WriteCompletion>`, one
-/// channel per operation, because exactly one operation could be unresolved at
-/// a time and the input lane blocked on its receiver. Per-Terminal admission
-/// (phux-w7z2.58) makes many operations unresolved at once, multiplexed onto a
-/// single completion queue, so the sink carries the callback that tags this
-/// operation's outcome with its queue ticket instead of a bare sender.
-///
-/// Dropping an unfired sink reports [`WriteCompletion::Failed`] — the
-/// pessimistic default for any path that discards a request without an
-/// explicit verdict, including an actor torn down with the request still
-/// sitting in its own inbound queue (never dequeued, so `service_encoded_input`
-/// never even sees it, but that is not provable from here without walking the
-/// queue at teardown, which nothing does today).
-/// phux-w7z2.60 split off the three sibling cases that a call site CAN prove
-/// synchronously — a full or closed writer-thread queue, or no PTY at all —
-/// which now call [`WriteCompletionSink::complete`] with
-/// [`WriteCompletion::NotWritten`] explicitly instead of falling through to
-/// this default.
+/// Dropping an unfired sink reports [`WriteCompletion::Failed`]; sites that
+/// can prove nothing was written report [`WriteCompletion::NotWritten`].
 pub(crate) struct WriteCompletionSink {
     notify: Option<Box<dyn FnOnce(WriteCompletion) + Send>>,
 }
@@ -249,16 +148,14 @@ impl WriteCompletionSink {
         }
     }
 
-    /// Report `outcome` exactly once. Consumes the sink, so the `Drop` fallback
-    /// cannot also fire.
+    /// Report `outcome` once; consuming the sink disarms the `Drop` fallback.
     pub(crate) fn complete(mut self, outcome: WriteCompletion) {
         if let Some(notify) = self.notify.take() {
             notify(outcome);
         }
     }
 
-    /// A sink whose outcome lands on a plain channel, for tests that drive one
-    /// operation at a time and want to `recv` its completion directly.
+    /// A sink backed by a plain channel (tests).
     #[cfg(test)]
     pub(crate) fn channel() -> (Self, std::sync::mpsc::Receiver<WriteCompletion>) {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -287,19 +184,15 @@ impl std::fmt::Debug for WriteCompletionSink {
     }
 }
 
-/// Bytes destined for the PTY writer, optionally carrying final write/flush
-/// completion for acknowledged input.
+/// Bytes for the PTY writer, optionally with a completion report.
 #[derive(Debug)]
 pub(crate) struct EncodedInputRequest {
     /// Fully encoded PTY bytes.
     pub(crate) bytes: Bytes,
-    /// Whether this request may arm the `echo.server` sample: true for a key
-    /// or paste (something a program answers), false for mouse, focus, and
-    /// terminal-generated replies, which would otherwise be paired with the
-    /// next unrelated output.
+    /// Whether this may arm the `echo.server` sample (keys and pastes, not
+    /// mouse, focus, or terminal replies).
     pub(crate) echo_probe: bool,
-    /// See [`WriteCompletion`] and [`WriteCompletionSink`]. Dropping the sink
-    /// reports indeterminate delivery.
+    /// See [`WriteCompletionSink`]; dropping it reports indeterminate.
     pub(crate) completion: Option<WriteCompletionSink>,
 }
 
@@ -308,8 +201,7 @@ impl EncodedInputRequest {
         Self::legacy_probe(bytes, true)
     }
 
-    /// [`Self::legacy`] with the echo-probe flag chosen by the caller, which
-    /// is the one that still knows what kind of input the bytes encode.
+    /// [`Self::legacy`] with an explicit echo-probe flag.
     pub(crate) fn legacy_probe(bytes: Vec<u8>, echo_probe: bool) -> Self {
         Self {
             bytes: bytes.into(),
@@ -327,24 +219,15 @@ impl EncodedInputRequest {
     }
 }
 
-/// Does this input kind arm the `echo.server` sample? Keys and pastes are
-/// answered by the program; mouse and focus events usually are not.
+/// Whether this input kind arms the `echo.server` sample.
 pub(crate) const fn echo_probe_for(input: &TerminalInput) -> bool {
     matches!(input, TerminalInput::Key(_) | TerminalInput::Paste(_))
 }
 
-/// Request for the pane's current `vt_replay_bytes` snapshot.
-///
-/// Sent by the ATTACH handler on the per-client task; the actor walks
-/// its `Terminal` via [`crate::grid::SnapshotSynthesizer`] and replies on the
-/// oneshot.
+/// Request the pane's replay snapshot (ATTACH).
 #[derive(Debug)]
 pub struct SnapshotRequest {
-    /// Requested scrollback history (`phux-9q5f`), carried from the
-    /// `ATTACH.request_scrollback` / `scrollback_limit_lines` pair: `None`
-    /// for viewport only, `Some(0)` for all retained history, `Some(n)` for
-    /// the most-recent `n` rows. The actor primes
-    /// [`SnapshotBytes::scrollback`] accordingly.
+    /// Scrollback: `None` viewport only, `Some(0)` all, `Some(n)` last `n`.
     pub scrollback: Option<u32>,
     /// Maximum aggregate snapshot bytes the actor may allocate.
     pub max_bytes: usize,
@@ -352,8 +235,7 @@ pub struct SnapshotRequest {
     pub max_frames: usize,
     /// Negotiated maximum bytes per synthesized bootstrap chunk.
     pub chunk_bytes: usize,
-    /// Channel receiving the snapshot and actor-global raw cut.
-    /// Dropping the receiver is benign; the actor discards the reply.
+    /// Snapshot plus its raw cut; dropping the receiver is benign.
     pub reply: oneshot::Sender<Result<(SnapshotBytes, u64), crate::grid::SynthesisError>>,
 }
 
@@ -363,10 +245,8 @@ pub struct SnapshotRequest {
 pub struct NativeBootstrapReply {
     /// Bounded BEGIN/CHUNK/READY sequence for the per-client pump to publish.
     pub frames: Vec<FrameKind>,
-    /// Aggregate heap capacity retained by opaque frame payloads.
-    ///
-    /// This may exceed their wire lengths and must be charged to the
-    /// connection-wide bootstrap staging budget.
+    /// Heap retained by the opaque payloads, charged to the connection's
+    /// bootstrap staging budget.
     pub retained_bytes: usize,
     /// Actor-global raw output cut included by the checkpoint.
     pub base_seq: u64,
@@ -374,8 +254,8 @@ pub struct NativeBootstrapReply {
     pub(crate) publication_cursor: crate::native_state::OpaqueHistoryCursor,
 }
 
-/// Live bytes captured after a native checkpoint fence and the broadcast
-/// receiver installed atomically after the replay cut.
+/// Live bytes after a native checkpoint fence, plus the receiver installed
+/// atomically after the replay cut.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub struct NativePublicationReply {
@@ -467,10 +347,8 @@ pub struct NativeReleaseRequest {
     pub owner: u64,
 }
 
-/// Install the effective default palette reported by an interactive client.
-///
-/// The reply acknowledges that OSC 10/11 queries parsed after this point will
-/// observe these values. Palette-less clients never send this request.
+/// Install an interactive client's default palette; later OSC 10/11
+/// queries see it once acknowledged.
 #[derive(Debug)]
 pub struct SetDefaultColorsRequest {
     /// Outer terminal defaults to install on the canonical emulator.
@@ -479,89 +357,49 @@ pub struct SetDefaultColorsRequest {
     pub reply: oneshot::Sender<()>,
 }
 
-/// Request for the pane's current screen as structured data
-/// (`phux-oki`, ADR-0022).
-///
-/// Sent by the `GET_SCREEN` command handler. The actor walks its own
-/// `Terminal` into a [`phux_core::screen::ScreenState`] and replies on the
-/// oneshot — side-effect-free: no resize, no client disturbance, unlike
-/// the attach path.
+/// Project the pane's screen (`GET_SCREEN`, ADR-0022); read-only.
 #[derive(Debug)]
 pub struct ScreenRequest {
     /// Wire-local pane id to stamp into the projected `ScreenState`.
     pub pane: u32,
-    /// Requested scrollback history (`phux-o1v`): `None` for viewport only,
-    /// `Some(0)` for all retained history, `Some(n)` for the most-recent
-    /// `n` history rows. Carried from `GET_SCREEN.request_scrollback`.
+    /// Scrollback: `None`, `Some(0)` all, or `Some(n)` rows.
     pub scrollback: Option<u32>,
-    /// When `true`, populate [`phux_core::screen::ScreenState::cells`] with
-    /// per-cell semantic marks + styles. Carried from `GET_SCREEN.cells`
-    /// (`phux-8yl`).
+    /// Populate [`phux_core::screen::ScreenState::cells`].
     pub cells: bool,
-    /// Which libghostty-vt Formatter rendering, if any, to populate
-    /// [`phux_core::screen::ScreenState::rendered`] with: `0` none, `1`
-    /// HTML, `2` VT. Carried from `GET_SCREEN.format` (D9); the caller has
-    /// already refused any other value with `INVALID_COMMAND`.
+    /// Formatter rendering: `0` none, `1` HTML, `2` VT (others refused).
     pub format: u8,
-    /// Channel the actor uses to ship the projection back. Dropping the
-    /// receiver is benign — the actor discards the reply.
+    /// Reply channel; dropping the receiver is benign.
     pub reply: oneshot::Sender<ScreenReply>,
 }
 
-/// Reply payload for a [`ScreenRequest`] (D9, review item 2(b)).
-///
-/// Almost always [`Self::Projection`] — including when a requested
-/// rendering failed on the engine (non-fatal: the plain projection still
-/// ships, with `rendered: None` and `rendered_error` naming why, review
-/// item 3). [`Self::TooLarge`] is different in kind: a refusal the actor
-/// makes *before* replying, when the requested rendered capture would
-/// exceed the server's per-read byte budget. That must reach the caller
-/// as a typed `RESOURCE_EXHAUSTED` command error, not a silently smaller
-/// or empty capture — hence its own variant instead of folding into
-/// `Projection`'s `rendered_error` string.
+/// Reply to a [`ScreenRequest`]: the projection (render failures ride in
+/// `rendered_error`), or [`Self::TooLarge`] when the rendering would exceed
+/// the budget and must be refused as `RESOURCE_EXHAUSTED`.
 #[derive(Debug)]
 pub enum ScreenReply {
-    /// The requested projection. Boxed: `ScreenState` (264+ bytes once
-    /// the D9 `rendered`/`rendered_error` fields landed) dwarfs
-    /// `TooLarge`'s two `usize`s, and every `ScreenReply` would otherwise
-    /// pay for the larger variant's size regardless of which one it is.
+    /// The projection, boxed to keep the enum small.
     Projection(Box<phux_core::screen::ScreenState>),
-    /// The rendered capture `GET_SCREEN.format` asked for would exceed
-    /// the server's per-read byte budget, measured via the engine
-    /// Formatter's own `format_len` before any allocation.
+    /// The requested rendering exceeds the per-read budget.
     TooLarge {
-        /// The Formatter's own measured byte count for the requested
-        /// selection/format.
+        /// The Formatter's measured byte count.
         required_bytes: usize,
         /// The server's per-read budget the request exceeded.
         budget_bytes: usize,
     },
 }
 
-/// Request for the pane's graceful-upgrade handoff (ADR-0032).
-///
-/// Sent by the upgrade producer while assembling the
-/// [`StateBlob`](crate::upgrade::blob::StateBlob): it asks every pane's actor
-/// for the descriptors and snapshot the re-exec'd image needs to re-adopt the
-/// PTY and rebuild the `Terminal`. Side-effect-free — like [`SnapshotRequest`]
-/// it only reads.
+/// Request a pane's graceful-upgrade handoff (ADR-0032); read-only.
 #[derive(Debug)]
 pub struct UpgradeHandleRequest {
-    /// Channel the actor uses to ship the [`PaneUpgradeHandle`] back. Dropping
-    /// the receiver is benign — the actor discards the reply.
+    /// Reply channel; dropping the receiver is benign.
     pub reply: oneshot::Sender<PaneUpgradeHandle>,
 }
 
-/// One pane's contribution to the upgrade [`StateBlob`](crate::upgrade::blob::StateBlob):
-/// the PTY descriptors to re-adopt plus the snapshot to replay.
-///
-/// `master_fd` / `child_pid` are `None` for a no-PTY actor (a pane carries no
-/// child); the producer skips such panes since there is nothing to hand off.
+/// One pane's upgrade handoff: PTY descriptors to re-adopt plus the replay
+/// snapshot. `master_fd`/`child_pid` are `None` without a PTY (skipped).
 #[derive(Debug)]
 pub struct PaneUpgradeHandle {
-    /// Owned duplicate of the PTY master descriptor. The actor creates the
-    /// duplicate while holding the master lock so close/reuse cannot change
-    /// which PTY the orchestrator later makes inheritable.
+    /// Owned duplicate of the master fd, taken under the master lock.
     pub master_fd: Option<OwnedFd>,
     /// Child PID on the slave side, re-adopted via `waitpid` after the exec.
     pub child_pid: Option<i32>,
@@ -569,133 +407,76 @@ pub struct PaneUpgradeHandle {
     pub cols: u16,
     /// Current grid height in cells.
     pub rows: u16,
-    /// Per-cell pixel size, if any client reported pixel metrics (`None` when
-    /// the actor's cell size is still the unset `0x0`).
+    /// Cell size in pixels, if a client reported one.
     pub cell_px: Option<(u16, u16)>,
     /// Current pane title, if the child set one.
     pub title: Option<String>,
-    /// Live working directory (kernel query against the child), falling back
-    /// to the actor's last-known CWD.
+    /// Live cwd, falling back to the last known one.
     pub cwd: Option<String>,
-    /// Replayable viewport snapshot — the same bytes a freshly-attaching
-    /// client receives.
+    /// Replayable viewport snapshot.
     pub vt_replay_bytes: Vec<u8>,
     /// Replayable scrollback that precedes the viewport, or empty.
     pub scrollback_bytes: Vec<u8>,
 }
 
-/// Request for the pane's live current working directory (`phux-cs6`).
+/// Request the pane's live cwd from the kernel.
 ///
-/// Sent by the `SPAWN_RESOURCE` handler when `defaults.cwd-inheritance`
-/// is [`phux_config::CwdInheritance::InheritFocused`] and the wire frame
-/// left `cwd` unset: the new pane should open in the focused pane's live
-/// CWD. The actor asks the kernel for its PTY child's working directory
-/// via [`crate::cwd_query::process_cwd`] (the shell's directory *now*,
-/// after any `cd`) and replies on the oneshot. Side-effect-free: no
-/// resize, no client disturbance.
-///
-/// This deliberately does not use libghostty's `Terminal::pwd`: the
-/// bundled libghostty surfaces OSC 7 only as an opaque `ReportPwd`
-/// command without exposing the announced path, so that getter never
-/// populates from the byte stream. The kernel query also needs no shell
-/// OSC 7 configuration.
-///
-/// The reply is `None` when there is no PTY (no-PTY actor), the child has
-/// no pid (already exited), or the platform query is unsupported/denied —
-/// the caller then falls back to a non-inherited default.
+/// Serves `defaults.cwd-inheritance = inherit-focused`. libghostty's
+/// `Terminal::pwd` never populates from OSC 7, so it is not used. `None`
+/// when there is no PTY, no pid, or the query fails.
 #[derive(Debug)]
 pub struct PwdRequest {
-    /// Channel the actor uses to ship the working directory back.
-    /// `None` ⇒ no resolvable CWD. Dropping the receiver is benign — the
-    /// actor discards the reply.
+    /// Reply channel (`None`: no resolvable cwd).
     pub reply: oneshot::Sender<Option<String>>,
 }
 
-/// Request for the pane's typed process facet (PHA-406 D5).
-///
-/// The facet names the PTY child and its start time, the tty's foreground
-/// process group, the kernel cwd, the OSC-133 prompt state, and the exit
-/// facet once the child has left.
-///
-/// Sent by the `GET_TERMINAL_STATE` handler. Side-effect-free, and served
-/// after PTY EOF too (the actor stays alive for late reads), so an exit
-/// observed before the pane is reaped is visible here. Every kernel fact is
-/// best-effort: an unobtainable one is `None` in the reply, never a guess.
+/// Request the typed process facet (`GET_TERMINAL_STATE`): child and start
+/// time, foreground group, cwd, prompt state, and exit. Served after EOF
+/// too; unobtainable facts are `None`.
 #[derive(Debug)]
 pub struct ProcessFacetRequest {
-    /// Channel the actor uses to ship the facet back. Dropping the receiver
-    /// is benign — the actor discards the reply.
+    /// Reply channel; dropping the receiver is benign.
     pub reply: oneshot::Sender<phux_core::process::TerminalProcessState>,
 }
 
-/// A resize request delivered to a [`super::TerminalActor`] over its `resize`
-/// mailbox.
+/// A resize request.
 ///
-/// `resync_clients` controls the phux-8v1 post-resize behavior: when
-/// `true`, the actor re-broadcasts a full grid snapshot after the reflow
-/// so attached clients (whose mirror reflowed independently and may have
-/// dropped rows) reconverge. It is `true` for *live* resizes from an
-/// already-attached client (SIGWINCH → `VIEWPORT_RESIZE`/`RESIZE_TERMINAL`)
-/// and `false` for the ATTACH-time resize — the attach handshake already
-/// sends an authoritative `TERMINAL_SNAPSHOT`, and a resync broadcast
-/// there would race ahead of it and reorder the handshake.
+/// `resync_clients` re-broadcasts a snapshot after a live reflow (clients
+/// reflow independently and may diverge); it is `false` for the attach-time
+/// resize, whose handshake snapshot already covers it.
 #[derive(Debug, Clone, Copy)]
 pub struct ResizeRequest {
     /// New grid width in cells.
     pub cols: u16,
     /// New grid height in cells.
     pub rows: u16,
-    /// Pixel size of one cell `(width, height)` on the donor display, as
-    /// resolved by [`crate::state::ServerState::resolve_terminal_cell_px`].
-    /// The actor multiplies it out to the PTY `winsize` pixel fields and
-    /// libghostty's pixel dimensions (XTWINOPS size replies, image
-    /// protocols). `None` ⇒ no pixel truth in this request; the actor
-    /// keeps its last-known cell size so a pixel-less resize (e.g. an
-    /// agent's `RESIZE_TERMINAL`) cannot zero out geometry a real client
-    /// already established.
+    /// Donor cell size in pixels. `None` keeps the last-known size, so a
+    /// pixel-less resize cannot zero established geometry.
     pub cell_px: Option<(u16, u16)>,
-    /// Re-broadcast a full snapshot after reflow (live resize) vs stay
-    /// quiet (attach-time resize). See the type-level doc.
+    /// Re-broadcast a snapshot after the reflow.
     pub resync_clients: bool,
-    /// Resync without resizing: skip the `handle_resize` entirely and only
-    /// schedule the `resync_clients` broadcast. Used by a lagged output pump to
-    /// ask the actor to emit an in-band [`PaneOutput::Resync`] (a full grid
-    /// snapshot on the same ordered broadcast) so a consumer that dropped bytes
-    /// past the broadcast buffer reconverges — without disturbing the grid
-    /// geometry. `cols`/`rows`/`cell_px` are ignored when this is set.
+    /// Skip the resize and only schedule a resync (a lagged pump's
+    /// request); geometry fields are ignored.
     pub resync_only: bool,
-    /// The one pump a `resync_only` request is for. `Some` addresses the
-    /// resulting [`PaneOutput::Resync`] to that pump alone
-    /// ([`ResyncAudience::Only`]), so one consumer falling behind does not
-    /// re-bootstrap every other consumer of the pane. `None` owes the resync
-    /// to every subscriber. Ignored unless `resync_only` is set: a reflow
-    /// changes the grid under everyone.
+    /// With `resync_only`, the one pump owed the resync; `None` means
+    /// everyone.
     pub resync_for: Option<ResyncTarget>,
 }
 
-/// The Terminal facet of a [`ResourceHandle`](crate::resource::ResourceHandle):
-/// the channels only the Terminal engine serves.
+/// The Terminal facet of a [`ResourceHandle`](crate::resource::ResourceHandle).
 ///
-/// `TerminalHandle` is `Send + Clone`. Runtime code obtains it through
+/// `Send + Clone`; obtained only via
 /// [`ResourceHandle::terminal`](crate::resource::ResourceHandle::terminal),
-/// never by holding one directly, so a request that only a Terminal can
-/// answer is refused at that one seam for any other kind. The actor itself
-/// (which owns the `!Send` `Terminal`) lives on the `LocalSet` and never
-/// crosses a thread boundary.
+/// so Terminal-only requests are refused for other kinds at one seam.
 #[derive(Debug, Clone)]
 pub struct TerminalHandle {
-    /// Sender for input events (keys, mouse, etc.). Drained by the
-    /// actor and written to the PTY via the per-pane encoders.
+    /// Input events, encoded by the actor and written to the PTY.
     pub input: mpsc::Sender<TerminalInput>,
-    /// Bounded handoff for bytes already encoded on the dedicated input lane.
-    /// The lane uses `try_send`, so a saturated actor never blocks input
-    /// routing or grows memory without bound.
+    /// Bytes pre-encoded by the input lane (`try_send`, never blocks).
     pub(crate) encoded_input: mpsc::Sender<EncodedInputRequest>,
-    /// Latest complete `Send` input-encoder state captured by the actor after
-    /// every terminal mutation.
+    /// Latest input-encoder state, captured after every terminal mutation.
     pub input_snapshot: tokio::sync::watch::Receiver<crate::input::InputEncoderSnapshot>,
-    /// Sender for snapshot requests. The ATTACH handler uses this to
-    /// build `TERMINAL_SNAPSHOT` frames.
+    /// Snapshot requests (ATTACH).
     pub snapshot: mpsc::Sender<SnapshotRequest>,
     /// Actor-serialized native checkpoint capture.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -709,29 +490,15 @@ pub struct TerminalHandle {
     /// Actor-serialized detach cleanup for retained native cuts.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub native_release: mpsc::Sender<NativeReleaseRequest>,
-    /// Sender for host-palette updates. The most recently attached client
-    /// that advertises colors is authoritative for the shared pane.
+    /// Host-palette updates; the latest reporting client wins.
     pub set_default_colors: mpsc::Sender<SetDefaultColorsRequest>,
-    /// Sender for structured screen reads. The `GET_SCREEN` command
-    /// handler uses this to project the pane's grid to JSON without
-    /// attaching (`phux-oki`, ADR-0022 §5).
+    /// Structured screen reads (`GET_SCREEN`).
     pub screen: mpsc::Sender<ScreenRequest>,
-    /// Sender for working-directory reads (`phux-cs6`). The
-    /// `SPAWN_RESOURCE` handler uses this to resolve
-    /// `defaults.cwd-inheritance = inherit-focused`: it asks the focused
-    /// pane's actor for its live CWD (a kernel query against the PTY
-    /// child, see [`PwdRequest`]) and seeds the new pane's
-    /// `CommandBuilder.cwd` with it.
+    /// Live cwd reads (see [`PwdRequest`]).
     pub pwd: mpsc::Sender<PwdRequest>,
-    /// Sender for typed process-facet reads (PHA-406 D5). The
-    /// `GET_TERMINAL_STATE` handler uses this to build the `process` object;
-    /// see [`ProcessFacetRequest`].
+    /// Process-facet reads (see [`ProcessFacetRequest`]).
     pub process: mpsc::Sender<ProcessFacetRequest>,
-    /// Resize control channel. The actor honours each request by
-    /// resizing libghostty's `Terminal` and the PTY winsize ioctl, and
-    /// (when [`ResizeRequest::resync_clients`] is set) re-broadcasting a
-    /// full grid snapshot so client mirrors reconverge after reflow
-    /// (phux-8v1).
+    /// Resize requests (see [`ResizeRequest`]).
     pub resize: mpsc::Sender<ResizeRequest>,
     /// Pane viewport width in cells at construction time.
     pub cols: u16,
@@ -740,8 +507,7 @@ pub struct TerminalHandle {
 }
 
 impl TerminalHandle {
-    /// A facet whose every sender is disconnected, for tests that need a
-    /// registered handle but never drive the actor behind it.
+    /// A facet whose senders are all disconnected (tests).
     #[cfg(test)]
     #[must_use]
     pub(crate) fn detached_for_test(cols: u16, rows: u16) -> Self {

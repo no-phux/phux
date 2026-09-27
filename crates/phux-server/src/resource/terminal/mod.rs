@@ -1,35 +1,12 @@
-//! Per-pane actor (`phux-byc.5`).
+//! Per-pane Terminal actor.
 //!
-//! Owns a `libghostty_vt::Terminal`, a backing `portable_pty` master,
-//! and per-pane input encoders. Drives a `select!` loop that forwards
-//! PTY output to subscribed clients and writes client-originated input
-//! back to the PTY.
-//!
-//! See ADR-0014 for the placement rationale. In short: `Terminal` is
-//! `!Send + !Sync`, so it can't live behind a `tokio::spawn` future. It
-//! lives inside a `spawn_local` task that runs on the server's existing
-//! current-thread runtime via a `LocalSet`. All cross-task coordination
-//! flows through channel handles ([`TerminalHandle`]) that are `Send` —
-//! the actor itself never crosses a thread boundary.
-//!
-//! # PTY async wrapper choice
-//!
-//! `portable_pty::MasterPty::try_clone_reader` / `take_writer` hand out
-//! `Box<dyn Read + Send>` and `Box<dyn Write + Send>` — both **blocking**
-//! I/O handles. We bridge them to async with two dedicated `std::thread`s
-//! (one for reads, one for writes) that talk to the actor over
-//! `tokio::sync::mpsc` channels. This avoids OS-specific `AsyncFd`
-//! plumbing for a feature whose value (a few PTY fds, not hundreds)
-//! doesn't justify the complexity. At typical phux pane counts (1–20)
-//! the per-pane thread cost is invisible against everything else the
-//! server does.
-//!
-//! # Why `bytes::Bytes` for the output broadcast
-//!
-//! `tokio::sync::broadcast::Sender` requires `Clone` payloads (every
-//! subscriber receives a copy of the same value). `bytes::Bytes` is the
-//! standard cheap-clone byte buffer in the tokio ecosystem; `Vec<u8>`
-//! would also work but at the cost of a full clone per subscriber.
+//! Owns a `libghostty_vt::Terminal`, a `portable_pty` master, and per-pane
+//! input encoders, and runs a `select!` loop forwarding PTY output to
+//! clients and client input to the PTY. `Terminal` is `!Send`, so the actor
+//! runs via `spawn_local` on the server's `LocalSet` (ADR-0014) and is
+//! reached only through `Send` channel handles ([`TerminalHandle`]). The
+//! blocking PTY halves are bridged to async by one reader and one writer
+//! thread per pane.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -86,40 +63,25 @@ pub use tick::*;
 /// Line half of [`DEFAULT_SCROLLBACK`]: a tmux-style mid-range value.
 const DEFAULT_MAX_SCROLLBACK: u32 = 10_000;
 
-/// Per-pane scrollback bounds used by the no-config convenience constructors
-/// ([`TerminalActor::new`] / [`TerminalActor::new_with_command`]). The runtime
-/// path overrides both halves with `defaults.history-limit` and
-/// `defaults.history-bytes` via [`TerminalActor::build_with_token`]; the byte
-/// half is the shipped schema default, because on any but a narrow grid it is
-/// the bound that actually binds (ADR-0094).
+/// Scrollback bounds for the no-config constructors; the runtime passes the
+/// configured `defaults.history-limit`/`history-bytes` (ADR-0094).
 const DEFAULT_SCROLLBACK: phux_config::ScrollbackLimits =
     phux_config::ScrollbackLimits::new(DEFAULT_MAX_SCROLLBACK, phux_config::DEFAULT_HISTORY_BYTES);
 
-/// Fallback per-cell pixel size `(width, height)` used to derive the PTY
-/// `winsize` pixel fields and XTWINOPS size reports until a client announces
-/// a viewport with usable pixel metrics. A program inside the pane that calls
-/// `TIOCGWINSZ` or queries `CSI 14 t` must read nonzero pixel dimensions:
-/// pixel probes such as `kitten icat` refuse to run against a terminal that
-/// reports `0x0` ("Terminal does not support reporting screen sizes in
-/// pixels"). `8x16` is a conventional terminal cell at ~96 DPI; it is only a
-/// placeholder, replaced the moment a real client reports its display's cell
-/// size via [`ResizeRequest::cell_px`]. Cells (cols/rows) stay authoritative;
-/// pixels are always derived as `cells x cell size`.
+/// Fallback cell size in pixels until a client reports real metrics, so
+/// `TIOCGWINSZ` and `CSI 14 t` never report `0x0` (pixel probes such as
+/// `kitten icat` refuse that).
 const DEFAULT_CELL_PX: (u16, u16) = (8, 16);
 
-/// Maximum independent native history cuts retained for one terminal.
-///
-/// The release contract exercises eight simultaneous clients; keeping this
-/// fixed preserves a hard per-terminal memory/lease bound.
+/// Maximum native history cuts retained per terminal (a hard memory bound;
+/// the release contract exercises eight clients).
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const MAX_NATIVE_HISTORY_CLIENTS: usize = 8;
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const MAX_NATIVE_REPLAY_BYTES: usize = 4 * 1024 * 1024;
 
-/// Streaming recognizer for the OSC 10/11 query form used by terminal-aware
-/// applications (`OSC 10 ; ? ST` / `OSC 11 ; ? ST`). libghostty tracks the
-/// effective colors but the pinned engine does not currently emit replies for
-/// these two OSC queries, so the actor answers them from that canonical state.
+/// Streaming recognizer for `OSC 10/11 ; ? ST` color queries, which the
+/// pinned engine does not answer; the actor answers from canonical state.
 #[derive(Debug, Default)]
 struct ColorQueryScanner {
     state: ColorQueryState,
@@ -139,14 +101,9 @@ enum ColorQueryState {
 
 impl ColorQueryScanner {
     fn feed(&mut self, bytes: &[u8], mut on_query: impl FnMut(u8)) {
-        // Ground-state fast skip, for the same reason as
-        // [`osc133::Osc133Scanner::feed`]: in `Ground` the machine reacts to
-        // exactly two bytes (`ESC` and 8-bit `OSC`), so a chunk of plain
-        // output is a long run of no-ops that used to be stepped one match
-        // arm at a time. The skip re-arms on every return to `Ground`
-        // (phux-l96p.13), so the plain run AFTER a sequence is skipped too.
-        // Resuming mid-OSC still walks every byte, because those bytes are
-        // the OSC payload.
+        // In `Ground` only ESC and 8-bit OSC matter, so skip plain runs with
+        // `memchr` (re-armed on every return to `Ground`). Mid-OSC bytes are
+        // payload and are walked.
         let mut index = 0;
         while index < bytes.len() {
             if matches!(self.state, ColorQueryState::Ground) {
@@ -177,9 +134,8 @@ impl ColorQueryScanner {
                     if byte == b'\\' {
                         self.finish_osc(&mut on_query);
                     } else {
-                        // An ESC not followed by `\\` is part of an OSC we do
-                        // not recognize. Keep scanning for its terminator but
-                        // never mistake its suffix for a query.
+                        // An unrecognized OSC: find its terminator, never
+                        // treat its suffix as a query.
                         self.valid = false;
                         self.state = ColorQueryState::Osc;
                     }
@@ -241,9 +197,7 @@ mod color_query_tests {
         );
     }
 
-    /// The `Ground` skip re-arms after each sequence (phux-l96p.13): two
-    /// queries separated by long plain runs are both answered, with the runs
-    /// skipped rather than stepped.
+    /// Queries separated by long plain runs are all answered.
     #[test]
     fn the_skip_rearms_after_each_return_to_ground() {
         let mut chunk = vec![b'x'; 100_000];
@@ -263,13 +217,7 @@ fn color_query_reply(selector: u8, color: libghostty_vt::style::RgbColor) -> Vec
     format!("\x1b]{selector};rgb:{r:04x}/{g:04x}/{b:04x}\x1b\\").into_bytes()
 }
 
-/// Sentinel prefix an in-pane agent writes into the terminal title (OSC 0 /
-/// OSC 2) to signal a pending human-answerable question (phux-2sl6).
-///
-/// The v1 ask-trigger is OSC-driven. The safe libghostty-vt wrapper does not
-/// expose OSC 9 / OSC 777 desktop notifications; phux's bounded raw scanner
-/// handles OSC 9;4 progress only. The title therefore remains the explicit ask
-/// signal. An agent that has blocked for input sets its title to:
+/// Title prefix an in-pane agent sets (OSC 0/2) to ask a human a question:
 ///
 /// ```text
 /// ESC ] 2 ; phux-ask:<question>                         ST
@@ -277,22 +225,14 @@ fn color_query_reply(selector: u8, color: libghostty_vt::style::RgbColor) -> Vec
 /// ESC ] 2 ; phux-ask[<id>]:<question>?s=opt1|opt2|opt3  ST
 /// ```
 ///
-/// i.e. the literal prefix [`ASK_TITLE_PREFIX`], an optional `[id]`, the
-/// question text, and an optional `?s=` suffix carrying `|`-separated
-/// suggested answers. Retitling away from a `phux-ask` title clears the ask.
-/// Full agent-state detection (manifests / hooks / OSC-9 surfacing) is the
-/// follow-up phux-2sl6.4.
+/// Retitling away from a `phux-ask` title clears the ask.
 const ASK_TITLE_PREFIX: &str = "phux-ask";
 
-/// A parsed in-pane "ask" marker (phux-2sl6), sourced from the terminal title.
-///
-/// Construct with [`AskMarker::parse`], which returns `None` for any title that
-/// is not a `phux-ask` sentinel. Equality is by content so the actor can
-/// edge-filter: a re-asserted identical marker is not a new report.
+/// A parsed `phux-ask` title marker. Equality is by content so the actor can
+/// edge-filter re-asserted markers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AskMarker {
-    /// Stable id the answer correlates against. Defaults to the empty string
-    /// when the title omits the `[id]` segment.
+    /// Correlation id; empty when the title omits `[id]`.
     id: String,
     /// The question text presented to the human.
     question: String,
@@ -301,13 +241,8 @@ struct AskMarker {
 }
 
 impl AskMarker {
-    /// Parse an in-pane ask marker out of a terminal title, or `None` if the
-    /// title is not a `phux-ask` sentinel.
-    ///
-    /// Grammar (see [`ASK_TITLE_PREFIX`]): `phux-ask` then an optional
-    /// `[<id>]`, then `:`, then the question, then an optional `?s=a|b|c`
-    /// suggestion suffix. A bare `phux-ask` with no `:` is rejected (it is a
-    /// degenerate marker carrying no question).
+    /// Parse a `phux-ask` title (see [`ASK_TITLE_PREFIX`]); `None` for any
+    /// other title, including a bare `phux-ask` without `:`.
     fn parse(title: &str) -> Option<Self> {
         let rest = title.strip_prefix(ASK_TITLE_PREFIX)?;
         // Optional `[id]` segment immediately after the prefix.
@@ -341,56 +276,28 @@ impl AskMarker {
     }
 }
 
-/// Upper bound on consecutive ready PTY chunks coalesced into a single
-/// `vt_write` + broadcast frame per pump wakeup (phux-ahk burst path). A
-/// heavy neovim redraw or p10k repaint arrives as many ~4KB reads; coalescing
-/// collapses the per-chunk Terminal write, broadcast frame, and downstream
-/// socket write into one. Bounded so a process emitting an unbroken stream
-/// can't monopolize the actor's `select!` loop (starving input / snapshot
-/// requests) — at 4KB/chunk this caps one drain at ~256KB.
+/// Max ready PTY chunks coalesced into one `vt_write` + broadcast per pump
+/// wakeup, so an unbroken stream cannot monopolize the loop.
 const MAX_PTY_COALESCE: usize = 64;
 
-/// Byte cap on one coalesced `vt_write` payload. A heavy redraw arrives
-/// as many ~4KB reads; coalescing still collapses them into one frame,
-/// but a single `vt_write` is a synchronous libghostty parse that blocks
-/// the actor loop (and thus the input arm polled before it) for its full
-/// duration. Capping at 48KB keeps a typical neovim / p10k repaint in one
-/// frame while bounding the worst-case parse, so a queued keystroke
-/// interleaves after at most one capped parse. libghostty's VT parser is
-/// a streaming state machine, so splitting the byte stream on this
-/// boundary loses no escape sequence — bytes are never reordered. Paired
-/// with `MAX_INPUT_COALESCE`, this is the load-bearing bound on the output
-/// arm: the two consts together keep either direction from monopolizing
-/// the single-thread actor loop.
+/// Byte cap on one coalesced `vt_write`: each is a synchronous parse that
+/// blocks the loop, so this bounds how long a queued keystroke waits. The
+/// parser is streaming, so splitting here loses nothing.
 pub(crate) const MAX_PTY_COALESCE_BYTES: usize = 48 * 1024;
 
-/// Upper bound on input events drained in a single `input_rx` wakeup
-/// before returning to the `select!`. Input events are tiny (one encode +
-/// channel send each) and `input_rx` is a bounded, low-rate single-client
-/// mailbox that empties in microseconds, so in steady state the PTY-output
-/// arm wins as soon as the mailbox drains. This cap bounds a single
-/// pathological batch (a paste that the encoder expands, or a burst of
-/// queued keys) so it cannot inflate one `input_rx` turn without limit; it
-/// does not by itself force a yield to output. The structural output bound
-/// is `MAX_PTY_COALESCE_BYTES`.
+/// Max inline input events drained per wakeup, bounding one pathological
+/// batch (an expanded paste).
 const MAX_INPUT_COALESCE: usize = 16;
 
-/// Grace window a still-running PTY child gets to flush and exit after a
-/// `SIGHUP` on pane teardown before we escalate to `SIGKILL` (phux-sw1).
-/// Sized so a foreground agent (`claude`) can persist its transcript; kept
-/// short so pane close / server shutdown stays snappy (idle shells exit on
-/// the hangup well inside it).
-// ponytail: fixed 500ms grace + 20ms poll; promote to a config knob only if a
-// slow-flushing agent actually needs longer.
+/// Grace a PTY child gets after `SIGHUP` on teardown before `SIGKILL`: long
+/// enough for an agent to persist its transcript, short enough for snappy
+/// close.
 const PANE_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 const PANE_KILL_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
-/// Effective hangup grace. Production is always [`PANE_KILL_GRACE`].
-///
-/// The wait is a deadline on "have the snapshotted groups exited?", not a
-/// sleep: a child that dies on the hangup returns on the first poll. Tests
-/// may stretch the ceiling so a starved SIGHUP trap can still flush
-/// (phux-7n1g).
+/// Effective hangup grace; production is always [`PANE_KILL_GRACE`]. A
+/// deadline, not a sleep: a child that dies at once returns on the first
+/// poll. Tests may stretch it.
 #[cfg(not(test))]
 const fn pane_kill_grace() -> std::time::Duration {
     PANE_KILL_GRACE
@@ -411,24 +318,19 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// How long a test may hold the hangup clock waiting for an observed
-/// trap-started marker before the ceiling begins (phux-ko7j). Ambient
-/// scheduling, not the product flush window — same budget as the armed
-/// barrier. Idle groups still return on the first poll, before this
-/// wait is consulted.
+/// How long a test may wait for a trap-started marker before the grace
+/// ceiling begins.
 #[cfg(test)]
 const PANE_KILL_GRACE_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Stretch the pane-kill grace ceiling for the rest of this thread.
-/// Cleared when the guard drops. Production never calls this.
+/// Stretch the pane-kill grace for this thread until the guard drops (tests).
 #[cfg(test)]
 fn stretch_pane_kill_grace(grace: std::time::Duration) -> PaneKillGraceOverride {
     stretch_pane_kill_grace_after(grace, None)
 }
 
-/// Like [`stretch_pane_kill_grace`], but do not start the ceiling until
-/// `gate` exists. Isolates SIGHUP-delivery scheduling from the flush
-/// budget (phux-ko7j). Production never calls this.
+/// Like [`stretch_pane_kill_grace`], but start the ceiling only once `gate`
+/// exists (tests).
 #[cfg(test)]
 fn stretch_pane_kill_grace_after(
     grace: std::time::Duration,
@@ -459,43 +361,22 @@ impl Drop for PaneKillGraceOverride {
     }
 }
 
-/// Ceiling on how long the pane-kill path will wait to reap the child after
-/// it has been signalled, and on how long it will wait for either bridge
-/// thread to exit (phux-l96p.12).
+/// Ceiling on reaping the child after `SIGHUP`/`SIGKILL` and on joining
+/// each bridge thread. Reached only when something already went wrong; the
+/// alternative (a blocking `waitpid` or `join`) would freeze every pane on
+/// the runtime (ADR-0003).
 ///
-/// Reached only when something has already gone wrong: by this point the
-/// child has been sent `SIGHUP` and then `SIGKILL`, so it should be a zombie
-/// within a poll or two. The budget exists because the alternative — a
-/// blocking `waitpid`, or a bare `JoinHandle::join` — turns "one child we
-/// failed to kill" into "every pane on the runtime is frozen" (ADR-0003).
-/// Generous relative to [`PANE_KILL_POLL`] so ordinary scheduling delay never
-/// trips it.
-///
-/// **What expiry costs, stated honestly.** Giving up here is not free, and
-/// nothing downstream cleans up after it:
-///
-/// * The child is handed to a detached thread that blocks in `waitpid`
-///   (`io::spawn_detached_reaper`). phux installs no `SIGCHLD` handler and has
-///   no central reaper — the adopted-PTY child collects only on an explicit
-///   poll — so without that thread the process would stay a zombie for the
-///   lifetime of the server. One parked thread is the cheaper leak.
-/// * A bridge thread that misses the budget is detached, not stopped. Rust
-///   cannot cancel a thread, so it lives until its descriptor closes. That is
-///   at worst one parked thread per abandoned pane.
-///
-/// Both are bounded leaks traded against an unbounded stall, which is the
-/// right trade on a shared current-thread runtime; neither is a leak we would
-/// accept if the deadlock were avoidable some other way.
+/// Expiry leaks boundedly: the child goes to a detached reaper thread (phux
+/// has no `SIGCHLD` handler), and a late bridge thread is detached until its
+/// descriptor closes.
 const PANE_KILL_REAP_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_HISTORY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_CAPTURE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
-/// One native checkpoint binding: one client's pump on one stream.
-///
-/// Client id (`owner`) is not unique on a pane. Two output pumps from the
-/// same client use different stream ids, and recapture of the same pair is
-/// the only case that must tombstone the prior generation (phux-dm8h).
+/// One native checkpoint binding: one client's pump on one stream. Two pumps
+/// from one client use different streams; only recapture of the same pair
+/// tombstones the prior generation.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct NativeCursorKey {
@@ -607,12 +488,8 @@ enum CanonicalTerminal {
 }
 
 impl CanonicalTerminal {
-    /// The canonical terminal, or `None` while it is on loan.
-    ///
-    /// `Plain` is `None` only while `native_manager` holds the actor-local
-    /// mutable borrow; `Native` is `None` while a snapshot capture holds the
-    /// terminal. Neither is an invariant violation, so neither aborts — see
-    /// [`crate::native_state::NativeTerminalManager::try_terminal`].
+    /// The canonical terminal, or `None` while it is on loan (to the native
+    /// manager or a snapshot capture); callers degrade rather than abort.
     pub(super) const fn try_terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         match self {
             Self::Plain(terminal) => terminal.as_ref(),
@@ -621,11 +498,7 @@ impl CanonicalTerminal {
         }
     }
 
-    /// `Plain` is `None` only while `native_manager` holds the actor-local
-    /// mutable borrow, which is narrow — but "narrow" is the reasoning that
-    /// made the Native side abort twice in production, and the cost of being
-    /// wrong is the whole process. `reset_for_new_child` below already took
-    /// the degrading branch for the same state; this matches it.
+    /// Degrades rather than aborts if the terminal is on loan.
     fn vt_write(&mut self, bytes: &[u8]) {
         match self {
             Self::Plain(Some(terminal)) => terminal.vt_write(bytes),
@@ -640,8 +513,7 @@ impl CanonicalTerminal {
         }
     }
 
-    /// Refuses rather than aborts when the terminal is taken; see
-    /// [`Self::vt_write`].
+    /// Refuses rather than aborts when the terminal is taken.
     fn resize(
         &mut self,
         cols: u16,
@@ -787,19 +659,9 @@ async fn recv_native_or_pty(
 
 /// The Terminal engine: one per-pane actor.
 ///
-/// Owns the `Terminal`, the PTY master, the per-pane input encoders, and a
-/// [`ResourceCore`], and serves the channels exposed via [`ResourceHandle`]
-/// (generic) and [`TerminalHandle`] (the Terminal facet).
-///
-/// `GhosttyTerminal<'static, 'static>` because we use [`GhosttyTerminal::new`] (NULL
-/// allocator) — the lifetime parameters degenerate to `'static`. A
-/// future custom allocator path would tie this to the surrounding
-/// arena's lifetime; not needed for `phux-byc.5`.
-///
-/// `Terminal`, encoders, and the `SnapshotSynthesizer` are stashed
-/// inside `RefCell` so the `select!` arms (which conceptually borrow
-/// `&mut self`) can each take what they need without fighting the
-/// borrow checker over disjoint field access.
+/// Owns the `Terminal`, the PTY, the input encoders, and a [`ResourceCore`], serving [`ResourceHandle`]
+/// and [`TerminalHandle`]. Shared pieces sit in `RefCell`s so each `select!`
+/// arm can borrow what it needs.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "DEC mode bits and internal state flags are independent; collapsing them would obscure individual semantics"
@@ -807,33 +669,16 @@ async fn recv_native_or_pty(
 pub struct TerminalActor {
     terminal: RefCell<CanonicalTerminal>,
     synth: RefCell<SnapshotSynthesizer<'static>>,
-    /// Cheap idle short-circuit for [`Self::tick_emit`] (phux-4l0).
-    ///
-    /// `true` whenever the canonical [`libghostty_vt::Terminal`] has been mutated
-    /// (`vt_write`, resize) since the last `tick_emit`. Set at every
-    /// mutation point, cleared at the top of each `tick_emit`. When this
-    /// is `false` AND no consumer is awaiting its first emission, the
-    /// per-consumer row walk is skipped entirely — an idle pane with N
-    /// consumers then costs O(1) per tick instead of O(N * rows) row
-    /// renders + allocations.
-    ///
-    /// Deliberately independent of libghostty's `RenderState`/`Snapshot`
-    /// dirty bits: those are *consumed* (cleared) by ANY `RenderState::update`
-    /// on the shared terminal (see
-    /// [`crate::grid::SnapshotSynthesizer::synthesize_against_reference`]),
-    /// including the one-shot updates in snapshot/screen/attach handling,
-    /// so probing them here could miss a write a sibling handler already
-    /// consumed. A self-owned flag cannot be clobbered that way.
+    /// Set on every canonical mutation, cleared by each `tick_emit`; lets an
+    /// idle pane skip the per-consumer walk. Self-owned because libghostty's
+    /// dirty bits are consumed by any `RenderState::update`.
     terminal_dirty_since_tick: bool,
-    /// When input bytes were last handed to the PTY writer, consumed by the
-    /// next output burst to sample `echo.server` (`crate::perf`).
+    /// When input last reached the PTY writer, for the `echo.server` sample.
     last_input_at: std::cell::Cell<Option<std::time::Instant>>,
-    /// When this pane last produced output; gates `echo.server` arming to a
-    /// pane that was quiet (`crate::perf::ECHO_QUIET_WINDOW`).
+    /// When this pane last produced output (gates `echo.server` arming).
     last_output_at: std::cell::Cell<Option<std::time::Instant>>,
-    /// The backing-agnostic half: output sequence and broadcast, event
-    /// subscribers and fan-out, lifecycle token and exit notify, control
-    /// mailbox. The Terminal engine is one owner of a [`ResourceCore`].
+    /// Backing-agnostic half: output sequence and broadcast, event fan-out,
+    /// lifecycle, control mailbox.
     core: ResourceCore,
     color_query_scanner: ColorQueryScanner,
     key_enc: RefCell<PerTerminalKeyEncoder>,
@@ -847,15 +692,10 @@ pub struct TerminalActor {
     input_snapshot_tx: watch::Sender<InputEncoderSnapshot>,
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
     native_requests: NativeRequestReceivers,
-    /// Native checkpoint bindings, keyed by `(owner, stream_id)` so two pumps
-    /// from the same client on this pane do not invalidate each other
-    /// (phux-dm8h). Recapture of the same pair still tombstones the prior
-    /// generation; client detach still releases every binding for that owner.
+    /// Native checkpoint bindings keyed by `(owner, stream_id)`.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_cursor_owners: HashMap<NativeCursorKey, NativeCursorOwner>,
-    /// Native pumps the last reflow tombstoned, taken by the resize path so
-    /// it can address a resync to them when no everyone-resync follows
-    /// (phux-p5bo).
+    /// Native pumps the last reflow tombstoned, owed a resync.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     reflow_tombstoned: Vec<crate::resource::ResyncTarget>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -877,218 +717,86 @@ pub struct TerminalActor {
     resize_rx: mpsc::Receiver<ResizeRequest>,
     consumer_attach_rx: mpsc::Receiver<ConsumerAttachRequest>,
     consumer_detach_rx: mpsc::Receiver<ConsumerDetachRequest>,
-    /// Per-consumer state-sync `FRAME_ACK` channel (phux-q0e.4). Drained
-    /// by a select! arm that walks `consumer_states[client_id]` and
-    /// advances `last_acked_seq` (the reference itself advances on emit).
+    /// Per-consumer `FRAME_ACK` channel.
     consumer_ack_rx: mpsc::Receiver<ConsumerAckRequest>,
-    /// Per-consumer state-sync cache (ADR-0018, phux-q0e.2). Keyed by
-    /// the [`ClientId`] the runtime uses for subscription tracking in
-    /// [`crate::state::ServerState`]; entries are inserted by the
-    /// ATTACH handler and removed by DETACH. `!Send` because the actor
-    /// holds the `!Send` `Terminal` — fine; the whole actor lives on the
-    /// `LocalSet` thread (ADR-0014).
+    /// Per-consumer state-sync cache (ADR-0018), keyed by [`ClientId`];
+    /// inserted on attach, removed on detach.
     consumer_states: HashMap<ClientId, ConsumerSyncState>,
-    /// Whether the per-consumer state-sync tick (phux-q0e.3) is the live
-    /// emitter of `ResourceOutput` frames (ADR-0018).
-    ///
-    /// `false` in production for human TUI attach (phux-yeca). Raw PTY
-    /// bytes are the byte-faithful, low-latency human path; synthesized
-    /// per-consumer ticks are reserved for explicitly negotiated
-    /// state-sync consumers. When `true`, the tick is the live
-    /// server->client emission path: per attached consumer it diffs the
-    /// live `Terminal` against that consumer's own
-    /// [`crate::grid::ConsumerReference`] (via the actor's shared
-    /// [`SnapshotSynthesizer`]) and pushes only the delta with a
-    /// per-consumer monotonic `seq`. The reference advances on emit
-    /// (emit-once); the runtime suppresses its broadcast pump for any
-    /// tick-managed consumer so exactly one emitter serves each consumer.
-    ///
-    /// Three prerequisites had to land before this can be enabled for a
-    /// negotiated consumer: all are met mechanically, but human attach stays
-    /// raw until phux-fseo adds an explicit mode boundary.
-    ///
-    /// 1. **Single emitter (phux-3uv).** The runtime's `handle_attach`
-    ///    suppresses its raw PTY-byte broadcast pump for any consumer this
-    ///    actor reports as tick-managed (via
-    ///    [`ConsumerAttachOutcome::tick_managed`]). Without that a
-    ///    tick-emitted `ResourceOutput` and the broadcast pump's would both
-    ///    land on the same consumer mailbox with independent `seq` —
-    ///    double-paint, non-monotonic `seq` (proto.md §8.2).
-    /// 2. **Client `FRAME_ACK` loop (phux-3uv).** The client drives
-    ///    `FRAME_ACK`, advancing the server's `last_acked_seq` for
-    ///    backpressure accounting (proto.md §8.2).
-    /// 3. **Per-consumer dirty isolation (phux-ia4).** `RenderState::update`
-    ///    *consumes* the shared `Terminal` dirty state on first read each
-    ///    tick (libghostty `render.zig`), which starved all-but-one
-    ///    consumer on a shared pane under the old per-consumer-`RenderState`
-    ///    dirty model. Resolved by diffing each consumer against its own
-    ///    [`crate::grid::ConsumerReference`] (rendered row bodies), which
-    ///    never reads the shared dirty bits — full per-consumer isolation
-    ///    regardless of attach/ack divergence.
-    ///
-    /// Tests may set it either way via the test-only setters; production
-    /// leaves it `false` until output mode negotiation exists.
+    /// Whether the per-consumer tick emits for every consumer (ADR-0018).
+    /// `false` in production: human attach gets raw PTY bytes, and only
+    /// consumers that negotiated `StateSync` are tick-managed. Test-only
+    /// setters flip it.
     consumer_tick_emits: bool,
-    /// Bytes streaming in from the PTY reader thread. `None` when this
-    /// actor is the no-PTY test variant (`TerminalActor::new`); the select!
-    /// branch becomes a no-op via `Option::as_mut`.
+    /// PTY output from the reader thread; `None` for the no-PTY test actor.
     pty_rx: Option<mpsc::Receiver<PtyEvent>>,
-    /// Outbound bytes destined for the PTY writer thread. `None` for
-    /// the no-PTY test variant.
+    /// Input bytes for the PTY writer thread; `None` without a PTY.
     pty_tx: Option<mpsc::Sender<EncodedInputRequest>>,
-    /// PTY backing resources. Kept alive for the actor's lifetime;
-    /// dropped on shutdown to send EOF to the slave and tear down the
-    /// reader/writer threads.
+    /// PTY resources; dropped on shutdown to send EOF and stop the threads.
     pty: Option<PtyOwned>,
-    /// Optional sink for agent events the actor sources from the PTY
-    /// stream (SPEC §7.5, phux-y2t): `bell`, `title_changed`, `dirty`,
-    /// `idle`, `cwd_changed`, the OSC-133-sourced `command_started` /
-    /// `command_finished`, and the supervisory `terminal_control`. `None`
-    /// for actors that no one watches (most tests); set by the runtime's
-    /// spawn path via [`Self::set_event_sink`]. The runtime drains it into
-    /// the server-wide event journal (it owns the wire `ResourceId`, which
-    /// the actor does not know).
-    ///
-    /// Non-blocking: a full sink drops the event rather than stalling the
-    /// hot PTY-pump loop, and counts the drop so the drain can journal a
-    /// `source_gap` (ADR-0123).
+    /// Sink for agent events sourced from the PTY stream (SPEC §7.5), set by
+    /// the runtime's spawn path and drained into the event journal.
+    /// Non-blocking: a full sink drops and counts, for a `source_gap`
+    /// (ADR-0123).
     event_sink: Option<crate::resource::event_sink::EventSink>,
-    /// Last terminal title observed (OSC 0 / OSC 2), for change detection.
-    /// `title_changed` fires only when the polled title differs from this.
-    ///
-    /// Refreshed UNCONDITIONALLY by [`Self::refresh_title`] on every PTY
-    /// chunk — including for a pane nobody is watching — because the
-    /// agent-state detector reads it on its own timer and the OSC title is
-    /// its highest-priority signal (ADR-0046 §B).
+    /// Last OSC 0/2 title, for `title_changed`. Refreshed on every chunk even
+    /// if unwatched: the detector reads it (ADR-0046).
     last_title: String,
     /// Latest OSC 9;4 payload, mirrored from the raw PTY stream for detection.
     last_progress: String,
-    /// Level-triggered agent-state detector (ADR-0046). `Some` only for a
-    /// PTY-backed actor with a wired `agent_state_sink` and a non-empty rule
-    /// set; constructed in [`Self::run`], so no existing constructor or test
-    /// actor grows one.
+    /// Agent-state detector (ADR-0046), built in [`Self::run`] for PTY-backed
+    /// actors with a sink and rules.
     agent_detect: Option<crate::agent_detect::AgentDetector>,
-    /// Sink for edge-filtered detector outputs. Drained by
-    /// `runtime::client::spawn_agent_state_drain`, which owns `ServerState`
-    /// and performs the arbitration + `metadata_set`.
+    /// Detector output sink, drained by `runtime::client::spawn_agent_state_drain`.
     agent_state_sink: Option<mpsc::Sender<AgentDetectEvent>>,
-    /// The detector's answer to "does this pane own a live `AgentSession`
-    /// child?", installed alongside the sinks and handed to the detector
-    /// when [`Self::install_agent_detector`] builds it (ADR-0103 §5).
-    ///
-    /// Held here rather than passed to `AgentDetector::new`: the detector is
-    /// built inside `run`, after the actor has moved onto the `LocalSet`,
-    /// and the probe closes over server state the spawn path has and the
-    /// run loop does not.
-    ///
-    /// [`Self::install_agent_detector`]: TerminalActor
+    /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5),
+    /// handed to the detector when [`Self::run`] builds it.
     live_session_probe: Option<crate::agent_detect::live_session::LiveSessionProbe>,
-    /// The live `AgentSession` child's producer channel, when one is bound.
-    ///
-    /// What makes `REPORT_AGENT_STATE` a record rather than a second opinion
-    /// (ADR-0103 §6): with a child bound, a hook report is appended to the
-    /// child's stream, so the arbiter keeps hearing one account of the pane.
-    /// A closed channel — the child left and nothing has cleared this yet —
-    /// is indistinguishable from no child for every purpose that matters,
-    /// and both fall back to the ADR-0085 path.
+    /// The bound `AgentSession` child's producer channel. With one bound, a
+    /// hook report is appended to its stream (ADR-0103 §6); a closed channel
+    /// behaves like no child.
     agent_session_append: Option<mpsc::Sender<crate::resource::agent_session::AppendRequest>>,
-    /// Grid-mutation flag scoped to the DETECTOR's tick (100-500 ms).
-    ///
-    /// Deliberately distinct from `terminal_dirty_since_tick`, which
-    /// `tick_emit` clears every ~30 ms: a detector reading that flag would
-    /// see `false` on nearly every tick and its "skip the scan when nothing
-    /// changed" fast path would skip *every* scan, so it would never see the
-    /// screen at all. Set at the same three mutation sites, cleared by
-    /// [`Self::detect_tick`].
+    /// Grid-mutation flag for the detector's slower tick; distinct from
+    /// `terminal_dirty_since_tick`, which `tick_emit` clears far more often.
     agent_dirty_since_detect: bool,
-    /// Last in-pane "ask" marker observed — the actor's mirror of the
-    /// `phux-ask` title sentinel, and a transport edge filter only.
-    ///
-    /// The v1 ask-trigger is OSC-driven: an in-pane agent signals a pending
-    /// human-answerable question by setting the terminal title (OSC 0 / OSC 2)
-    /// to a `phux-ask` sentinel (see [`AskMarker`]). The actor does not decide
-    /// whether that reaches a client: it reports each marker *change* — a new
-    /// or changed marker, and the pane retitling away from one — as an
-    /// [`AgentDetectEvent::AskSentinel`], and [`crate::agent_asked`] out in
-    /// `ServerState` ranks it against the other ADR-0036 sources and owns the
-    /// coalescing. This field exists so a pane sitting on a stable `phux-ask`
-    /// title does not push a message per PTY chunk; `None` means the pane is
-    /// not currently displaying a marker.
-    ///
-    /// The raw scanner mirrors OSC 9;4 for state detection, but does not treat
-    /// generic OSC 9 / OSC 777 desktop notifications as asks. The title
-    /// sentinel remains the explicit v1 ask signal.
+    /// Last `phux-ask` title marker, an edge filter so a stable title does
+    /// not report per chunk. Changes go out as
+    /// [`AgentDetectEvent::AskSentinel`]; [`crate::agent_asked`] ranks them.
     last_ask: Option<AskMarker>,
-    /// Whether an ask edge was derived but refused by a full agent-state
-    /// sink, so the next PTY chunk must re-derive and retry it.
-    ///
-    /// The retry used to be implicit: the marker was re-parsed on every
-    /// chunk, so a stale `last_ask` simply re-attempted next time. Parsing is
-    /// now gated on a title change (the only thing that can move the answer),
-    /// which makes the owed retry something the actor has to remember rather
-    /// than rediscover.
+    /// An ask edge a full sink refused; retried on the next chunk (parsing
+    /// only reruns on a title change).
     ask_retry_owed: bool,
-    /// Whether the pane is currently in an active output "burst": a
-    /// `dirty` event has been emitted and no settling `idle` has followed.
-    /// Drives the dirty/idle coalescing — at most one `dirty` per burst,
-    /// then one `idle` when a tick observes the grid has settled.
+    /// In an output burst: `dirty` emitted, no `idle` yet.
     in_output_burst: bool,
-    /// Whether a PTY output chunk arrived since the preceding idle-check
-    /// tick. Self-owned by dirty/idle bookkeeping so settling a burst does
-    /// not depend on [`Self::tick_emit`] consuming its state-sync mutation
-    /// flag (that emitter is deliberately gated off for raw consumers).
+    /// PTY output arrived since the last idle check (independent of the
+    /// state-sync mutation flag).
     output_since_idle_tick: bool,
-    /// Last known working directory for this pane. Used to detect CWD
-    /// changes and emit `CwdChanged` events (phux-foz.4). Seeded from the
-    /// child's kernel cwd at construction (empty when that query fails),
-    /// then re-queried lazily at OSC-133 prompt boundaries and on
-    /// output-idle via `process_cwd` (`proc_pidinfo` on macOS,
-    /// `/proc/PID/cwd` on Linux).
+    /// Last known cwd, for `CwdChanged`. Seeded from the child at build,
+    /// re-queried at OSC 133 prompts and on output idle.
     last_known_cwd: RefCell<String>,
-    /// Whether this pane has announced its cwd yet. The first successful
-    /// observation always emits `cwd_changed`, even when it equals the
-    /// accurate spawn seed: a consumer that learns of a pane mid-session
-    /// (a TUI split) has no other source for its starting directory.
+    /// Whether the cwd has been announced; the first observation always
+    /// emits, so late consumers learn the starting directory.
     cwd_announced: Cell<bool>,
-    /// Incremental OSC scanner over the raw PTY byte stream. Sources
-    /// `command_started` / `command_finished` (with the
-    /// `D`-mark exit code libghostty's grid projection does not retain) and
-    /// triggers the prompt-boundary cwd re-query. Stateful so a mark split
-    /// across two PTY read chunks is still recognised.
+    /// OSC 133 scanner over raw PTY bytes (keeps the `D` exit code the grid
+    /// drops); survives marks split across chunks.
     osc133: osc133::Osc133Scanner,
-    /// OSC-133 prompt state machine behind the `process.prompt` facet
-    /// (PHA-406 D5). Fed every mark, listened-to or not.
+    /// OSC 133 prompt state behind the `process.prompt` facet.
     prompt: osc133::PromptTracker,
-    /// Start time of the PTY child in Unix ms, captured once at
-    /// construction. Paired with the child pid it is the pid generation the
-    /// `process.child` facet reports; captured up front so it still names
-    /// the right process after the child is reaped and its pid recycled.
+    /// PTY child start time (Unix ms), captured at build so `process.child`
+    /// still names the right process after reap and pid reuse.
     child_start_ms: Option<u64>,
-    /// The PTY child's pid, kept once a retained pane has let go of its PTY
-    /// (ADR-0124), so `process.child` still names the process that ran.
+    /// The child pid kept after a retained pane releases its PTY (ADR-0124).
     released_child_pid: Option<i32>,
-    /// The exit facet, recorded when PTY EOF reaps the child. `None` while
-    /// the child runs (or when this actor has no PTY).
+    /// The exit facet, recorded at PTY EOF.
     exit: Option<phux_core::process::ProcessExit>,
-    /// Process lifecycle as the supervisory surface sees it (ADR-0033):
-    /// `Running` until a `Freeze` (SIGSTOP) flips it to `Frozen`, back to
-    /// `Running` on `Resume` (SIGCONT). Natural/terminal exits are reported
-    /// by the existing `RESOURCE_CLOSED` / `ResourceClosed` path, not here.
+    /// Supervisory lifecycle (ADR-0033): `Running` or `Frozen`.
     lifecycle: ResourceLifecycle,
     cols: u16,
     rows: u16,
-    /// Per-cell pixel size `(width, height)` used to derive the PTY winsize
-    /// pixel fields and XTWINOPS size reports. Seeded to [`DEFAULT_CELL_PX`]
-    /// so the geometry is never zero, then overwritten by the most recent
-    /// [`ResizeRequest`] that carries usable pixel metrics. Sticky: a
-    /// pixel-less resize (agent `RESIZE_TERMINAL`) keeps the established
-    /// value. Nonzero on both axes at all times, so pixel probes inside the
-    /// pane (`kitten icat`, sixel sizers) always read a real cell size.
+    /// Cell size in pixels for winsize and XTWINOPS; never zero. Updated by
+    /// resizes that carry pixel metrics, kept by those that do not.
     cell_px: (u16, u16),
-    /// Current grid + cell geometry shared with the libghostty `on_size`
-    /// callback, which answers XTWINOPS size queries (CSI 14/16/18 t)
-    /// synchronously inside `vt_write` — while `handle_resize` is the
-    /// writer. Updated after every applied resize.
+    /// Geometry shared with libghostty's `on_size` callback, which answers
+    /// XTWINOPS queries inside `vt_write`.
     size_report: Rc<Cell<SizeReportSize>>,
 }
 
@@ -1107,48 +815,24 @@ pub enum TerminalActorError {
     /// Could not spawn the command on the PTY slave.
     #[error("spawn failed: {0}")]
     Spawn(String),
-    /// Could not take the master reader or writer half, or start the
-    /// bridge threads.
+    /// Could not take the master halves or start the bridge threads.
     #[error("pty io setup failed: {0}")]
     PtyIo(String),
 }
 
-/// Bundle returned from [`TerminalActor::new`]: the actor itself plus a
-/// [`CancellationToken`] that, when cancelled, fires the actor's
-/// shutdown branch.
-///
-/// The token is **clone-shared** with the actor: callers can clone it
-/// before handing the actor off to `spawn_local`, hold the clone, and
-/// call `.cancel()` to ask the actor to exit. Unlike the prior
-/// `oneshot::Sender<()>`-shaped bundle, dropping `token` does NOT
-/// cancel the actor — cancellation must be explicit.
+/// The actor plus its [`CancellationToken`]. Cancellation is explicit:
+/// dropping the token does not stop the actor.
 #[must_use]
 pub struct TerminalActorBundle {
     /// The actor; pass to `tokio::task::spawn_local`.
     pub actor: TerminalActor,
-    /// Cross-task handle to the actor: the generic resource channels plus
-    /// the Terminal facet.
+    /// Cross-task handle: generic resource channels plus the Terminal facet.
     pub handle: ResourceHandle,
-    /// Cancellation token. Call `.cancel()` to ask the actor to shut
-    /// down cleanly. Cloneable; shares cancellation state with the
-    /// actor's internal copy.
+    /// Cancel to shut the actor down.
     pub token: CancellationToken,
-    /// One-shot receiver that fires when the actor observes PTY EOF
-    /// (the child process exited, the pane is dying). The runtime
-    /// pairs this with the terminal's [`phux_core::ids::ResourceId`] and uses
-    /// it to drive client-detach on shell-`exit` (phux-it8).
-    ///
-    /// Used by the runtime's per-pane EOF watcher task; tests that
-    /// don't care about lifecycle simply drop it. Receiver-drop is
-    /// benign for the sender side — the actor uses `send().ok()`.
-    ///
-    /// `Option` so callers can `take()` it out of the bundle;
-    /// `None` after the first take.
-    ///
-    /// The payload is the child's [`ExitOutcome`](phux_core::process::ExitOutcome):
-    /// `status` for a normal `_exit(n)`, `signal` for a death by signal,
-    /// neither for an unknown cause. `status` is what the
-    /// `RESOURCE_CLOSED.exit_status` wire field carries (phux-4li.11).
+    /// Fires with the child's [`ExitOutcome`](phux_core::process::ExitOutcome)
+    /// at PTY EOF; the runtime's EOF watcher drives client detach from it.
+    /// `Option` so it can be taken once.
     pub exit_notify: Option<oneshot::Receiver<phux_core::process::ExitOutcome>>,
 }
 
@@ -1177,8 +861,8 @@ enum PtySource {
     None,
     /// Open a fresh PTY and spawn `cmd` on the slave.
     Spawn(CommandBuilder),
-    /// Re-adopt a PTY master fd + child PID inherited across a graceful-upgrade
-    /// `execve` (ADR-0032).
+    /// Re-adopt a PTY master fd and child pid after a graceful-upgrade exec
+    /// (ADR-0032).
     Adopt {
         /// Inherited master descriptor (`FD_CLOEXEC` cleared before the exec).
         master_fd: std::os::fd::RawFd,

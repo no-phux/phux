@@ -20,13 +20,11 @@ enum PtyTurn {
     Continue,
     /// Keep looping with a freshly recomputed `native_step_due`.
     Stepped(bool),
-    /// The actor-global raw output sequence is exhausted; the PTY has already
-    /// been torn down and the loop must return.
+    /// The raw output sequence is exhausted; the PTY is torn down.
     Shutdown,
 }
 
-/// One bounded PTY read burst: the coalesced payload plus why the drain
-/// stopped.
+/// One bounded PTY read burst and why the drain stopped.
 struct PtyBurst {
     /// The chunks to write to the `Terminal` and broadcast as one frame.
     payload: Bytes,
@@ -34,15 +32,12 @@ struct PtyBurst {
     chunks: u64,
     /// A queued EOF was observed while draining; handle it after the flush.
     saw_eof: bool,
-    /// `true` when the drain stopped because the next chunk would cross the
-    /// byte cap (more output is likely queued) rather than because the queue
-    /// emptied. Drives the post-broadcast yield so a sustained burst hands the
-    /// scheduler a turn between bounded parses.
+    /// The drain stopped at the byte cap (more output likely queued), so the
+    /// loop yields before the next bounded parse.
     hit_byte_cap: bool,
 }
 
-/// The consumer-independent render products of one state-sync tick, as
-/// returned by [`SnapshotSynthesizer::prepare_tick`].
+/// Consumer-independent render products of one state-sync tick.
 #[derive(Clone, Copy)]
 struct TickRender {
     /// Grid width the tick rendered at.
@@ -55,8 +50,7 @@ struct TickRender {
 
 /// What one consumer's slot in a state-sync tick produced.
 enum TickOutcome {
-    /// Nothing shipped: not tick-managed, gated off, backpressured, or
-    /// byte-identical to this consumer's reference.
+    /// Nothing shipped (not tick-managed, gated, backpressured, or unchanged).
     Skipped,
     /// The consumer's outbound mailbox is closed; reap the entry.
     Closed,
@@ -64,8 +58,7 @@ enum TickOutcome {
     Emitted(usize),
 }
 
-/// The consumer walk of one productive state-sync tick, handed back to
-/// [`TerminalActor::tick_emit`] so span/histogram/reap stay in one place.
+/// The consumer walk of one productive tick.
 struct TickEmitWalk {
     /// Frames actually shipped this tick.
     emitted: u64,
@@ -77,13 +70,9 @@ struct TickEmitWalk {
     started: std::time::Instant,
 }
 
-/// The cooperative native-capture pump's position for one `run` turn.
-///
-/// While a native bootstrap is in flight the loop alternates a yield to the
-/// runtime with exactly one record step, so prefix capture advances between
-/// ingress turns without starving sibling `LocalSet` tasks. The two pump
-/// arms are the two halves of that alternation; this enum names which half
-/// (if either) the current turn owes.
+/// Which half of the cooperative native-capture pump this turn owes: a
+/// yield to the runtime or one record step, alternating so capture advances
+/// without starving sibling tasks.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BootstrapPump {
     /// No capture work in flight: both pump arms stay disabled.
@@ -95,8 +84,7 @@ enum BootstrapPump {
 }
 
 impl BootstrapPump {
-    /// Resolve the pump from the actor's bootstrap state plus whether the
-    /// previous turn left a step owed.
+    /// Resolve from bootstrap state and whether a step is owed.
     const fn resolve(work_pending: bool, step_owed: bool) -> Self {
         if !work_pending {
             return Self::Idle;
@@ -109,37 +97,26 @@ impl BootstrapPump {
     }
 }
 
-/// One request's claim on the debounced resync: why it is owed and, for a
-/// gap, the one pump it is owed to.
+/// One claim on the debounced resync: why, and for a gap, which pump.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct OwedResync {
     /// Why the requester's generation cannot continue.
     pub(super) reason: ResyncReason,
-    /// The pump that fell behind, or `None` when every subscriber is owed
-    /// (a reflow, or a gap request that named no pump).
+    /// The pump that fell behind; `None` means every subscriber.
     pub(super) target: Option<ResyncTarget>,
 }
 
-/// phux-8v1 drag fix: the debounced post-resize client resync owned by the
-/// `run` loop. (Re)armed on each resync-requesting resize; when the timer
-/// fires we broadcast ONE snapshot at the settled size.
-///
-/// It also collects *who* the snapshot is for. A reflow is owed to every
-/// subscriber; a gap is owed only to the pumps that asked. Both share the one
-/// deadline and the one synthesis, so N stale pumps still converge on a
-/// single snapshot, and a reflow owed in the same window subsumes them all.
+/// The debounced post-resize resync. Re-armed per resize; on fire, one
+/// snapshot at the settled size. A reflow is owed to everyone, a gap only to
+/// the pumps that asked; all share one deadline and one synthesis.
 pub(super) struct ResyncDebounce {
-    /// A resync is owed once the debounce deadline lands. False until a
-    /// resize arms it, which is why the idle far-future deadline the loop
-    /// starts with is never observed.
+    /// A resync is owed once the deadline lands.
     pending: bool,
     /// Why the owed resync was armed; broadcast when the deadline fires.
     reason: ResyncReason,
     /// Every subscriber is owed the resync, whatever `targets` says.
     everyone: bool,
-    /// The pumps that asked for a gap resync of their own, deduplicated.
-    /// Bounded by the pumps on this pane: a pump asks again only after its
-    /// retry backoff, and its repeat is folded onto its existing entry.
+    /// Pumps owed a gap resync, deduplicated.
     targets: Vec<ResyncTarget>,
 }
 
@@ -154,29 +131,17 @@ impl ResyncDebounce {
         }
     }
 
-    /// Whether the settled-resize snapshot may fire this turn: one is owed,
-    /// and no native bootstrap is holding the loop's broadcast arms closed.
+    /// Whether the owed snapshot may fire (none is blocked by a bootstrap).
     const fn may_fire(&self, bootstrap_pending: bool) -> bool {
         self.pending && !bootstrap_pending
     }
 
-    /// Owe a resync for `reason` and (re)start the debounce, so a drag storm
-    /// coalesces into a single snapshot rather than flooding the client.
+    /// Owe a resync for `reason` and (re)start the debounce.
     ///
-    /// A gap resync that is *already* owed deliberately does not push the
-    /// deadline out again. The two callers want opposite things: a resize
-    /// storm wants the last size, so every resize must re-arm, but every
-    /// fenced pump on a pane asks for the same single snapshot, and each of
-    /// those requests resetting the timer is a livelock. N pumps retrying
-    /// independently arrive at a mean interval of `retry / N`, which at around
-    /// ten consumers on one pane beats the 50 ms debounce every time: the
-    /// snapshot they are all waiting for would never fire, and none of them
-    /// would ever unfence. Coalescing onto the first deadline is what makes
-    /// the fleet converge instead of starve.
-    ///
-    /// The audience is recorded before that early return, so a pump that
-    /// asks while another pump's gap resync is already owed still rides the
-    /// same snapshot.
+    /// An already-owed gap resync does not push the deadline out: N pumps
+    /// retrying independently would otherwise keep resetting it and livelock.
+    /// Resizes always re-arm (the last size wins). The audience is recorded
+    /// first either way.
     fn arm(&mut self, owed: OwedResync, deadline: std::pin::Pin<&mut tokio::time::Sleep>) {
         let coalesce_gap = self.pending && owed.reason == ResyncReason::OutboundGap;
         self.include(owed);
@@ -186,11 +151,8 @@ impl ResyncDebounce {
         deadline.reset(tokio::time::Instant::now() + RESIZE_RESYNC_DEBOUNCE);
     }
 
-    /// Fold `owed` into the audience without touching the deadline.
-    ///
-    /// PTY EOF uses this: a fenced pump's request must ride the snapshot that
-    /// is about to fire, not wait another debounce the actor will not live to
-    /// serve (phux-fpgl.28).
+    /// Fold `owed` into the audience without touching the deadline (PTY EOF:
+    /// the snapshot is about to fire).
     fn include(&mut self, owed: OwedResync) {
         match owed.target {
             None => self.everyone = true,
@@ -204,8 +166,7 @@ impl ResyncDebounce {
         self.reason = owed.reason;
     }
 
-    /// Clear the owed resync and hand back the reason and audience to
-    /// broadcast it with.
+    /// Clear the owed resync, returning its reason and audience.
     fn take(&mut self) -> (ResyncReason, ResyncAudience) {
         self.pending = false;
         let targets = std::mem::take(&mut self.targets);
@@ -219,10 +180,6 @@ impl ResyncDebounce {
 }
 
 /// Loop-local timers and ingress preference owned by [`TerminalActor::run`].
-///
-/// Kept as one value so [`TerminalActor::run`] can arm once and
-/// [`TerminalActor::drive_run_loop`] can drive without threading each
-/// timer through a long parameter list (phux-18sb).
 struct RunLoopState {
     /// Shared state-sync cadence; rebuilt when a consumer's RTT shifts it.
     tick_interval: std::time::Duration,
@@ -241,14 +198,8 @@ struct RunLoopState {
 }
 
 impl TerminalActor {
-    /// Run the actor's event loop until shutdown.
-    ///
-    /// Native prefix capture advances by one record between ingress turns.
-    ///
-    /// Arms the loop-local timers, then drives the `select!`. Every arm is
-    /// a one-line dispatch into a named handler; what remains inline is the
-    /// `select!`'s own arm/guard scaffolding plus the rationale comments
-    /// that must sit next to the guard they explain.
+    /// Run the actor's event loop until shutdown. Native prefix capture
+    /// advances by one record between ingress turns.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -262,29 +213,20 @@ impl TerminalActor {
         );
 
         let mut state = self.arm_run_loop().await;
-        // Init the debounce deadline far out — `resync.pending` is false
-        // until a resize arms it, and arming always resets the deadline, so
-        // the initial instant is never observed.
+        // Far-future until a resize arms it.
         let resync_deadline = tokio::time::sleep(std::time::Duration::from_secs(3600));
         tokio::pin!(resync_deadline);
         self.drive_run_loop(&mut state, resync_deadline).await;
     }
 
-    /// Arm the state-sync tick, the agent detector, and the idle resync /
-    /// ingress bookkeeping that [`Self::drive_run_loop`] then drives.
+    /// Arm the state-sync tick, the detector, and idle bookkeeping.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
     async fn arm_run_loop(&mut self) -> RunLoopState {
-        // State-sync tick driver (phux-q0e.3 / phux-q0e.5). RTT-adaptive
-        // cadence: starts at the `DEFAULT_TICK_INTERVAL` cold-start value and
-        // is rebuilt toward each consumer's measured `RTT/2` (clamped to
-        // [`MIN_TICK_INTERVAL`, `MAX_TICK_INTERVAL`]) as `FRAME_ACK`
-        // round-trips land. The shared timer runs at the minimum desired
-        // interval across consumers (see [`Self::adaptive_tick_interval`]).
-        // The timer's missed-tick behavior and the eaten first tick are
-        // [`armed_interval`]'s; the rationale for both lives there.
+        // State-sync tick: starts at `DEFAULT_TICK_INTERVAL` and adapts to
+        // the fastest consumer's RTT/2 (see `adaptive_tick_interval`).
         let tick_interval = DEFAULT_TICK_INTERVAL;
         let tick = armed_interval(tick_interval).await;
 
@@ -292,10 +234,8 @@ impl TerminalActor {
         let detect_interval = crate::agent_detect::TICK_UNIDENTIFIED;
         let detect_tick = armed_interval(detect_interval).await;
 
-        // Native control and PTY output are one outer select arm so the actor
-        // never borrows either receiver twice. Preference swaps after every
-        // selected ingress, but both sources remain enabled: a silent PTY can
-        // never park bootstrap or consecutive history requests.
+        // Native control and PTY output share one arm, alternating
+        // preference; both stay enabled so a silent PTY never parks history.
         RunLoopState {
             tick_interval,
             tick,
@@ -307,7 +247,7 @@ impl TerminalActor {
         }
     }
 
-    /// Drive the actor `select!` until cancel, sequence exhaustion, or every
+    /// Drive the `select!` until cancel, sequence exhaustion, or every
     /// mailbox closes.
     #[allow(
         clippy::future_not_send,
@@ -323,10 +263,7 @@ impl TerminalActor {
         mut resync_deadline: std::pin::Pin<&mut tokio::time::Sleep>,
     ) {
         loop {
-            // Resolved once per turn. `select!` evaluates every precondition
-            // below in one pass as it is entered, and nothing runs between
-            // here and there, so one read stands in for the ~ten separate
-            // reads the guards used to make.
+            // One read serves every guard below.
             let bootstrap_pending = self.native_bootstrap_pending();
             let pump = BootstrapPump::resolve(self.native_work_pending(), state.native_step_due);
 
@@ -339,23 +276,13 @@ impl TerminalActor {
                     return;
                 }
 
-                // Bytes already encoded on the dedicated input lane. This
-                // bounded mailbox is the production input path and shares the
-                // actor's highest scheduling priority.
+                // Encoded input from the input lane: highest priority.
                 Some(request) = self.encoded_input_rx.recv() =>
                     self.service_encoded_input_batch(request),
 
-                // Legacy inline input → PTY, retained for direct-drive tests
-                // that intentionally construct the runtime without a lane.
-                // Polled before the PTY-output arm (biased
-                // order) so a queued keystroke is serviced this turn
-                // rather than waiting behind an output burst — the fix for
-                // load-correlated input starvation. Bounded by
-                // `MAX_INPUT_COALESCE`: the arm fires on the first ready
-                // event, then drains up to a capped batch via `try_recv`
-                // so a paste the encoder expands cannot inflate one turn
-                // without limit. The PTY-output arm's structural bound is
-                // `MAX_PTY_COALESCE_BYTES`.
+                // Inline input (ROUTE_INPUT and attached input events), encoded here.
+                // Before PTY output so keystrokes are not starved; batch
+                // bounded by `MAX_INPUT_COALESCE`.
                 Some(input) = self.input_rx.recv(), if !bootstrap_pending =>
                     self.service_input_batch(&input),
 
@@ -400,10 +327,7 @@ impl TerminalActor {
                 Some(req) = self.resize_rx.recv(), if !bootstrap_pending =>
                     self.service_resize_request(req, &mut state.resync, resync_deadline.as_mut()),
 
-                // phux-8v1: debounced resize resync — fires once the
-                // resize storm settles (RESIZE_RESYNC_DEBOUNCE after the
-                // last resync-requesting resize). Guarded by the owed-resync
-                // flag so the idle far-future timer never fires spuriously.
+                // Debounced resize resync, once the storm settles.
                 () = &mut resync_deadline, if state.resync.may_fire(bootstrap_pending) =>
                     self.fire_owed_resync(&mut state.resync),
 
@@ -413,43 +337,23 @@ impl TerminalActor {
                 Some(req) = self.consumer_detach_rx.recv() =>
                     self.service_consumer_detach(req, &mut state.tick, &mut state.tick_interval),
 
-                // ADR-0018 / phux-q0e.4: inbound FRAME_ACK. Clears the
-                // per-consumer dirty cache so the next tick re-diffs
-                // against the just-acked reference. Loss tolerance: a
-                // dropped ack just means the next tick re-emits a larger
-                // diff against the same older reference — no
-                // retransmit machinery here.
+                // FRAME_ACK: advances the consumer's acked reference. A lost
+                // ack only means a larger diff next tick.
                 Some(req) = self.consumer_ack_rx.recv(), if !bootstrap_pending =>
                     self.service_frame_ack(&req, &mut state.tick, &mut state.tick_interval),
 
-                // Supervisory control (ADR-0033): lease-change broadcasts and
-                // process signals. The lease itself lives in `ServerState`; the
-                // actor is the emitter (it owns the lifecycle)
-                // and the signal deliverer (it owns the PTY child pid).
+                // Supervisory control (ADR-0033): lease broadcasts and signals.
                 Some(req) = self.core.control_rx.recv() => self.handle_control_request(req),
 
-                // Disarmed while there is nothing for a tick to do (see
-                // `state_tick_armed`). A `select!` arm whose precondition is
-                // false is never polled, so a disarmed tick registers no
-                // timer and produces no wakeup at all — an idle pane with no
-                // state-sync consumer costs zero, where it used to wake the
-                // whole actor 33 times a second to discover that. The guard
-                // is re-evaluated every loop turn, and every event that can
-                // make the tick relevant (a consumer attaching, a PTY chunk
-                // opening an output burst, a native cursor binding) is itself
-                // a loop turn, so re-arming is immediate.
+                // Disarmed when there is nothing to do (`state_tick_armed`),
+                // so an idle pane has no timer wakeups. Every event that can
+                // make the tick relevant is itself a loop turn, so re-arming
+                // is immediate.
                 _ = state.tick.tick(), if !bootstrap_pending && self.state_tick_armed() =>
                     self.service_state_tick(),
 
-                // Agent-state detector (ADR-0046). This interval is the SOLE
-                // driver: PTY bytes deliberately do NOT wake it. A chatty
-                // agent spewing megabytes must cost zero extra detector work
-                // — the whole design is a periodic re-derivation, not a
-                // reaction to output. The cadence is adaptive (500 ms while
-                // unidentified, 300 ms once identified, 100 ms while
-                // confirming a working -> idle transition) and is re-armed
-                // through the existing `rearm_tick`, whose deadband keeps a
-                // steady cadence from churning the scheduler.
+                // Agent-state detector (ADR-0046): driven only by this
+                // adaptive interval, never by PTY bytes.
                 _ = state.detect_tick.tick(), if self.detector_tick_armed(bootstrap_pending) =>
                     self.service_detect_tick(&mut state.detect_tick, &mut state.detect_interval),
 
@@ -471,22 +375,12 @@ impl TerminalActor {
         self.shutdown_pty().await;
     }
 
-    /// Drain queued gap-resync requests and fire any owed snapshot now.
-    ///
-    /// A fenced pump asked while the actor was ingesting the last PTY burst
-    /// still has its request in `resize_rx` or on the debounce; waiting for
-    /// the debounce after EOF lets the exit watcher reap the pane first
-    /// (phux-fpgl.28).
+    /// Drain queued gap-resync requests and fire any owed snapshot now, so
+    /// an EOF'd pane does not get reaped before its fenced pumps are served.
     pub(super) fn flush_final_gap_resync(&mut self, resync: &mut ResyncDebounce) -> bool {
-        // Both callers run outside the `!bootstrap_pending` guards: the
-        // `token.cancelled()` arm is `biased` first, and
-        // `flush_exit_resync_if_needed` hangs off the ungated ingress arm.
-        // The drain below applies resizes and the fire below synthesizes a
-        // grid, and both dereference the canonical terminal — which an
-        // in-flight capture has moved out. Land the cut so the terminal is
-        // home before either touches it. (A pane whose child exits while a
-        // client attaches is the designed-for race, not an exotic one: see
-        // `handle_pty_eof`.)
+        // Callers run outside the bootstrap guards, and both the drain and
+        // the fire touch the canonical terminal, so land any in-flight
+        // capture first.
         self.land_native_cuts();
         while let Ok(req) = self.resize_rx.try_recv() {
             for owed in self.apply_resize_request(req) {
@@ -500,16 +394,9 @@ impl TerminalActor {
         true
     }
 
-    /// After PTY EOF: publish the last grid, then tell the exit watcher
-    /// the child is gone.
-    ///
-    /// Drain any queued gap request first so it rides this snapshot, then
-    /// broadcast everyone: a targeted fire names only the pump that asked,
-    /// and a lagged `ATTACH_RESOURCE` watcher is often not that pump
-    /// (phux-fpgl.28). Healthy last-pane attach still gets one replacement
-    /// generation; it must not get a second, and close must not wait on
-    /// mailbox occupancy — those stuffed the TUI and lost `RESOURCE_CLOSED`
-    /// to server self-exit.
+    /// After PTY EOF: publish the last grid to everyone (queued gap requests
+    /// ride it), then tell the exit watcher the child is gone. Exactly one
+    /// replacement generation, and close never waits on mailbox room.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -519,10 +406,8 @@ impl TerminalActor {
             return;
         }
         let _ = self.flush_final_gap_resync(resync);
-        // `Exit`, not another gap: a pump whose mailbox is already full must
-        // park on this snapshot and not on an earlier one. `RESOURCE_CLOSED`
-        // is queued only after the yield below, so it lines up behind it
-        // (phux-fpgl.28).
+        // `Exit` so full-mailbox pumps park on this snapshot;
+        // `RESOURCE_CLOSED` is queued after the yield, behind it.
         self.broadcast_resync(ResyncReason::Exit, ResyncAudience::Everyone);
         tokio::task::yield_now().await;
         if let Some(exit) = self.exit.as_ref() {
@@ -546,11 +431,7 @@ impl TerminalActor {
     }
 
     /// Service one combined native-control / PTY-output ingress turn.
-    ///
-    /// Owns the source-preference swap and the cooperative-step bookkeeping
-    /// that follow each selected ingress. Returns `ControlFlow::Break` when
-    /// the actor-global raw output sequence is exhausted: the PTY has already
-    /// been torn down and the loop must return.
+    /// `Break` means the raw output sequence is exhausted.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -569,10 +450,8 @@ impl TerminalActor {
             }
             NativeOrPty::Pty(evt) => {
                 *prefer_native = true;
-                // PTY -> Terminal + broadcast. One bounded parse
-                // returns to this combined ingress arm so native
-                // control and live output alternate when both are
-                // continuously ready.
+                // One bounded parse, then back to the combined arm so
+                // control and output alternate.
                 match self.service_pty_event(evt).await {
                     PtyTurn::Continue => {}
                     PtyTurn::Stepped(due) => *native_step_due = due,
@@ -583,11 +462,7 @@ impl TerminalActor {
         std::ops::ControlFlow::Continue(())
     }
 
-    /// Apply one resize request and arm the debounced resync it earns.
-    ///
-    /// Arming the debounce timer is this caller's half of the resync
-    /// decision; `apply_resize_request` owns the reflow and the "does this
-    /// deserve a resync" rules.
+    /// Apply one resize request and arm the resync it earns.
     fn service_resize_request(
         &mut self,
         req: ResizeRequest,
@@ -600,8 +475,7 @@ impl TerminalActor {
         }
     }
 
-    /// Reap a detached consumer's per-consumer state and re-evaluate the
-    /// shared tick cadence.
+    /// Reap a detached consumer and re-evaluate the tick cadence.
     fn service_consumer_detach(
         &mut self,
         req: ConsumerDetachRequest,
@@ -614,18 +488,13 @@ impl TerminalActor {
             ?client_id,
             "consumer detached: per-consumer RenderState freed"
         );
-        // phux-q0e.5: losing a consumer can raise the minimum
-        // desired interval (e.g. the fastest peer left), so
-        // re-evaluate the shared cadence.
+        // Losing the fastest consumer can slow the shared cadence.
         Self::rearm_tick(tick, tick_interval, self.adaptive_tick_interval());
         let _ = reply.send(());
     }
 
-    /// Fold one inbound `FRAME_ACK` into its consumer's state.
-    ///
-    /// phux-q0e.5: a fresh RTT sample may shift the adaptive cadence. Rebuild
-    /// the shared tick only when the new minimum-desired interval moves
-    /// beyond the deadband, so a steady RTT does not churn the scheduler.
+    /// Fold one `FRAME_ACK` into its consumer; rebuild the shared tick only
+    /// when the adaptive interval moves past the deadband.
     fn service_frame_ack(
         &mut self,
         req: &ConsumerAckRequest,
@@ -643,50 +512,23 @@ impl TerminalActor {
         }
     }
 
-    /// One state-sync tick (phux-q0e.3, phux-ia4, ADR-0018): iterate each
-    /// attached consumer, diff the live terminal against that consumer's own
-    /// reference grid, and push a `ResourceOutput` frame onto its outbound
-    /// mailbox whenever `synthesize_against_reference` returns non-empty
-    /// bytes.
+    /// One state-sync tick (ADR-0018): diff each tick-managed consumer
+    /// against its own reference and ship non-empty deltas.
     pub(super) fn service_state_tick(&mut self) {
-        // phux-y2t: close an output burst with an `idle` event
-        // when no PTY output arrived since the previous tick.
-        // This bookkeeping is independent of the state-sync
-        // emitter gate, so headless watchers settle raw panes too.
+        // Close an idle output burst (independent of the emitter gate).
         self.maybe_emit_idle();
         self.tick_emit();
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.expire_native_cursors();
     }
 
-    /// Whether the state-sync tick arm has any work to do this turn.
+    /// Whether the state-sync tick has work: an open output burst, a
+    /// tick-managed consumer, or native cursors to expire. Otherwise the
+    /// timer is not armed at all.
     ///
-    /// [`Self::service_state_tick`] does exactly three things, and all three
-    /// are conditional:
-    ///
-    /// * `maybe_emit_idle` closes an output burst — only relevant while one
-    ///   is open (`in_output_burst`).
-    /// * `tick_emit` returns immediately unless some consumer is
-    ///   tick-managed, which is the same gate spelled out here.
-    /// * `expire_native_cursors` expires history bindings — only relevant
-    ///   while at least one exists.
-    ///
-    /// With none of those true the tick was a pure wakeup: a timer fire, a
-    /// `debug_span!` construction, and two early returns, repeated 33 times a
-    /// second for every pane on the server whether or not anyone was
-    /// attached. Naming the precondition lets the `select!` skip arming the
-    /// timer entirely.
-    ///
-    /// **This is only safe because [`armed_interval`] sets
-    /// `MissedTickBehavior::Delay`.** A disarmed arm is not polled, so its
-    /// `Interval` accumulates missed periods for as long as the pane stays
-    /// quiet. Under tokio's default `Burst` those would all be owed on
-    /// re-arm: an hour of silence at the 30 ms cold-start cadence is ~120,000
-    /// back-to-back `service_state_tick` calls, on the shared current-thread
-    /// runtime, the instant someone attaches. `Delay` discards them and
-    /// yields exactly one catch-up tick, which is what makes disarming a
-    /// saving rather than a deferred stampede. `disarming_the_tick_does_not_\
-    /// bank_a_stampede_of_catch_up_ticks` pins that.
+    /// Safe only because [`armed_interval`] uses `MissedTickBehavior::Delay`:
+    /// with `Burst`, re-arming after a long quiet spell would owe every
+    /// missed tick at once.
     pub(super) fn state_tick_armed(&self) -> bool {
         if self.in_output_burst {
             return true;
@@ -698,9 +540,7 @@ impl TerminalActor {
         self.consumer_tick_emits || self.consumer_states.values().any(|s| s.wants_state_sync)
     }
 
-    /// Whether the agent-state detector arm may run this turn: a detector was
-    /// installed (see [`Self::install_agent_detector`]) and no native
-    /// bootstrap is holding the loop's non-ingress arms closed.
+    /// Whether the detector arm may run: installed, and no bootstrap pending.
     const fn detector_tick_armed(&self, bootstrap_pending: bool) -> bool {
         self.agent_detect.is_some() && !bootstrap_pending
     }
@@ -716,20 +556,15 @@ impl TerminalActor {
         }
     }
 
-    /// Agent-state detector (ADR-0046). Constructed HERE, not in `build`,
-    /// for two reasons: `started` then anchors the startup grace window at
-    /// the moment the child actually begins painting, and no existing
-    /// constructor or test actor grows a detector it never asked for. Only
-    /// a PTY-backed actor with a wired sink and a non-empty rule set gets
-    /// one — everything else pays exactly nothing.
+    /// Install the agent detector (ADR-0046) at run start, so the grace
+    /// anchors when the child begins painting. Only PTY-backed actors with a
+    /// sink and a non-empty rule set get one.
     fn install_agent_detector(&mut self) {
         let rules = crate::agent_detect::rules::global();
         if self.pty.is_some() && self.agent_state_sink.is_some() && !rules.is_empty() {
             let mut detector = AgentDetector::new(rules, std::time::Instant::now());
-            // ADR-0103 §5: the ladder's top rung is a live `AgentSession`
-            // child, and only the spawn path knows how to ask about one.
-            // A pane built without the probe answers "no live child", which
-            // is the world every path outside this program lives in.
+            // ADR-0103 §5: only the spawn path can ask about a live
+            // `AgentSession` child; without a probe the answer is "no".
             if let Some(probe) = self.live_session_probe.clone() {
                 detector.set_live_session_probe(probe);
             }
@@ -737,12 +572,8 @@ impl TerminalActor {
         }
     }
 
-    /// Service one encoded-input wakeup: the ready request plus up to
-    /// [`MAX_INPUT_COALESCE`] more already queued behind it.
-    ///
-    /// Bounded by `MAX_INPUT_COALESCE`: the arm fires on the first ready
-    /// event, then drains up to a capped batch via `try_recv` so a paste the
-    /// encoder expands cannot inflate one turn without limit.
+    /// Service one encoded-input wakeup plus up to [`MAX_INPUT_COALESCE`]
+    /// already-queued requests.
     fn service_encoded_input_batch(&mut self, request: EncodedInputRequest) {
         self.service_encoded_input(request);
         for _ in 1..MAX_INPUT_COALESCE {
@@ -753,22 +584,18 @@ impl TerminalActor {
         }
     }
 
-    /// Service one legacy inline-input wakeup: the ready event plus up to
-    /// [`MAX_INPUT_COALESCE`] more already queued behind it.
+    /// Service one inline-input wakeup plus queued followers.
     fn service_input_batch(&mut self, input: &TerminalInput) {
         self.service_input(input);
         for _ in 1..MAX_INPUT_COALESCE {
             match self.input_rx.try_recv() {
                 Ok(next) => self.service_input(&next),
-                // Empty (nothing more ready) or Disconnected —
-                // stop draining.
                 Err(_) => break,
             }
         }
     }
 
-    /// Ingest one PTY-ingress event: a bounded, coalesced write into the
-    /// `Terminal` plus its broadcast, or EOF.
+    /// Ingest one PTY event: a bounded coalesced write and broadcast, or EOF.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -784,9 +611,8 @@ impl TerminalActor {
             return PtyTurn::Continue;
         };
         crate::perf::PTY_QUEUE_WAIT.record_elapsed(read_at);
-        // Server-side echo: the first output after an input handoff on this
-        // pane. Anything slower than the ceiling is a program that did not
-        // echo, not a slow server.
+        // Server-side echo latency; slower than the ceiling means the
+        // program did not echo.
         if let Some(input_at) = self.last_input_at.take() {
             let since_input = input_at.elapsed();
             if since_input < crate::perf::ECHO_SAMPLE_CEILING {
@@ -797,12 +623,6 @@ impl TerminalActor {
         let burst = self.coalesce_pty_burst(first);
         crate::perf::PTY_BURST_BYTES.record_len(burst.payload.len());
         crate::perf::PTY_BURST_CHUNKS.record(burst.chunks);
-        // Debug level deliberately (was trace): this is
-        // the pump's only witness line, and the lost-echo
-        // forensics (phux-dacb follow-up) need it inside
-        // the test capture's debug filter. Per-wakeup, so
-        // it costs one line per coalesced read, not per
-        // byte.
         debug!(
             bytes = burst.payload.len(),
             "vt_write: PTY chunk(s) -> Terminal"
@@ -830,40 +650,22 @@ impl TerminalActor {
         if burst.saw_eof {
             self.handle_pty_eof();
         } else if burst.hit_byte_cap {
-            // A capped payload with more output queued:
-            // yield so the runtime re-polls (input arm
-            // first) and sibling LocalSet tasks advance,
-            // bounding the output arm at the thread level.
-            // The next loop turn coalesces the next
-            // bounded payload, so throughput is preserved.
+            // Capped with more queued: yield so input and sibling tasks run.
             tokio::task::yield_now().await;
         }
         PtyTurn::Stepped(native_step_due)
     }
 
-    /// Coalesce any chunks already queued behind `first`
-    /// into a single Terminal write + broadcast frame
-    /// (phux-ahk burst path). A lone chunk takes the
-    /// fast path below: its `Vec` moves into `Bytes`
-    /// with no copy. Only a genuine burst (several
-    /// reads queued) allocates a join buffer. The drain
-    /// stops on the chunk-count cap, on EOF, or once the
-    /// payload would cross `MAX_PTY_COALESCE_BYTES` — in
-    /// the byte-cap case the crossing chunk is left
-    /// queued for the next turn (mpsc has no peek, so the
-    /// length is checked before `try_recv`).
+    /// Coalesce chunks queued behind `first` into one write and broadcast.
+    /// A lone chunk is copy-free; the drain stops at the chunk cap, EOF, or
+    /// before a chunk that would cross `MAX_PTY_COALESCE_BYTES`.
     fn coalesce_pty_burst(&mut self, first: Bytes) -> PtyBurst {
         let mut coalesced: Vec<u8> = Vec::new();
         let mut saw_eof = false;
         let mut hit_byte_cap = false;
         let mut chunks: u64 = 1;
         for _ in 0..MAX_PTY_COALESCE {
-            // Length so far: the lone `first` chunk before
-            // any coalescing, else the join buffer. Stop
-            // before consuming a chunk that would push the
-            // payload past the byte cap so each `vt_write`
-            // is a bounded synchronous parse. The first
-            // chunk always lands; only coalescing is capped.
+            // The first chunk always lands; only coalescing is capped.
             let current_len = if coalesced.is_empty() {
                 first.len()
             } else {
@@ -882,24 +684,17 @@ impl TerminalActor {
                     coalesced.extend_from_slice(&more);
                     chunks += 1;
                 }
-                // A queued EOF: flush the coalesced bytes
-                // first, then handle EOF below.
+                // Flush coalesced bytes, then handle EOF.
                 Some(Ok(PtyEvent::Eof)) => {
                     saw_eof = true;
                     break;
                 }
-                // Empty (nothing more ready) or the sender
-                // dropped — stop draining. A dropped sender
-                // surfaces as EOF on the next pump wakeup.
+                // Empty or disconnected (EOF arrives on the next wakeup).
                 _ => break,
             }
         }
-        // The lone-chunk path is now genuinely copy-free: the reader thread
-        // already hands over a refcounted `Bytes`, so a single chunk moves
-        // through with no re-buffering at all. The join buffer, and its
-        // copy, remains for the short-read bursts it was written for —
-        // which on macOS is every burst, because the line discipline caps a
-        // PTY read at 1024 bytes (see `spawn::PTY_READ_CHUNK`).
+        // A lone chunk moves through as-is; bursts (every burst on macOS,
+        // where reads cap at 1 KiB) join into one buffer.
         let payload: Bytes = if coalesced.is_empty() {
             first
         } else {
@@ -913,32 +708,11 @@ impl TerminalActor {
         }
     }
 
-    /// Write one coalesced PTY payload into the canonical `Terminal` and fan
-    /// out everything derived from it (color queries, encoder snapshot, dirty
-    /// bits, semantic events, native bootstrap advance).
-    ///
-    /// Every step here was measured before being kept or dropped. Over 4 KiB
-    /// plain-text chunks, in milliseconds of CPU per MB ingested (release
-    /// build, macOS, `TerminalActor::new(200, 50)`):
-    ///
-    /// | step | before | after |
-    /// |---|---|---|
-    /// | libghostty `vt_write` | 0.71 – 0.76 | unchanged |
-    /// | OSC scanners (`answer_color_queries` + `osc133`) | 1.36 – 1.39 | **0.03** |
-    /// | `publish_input_snapshot` (≈10 FFI reads + a `watch` send) | 0.02 | unchanged |
-    /// | `refresh_title` (FFI read + string compare) | 0.00 | unchanged |
-    ///
-    /// The two FFI-shaped steps that look expensive are not — libghostty's
-    /// mode and title reads disappear into the noise — so they stay
-    /// unconditional. An earlier revision gated them behind a "did this
-    /// payload contain an escape byte" scan; that scan cost ~0.5 ms/MB, as
-    /// much as the whole VT parse, to avoid 0.02, and was removed.
-    ///
-    /// The scanners were where the money was: two byte-at-a-time state
-    /// machines walking every byte of output to find an introducer that plain
-    /// text never contains. The fix that survived therefore lives inside them
-    /// (a ground-state `memchr` skip), not around them, and takes the actor's
-    /// whole per-chunk ingest cost on plain output from ~2.1 to ~0.6 ms/MB.
+    /// Write one coalesced payload into the canonical `Terminal` and fan out
+    /// everything derived from it (color queries, encoder snapshot, dirty
+    /// bits, semantic events, native bootstrap advance). The OSC scanners
+    /// skip plain text with `memchr`; the FFI reads are cheap enough to stay
+    /// unconditional.
     fn ingest_pty_payload(&mut self, payload: &Bytes) {
         self.terminal.borrow_mut().vt_write(payload);
         self.answer_color_queries(payload);
@@ -950,8 +724,7 @@ impl TerminalActor {
         self.start_next_native_bootstrap();
     }
 
-    /// Answer one bounded `SnapshotRequest` with the pane's replay bytes and
-    /// the actor-global raw cut they were taken at.
+    /// Answer a bounded `SnapshotRequest` with replay bytes and their raw cut.
     fn reply_bounded_snapshot(&self, req: SnapshotRequest) {
         let byte_limit = req
             .max_frames
@@ -969,8 +742,7 @@ impl TerminalActor {
             .send(snap.map(|snapshot| (snapshot, self.core.seq())));
     }
 
-    /// Install the effective default palette an interactive client reported,
-    /// then acknowledge it.
+    /// Install a client's reported default palette, then acknowledge.
     fn install_client_default_colors(&self, req: SetDefaultColorsRequest) {
         let result = match &mut *self.terminal.borrow_mut() {
             CanonicalTerminal::Plain(Some(terminal)) => {
@@ -989,16 +761,13 @@ impl TerminalActor {
         let _ = req.reply.send(());
     }
 
-    /// Answer one `GET_SCREEN` projection request, falling back to an empty
-    /// screen of the request's shape when projection fails.
+    /// Answer `GET_SCREEN`, falling back to an empty screen of the request's
+    /// shape when projection fails.
     fn reply_screen_state(&self, req: ScreenRequest) {
         let want_cells = req.cells;
         let reply = match self.screen_state(req.pane, req.scrollback, req.cells, req.format) {
             Ok(screen) => ScreenReply::Projection(Box::new(screen)),
-            // A budget refusal is not a projection failure: the actor
-            // never built a reply at all, and the caller must see a
-            // typed refusal, not a silently empty screen (D9, review
-            // item 2(b)).
+            // Budget refusal must reach the caller typed, not as an empty screen.
             Err(SynthesisError::RenderBudgetExceeded { required, budget }) => {
                 ScreenReply::TooLarge {
                     required_bytes: required,
@@ -1015,9 +784,7 @@ impl TerminalActor {
                     cursor: None,
                     lines: Vec::new(),
                     scrollback: Vec::new(),
-                    // Honour the request shape even on the error
-                    // path: an empty cells vec, not a misleading
-                    // `None`, when the caller asked for cells.
+                    // Honour the requested shape: empty cells, not `None`.
                     cells: want_cells.then(Vec::new),
                     ..phux_core::screen::ScreenState::default()
                 }))
@@ -1026,9 +793,8 @@ impl TerminalActor {
         let _ = req.reply.send(reply);
     }
 
-    /// ADR-0032: hand the upgrade producer this pane's PTY
-    /// descriptors + a full replay snapshot. Read-only; mirrors
-    /// the snapshot/pwd paths.
+    /// ADR-0032: hand the upgrade producer this pane's PTY descriptors and
+    /// a full replay snapshot.
     fn reply_upgrade_handle(&self, req: UpgradeHandleRequest) {
         let snap = self
             .synthesize_with_scrollback(Some(0))
@@ -1078,12 +844,8 @@ impl TerminalActor {
         });
     }
 
-    /// Resolve the pane's live working directory by asking
-    /// the kernel for the PTY child's CWD (the shell's
-    /// directory *now*, after any `cd`). `None` when there
-    /// is no PTY (no-PTY actor), the child has no pid, or
-    /// the query is unsupported/denied — the caller then
-    /// falls back to a non-inherited default.
+    /// Answer with the PTY child's live cwd, or `None` (no PTY, no pid, or
+    /// the query failed).
     fn reply_pane_cwd(&self, req: PwdRequest) {
         let cwd = self
             .pty
@@ -1094,38 +856,15 @@ impl TerminalActor {
         let _ = req.reply.send(cwd);
     }
 
-    /// Apply one resize request, returning the resync the caller should arm
-    /// the debounce timer with, or `None` when this resize earns no client
-    /// resync.
+    /// Apply one resize request, returning the resyncs to arm.
     ///
-    /// A reflow is owed to every subscriber. A `resync_only` gap request is
-    /// owed only to the pump it names (`resync_for`), so the one consumer
-    /// that fell behind is re-bootstrapped and nobody else is.
-    ///
-    /// phux-8v1: re-broadcast a full snapshot for live
-    /// resizes so client mirrors reconverge after their
-    /// independent reflow. Suppressed for the ATTACH-time
-    /// resize (the handshake snapshot covers it). Debounced
-    /// (`RESIZE_RESYNC_DEBOUNCE`) so a drag storm — or a burst of
-    /// lag-resync requests — coalesces into a single snapshot
-    /// rather than flooding the client.
-    ///
-    /// phux-a5xj: also suppressed when the geometry did not
-    /// move. There is no independent reflow to reconverge from
-    /// if nothing reflowed, and the resync is what rotates the
-    /// bootstrap generation — so a client confirming the size
-    /// it already asked for at spawn must not cost the pane the
-    /// checkpoint it just published.
-    ///
-    /// A reflow that owes no everyone-resync (an attach-time viewport change,
-    /// `resync_clients: false`) still owes one to every native pump it
-    /// tombstoned: those pumps are retired, forward nothing, and never ask
-    /// for a resync of their own, so without one addressed to them they stay
-    /// frozen (phux-p5bo).
+    /// A reflow owes everyone a resync; a `resync_only` gap request owes only
+    /// the pump it names. No resync for the attach-time resize (the handshake
+    /// snapshot covers it) or for an unchanged geometry (it would rotate the
+    /// generation for nothing). A reflow without an everyone-resync still owes
+    /// one to each native pump it tombstoned, or they stay frozen.
     pub(super) fn apply_resize_request(&mut self, req: ResizeRequest) -> Vec<OwedResync> {
-        // A `resync_only` request (from a lagged output pump)
-        // carries no geometry — skip the resize and only schedule
-        // the resync broadcast below.
+        // `resync_only` carries no geometry.
         let reflowed = if req.resync_only {
             false
         } else {
@@ -1160,47 +899,19 @@ impl TerminalActor {
         }]
     }
 
-    /// One tick of the state-sync emission driver (phux-q0e.3, phux-ia4).
+    /// One tick of the state-sync emitter (ADR-0018).
     ///
-    /// Walks every attached consumer in turn. For each:
-    ///
-    /// 1. Call [`SnapshotSynthesizer::synthesize_against_reference`] using
-    ///    the actor's shared synthesizer and the consumer's *own*
-    ///    reference grid. The reference is per-consumer and independent of
-    ///    the shared `Terminal` dirty bits, so every consumer on a shared
-    ///    pane gets its own correct diff this tick — even though
-    ///    libghostty's `RenderState::update` consumes the shared dirty
-    ///    state on the first read (the phux-ia4 fix). Synthesis errors are
-    ///    logged and that consumer is skipped for this tick (no kill: a
-    ///    transient FFI error on one consumer must not poison the others).
-    /// 2. If the body is empty, skip — the viewport is byte-identical to
-    ///    that consumer's reference (steady state between writes).
-    /// 3. Stamp the per-consumer monotonic `seq` (starting at `1`,
-    ///    incrementing per emission) and ship a `ResourceOutput` frame
-    ///    via the per-consumer outbound mailbox.
-    ///
-    /// Emit-once (phux-ia4): `synthesize_against_reference` advances the
-    /// consumer's reference before returning a non-empty body, so a given
-    /// change is emitted exactly once and an unchanged terminal produces no
-    /// re-emission on the next tick. This is the v0.1 reliable-transport
-    /// model (proto.md §8); the loss-tolerance re-diff property is a future
-    /// lossy-transport concern (ADR-0018) and is not wired here.
+    /// For each tick-managed consumer: diff against its own reference (not
+    /// libghostty's shared dirty bits), skip an empty body, else stamp the
+    /// next `seq` and ship. Errors skip that consumer only. The reference
+    /// advances on emit, so each change ships once.
     pub(super) fn tick_emit(&mut self) {
-        // Per-tick observation span (hot path, so debug level: the default
-        // `phux=info` filter leaves it disabled and effectively free —
-        // `tracing` skips a disabled span without evaluating its fields).
-        // The correlation fields a trace reader greps for to localize
-        // server-side lag: how many consumers this tick must serve and
-        // whether the grid is dirty. `consumer_count` is read before the
-        // gate so the span is consistent on the gated-off / idle-skip
-        // return paths too; `emitted` + `total_out_bytes` are recorded at
-        // the end of a productive tick.
+        // Debug-level span (free when disabled) carrying consumer count and
+        // dirtiness; `emitted`/`total_out_bytes` are recorded at the end.
         let tick_span = tracing::debug_span!(
             "tick_emit",
             consumer_count = self.consumer_states.len(),
             dirty = self.terminal_dirty_since_tick,
-            // Filled in at the end of a productive tick via `record`; declared
-            // `Empty` so they exist on the span for later assignment.
             emitted = tracing::field::Empty,
             total_out_bytes = tracing::field::Empty,
         )
@@ -1215,9 +926,6 @@ impl TerminalActor {
         let Some(walk) = self.emit_ready_tick(force_all_consumers, mutated) else {
             return;
         };
-        // Record the per-tick emission tally on the tick span so a reader
-        // can reconstruct "tick served N consumers, shipped M frames /
-        // B bytes" without re-deriving it from the per-consumer trace lines.
         tick_span.record("emitted", walk.emitted);
         tick_span.record("total_out_bytes", walk.total_out_bytes);
         crate::perf::TICK_EMIT.record_elapsed(walk.started);
@@ -1226,18 +934,9 @@ impl TerminalActor {
         }
     }
 
-    /// Whether this tick has anyone to serve, and whether the test gate
-    /// forces every consumer onto the tick path.
-    ///
-    /// Emission gate (phux-0q8 / phux-3uv / phux-ia4 / phux-fseo). The tick
-    /// emits only for a *tick-managed* consumer — one that negotiated
-    /// `OutputMode::StateSync` (`state.wants_state_sync`), or any consumer
-    /// when the global test gate forces it; the runtime suppresses its
-    /// broadcast pump for exactly those (see `ConsumerAttachOutcome`). A
-    /// raw consumer is served by the pump, so the tick stays silent for it
-    /// to avoid double-painting. `force_all_consumers` is captured here so
-    /// the walk below reads it without re-borrowing `self` while it holds
-    /// `&mut self.consumer_states`.
+    /// Whether this tick has anyone to serve, plus the test gate that forces
+    /// every consumer onto the tick. Only `StateSync` consumers are
+    /// tick-managed; raw consumers get the broadcast pump.
     fn tick_emit_audience(&self) -> Option<bool> {
         let force_all_consumers = self.consumer_tick_emits;
         if !force_all_consumers && !self.consumer_states.values().any(|s| s.wants_state_sync) {
@@ -1247,15 +946,8 @@ impl TerminalActor {
         Some(force_all_consumers)
     }
 
-    /// Take the "mutated since last tick" flag and decide whether a consumer
-    /// walk is still owed on a clean terminal.
-    ///
-    /// Idle short-circuit (phux-4l0). The per-consumer reference diff
-    /// walks + renders every viewport row into a throwaway `Vec<u8>`
-    /// for every consumer, every tick — pure waste when nothing has
-    /// changed. Take and reset the flag here; if the terminal is
-    /// unchanged AND no consumer is awaiting its first emission, skip
-    /// the entire per-consumer loop.
+    /// Take the "mutated since last tick" flag. On a clean terminal the walk
+    /// is skipped unless some consumer still needs one.
     fn take_tick_mutation(&mut self) -> Option<bool> {
         let mutated = self.terminal_dirty_since_tick;
         self.terminal_dirty_since_tick = false;
@@ -1265,12 +957,8 @@ impl TerminalActor {
         Some(mutated)
     }
 
-    /// Render the grid once and walk every consumer against that snapshot.
-    ///
-    /// Returns `None` when `prepare_tick` fails (same skip as before: no
-    /// histogram sample, no reap). Timed from here so gated-off and idle
-    /// ticks, which are the common case and nearly free, do not swamp the
-    /// histogram.
+    /// Render once and walk every consumer. `None` when `prepare_tick`
+    /// fails. Timed here so cheap skipped ticks do not swamp the histogram.
     fn emit_ready_tick(
         &mut self,
         force_all_consumers: bool,
@@ -1278,23 +966,14 @@ impl TerminalActor {
     ) -> Option<TickEmitWalk> {
         let started = std::time::Instant::now();
 
-        // Borrow the terminal + shared synthesizer once per tick. The
-        // synthesizer's `RenderState`/iterators are reused across
-        // consumers; the per-consumer state lives in each `reference`.
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
-            // The tick renders the canonical grid; with it on loan there is
-            // nothing to diff against. Skipping one tick is invisible — the
-            // capture's return is followed by a resync that repaints.
+            // Terminal on loan to a capture; the resync after repaints.
             trace!("tick skipped: canonical terminal is on loan to a capture");
             return None;
         };
         let mut synth = self.synth.borrow_mut();
-        // phux-ahk.2: render the grid ONCE for this tick (the consumer-
-        // independent snapshot + per-row cell render + cursor/mode FFI +
-        // epilogue/screen-toggle precompute). Each consumer below then only
-        // DIFFS against the shared result via `diff_consumer`, so a pane with
-        // N state-sync consumers renders once, not N times.
+        // Render once; each consumer only diffs against the result.
         let render = match synth.prepare_tick(terminal) {
             Ok((cols, rows, live_cm)) => TickRender {
                 cols,
@@ -1306,13 +985,8 @@ impl TerminalActor {
                 return None;
             }
         };
-        // Consumers whose outbound mailbox is `Closed` (receiver dropped)
-        // are reaped after the loop so a missed detach (phux-ddg) does not
-        // leave a dead `ConsumerReference` to be re-rendered forever.
+        // Consumers with a closed mailbox are reaped after the loop.
         let mut closed: Vec<ClientId> = Vec::new();
-        // Per-tick emission tally recorded onto the tick span on the way out
-        // (frames actually shipped + their total byte volume) — the headline
-        // "frame N for terminal T was Y bytes" reconstruction signal.
         let mut emitted: u64 = 0;
         let mut total_out_bytes: usize = 0;
         for (client_id, state) in &mut self.consumer_states {
@@ -1342,9 +1016,7 @@ impl TerminalActor {
         })
     }
 
-    /// Serve one consumer within a state-sync tick: reserve its outbound
-    /// slot, diff the just-rendered grid against its reference, and ship the
-    /// delta.
+    /// Serve one consumer: reserve its outbound slot, diff, ship.
     fn emit_consumer_tick(
         client_id: ClientId,
         state: &mut ConsumerSyncState,
@@ -1353,51 +1025,24 @@ impl TerminalActor {
         mutated: bool,
         force_all_consumers: bool,
     ) -> TickOutcome {
-        // phux-fseo: serve only tick-managed consumers. A raw consumer
-        // sharing this pane is served by the broadcast pump; emitting here
-        // too would double-paint it, so skip it (reference left untouched
-        // for a later mode flip).
+        // Raw consumers are served by the broadcast pump.
         if !force_all_consumers && !state.wants_state_sync {
             return TickOutcome::Skipped;
         }
         if !*state.live_gate.borrow() {
             return TickOutcome::Skipped;
         }
-        // Captured before the `behind` reset below: whether a prior tick
-        // held this consumer's delta back for a full mailbox. The
-        // loss-tolerant emit gate treats a drained-after-backpressure
-        // consumer as "has new content to ship" (phux-v45.8).
+        // Captured before the reset: a delta held back by backpressure.
         let was_behind = state.behind;
-        // This consumer is being serviced this tick; it no longer needs
-        // a forced first pass.
         state.needs_initial_emit = false;
-        // Reserve an outbound permit BEFORE synthesizing
-        // (phux-wave-hunt/server-lifecycle). `synthesize_against_reference`
-        // commits the per-consumer reference to the just-rendered grid
-        // *before* it returns the bytes (emit-once, grid.rs), so once we
-        // synthesize the delta is the only copy and the reference has
-        // moved past it. If the send then failed `Full` we would drop the
-        // delta and never re-emit it (the next tick diffs against the
-        // already-advanced reference), silently losing content and
-        // diverging the client mirror forever.
-        //
-        // Reserving first inverts the ordering: a `Full` mailbox means we
-        // skip this consumer entirely this tick WITHOUT synthesizing, so
-        // the reference (and `next_seq`) stay put and the delta is
-        // re-diffed intact on the next tick once the client drains. A
-        // `Closed` mailbox reaps the entry (phux-ddg self-heal). Only when
-        // we hold a permit — which guarantees the subsequent send cannot
-        // fail — do we synthesize, advance the reference, and ship.
+        // Reserve before diffing: the diff advances the reference, so a
+        // delta that then failed to send would be lost for good. A full
+        // mailbox skips this consumer untouched; a closed one is reaped.
         let permit = match state.outbound.try_reserve() {
             Ok(permit) => permit,
             Err(tokio::sync::mpsc::error::TrySendError::Full(())) => {
-                // Backpressure: the consumer mailbox is wedged. Skip
-                // without advancing the reference so no content is lost;
-                // the next tick retries the same delta. Mark `behind` so
-                // the idle short-circuit keeps walking this consumer even
-                // if the grid goes `Clean` before the client drains — the
-                // retry must not depend on a fresh write. At debug so a
-                // stall is visible at the recommended `phux=debug` level.
+                // Retry next tick without advancing; `behind` keeps the walk
+                // alive even if the grid goes clean meanwhile.
                 state.behind = true;
                 crate::perf::CONSUMER_MAILBOX_FULL.incr();
                 if let Some(suppressed) = crate::perf::MAILBOX_FULL_WARN.admit() {
@@ -1411,11 +1056,7 @@ impl TerminalActor {
                 return TickOutcome::Skipped;
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
-                // The receiver is gone. A `ConsumerDetachRequest` may have
-                // been dropped (best-effort `try_send` on a full detach
-                // mailbox, runtime.rs) so `unregister_consumer` never ran.
-                // Self-heal: reap the entry now so we stop re-rendering a
-                // dead consumer every tick (phux-ddg).
+                // The detach may have been dropped; reap now.
                 crate::perf::CONSUMER_REAPED.incr();
                 debug!(
                     ?client_id,
@@ -1425,15 +1066,8 @@ impl TerminalActor {
                 return TickOutcome::Closed;
             }
         };
-        // We hold a permit: the mailbox has room, so this consumer is
-        // about to be fully serviced this tick (a delta ships, or the
-        // diff is empty and the reference is already at the live grid).
-        // Either way it is no longer behind.
+        // Holding a permit: this consumer is served this tick.
         state.behind = false;
-        // Per-consumer synthesis span (debug; the per-tick CPU sink —
-        // its duration is the key server-side lag signal). Carries the
-        // consumer correlation fields; the diff size lands in
-        // `synthesize_against_reference`'s own child span.
         let _synth_span = tracing::debug_span!(
             "synthesize",
             ?client_id,
@@ -1450,10 +1084,7 @@ impl TerminalActor {
         );
         crate::perf::TICK_SYNTH.record_elapsed(synth_started);
         if bytes.is_empty() {
-            // Byte-identical to this consumer's reference; nothing to
-            // send this tick. The reserved permit drops unused. A closed
-            // mailbox was already reaped by the `try_reserve` arm above,
-            // so no extra liveness probe is needed here.
+            // Unchanged; the permit drops unused.
             return TickOutcome::Skipped;
         }
         if state.loss_tolerant && holds_loss_tolerant_delta(state, mutated, was_behind) {
@@ -1462,9 +1093,6 @@ impl TerminalActor {
         let seq = state.next_seq;
         let out_bytes = bytes.len();
         crate::perf::TICK_OUT_BYTES.record_len(out_bytes);
-        // Wrapping_add for paranoia; `u64` will not realistically
-        // roll over at 33 Hz, but the existing `runtime.rs` pump
-        // uses the same idiom and we match it.
         state.next_seq = state.next_seq.wrapping_add(1);
         let frame = FrameKind::ResourceOutput {
             terminal_id: phux_protocol::ids::ResourceId::local(state.wire_terminal_id),
@@ -1473,18 +1101,11 @@ impl TerminalActor {
             seq,
             bytes: bytes.into(),
         };
-        // Infallible: we hold a reserved permit, so this cannot block,
-        // drop, or fail. This preserves the actor's single-poll-budget
-        // invariant (the tick arm never yields the loop) while keeping
-        // emit-once consistent — a synthesized delta always ships.
+        // Infallible with a reserved permit.
         permit.send(Outbound::Frame(frame));
         record_emit_instant(&mut state.emit_instants, seq);
-        // phux-v45.8: for a loss-tolerant consumer, snapshot the grid state
-        // this `seq` shipped so a later cumulative `FRAME_ACK` can advance
-        // the acked reference to exactly it. Bounded the same way as
-        // `emit_instants` (oldest-evicted past the cap) so a wedged leg
-        // cannot grow it without bound. Empty/untouched on the emit-once
-        // path.
+        // Loss-tolerant: remember the grid this `seq` shipped so a later
+        // ack can advance the acked reference to it (bounded).
         if state.loss_tolerant {
             let snapshot = synth.snapshot_tick_reference(render.cols, render.rows, render.live_cm);
             record_pending_ref(&mut state.pending_refs, seq, snapshot);
@@ -1500,16 +1121,9 @@ impl TerminalActor {
     }
 }
 
-/// One consumer's delta bytes against the just-rendered tick.
-///
-/// `diff_consumer` is infallible (the fallible render happened once in
-/// `prepare_tick`); it returns this consumer's delta bytes.
-/// phux-v45.8: a loss-tolerant consumer re-diffs against its
-/// last-ACKED reference (which does NOT advance on emit), so a
-/// dropped/un-acked frame self-heals — its rows still differ from the
-/// acked reference on the next emission. The reliable-transport
-/// default stays on the emit-once `diff_consumer` path (reference
-/// advances on emit), byte-for-byte unchanged.
+/// One consumer's delta against the just-rendered tick. Loss-tolerant
+/// consumers diff against their last-acked reference (not advanced on emit),
+/// so a dropped frame self-heals; others use emit-once `diff_consumer`.
 fn consumer_delta(
     synth: &SnapshotSynthesizer<'_>,
     render: TickRender,
@@ -1526,41 +1140,16 @@ fn consumer_delta(
     }
 }
 
-/// Whether a consumer must still be walked on a `Clean` terminal.
-///
-/// Correctness: a `Clean` terminal cannot have diverged from any
-/// consumer's last-emitted reference (the reference advanced to the
-/// terminal state on the prior emit, and nothing has mutated the
-/// terminal since), so skipping is sound. Two carve-outs suppress the
-/// short-circuit even on a `Clean` terminal:
-///
-/// - `needs_initial_emit` preserves the phux-ia4 multi-consumer
-///   guarantee: a consumer registered *after* the last write sits on a
-///   clean terminal yet has never had a synthesis pass, so it must be
-///   walked once even though the global flag is clear.
-/// - `behind` preserves the backpressure retry: a consumer skipped on
-///   a prior tick because its mailbox was full has a reference behind
-///   the live grid. The grid can stay `Clean` indefinitely, so without
-///   this the held-back delta would never be retried once the client
-///   drains (the wave-hunt/server-lifecycle backpressure leak).
-///
-/// phux-v45.8: a loss-tolerant consumer with un-acked frames in
-/// flight must keep being walked even on a Clean terminal, so its
-/// retransmit timer can fire and re-diff a suspected-lost frame
-/// against the acked reference. `pending_refs` is empty for the
-/// reliable emit-once path, so this adds nothing there.
+/// Whether a consumer must be walked on a clean terminal: it has never been
+/// served (`needs_initial_emit`), a backpressured delta is owed (`behind`),
+/// or a loss-tolerant frame is still un-acked.
 fn must_walk_when_clean(state: &ConsumerSyncState) -> bool {
     state.needs_initial_emit || state.behind || !state.pending_refs.is_empty()
 }
 
-/// phux-v45.8 loss-tolerant emit gate. Because a loss-tolerant diff
-/// is against the last-acked (not last-emitted) reference, it stays
-/// non-empty every tick while a frame is un-acked. Only actually
-/// (re)ship when there is genuinely new content this tick
-/// (`mutated`), a drained-after-backpressure delta to flush
-/// (`was_behind`), or a retransmit is due for a still-un-acked frame
-/// (suspected loss). Otherwise hold: re-shipping the same cumulative
-/// delta every tick would flood the leg. The reserved permit drops.
+/// Loss-tolerant emit gate: the diff stays non-empty while a frame is
+/// un-acked, so ship only on new content, a post-backpressure flush, or a
+/// due retransmit.
 fn holds_loss_tolerant_delta(state: &ConsumerSyncState, mutated: bool, was_behind: bool) -> bool {
     let now = tokio::time::Instant::now();
     let retransmit_due = !state.pending_refs.is_empty()
@@ -1570,20 +1159,9 @@ fn holds_loss_tolerant_delta(state: &ConsumerSyncState, mutated: bool, was_behin
     !mutated && !was_behind && !retransmit_due
 }
 
-/// Stamp the emit instant for this seq so the matching `FRAME_ACK`
-/// can be turned into an RTT sample (phux-q0e.5). Recorded only
-/// for shipped frames — empty/skipped ticks have no round-trip to
-/// measure. Pruned on ack, so the map stays as small as the
-/// in-flight window.
-///
-/// Defensive bound: ack-pruning keeps this map tiny for a
-/// well-behaved consumer, but one that opts into state sync and
-/// never sends `FRAME_ACK` (or a transport that drops acks) would
-/// otherwise grow it one entry per emitted tick without bound
-/// (~50/s at the 20ms floor cadence). Evict the oldest (lowest-seq)
-/// samples past the cap; an unacked sample this stale is already
-/// useless for RTT, so dropping it costs nothing and bounds the
-/// map to a few KB per consumer. See `MAX_EMIT_INSTANTS`.
+/// Record the emit instant for `seq`, for RTT on its `FRAME_ACK`. Oldest
+/// entries are evicted past [`MAX_EMIT_INSTANTS`] so a consumer that never
+/// acks cannot grow the map.
 fn record_emit_instant(
     emit_instants: &mut std::collections::BTreeMap<u64, tokio::time::Instant>,
     seq: u64,
@@ -1594,8 +1172,7 @@ fn record_emit_instant(
     }
 }
 
-/// Retain the grid snapshot a loss-tolerant `seq` shipped, bounded the same
-/// way as the emit instants (oldest-evicted past [`MAX_EMIT_INSTANTS`]).
+/// Retain the grid a loss-tolerant `seq` shipped, bounded like emit instants.
 fn record_pending_ref(
     pending_refs: &mut std::collections::BTreeMap<u64, crate::grid::ConsumerReference>,
     seq: u64,
@@ -1607,17 +1184,8 @@ fn record_pending_ref(
     }
 }
 
-/// Build a `MissedTickBehavior::Delay` interval and eat its first tick.
-///
-/// `Delay` — if the actor falls behind under heavy PTY traffic we want
-/// subsequent ticks spaced by the interval from when they ran, not bunched up
-/// to "catch up" (which would defeat the rate limit's purpose). `Burst` (the
-/// default) would spam emissions when a long PTY chunk delays us past several
-/// tick boundaries.
-///
-/// Eat the first immediate tick (Interval fires synchronously on
-/// first poll). Without this, the very first iteration would
-/// tick before any other branch has a chance to react.
+/// A `MissedTickBehavior::Delay` interval with its immediate first tick
+/// consumed. `Delay` spaces late ticks instead of bursting to catch up.
 async fn armed_interval(period: std::time::Duration) -> tokio::time::Interval {
     let mut interval = tokio::time::interval(period);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1629,15 +1197,8 @@ async fn armed_interval(period: std::time::Duration) -> tokio::time::Interval {
 mod tick_rearm_tests {
     use super::{DEFAULT_TICK_INTERVAL, armed_interval};
 
-    /// The state-sync tick arm is disarmed while a pane has nothing to emit
-    /// (see [`TerminalActor::state_tick_armed`]), which means its `Interval`
-    /// can sit unpolled across thousands of missed periods. Re-arming must
-    /// cost exactly one tick.
-    ///
-    /// This is a guard on [`armed_interval`]'s `MissedTickBehavior`, not on
-    /// the `select!`: switch it to tokio's default `Burst` and this test
-    /// reports ~120,000 immediately-ready ticks instead of one, which on a
-    /// shared current-thread runtime is a stall for every pane on the server.
+    /// Re-arming a long-disarmed tick owes exactly one tick (`Delay`), not
+    /// every missed period.
     #[tokio::test(start_paused = true)]
     async fn disarming_the_tick_does_not_bank_a_stampede_of_catch_up_ticks() {
         let mut tick = armed_interval(DEFAULT_TICK_INTERVAL).await;
@@ -1645,9 +1206,7 @@ mod tick_rearm_tests {
         // An hour with the arm's precondition false: nothing polls the timer.
         tokio::time::advance(std::time::Duration::from_secs(3600)).await;
 
-        // Re-armed. Count the ticks that are ready with no further time
-        // passing; a zero-length timeout resolves against the paused clock
-        // without letting it advance to the next deadline.
+        // Count ticks ready without the paused clock advancing.
         let mut immediate = 0_u32;
         while tokio::time::timeout(std::time::Duration::ZERO, tick.tick())
             .await
@@ -1712,19 +1271,8 @@ mod resync_debounce_tests {
         }
     }
 
-    /// A pane with many lagged consumers must still get its one snapshot.
-    ///
-    /// Every fenced output pump asks the actor for the same in-band resync,
-    /// and they retry independently. If each request restarted the 50 ms
-    /// debounce, N pumps arriving at a mean interval of `retry / N` would keep
-    /// pushing the deadline out faster than it could fire — the snapshot they
-    /// are all waiting for would never be broadcast and none of them would
-    /// ever unfence. That is a livelock, not a slowdown: it gets *worse* the
-    /// more consumers a pane has.
-    ///
-    /// Ten consumers, each asking twice, on a clock that only ever advances by
-    /// less than the debounce window. The deadline must not move after the
-    /// first request.
+    /// Many lagged pumps retrying must not keep pushing the debounce out:
+    /// the deadline is fixed by the first gap request.
     #[tokio::test(start_paused = true)]
     async fn a_pending_gap_resync_is_not_pushed_out_by_more_lagged_consumers() {
         let sleep = tokio::time::sleep(Duration::from_secs(3600));
@@ -1762,8 +1310,7 @@ mod resync_debounce_tests {
         );
     }
 
-    /// phux-fpgl.28: EOF folds queued gap requests onto the pending snapshot
-    /// without pushing the deadline out — the actor will fire it immediately.
+    /// EOF folds queued gap requests in without moving the deadline.
     #[tokio::test(start_paused = true)]
     async fn eof_flush_includes_queued_gap_requests_without_rearming_the_deadline() {
         let sleep = tokio::time::sleep(Duration::from_secs(3600));
@@ -1785,11 +1332,8 @@ mod resync_debounce_tests {
         );
     }
 
-    /// phux-auqy: a gap resync is owed only to the pumps that asked.
-    ///
-    /// Two stale pumps inside one window share one snapshot addressed to both
-    /// of them and to nobody else; the debounce then starts empty, so the
-    /// next window does not inherit them.
+    /// A gap resync is owed only to the pumps that asked, and the next
+    /// window starts empty.
     #[tokio::test(start_paused = true)]
     async fn a_gap_resync_is_addressed_only_to_the_pumps_that_asked() {
         let sleep = tokio::time::sleep(Duration::from_secs(3600));
@@ -1814,10 +1358,8 @@ mod resync_debounce_tests {
         );
     }
 
-    /// A reflow changes the grid under every consumer, so a resize owed in
-    /// the same window widens a targeted gap resync to everyone — whichever
-    /// order the two arrive in — and a gap request that names no pump stays
-    /// the old everyone-resync.
+    /// A resize in the same window widens a gap resync to everyone, in either
+    /// order; an untargeted gap request is everyone.
     #[tokio::test(start_paused = true)]
     async fn a_resize_or_an_unnamed_gap_widens_the_audience_to_everyone() {
         let sleep = tokio::time::sleep(Duration::from_secs(3600));
@@ -1848,9 +1390,7 @@ mod resync_debounce_tests {
         );
     }
 
-    /// The other half: a resize storm still re-arms every time, because there
-    /// the *last* size is the one worth synthesizing. Only the gap path
-    /// coalesces.
+    /// A resize storm still re-arms every time.
     #[tokio::test(start_paused = true)]
     async fn a_resize_still_restarts_the_debounce() {
         let sleep = tokio::time::sleep(Duration::from_secs(3600));
@@ -1867,9 +1407,7 @@ mod resync_debounce_tests {
         );
     }
 
-    /// A resize arriving while a gap resync is owed takes over: it re-arms and
-    /// carries the resize reason, and its snapshot unfences the gapped pumps
-    /// just as well.
+    /// A resize arriving while a gap resync is owed re-arms with its reason.
     #[tokio::test(start_paused = true)]
     async fn a_resize_supersedes_a_pending_gap_resync() {
         let sleep = tokio::time::sleep(Duration::from_secs(3600));
