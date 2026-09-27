@@ -1,22 +1,9 @@
-//! Where the running `phux` came from — decided from the **resolved** path of
-//! the running executable, never from a guess.
-//!
-//! `phux update` is allowed to overwrite a binary only when it can positively
-//! recognize the layout it is overwriting. That inverts the usual default: an
-//! unrecognized location is a refusal, not a best-effort write. A package
-//! manager owns its files (Homebrew's Cellar, Cargo's bin directory) and a Nix
-//! store path is read-only by construction; mutating either one produces a
-//! binary the owning tool believes is something else.
-//!
-//! Detection is a pure function of a [`Probe`] — the resolved executable path
-//! plus the handful of environment values that move these layouts around — so
-//! every arm is unit-testable without a real install.
-//!
-//! Order matters: the checks run most-specific first, because the layouts
-//! overlap. `/usr/local/bin/phux` is the direct-release location on Linux
-//! *and* the Homebrew symlink location on an Intel Mac; resolving symlinks
-//! first is what separates them, since the Homebrew entry resolves into
-//! `…/Cellar/phux/<version>/bin/phux` and the direct-release one does not.
+//! Where the running `phux` came from, decided from the symlink-resolved path
+//! of the running executable. `phux update` overwrites only a layout it
+//! positively recognizes; anything else is refused. Detection is a pure
+//! function of a [`Probe`], checked most-specific first (`/usr/local/bin` is
+//! both a direct-release location and a Homebrew symlink location; resolving
+//! the link into the Cellar separates them).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -28,17 +15,11 @@ const DEFAULT_NIX_STORE: &str = "/nix/store";
 /// a different update command.
 const NIXOS_MARKER: &str = "/etc/NIXOS";
 
-/// Linuxbrew's default prefix. Homebrew on macOS lives at `/opt/homebrew`
-/// (arm64) or `/usr/local` (`x86_64`); both are recognized by their `Cellar`
-/// component rather than by prefix, which is what makes a relocated
-/// `HOMEBREW_PREFIX` work too.
+/// Linuxbrew's default prefix. macOS Homebrew is recognized by its `Cellar`
+/// component, which also covers a relocated `HOMEBREW_PREFIX`.
 const LINUXBREW_PREFIX: &str = "/home/linuxbrew/.linuxbrew";
 
 /// How `phux` was installed.
-///
-/// The variants are exactly the five cases the update path has to tell apart;
-/// [`InstallSource::is_mutable`] is the single question the rest of the
-/// command asks of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstallSource {
     /// A GitHub release tarball, unpacked into a recognized bin directory by
@@ -55,10 +36,7 @@ pub(crate) enum InstallSource {
 }
 
 impl InstallSource {
-    /// The stable string this source is called in `--json` output.
-    ///
-    /// Part of the frozen `--json` surface (ADR-0071): renaming one of these
-    /// is a breaking change.
+    /// The stable `--json` token (frozen by ADR-0071).
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::DirectRelease => "direct-release",
@@ -70,9 +48,6 @@ impl InstallSource {
     }
 
     /// Whether `phux update` may replace files at this install's path.
-    ///
-    /// Only the direct-release layout says yes. Everything else either has an
-    /// owner (Homebrew, Cargo) or is physically read-only (Nix).
     pub(crate) const fn is_mutable(self) -> bool {
         matches!(self, Self::DirectRelease)
     }
@@ -111,12 +86,8 @@ impl Install {
         self.executable.parent()
     }
 
-    /// The exact native command that updates this install, as a block of
-    /// lines, or `None` when `phux update` handles it itself.
-    ///
-    /// These strings are the whole product of the package-managed and
-    /// immutable arms: a user who is told "phux cannot update this" and not
-    /// told what can has been given a dead end.
+    /// The exact native command that updates this install, or `None` when
+    /// `phux update` handles it itself.
     pub(crate) fn native_command(&self) -> Option<String> {
         match self.source {
             InstallSource::DirectRelease | InstallSource::Unknown => None,
@@ -163,22 +134,12 @@ pub(crate) struct Probe {
 }
 
 impl Probe {
-    /// Read a [`Probe`] from the live process: the resolved `current_exe`
-    /// plus the environment.
-    ///
-    /// The symlink resolution is the load-bearing step. `~/.local/bin/phux`
-    /// may be a symlink into a Cellar, a Nix store path, or a checkout's
-    /// `target/release`; classifying the link instead of its destination
-    /// would let `phux update` overwrite a symlink and silently orphan the
-    /// real binary.
+    /// Read a [`Probe`] from the live process. Classifying the resolved target,
+    /// not the symlink, is what keeps `phux update` from overwriting a link and
+    /// orphaning the real binary.
     pub(crate) fn from_process() -> std::io::Result<Self> {
         let raw = std::env::current_exe()?;
-        // `canonicalize` resolves every symlink in the path, including
-        // intermediate directory links (`/var` -> `/private/var` on macOS).
-        // If it fails the raw path is still better than nothing — but a path
-        // we could not resolve is exactly the case that must not be
-        // overwritten, so an unresolvable path stays unresolved and will fall
-        // through to `Unknown` unless it matches on its own.
+        // An unresolvable path stays as is and falls through to `Unknown`.
         let executable = std::fs::canonicalize(&raw).unwrap_or(raw);
         Ok(Self {
             executable,
@@ -218,8 +179,7 @@ pub(crate) fn detect(probe: &Probe) -> Install {
 fn classify(probe: &Probe) -> InstallSource {
     let exe = probe.executable.as_path();
 
-    // 1. Nix store. Read-only by construction, so it is checked before any
-    //    prefix that a store path could also sit under.
+    // 1. Nix store, before any prefix a store path could also sit under.
     let store = probe
         .nix_store
         .clone()
@@ -228,9 +188,7 @@ fn classify(probe: &Probe) -> InstallSource {
         return InstallSource::Nix;
     }
 
-    // 2. Homebrew. The Cellar component is the reliable marker across
-    //    `/opt/homebrew`, `/usr/local`, Linuxbrew, and relocated prefixes;
-    //    the prefix checks catch a keg-only or otherwise unusual layout.
+    // 2. Homebrew: the Cellar component, or a known prefix.
     if has_component(exe, "Cellar")
         || probe
             .homebrew_prefix
@@ -251,9 +209,7 @@ fn classify(probe: &Probe) -> InstallSource {
         return InstallSource::Cargo;
     }
 
-    // 4. Direct release. The allowlist is `$PHUX_INSTALL_DIR` (the curl
-    //    installer's own override) plus the locations that installer and
-    //    docs/INSTALL.md actually name. Anything else is not assumed.
+    // 4. Direct release: `$PHUX_INSTALL_DIR` plus the documented locations.
     if direct_release_dirs(probe)
         .iter()
         .any(|dir| is_child_of(exe, Some(dir)))

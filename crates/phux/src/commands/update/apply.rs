@@ -1,31 +1,18 @@
 //! Verify, unpack, and replace — the half of `phux update` that touches the
 //! filesystem.
 //!
-//! Three invariants hold this module together, in order:
+//! 1. The checksum gates everything: nothing is unpacked or replaced unless the
+//!    sidecar digest matches the file on disk.
+//! 2. Nothing downloaded is executed to decide whether to install it; the
+//!    archive's member list and extracted tree are both validated.
+//! 3. Publication is a recoverable transaction: a persistent lock serializes
+//!    publishers, the old pair is fsynced into a sibling journal before any
+//!    destination changes, every rename is followed by a directory fsync, and
+//!    renaming the journal into the rollback directory is the durable commit.
+//!    Later runs recover an interrupted pre-commit pair first.
 //!
-//! 1. **The checksum gates everything.** The `.sha256` sidecar is compared
-//!    against a digest computed here, over the file on disk, *before* `tar`
-//!    is ever pointed at the archive. A mismatch is a hard refusal that names
-//!    both digests; nothing is unpacked and nothing is replaced.
-//! 2. **Nothing downloaded is executed to decide whether to install it.** The
-//!    archive is data: its member list is validated, it is unpacked, and the
-//!    extracted tree is validated again. The one place a new binary *is* run
-//!    is the server's own pre-commit `--version` check in
-//!    `phux-server/src/runtime/upgrade.rs`, which happens after installation,
-//!    on the server side, where a failure is harmless because nothing has
-//!    been closed yet.
-//! 3. **Publication is a recoverable transaction.** A persistent advisory
-//!    lock serializes publishers. The old pair and its manifest are fsynced in
-//!    a sibling journal before either destination changes; each rename is
-//!    followed by a directory fsync. Renaming that journal into the rollback
-//!    directory is the durable commit point. A later update or rollback first
-//!    recovers an interrupted pre-commit pair, while a committed pair stays
-//!    new. No destination ever holds a partial file or a lasting mixed pair.
-//!
-//! Permissions come from the file being replaced, not from the archive. That
-//! preserves a deliberately restrictive mode (a `0o700` binary in a shared
-//! bin directory stays `0o700`) and, in the other direction, means a setuid
-//! bit smuggled into a tarball cannot survive the replacement.
+//! Permissions come from the file being replaced, not the archive, so a
+//! restrictive mode survives and a smuggled setuid bit does not.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -38,21 +25,12 @@ use sha2::{Digest, Sha256};
 
 use super::UpdateError;
 
-/// The binaries a phux release tarball ships, in replacement order.
-///
-/// `phux-mcp` goes first and `phux` last on purpose: the pair is replaced by
-/// two renames and two renames cannot be one atomic step, so the primary
-/// binary is the last thing to move. If the second rename fails, the first is
-/// rolled back and the install is left entirely on the old pair.
+/// The binaries a phux release tarball ships, in replacement order: `phux`
+/// moves last, since two renames cannot be one atomic step.
 pub(crate) const RELEASE_BINARIES: &[&str] = &["phux-mcp", "phux"];
 
-/// Non-executable members a release tarball may carry.
-///
-/// Both license layouts are accepted: tarballs cut before the Apache-2.0-only
-/// relicense (<=v0.35.0) carry `LICENSE-MIT` + `LICENSE-APACHE`, later ones
-/// carry `LICENSE` + `NOTICE` + `THIRD-PARTY-NOTICES.md`. The curl installer
-/// (`scripts/install.sh`) accepts the same union, so either side of the
-/// cutover installs cleanly.
+/// Non-executable members a release tarball may carry: the pre-relicense
+/// (<= v0.35.0) and current license layouts, as `scripts/install.sh` accepts.
 const RELEASE_DOCS: &[&str] = &[
     "README.md",
     "LICENSE-MIT",
@@ -63,8 +41,7 @@ const RELEASE_DOCS: &[&str] = &[
 ];
 
 /// The directory, inside the install's bin directory, that holds the previous
-/// binaries after a successful update. Same directory means same filesystem,
-/// which is what lets a rollback be a rename rather than a copy.
+/// binaries (same filesystem, so a rollback is a rename).
 pub(crate) const BACKUP_DIR: &str = ".phux-update-backup";
 
 /// The manifest written beside the saved binaries.
@@ -96,19 +73,13 @@ pub(crate) fn sha256_file(path: &Path) -> std::io::Result<String> {
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut out, byte| {
-        // Writing into a String cannot fail.
         let _ = write!(out, "{byte:02x}");
         out
     })
 }
 
-/// Read the expected digest out of a `.sha256` sidecar.
-///
-/// The sidecar `release.yml` writes is one line, `"<64 hex>  <archive>"` —
-/// the `shasum`/`sha256sum` interchange format. The name is checked as well
-/// as the digest: a sidecar that names a different artifact means the release
-/// assets are crossed, which is exactly the kind of quiet mismatch a checksum
-/// exists to catch.
+/// Read the expected digest out of a `.sha256` sidecar (`"<64 hex>  <archive>"`,
+/// the `sha256sum` format). A sidecar naming a different artifact is refused.
 pub(crate) fn expected_digest(sidecar: &str, archive: &str) -> Result<String, UpdateError> {
     let line = sidecar
         .lines()
@@ -135,10 +106,8 @@ pub(crate) fn expected_digest(sidecar: &str, archive: &str) -> Result<String, Up
     Ok(digest.to_ascii_lowercase())
 }
 
-/// Verify `archive` against `sidecar`, returning the digest both agree on.
-///
-/// This is the trust anchor. Everything downstream — unpacking, staging,
-/// replacement — runs only if this returns `Ok`.
+/// Verify `archive` against `sidecar`, returning the agreed digest. This is
+/// the trust anchor: everything downstream runs only on `Ok`.
 pub(crate) fn verify_archive(
     archive: &Path,
     sidecar: &str,
@@ -169,14 +138,9 @@ fn allowed_members(stage: &str) -> BTreeSet<String> {
     allowed
 }
 
-/// Unpack a **verified** archive into `into`, returning the staged directory.
-///
-/// The member list is checked before extraction and the extracted tree is
-/// checked after it. The two checks are not redundant: the first refuses an
-/// archive whose table of contents names anything unexpected (absolute paths,
-/// `..`, extra files), the second catches anything that reached the disk in a
-/// shape the listing did not describe — a symlink, a hard link, a device
-/// node.
+/// Unpack a verified archive into `into`, returning the staged directory. The
+/// listing is checked before extraction (paths, extra members) and the tree
+/// after it (symlinks, hard links, device nodes).
 pub(crate) fn unpack_verified(
     archive: &Path,
     stage: &str,
@@ -273,13 +237,8 @@ fn tar(args: &[&str]) -> Result<String, UpdateError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// A scratch directory inside the target's own directory, removed on drop.
-///
-/// Being a sibling of the target is not a convenience: it is what guarantees
-/// the staged file and the destination share a filesystem, which is what
-/// makes the final `rename` atomic. A staging directory in `/tmp` would force
-/// a cross-device copy into place, and a copy is exactly the window this
-/// module exists to close.
+/// A scratch directory beside the target, removed on drop. Sharing the
+/// target's filesystem is what makes the final `rename` atomic.
 #[derive(Debug)]
 pub(crate) struct Staging {
     path: PathBuf,
@@ -312,8 +271,6 @@ impl Staging {
 
 impl Drop for Staging {
     fn drop(&mut self) {
-        // Best effort: a leftover dot-directory is untidy, not dangerous, and
-        // there is nothing useful to report from a destructor.
         let _ = fs::remove_dir_all(&self.path);
     }
 }
@@ -408,11 +365,8 @@ impl Drop for UpdateLock {
 }
 
 /// Atomically replace the release binaries in `bin_dir` from `staged`.
-///
-/// `phux-mcp` is replaced alongside `phux` when it is present beside it. That
-/// is not tidiness: ADR-0071 makes the *release* the compatibility unit, so a
-/// new `phux` next to a stale `phux-mcp` is precisely the mismatched-peer
-/// state the update path exists to prevent.
+/// `phux-mcp` is replaced alongside `phux` when present: the release is the
+/// compatibility unit (ADR-0071).
 pub(crate) fn replace_binaries(
     bin_dir: &Path,
     staged: &Path,
@@ -428,8 +382,6 @@ fn replace_binaries_with_checkpoint(
     mut checkpoint: impl FnMut(InstallCheckpoint),
 ) -> Result<Replaced, UpdateError> {
     let _lock = UpdateLock::acquire(bin_dir)?;
-    // Only replace what is actually installed here. `phux` itself is
-    // mandatory; `phux-mcp` is replaced when it is already a sibling.
     let targets: Vec<&str> = RELEASE_BINARIES
         .iter()
         .copied()
@@ -514,11 +466,8 @@ fn replace_binaries_with_checkpoint(
     publish
 }
 
-/// Give the staged file the mode of the file it is about to replace.
-///
-/// When there is nothing to replace (a `phux-mcp` that was never installed —
-/// which `replace_binaries` filters out, but the helper stays honest anyway)
-/// the archive's own executable bit is kept and narrowed to `0o755`.
+/// Give the staged file the mode of the file it replaces. With nothing to
+/// replace, the mode defaults to `0o755`.
 fn adopt_permissions(staged: &Path, target: &Path) -> Result<(), UpdateError> {
     let mode = fs::metadata(target).map_or(0o755, |meta| meta.permissions().mode());
     fs::set_permissions(staged, fs::Permissions::from_mode(mode)).map_err(|err| {
@@ -556,9 +505,7 @@ fn prepare_transaction(
     for name in targets {
         let live = bin_dir.join(name);
         let into = preparing.join(name);
-        // A hard link is free and keeps the exact inode — including its mode
-        // — so a rollback restores byte-for-byte what was there. `fs::copy`
-        // is the fallback for filesystems that refuse links.
+        // A hard link keeps the exact inode and mode; copy where links fail.
         if fs::hard_link(&live, &into).is_err() {
             fs::copy(&live, &into).map_err(|err| {
                 UpdateError::Install(format!(
@@ -639,6 +586,17 @@ fn manifest_names(directory: &Path) -> Result<Vec<String>, UpdateError> {
             path.display()
         ))
     })?;
+    manifest_binaries(&manifest).ok_or_else(|| {
+        UpdateError::Install(format!(
+            "transaction {} names no valid release binaries",
+            path.display()
+        ))
+    })
+}
+
+/// A manifest's `binaries` list, when it is non-empty and names only release
+/// binaries.
+fn manifest_binaries(manifest: &serde_json::Value) -> Option<Vec<String>> {
     let names: Vec<String> = manifest
         .get("binaries")
         .and_then(serde_json::Value::as_array)
@@ -646,17 +604,11 @@ fn manifest_names(directory: &Path) -> Result<Vec<String>, UpdateError> {
         .flatten()
         .filter_map(|entry| entry.as_str().map(str::to_owned))
         .collect();
-    if names.is_empty()
-        || names
+    let valid = !names.is_empty()
+        && names
             .iter()
-            .any(|name| !RELEASE_BINARIES.contains(&name.as_str()))
-    {
-        return Err(UpdateError::Install(format!(
-            "transaction {} names no valid release binaries",
-            path.display()
-        )));
-    }
-    Ok(names)
+            .all(|name| RELEASE_BINARIES.contains(&name.as_str()));
+    valid.then_some(names)
 }
 
 /// Publish `source` over `target` without consuming the recovery source.
@@ -791,11 +743,9 @@ pub(crate) struct RolledBack {
     pub(crate) version: String,
 }
 
-/// Restore the binaries saved by the last successful update.
-///
-/// The restore uses a durable journal and atomic renames within one directory.
-/// The backup is consumed only after the journal's commit rename is durable. A
-/// rollback with nothing saved is an error, not a silent no-op.
+/// Restore the binaries saved by the last successful update. Uses the same
+/// durable journal; the backup is consumed only after the commit
+/// rename is durable. Nothing saved is an error, not a no-op.
 pub(crate) fn rollback(bin_dir: &Path) -> Result<RolledBack, UpdateError> {
     rollback_with_checkpoint(bin_dir, |_| {})
 }
@@ -816,23 +766,12 @@ fn read_backup_manifest(backup: &Path) -> Result<(String, Vec<String>), UpdateEr
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown")
         .to_owned();
-    let names: Vec<String> = manifest
-        .get("binaries")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.as_str().map(str::to_owned))
-        .collect();
-    if names.is_empty()
-        || names
-            .iter()
-            .any(|name| !RELEASE_BINARIES.contains(&name.as_str()))
-    {
-        return Err(UpdateError::NoBackup(format!(
+    let names = manifest_binaries(&manifest).ok_or_else(|| {
+        UpdateError::NoBackup(format!(
             "{} lists no valid saved binaries",
             manifest_path.display()
-        )));
-    }
+        ))
+    })?;
     Ok((version, names))
 }
 
@@ -844,8 +783,7 @@ fn rollback_with_checkpoint(
     let backup = bin_dir.join(BACKUP_DIR);
     let (version, names) = read_backup_manifest(&backup)?;
 
-    // Refuse before moving anything if any saved file is missing, so a
-    // rollback is all-or-nothing rather than half-applied.
+    // All-or-nothing: refuse if any saved file is missing.
     for name in &names {
         let saved = backup.join(name);
         if !saved.exists() {
@@ -963,41 +901,10 @@ mod tests {
         unpack_verified, verify_archive,
     };
 
-    /// A private scratch directory, removed when the guard drops.
-    #[derive(Debug)]
-    struct Scratch {
-        path: PathBuf,
-    }
-
-    impl Scratch {
-        fn new(tag: &str) -> Self {
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default();
-            let path = std::env::temp_dir().join(format!(
-                "phux-update-test-{tag}-{}-{nonce}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
     /// The SHA-256 of the empty input, the standard published vector.
     #[test]
     fn sha256_matches_the_published_vector() {
-        let scratch = Scratch::new("sha");
+        let scratch = tempfile::tempdir().unwrap();
         let empty = scratch.path().join("empty");
         fs::write(&empty, b"").unwrap();
         assert_eq!(
@@ -1013,33 +920,22 @@ mod tests {
         );
     }
 
+    /// The release workflow's sidecar format (with or without `sha256sum -b`'s
+    /// marker, or digest-only) parses; malformed or crossed sidecars do not.
     #[test]
-    fn sidecar_parsing_accepts_the_release_workflow_format() {
+    fn sidecar_parsing_accepts_the_release_format_and_refuses_the_rest() {
+        let archive = "phux-v1.0.0-x.tar.gz";
         let digest = "a".repeat(64);
-        let sidecar = format!("{digest}  phux-v1.0.0-x.tar.gz\n");
-        assert_eq!(
-            expected_digest(&sidecar, "phux-v1.0.0-x.tar.gz").unwrap(),
-            digest
-        );
-        // `sha256sum -b`'s binary marker.
-        let starred = format!("{digest} *phux-v1.0.0-x.tar.gz\n");
-        assert_eq!(
-            expected_digest(&starred, "phux-v1.0.0-x.tar.gz").unwrap(),
-            digest
-        );
-        // Digest-only sidecars are accepted; there is nothing to cross-check.
-        assert_eq!(
-            expected_digest(&digest, "phux-v1.0.0-x.tar.gz").unwrap(),
-            digest
-        );
-    }
-
-    #[test]
-    fn sidecar_parsing_refuses_malformed_and_crossed_sidecars() {
-        let digest = "b".repeat(64);
+        for sidecar in [
+            format!("{digest}  {archive}\n"),
+            format!("{digest} *{archive}\n"),
+            digest.clone(),
+        ] {
+            assert_eq!(expected_digest(&sidecar, archive).unwrap(), digest);
+        }
         for (sidecar, why) in [
             (String::new(), "empty"),
-            ("not-a-digest  phux-v1.0.0-x.tar.gz".to_owned(), "short"),
+            (format!("not-a-digest  {archive}"), "short"),
             (format!("{}  x.tar.gz", "z".repeat(64)), "non-hex"),
             (
                 format!("{digest}  phux-v9.9.9-other.tar.gz"),
@@ -1047,7 +943,7 @@ mod tests {
             ),
         ] {
             assert!(
-                expected_digest(&sidecar, "phux-v1.0.0-x.tar.gz").is_err(),
+                expected_digest(&sidecar, archive).is_err(),
                 "sidecar should be refused ({why})"
             );
         }
@@ -1056,7 +952,7 @@ mod tests {
     /// The gate: a tampered archive is refused, loudly, with both digests.
     #[test]
     fn a_checksum_mismatch_refuses_and_names_both_digests() {
-        let scratch = Scratch::new("mismatch");
+        let scratch = tempfile::tempdir().unwrap();
         let archive = scratch.path().join("phux-v1.0.0-t.tar.gz");
         fs::write(&archive, b"the real bytes").unwrap();
         let good = sha256_file(&archive).unwrap();
@@ -1124,7 +1020,7 @@ mod tests {
 
     #[test]
     fn a_release_shaped_archive_unpacks_and_an_unexpected_member_is_refused() {
-        let scratch = Scratch::new("unpack");
+        let scratch = tempfile::tempdir().unwrap();
         let stage = "phux-v1.0.0-aarch64-apple-darwin";
 
         let archive = build_archive(scratch.path(), stage, None);
@@ -1134,7 +1030,14 @@ mod tests {
         assert!(staged.join("phux").is_file());
         assert!(staged.join("phux-mcp").is_file());
 
-        let hostile = Scratch::new("unpack-hostile");
+        // Pre-relicense (<= v0.35.0) tarballs carry the old license files.
+        let old = tempfile::tempdir().unwrap();
+        let old_stage = "phux-v0.35.0-aarch64-apple-darwin";
+        let archive = build_archive_with_docs(old.path(), old_stage, PRE_RELICENSE_DOCS, None);
+        let staged = unpack_verified(&archive, old_stage, old.path()).unwrap();
+        assert!(staged.join("LICENSE-APACHE").is_file());
+
+        let hostile = tempfile::tempdir().unwrap();
         let archive = build_archive(hostile.path(), stage, Some(("payload.sh", b"rm -rf /")));
         let into = hostile.path().join("into");
         fs::create_dir(&into).unwrap();
@@ -1149,18 +1052,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_pre_relicense_archive_still_unpacks() {
-        let scratch = Scratch::new("unpack-pre-relicense");
-        let stage = "phux-v0.35.0-aarch64-apple-darwin";
-        let archive = build_archive_with_docs(scratch.path(), stage, PRE_RELICENSE_DOCS, None);
-        let into = scratch.path().join("into");
-        fs::create_dir(&into).unwrap();
-        let staged = unpack_verified(&archive, stage, &into).unwrap();
-        assert!(staged.join("phux").is_file());
-        assert!(staged.join("LICENSE-APACHE").is_file());
-    }
-
     /// Seed a bin directory with a "current" install at a chosen mode.
     fn seed_bin_dir(dir: &Path, mode: u32) {
         fs::write(dir.join("phux"), b"#!/bin/sh\nold phux\n").unwrap();
@@ -1171,10 +1062,9 @@ mod tests {
 
     #[test]
     fn replacement_is_atomic_preserves_permissions_and_is_reversible() {
-        let scratch = Scratch::new("replace");
+        let scratch = tempfile::tempdir().unwrap();
         let bin = scratch.path().join("bin");
         fs::create_dir(&bin).unwrap();
-        // A deliberately restrictive mode: the update must not widen it.
         seed_bin_dir(&bin, 0o700);
 
         let stage = "phux-v1.0.0-aarch64-apple-darwin";
@@ -1187,7 +1077,6 @@ mod tests {
         assert_eq!(replaced.previous_version, "0.12.1");
         assert_eq!(replaced.backup, bin.join(BACKUP_DIR));
 
-        // The new bytes are live...
         assert_eq!(
             fs::read(bin.join("phux")).unwrap(),
             b"#!/bin/sh\nnew phux\n"
@@ -1196,15 +1085,12 @@ mod tests {
             fs::read(bin.join("phux-mcp")).unwrap(),
             b"#!/bin/sh\nnew mcp\n"
         );
-        // ...at the mode the old file carried, not the archive's 0o755.
         for name in ["phux", "phux-mcp"] {
             let mode = fs::metadata(bin.join(name)).unwrap().permissions().mode() & 0o7777;
             assert_eq!(mode, 0o700, "{name} kept the wrong mode");
         }
-        // No staging or partial file is reachable at the destination.
         assert!(!bin.join("phux.new").exists());
 
-        // Rollback puts the previous pair back and clears the backup.
         let back = rollback(&bin).unwrap();
         assert_eq!(back.version, "0.12.1");
         assert_eq!(
@@ -1218,7 +1104,7 @@ mod tests {
         assert!(!bin.join(BACKUP_DIR).exists());
     }
 
-    fn staged_release(scratch: &Scratch, bin: &Path) -> (Staging, PathBuf) {
+    fn staged_release(scratch: &tempfile::TempDir, bin: &Path) -> (Staging, PathBuf) {
         let stage = "phux-v1.0.0-aarch64-apple-darwin";
         let archive = build_archive(scratch.path(), stage, None);
         let staging = Staging::create(bin).unwrap();
@@ -1246,13 +1132,12 @@ mod tests {
         ];
 
         for fault in checkpoints {
-            let scratch = Scratch::new(&format!("install-fault-{fault:?}"));
+            let scratch = tempfile::tempdir().unwrap();
             let bin = scratch.path().join("bin");
             fs::create_dir(&bin).unwrap();
             seed_bin_dir(&bin, 0o755);
 
-            // Exercise the asymmetric backup rotation boundary too: the old
-            // generation must survive until the new transaction commits.
+            // The older backup generation must survive until the new commit.
             if matches!(
                 fault,
                 InstallCheckpoint::PreviousBackupVisible
@@ -1273,8 +1158,7 @@ mod tests {
             }));
             assert!(interrupted.is_err(), "checkpoint {fault:?} was not reached");
 
-            // A new updater acquires the same lock and repairs the journal
-            // before doing any new work.
+            // The next lock holder repairs the journal before any new work.
             drop(UpdateLock::acquire(&bin).unwrap());
             if matches!(
                 fault,
@@ -1304,7 +1188,7 @@ mod tests {
         ];
 
         for fault in checkpoints {
-            let scratch = Scratch::new(&format!("rollback-fault-{fault:?}"));
+            let scratch = tempfile::tempdir().unwrap();
             let bin = scratch.path().join("bin");
             fs::create_dir(&bin).unwrap();
             seed_bin_dir(&bin, 0o755);
@@ -1335,7 +1219,7 @@ mod tests {
 
     #[test]
     fn update_lock_serializes_publishers() {
-        let scratch = Scratch::new("lock");
+        let scratch = tempfile::tempdir().unwrap();
         let bin = scratch.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let first = UpdateLock::acquire(&bin).unwrap();
@@ -1360,7 +1244,7 @@ mod tests {
 
     #[test]
     fn an_interrupted_journal_build_is_discarded_before_publication() {
-        let scratch = Scratch::new("preparing");
+        let scratch = tempfile::tempdir().unwrap();
         let bin = scratch.path().join("bin");
         fs::create_dir(&bin).unwrap();
         seed_bin_dir(&bin, 0o755);
@@ -1376,7 +1260,7 @@ mod tests {
 
     #[test]
     fn a_lone_phux_install_does_not_grow_a_phux_mcp() {
-        let scratch = Scratch::new("lone");
+        let scratch = tempfile::tempdir().unwrap();
         let bin = scratch.path().join("bin");
         fs::create_dir(&bin).unwrap();
         fs::write(bin.join("phux"), b"old").unwrap();
@@ -1397,13 +1281,12 @@ mod tests {
 
     #[test]
     fn rollback_without_a_backup_is_an_error_not_a_no_op() {
-        let scratch = Scratch::new("no-backup");
+        let scratch = tempfile::tempdir().unwrap();
         let bin = scratch.path().join("bin");
         fs::create_dir(&bin).unwrap();
         seed_bin_dir(&bin, 0o755);
         let err = rollback(&bin).unwrap_err();
         assert!(matches!(err, UpdateError::NoBackup(_)), "{err:?}");
-        // The live binaries are untouched.
         assert_eq!(
             fs::read(bin.join("phux")).unwrap(),
             b"#!/bin/sh\nold phux\n"
@@ -1412,7 +1295,7 @@ mod tests {
 
     #[test]
     fn staging_is_a_sibling_of_the_target_and_is_cleaned_up() {
-        let scratch = Scratch::new("staging");
+        let scratch = tempfile::tempdir().unwrap();
         let bin = scratch.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let path = {
@@ -1425,7 +1308,7 @@ mod tests {
 
     #[test]
     fn staging_refuses_an_unwritable_bin_directory() {
-        let scratch = Scratch::new("readonly");
+        let scratch = tempfile::tempdir().unwrap();
         let bin = scratch.path().join("bin");
         fs::create_dir(&bin).unwrap();
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o500)).unwrap();
@@ -1433,8 +1316,7 @@ mod tests {
         // Restore the mode so the scratch guard can clean up.
         let _ = fs::set_permissions(&bin, fs::Permissions::from_mode(0o700));
         let Err(err) = result else {
-            // Running as root (some CI images do): mode bits do not stop a
-            // write, so there is no refusal to assert on.
+            // Running as root: mode bits do not stop the write.
             return;
         };
         assert!(

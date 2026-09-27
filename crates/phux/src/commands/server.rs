@@ -13,31 +13,22 @@ pub(super) mod ensure;
 
 pub use ensure::ENSURE_TIMEOUT_ENV;
 
-/// How long the auto-spawn path waits for the freshly-launched server
-/// to bind its socket before giving up. The server's bind is sub-ms on
-/// a healthy system; 2s tolerates a slow-CI host without making a
-/// failed spawn feel like a hang.
+/// How long the auto-spawn path waits for a fresh server to accept (bind is
+/// sub-ms on a healthy system; 2s tolerates a slow host).
 const AUTO_SPAWN_SOCKET_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Poll cadence while waiting for the auto-spawned server's socket to
-/// appear. 25ms is well under user-perceptible delay and small enough
-/// that the typical happy path resolves in a single poll.
+/// Poll cadence while waiting for the auto-spawned server's socket.
 const AUTO_SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// How long a client waits for the spawn lock before giving up and spawning
-/// unserialised. Comfortably longer than [`AUTO_SPAWN_SOCKET_TIMEOUT`] so the
-/// holder's spawn attempt can finish and be observed; short enough that a
-/// stuck holder cannot hang the terminal.
+/// How long a client waits for the spawn lock before spawning unserialised:
+/// long enough to observe the holder's spawn, short enough not to hang.
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Version of the `phux server --ensure --json` availability document.
 const ENSURE_SCHEMA_VERSION: u8 = 1;
 
-/// Which owner made the selected socket available.
-///
-/// This is deliberately about the startup decision, not server compatibility:
-/// `--ensure` proves only that the Unix socket accepts. The consumer's normal
-/// HELLO remains the authority for protocol and feature negotiation.
+/// Which owner made the selected socket available. `--ensure` proves only
+/// that the socket accepts; HELLO still negotiates protocol and features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EnsureDisposition {
     /// The socket accepted before startup coordination was needed.
@@ -124,26 +115,20 @@ fn ensure_accepting(socket_path: &Path) -> std::io::Result<EnsureDisposition> {
         socket_path,
         &super::attach::resolved_default_session_name(),
         super::attach::configured_spawn_on_attach().as_deref(),
-        // Availability-only: the shared quiet path also skips automatic
-        // version reconciliation. A bundled CLI must not repeatedly re-exec
-        // a coordinator owned by a different installation on every reconnect.
+        // Availability-only: the quiet path skips version reconciliation, so a
+        // bundled CLI does not re-exec another installation's coordinator.
         true,
     )?;
-    // The shared probe deliberately calls permission errors "Live" to avoid
-    // unlinking another user's socket. That conservative classification is not
-    // sufficient evidence for this command's success contract.
+    // The probe calls permission errors "Live" (to avoid unlinking another
+    // user's socket); success here requires a real connect.
     std::os::unix::net::UnixStream::connect(socket_path).map(|stream| {
         drop(stream);
         disposition
     })
 }
 
-/// Compose the fatal message printed when the server refuses to start
-/// because the config file exists but failed to load: the config path,
-/// the real loader error, and the remedy (`phux config check`).
-///
-/// One string, built once, so stderr and the server log tell the same
-/// story (phux-i0e8.1.1).
+/// The fatal message for a config that exists but fails to load, shared by
+/// stderr and the server log.
 fn broken_config_message(path: &Path, err: &impl std::fmt::Display) -> String {
     format!(
         "phux server: cannot start: config at {} failed to load\n  {err}\nrun: phux config check",
@@ -151,17 +136,8 @@ fn broken_config_message(path: &Path, err: &impl std::fmt::Display) -> String {
     )
 }
 
-/// Emit the server's startup info line through `tracing`, carrying
-/// pid + version + socket.
-///
-/// Several writers can interleave into the canonical server log
-/// (`$XDG_STATE_HOME/phux/server.log`): successive auto-spawned servers,
-/// a service-managed server across restarts, different binary versions
-/// after an upgrade. This line attributes everything that follows it to
-/// one pid and one build. Emitted at `info` under the `phux` target, so
-/// it passes the default filter (`phux=info,warn`) and — with the
-/// auto-spawn/service stderr redirect — verifiably lands in the log file
-/// (phux-i0e8.5.1).
+/// Log the startup line (pid, version, socket) that attributes what follows
+/// in the shared server log, and record the start for crash-loop detection.
 fn log_startup(socket_path: &Path) {
     let pid = std::process::id();
     tracing::info!(
@@ -170,8 +146,6 @@ fn log_startup(socket_path: &Path) {
         socket = %socket_path.display(),
         "phux server started",
     );
-    // phux-zomb.6: the same fact in a machine-readable place, so `phux doctor`
-    // can report a crash-loop instead of leaving it buried in a rotated log.
     phux_server::health::record_start(pid, env!("CARGO_PKG_VERSION"));
 }
 
@@ -195,45 +169,26 @@ fn select_connectors(
 }
 
 /// Arm the process-wide server concerns and resolve the socket path, or
-/// report why the server refuses to start.
-///
-/// Everything here runs before the config load and the runtime bring-up, so
-/// a refusal costs nothing and reads on the terminal that asked for it.
+/// report why the server refuses to start, before any config or runtime work.
 fn prepare_process(
     socket: Option<PathBuf>,
     daemonize: bool,
     resume: Option<std::os::fd::RawFd>,
 ) -> Result<PathBuf, ExitCode> {
-    // Arm durable crash capture. This is a long-running, often daemonized
-    // process whose panic has to survive in `PHUX_LOG` — nobody is watching
-    // its stderr. `telemetry::init` deliberately does not install this for
-    // us: it runs for every one-shot verb too, and a CLI panic logged as
-    // `server panic` sends triage after a server that never faltered
-    // (phux-h5hj.8).
+    // Durable crash capture for this long-running, often detached process.
     phux_server::telemetry::install_server_panic_hook();
 
     let socket_path = socket.unwrap_or_else(default_socket_path);
-    // phux-iwuc: fail before the banner and the runtime bring-up when the
-    // path cannot fit in a sockaddr_un — the bind inside `run_async` would
-    // gate it too, but only after "listening on ..." has already printed.
+    // Fail before the banner when the path cannot fit in a `sockaddr_un`.
     crate::commands::ensure_socket_path_fits(&socket_path)?;
 
-    // Banner only for a hand-started foreground server (a human watching
-    // a long-running process). The `--daemonize` child of the auto-spawn
-    // path nulls its stdio and logs to a file, so a banner there is noise;
-    // a `--resume` re-exec is likewise a detached continuation, not a
-    // hand-start.
+    // Banner only for a hand-started foreground server.
     if !daemonize && resume.is_none() {
         print_banner();
     }
 
-    // Auto-spawn path: detach from the launching client's controlling
-    // terminal so closing that terminal (SIGHUP to its session) can't
-    // take the server — and the sessions it holds — down with it. The
-    // client already nulled our stdio, so as a non-leader process
-    // `setsid` gives us a fresh session with no controlling terminal;
-    // we never open a tty afterward, so a session-leader double-fork
-    // isn't needed. An `EPERM` (already a group leader) is harmless.
+    // Auto-spawn: detach from the launching terminal so closing it cannot
+    // SIGHUP the server. `EPERM` (already a group leader) is harmless.
     if daemonize {
         let _ = rustix::process::setsid();
     }
@@ -241,27 +196,13 @@ fn prepare_process(
     Ok(socket_path)
 }
 
-/// Load the one config snapshot every consumer binds from, or report why
-/// the server refuses to start.
-///
-/// phux-i0e8.1.1: the config is loaded exactly ONCE, here. Every
-/// consumer downstream (seed command, `defaults.*`, hook catalog, connector
-/// registry, hub satellites) binds from this one snapshot, so an edit
-/// mid-startup cannot yield a torn read. A missing file is not an
-/// error — the loader returns the shipped defaults (loader.rs, `NotFound`
-/// arm). A file that exists but fails to load is fatal: silently
-/// disabling every configured hook and reverting scrollback/TERM/
-/// window-size policy behind a normal "listening on ..." banner is
-/// strictly worse than refusing to start. The connector registry's
-/// security stance (malformed must not read as empty) already made a
-/// parse error fatal; this makes the reported error the real one.
+/// Load the one config snapshot every consumer binds from, so an edit
+/// mid-startup cannot yield a torn read. A missing file yields defaults; a file
+/// that fails to load is fatal, because silently dropping hooks and policy
+/// behind a normal banner is worse than refusing to start.
 fn load_config() -> Result<phux_config::Config, ExitCode> {
     config_loader::load().map_err(|err| {
         let msg = broken_config_message(&config_loader::config_path(), &err);
-        // Both surfaces on purpose: stderr reaches a human who
-        // hand-started a foreground server; the auto-spawn path nulls
-        // stdout/stdin and points stderr at a log file, so the
-        // `tracing::error!` line is the durable trace either way.
         eprintln!("{msg}");
         tracing::error!(
             path = %config_loader::config_path().display(),
@@ -288,55 +229,23 @@ fn build_server_config(
     seed_command: Option<&str>,
     exit_after_idle: Option<u64>,
 ) -> ServerConfig {
-    // phux-i0e8.4.1: resolve the default shell exactly once, from the
-    // single config snapshot above — `defaults.shell` when set, else
-    // `$SHELL`, else `/bin/sh` — and thread it into every server-owned
-    // spawn path (seed session, `--seed-command`, `CreateIfMissing`,
-    // `SESSION_CREATE_KEY`, command-less `SPAWN_RESOURCE`). This bind
-    // must stay below the config load.
+    // Resolve the default shell once (`defaults.shell`, `$SHELL`, `/bin/sh`)
+    // for every server-owned spawn path.
     let shell = phux_server::terminal_actor::resolve_shell(defaults.shell.as_deref());
 
-    // phux-87rr: a server started via `phux service install`'s generated
-    // launchd/systemd unit inherits the init system's minimal environment
-    // — no login shell ever ran, so profile-provided `PATH` entries
-    // (Homebrew, Nix) are invisible to every pane even though markers
-    // like `NIX_PROFILES` may still be inherited and fool a guard into
-    // thinking initialization already happened. Detect that case from
-    // `SERVICE_MANAGED_ENV`, the marker `phux service install` stamps
-    // into the unit's OWN environment (see `commands::service`) —
-    // deliberately not sniffed from environment shape (a short `PATH`, an
-    // unfamiliar parent pid): both are true of setups that never went
-    // through the installer, and wrong is exactly the failure mode this
-    // bug is about. Its absence is the correct default for a server a
-    // human started directly from their own already-initialized
-    // terminal, where re-running login-shell initialization a second
-    // time is not idempotent for every setup (PATH duplication is the
-    // mild failure; `nvm`/`rbenv`/`direnv` guards misfiring is not).
+    // A server started from a unit `phux service install` wrote (marked by
+    // `SERVICE_MANAGED_ENV`) never ran a login shell, so its panes need login-shell
+    // treatment to see profile `PATH` entries. Absent the marker, a login shell
+    // would re-run initialization that is not idempotent for every setup.
     let login_shell = std::env::var_os(super::service::SERVICE_MANAGED_ENV).is_some();
 
-    // phux-07y: `--seed-command` runs that command (via `<shell> -c`) as
-    // the pre-seeded session's initial program instead of a bare shell.
-    // The naked-`phux` auto-spawn path passes `defaults.spawn-on-attach`
-    // here; `phux new`'s auto-spawn and a hand-started `phux server`
-    // pass nothing, so an explicitly-created session still gets a shell.
-    // `login_shell` carries through so a service-managed server's seeded
-    // command also runs with a profile-initialized `PATH` (phux-87rr).
+    // `--seed-command` runs via `<shell> -c` as the seeded session's program.
     let seed_command = seed_command
         .map(|command| phux_server::terminal_actor::shell_command(&shell, command, login_shell));
 
-    // `defaults.history-limit` and `defaults.history-bytes` bound each pane's
-    // retained scrollback; libghostty prunes on whichever is reached first,
-    // and on a wide grid that is usually the byte bound (ADR-0094).
-    // `defaults.cwd-inheritance` selects how `SPAWN_RESOURCE` resolves a
-    // new pane's working directory. `defaults.term` is the `TERM`
-    // advertised to every server-spawned pane (a per-spawn
-    // `SPAWN_RESOURCE.env` entry for `TERM` overrides it).
-    // `defaults.window-size` picks the multi-client geometry policy
-    // (phux-nk07).
     ServerConfig {
         socket_path: socket_path.to_path_buf(),
-        // `None` under `--no-seed` (ADR-0105): `phux new --empty` wants only
-        // the session it creates.
+        // `None` under `--no-seed` (ADR-0105).
         pre_seeded_session: session.map(str::to_owned),
         seed_with_pty: true,
         seed_command,
@@ -348,8 +257,6 @@ fn build_server_config(
             by_default: defaults.retain_on_exit,
             default_secs: defaults.retain_on_exit_secs,
             max_secs: defaults.retain_on_exit_max_secs,
-            // `phux config check` flags a larger value; a config that ships
-            // one anyway is clamped here rather than holding that many grids.
             max_count: defaults
                 .retain_on_exit_max
                 .min(phux_config::MAX_RETAIN_ON_EXIT_MAX),
@@ -360,20 +267,12 @@ fn build_server_config(
         login_shell,
         window_size: defaults.window_size,
         voice,
-        // PHA-406 L18 review item 3: `phux config check` flags a value
-        // below this floor (`limits_findings` in `phux-config`), but a
-        // config that ships one anyway must not silently break the
-        // built-in agent-session record write `reject_set_metadata`
-        // checks this generic cap ahead of — clamp here, the one place
-        // every startup path builds the runtime's `ServerConfig`, so the
-        // shared cap can degrade but the writes that depend on it never
-        // do.
+        // Clamped up so the built-in agent-session record write always fits under
+        // the generic metadata cap, whatever the config says.
         metadata_value_bytes: limits.metadata_value_bytes.max(
             u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES)
                 .unwrap_or(u32::MAX),
         ),
-        // `phux config check` flags an out-of-range approval bound; a config
-        // that ships one anyway is clamped here (the runtime floors the TTL).
         approval_ttl_secs: defaults
             .approval_ttl_secs
             .min(phux_config::MAX_APPROVAL_TTL_SECS),
@@ -383,14 +282,10 @@ fn build_server_config(
         approval_max_pending_total: defaults
             .approval_max_pending_total
             .min(phux_config::MAX_APPROVAL_MAX_PENDING_TOTAL),
-        // The runtime picks the engine from `policy_mode` (workload-auth
-        // §8); no override. `run_server` sets the mode from `[policy]`.
         policy_engine: None,
         policy_mode: None,
         hook_catalog,
-        // Ephemeral lifetime (ADR-0063). Absent by default: the multiplexer
-        // contract — live until the last pane is gone — is what a human
-        // expects and is deliberately untouched.
+        // Ephemeral lifetime (ADR-0063); absent by default.
         exit_after_idle: exit_after_idle.map(Duration::from_secs),
     }
 }
@@ -435,9 +330,6 @@ fn listener_summary(
         let _ =
             std::fmt::Write::write_fmt(&mut extra, format_args!(" + connectors={connector_count}"));
     }
-    // An ephemeral server has a lifetime a human would otherwise have to
-    // infer from a flag they may not have typed themselves (a wrapper
-    // script did), so the banner says so out loud.
     if let Some(secs) = exit_after_idle {
         let _ = std::fmt::Write::write_fmt(&mut extra, format_args!(" [exit-after-idle={secs}s]"));
     }
@@ -481,13 +373,8 @@ fn report_shutdown<E: std::fmt::Display>(result: Result<(), E>) -> ExitCode {
     }
 }
 
-/// Build a current-thread tokio runtime and drive `ServerRuntime`
-/// until Ctrl-C.
-///
-/// The runtime pre-seeds a session named `session` whose initial pane
-/// is backed by a real PTY running the resolved default shell
-/// (`defaults.shell`, falling back to `$SHELL`, then `/bin/sh`). On
-/// Ctrl-C, `run_async` returns `Ok(())` and the process exits 0.
+/// Build a current-thread tokio runtime and drive `ServerRuntime` until
+/// SIGINT or SIGTERM.
 #[allow(
     clippy::too_many_arguments,
     clippy::fn_params_excessive_bools,
@@ -516,19 +403,13 @@ pub(crate) fn run_server(
         Err(code) => return code,
     };
 
-    // `[[hooks.<name>]]` entries plus enabled plugin manifests' `[[events]]`
-    // feed the server-side hook dispatcher (docs/consumers/tui.md §9,
-    // phux-r82.1). Relative manifest paths resolve against the config file's
-    // directory.
+    // Config hooks plus enabled plugin manifests' events feed the server-side
+    // hook dispatcher.
     let hook_catalog =
         phux_server::hooks::HookCatalog::from_config(&config, &config_loader::config_path());
 
-    // `[[satellites]]` registry, consumed below only when `--hub` was
-    // asked for.
     let satellites = config.satellites;
 
-    // Connector registry — same single snapshot; a malformed config never
-    // reads as an empty registry because it never gets this far.
     let configured_connectors = config.connector;
     let connector_entries = select_connectors(configured_connectors, connect.as_deref());
     if let Err(err) = phux_server::connector::plan_connectors(&connector_entries) {
@@ -546,8 +427,6 @@ pub(crate) fn run_server(
         seed_command,
         exit_after_idle,
     );
-    // `[policy] mode` decides which connections the server admits and what
-    // they may do (workload-auth §8); a contradicted mode refuses to start.
     cfg.policy_mode = config.policy.mode;
 
     let rt = match build_runtime() {
@@ -568,80 +447,41 @@ pub(crate) fn run_server(
         socket_path.display(),
         session.unwrap_or("none")
     );
-    // Attribution line for the (possibly shared) server log — see
-    // `log_startup`. After the human banner so an interactive stderr
-    // reads banner-first.
     log_startup(&socket_path);
 
     let mut server = with_network_listeners(ServerRuntime::new(cfg), listen, quic, webtransport);
     if !connector_entries.is_empty() {
         server = server.connectors(connector_entries, connect);
     }
-    // Hub mode (phux-v45.1, ADR-0007): hand the `[[satellites]]` registry to
-    // the runtime, which validates it into the satellite table before
-    // binding. The registry comes from the same single config snapshot as
-    // everything else, so a hub can never start with a silently empty
-    // table: a broken config already refused to start above.
+    // Hub mode (ADR-0007): the runtime validates the satellite registry.
     if hub {
         server = server.hub(satellites);
     }
-    // Every start either consumes the upgrade handoff (resume) or discards
-    // it (cold start), so no `PHUX_UPGRADE_*` value outlives this point.
+    // Every start consumes (resume) or discards the upgrade handoff.
     server = match resume {
         Some(fd) => server.resume(fd),
         None => server.discard_inherited_upgrade(),
     };
-    // Live rotation for the canonical server log for as long as this
-    // process runs (phux-j1zj): startup-only rotation still lets one very
-    // long-lived, chatty server exceed `server.log`'s size threshold
-    // within a single run. Spawned directly on `rt` (not inside the
-    // `block_on` future below) — a `Runtime` can be spawned onto before
-    // its first `block_on`, and the task is driven by the same runtime
-    // either way. It runs until `rt` itself is dropped at shutdown,
-    // alongside `server.run_async`.
+    // Live rotation of the server log for as long as this process runs.
     rt.spawn(phux_server::telemetry::run_log_rotation_task());
 
-    // The current-thread runtime runs every actor, pump, and client writer
-    // on this thread, so this is the one call that puts the whole server's
-    // keystroke path into the interactive scheduling class (ADR-0096).
+    // Marks the whole server's keystroke path interactive (ADR-0096).
     phux_server::perf::mark_started();
     report_shutdown(rt.block_on(async move { server.run_async(shutdown_signal()).await }))
 }
 
-/// Resolve when the process is asked to stop, by any route a supervisor or a
-/// human actually uses.
-///
-/// Both signals cancel the runtime's root token, which is the *same* signal
-/// idle-exit (ADR-0063) and the last-pane self-exit already deliver. That is
-/// what routes the stop through the one graceful path: every pane gets
-/// `TerminalActor::shutdown_pty`'s SIGHUP-then-grace-then-reap, and the socket
-/// is unlinked on the way out by `unlink_socket_if_ours`.
-///
-/// SIGTERM is not optional politeness. Without it the process died on the
-/// default disposition, so none of the above ran: pane children were left to
-/// notice the kernel closing their PTY master rather than being reaped, and
-/// the socket was left behind as a stale entry for the next client to trip
-/// over. It also decided the exit *status*, and therefore whether a supervised
-/// server stays stopped -- launchd's `KeepAlive{SuccessfulExit: false}` reads
-/// death-by-signal as failure and restarts after `ThrottleInterval`, which is
-/// exactly the "a deliberately stopped server stays stopped" property ADR-0080
-/// claims (phux-1wka).
-///
-/// `phux service install --restore`'s wrapper already sends SIGTERM, so this
-/// is what makes that path's `save`-then-stop actually graceful for the panes.
+/// Resolve on SIGINT or SIGTERM. Both cancel the runtime's root token, the
+/// same graceful path idle-exit uses: panes are hung up and reaped and the
+/// socket is unlinked. Without SIGTERM a supervised stop died on the default
+/// disposition, leaving a stale socket and an exit status launchd reads as a
+/// crash (ADR-0080).
 async fn shutdown_signal() {
-    // `ctrl_c()` resolves on SIGINT *or* closure of the process's stdin
-    // equivalent on some platforms; either way, treat it as "user wants out".
     let interrupt = tokio::signal::ctrl_c();
 
     let Ok(mut terminate) =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
     else {
-        // Registering the handler failed (no libc slot, or a sandbox that
-        // refuses). Falling back to SIGINT alone restores the previous
-        // behaviour rather than refusing to serve. `eprintln!` to match this
-        // command's other operator-facing lines -- for a daemonised server
-        // stderr *is* the server log.
+        // Registering failed; fall back to SIGINT alone rather than refuse to serve.
         eprintln!(
             "phux server: could not install a SIGTERM handler; only Ctrl-C will stop this server cleanly"
         );
@@ -655,11 +495,8 @@ async fn shutdown_signal() {
     }
 }
 
-/// Open the canonical server log for appending, creating its parent
-/// directory (the phux state dir) at mode `0o700` and the file itself at
-/// mode `0o600` — the log captures operational detail that must not be
-/// group/world-readable on a shared box (ADR-0028), and the state dir
-/// holds TLS keys and token stores that want the same tight perms.
+/// Open the server log for appending: parent dir `0o700`, file `0o600`
+/// (ADR-0028).
 fn open_server_log(path: &Path) -> std::io::Result<std::fs::File> {
     if let Some(parent) = path.parent() {
         let mut builder = std::fs::DirBuilder::new();
@@ -681,46 +518,18 @@ fn open_server_log(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
-/// Environment variable that gives an auto-spawned daemon an idle backstop.
-///
-/// Seconds, in the same `1..=86_400` range `--exit-after-idle` accepts.
-///
-/// Re-exported from the crate root (and public for that reason alone): the
-/// integration harness re-arms this after `env_clear()` wipes the justfile's
-/// export, and a harness that spelled the name itself would keep passing
-/// through a rename here while silently leaking daemons (phux-8y3o).
+/// Environment variable that gives an auto-spawned daemon an idle backstop,
+/// in seconds (`1..=86_400`, as `--exit-after-idle`). Public so the
+/// integration harness re-arms it by name.
 pub const AUTO_SPAWN_IDLE_ENV: &str = "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE";
 
-/// The upper bound `--exit-after-idle` accepts, mirrored here so an
-/// out-of-range value is rejected by the parent with a message about the
-/// variable rather than by the child with one about a flag the caller never
-/// typed.
+/// The upper bound `--exit-after-idle` accepts.
 const AUTO_SPAWN_IDLE_MAX_SECS: u64 = 86_400;
 
 /// Resolve the idle limit an auto-spawned daemon should carry, if any.
-///
-/// **`None` in production, and deliberately so.** Every *explicitly* spawned
-/// test server passes `--exit-after-idle` as its survives-a-SIGKILLed-runner
-/// backstop, but the auto-spawn path could not: nothing passed it, and the
-/// child is intentionally orphaned. So an auto-spawned daemon had no owner and
-/// no timer — and the last-pane self-exit is armed only once a client attaches,
-/// so one that never served a client never exited either. That is the
-/// structural root of the leaked-server problem (phux-nbam, phux-whhd).
-///
-/// The fix is an opt-in seam, not a new default. ADR-0063 and
-/// `server_idle_exit::without_the_flag_an_unattended_server_stays_up`
-/// deliberately pin that an unattended server stays up; making auto-spawn
-/// finite would change the multiplexer contract, which is a product decision
-/// and not a test-hygiene fix. This extends the mechanism ADR-0063 already
-/// established rather than inventing one.
-///
-/// A malformed value warns and is ignored rather than failing the spawn: this
-/// runs on the hot path of a naked `phux`, and refusing to start a terminal
-/// because of a stray environment variable is worse than starting one without
-/// a bound. It must not be *silent*, though — the whole point of setting it is
-/// a bound that actually applies — so the warning rides the same `quiet` gate
-/// as the auto-spawn banner (suppressed only under `--json`, whose stderr
-/// contract is the error document and nothing else).
+/// `None` in production: an unattended server stays up (ADR-0063); the
+/// variable is an opt-in for test harnesses so auto-spawned daemons cannot
+/// leak. A malformed value warns (unless `quiet`) and is ignored.
 fn auto_spawn_idle_limit(quiet: bool) -> Option<u64> {
     let raw = std::env::var_os(AUTO_SPAWN_IDLE_ENV)?;
     let text = raw.to_string_lossy();
@@ -739,35 +548,16 @@ fn auto_spawn_idle_limit(quiet: bool) -> Option<u64> {
     parsed
 }
 
-/// The pure half of [`auto_spawn_idle_limit`]: `None` for anything the
-/// `--exit-after-idle` parser would itself reject, so the parent and the child
-/// agree on what counts as a usable value.
+/// The pure half of [`auto_spawn_idle_limit`], matching the flag's range.
 fn parse_auto_spawn_idle(raw: &str) -> Option<u64> {
     raw.parse::<u64>()
         .ok()
         .filter(|secs| (1..=AUTO_SPAWN_IDLE_MAX_SECS).contains(secs))
 }
 
-/// Fork-exec the current binary as `phux server` (with the same
-/// `--socket` override), then poll for the socket to appear.
-///
-/// Detachment strategy: the child is launched with `--daemonize`, so it
-/// calls `setsid(2)` before binding and lands in its own session with no
-/// controlling terminal — closing the launching terminal can't SIGHUP it.
-/// stdin/stdout are nulled; stderr is redirected to the canonical server
-/// log (`telemetry::server_log_path()`, `$XDG_STATE_HOME/phux/server.log`
-/// — the same file the service unit writes) so a startup crash is
-/// debuggable and `phux service logs` tails the right file for every
-/// spawn path (phux-i0e8.5.1). The server never opens a tty afterward,
-/// so a session-leader double-fork isn't needed.
-///
-/// **Lifetime.** The child is deliberately not kept as a `Child` — it owns
-/// its own lifecycle — and by default it carries no idle backstop, which
-/// ADR-0063 pins: an unattended server stays up, because that is the
-/// multiplexer contract. `$PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` opts a caller
-/// out of that (see [`auto_spawn_idle_limit`]).
-///
-/// Returns `Ok` if the socket showed up within the timeout.
+/// Fork-exec the current binary as a detached `phux server --daemonize`, with
+/// stderr on the canonical server log, and wait for it to accept. The child is
+/// not kept: it owns its own lifecycle.
 pub(crate) fn maybe_auto_spawn_server(
     socket_path: &Path,
     session: Option<&str>,
@@ -778,10 +568,7 @@ pub(crate) fn maybe_auto_spawn_server(
     let current_exe = std::env::current_exe()?;
     let log_path = phux_server::telemetry::server_log_path();
 
-    // The banner names the log so the one moment the user watches an
-    // auto-spawn is also the moment they learn where the server writes.
-    // Suppressed under `--json`, whose contract is that stderr carries the
-    // error document and nothing else.
+    // The banner names the log; suppressed under `--json`.
     if !quiet {
         eprintln!(
             "phux: starting server at {} (auto-spawn, session={}; log: {})",
@@ -791,9 +578,7 @@ pub(crate) fn maybe_auto_spawn_server(
         );
     }
 
-    // Redirect the daemon's stderr to the canonical server log so a
-    // crash-on-startup is debuggable (nulled stdio leaves no trace).
-    // Best-effort: fall back to /dev/null if the file can't be opened.
+    // Best-effort: fall back to /dev/null if the log cannot be opened.
     let log = open_server_log(&log_path).ok();
 
     let mut cmd = std::process::Command::new(current_exe);
@@ -803,9 +588,8 @@ pub(crate) fn maybe_auto_spawn_server(
         .arg("--daemonize")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
-    // A server started from an environment no login shell initialized gets
-    // the same marker a service unit stamps, so its panes run login shells
-    // and see the profile's `PATH` (phux-87rr, ADR-0120).
+    // A server started from a non-login environment gets the service marker, so
+    // its panes run login shells (ADR-0120).
     if login_shell {
         cmd.env(super::service::SERVICE_MANAGED_ENV, "1");
     }
@@ -817,15 +601,10 @@ pub(crate) fn maybe_auto_spawn_server(
             cmd.arg("--no-seed");
         }
     }
-    // phux-07y: forward the pre-seed command (naked `phux` passes
-    // `defaults.spawn-on-attach`; other callers pass `None`).
     if let Some(seed) = seed_command {
         cmd.arg("--seed-command").arg(seed);
     }
-    // phux-nbam: an opt-in idle backstop for this daemon. Passed as the flag
-    // rather than left to the child's inherited environment so a leaked server
-    // shows its own bound in `ps`, which is exactly the moment someone is
-    // trying to work out why it is still running.
+    // Passed as a flag so a leaked server shows its bound in `ps`.
     if let Some(secs) = auto_spawn_idle_limit(quiet) {
         cmd.arg("--exit-after-idle").arg(secs.to_string());
     }
@@ -838,25 +617,13 @@ pub(crate) fn maybe_auto_spawn_server(
         }
     }
 
-    // Spawn — we deliberately don't keep the `Child` around; the
-    // server is its own lifecycle now. The OS reaps it when it exits.
     let _child = ensure::spawn_daemon(&mut cmd)?;
 
     wait_until_accepting(socket_path, "auto-spawned server", &log_path)
 }
 
-/// Block until `socket_path` accepts, or the auto-spawn deadline passes.
-///
-/// Waiting on *accept* rather than on the socket file existing is the whole
-/// point: the file exists for a window before the listener is ready, and a
-/// caller that returns on `exists()` hands the user a connection refused it
-/// cannot explain (phux-zomb.1).
-///
-/// Shared by the two paths that can put a server there — the forked daemon and
-/// a service unit the init system was just asked to start — so neither can
-/// drift into returning early. `what` names the one that is being waited on,
-/// because "the auto-spawned server did not accept" is a misleading thing to
-/// print about a supervised start.
+/// Block until `socket_path` accepts (not merely exists), or the auto-spawn
+/// deadline passes. `what` names what is being waited on.
 fn wait_until_accepting(socket_path: &Path, what: &str, log_path: &Path) -> std::io::Result<()> {
     let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
     loop {
@@ -878,29 +645,10 @@ fn wait_until_accepting(socket_path: &Path, what: &str, log_path: &Path) -> std:
     }
 }
 
-/// Ensure a server is accepting on `socket_path`, starting one if not.
-///
-/// This is the single entry point every client verb uses. It replaces the
-/// `if !socket_path.exists() { spawn() }` gate that each call site used to
-/// spell out, which had two defects that together produced the "phux is
-/// wedged and I have to `rm` a socket" experience (phux-zomb.1):
-///
-/// * **existence is not liveness.** A server killed uncleanly leaves its
-///   socket file behind. The gate then saw a file, declined to spawn, and the
-///   connection failed — permanently, for every later invocation, until a
-///   human removed the file. A stale entry is now detected and reaped.
-/// * **no serialisation.** N concurrent invocations on a cold socket all
-///   observed "no server" and all forked one. A profile-scoped advisory lock
-///   now elects a single spawner; the rest wait and re-probe, and find the
-///   winner's server rather than racing to bind over it.
-///
-/// A live server is the common case and costs one connect probe — no lock is
-/// taken, so the steady state stays as cheap as the `exists()` check it
-/// replaces.
-///
-/// # Errors
-/// Returns the spawn or timeout failure. Callers report it and continue to
-/// the connect attempt, which produces the user-facing remedy.
+/// Ensure a server is accepting on `socket_path`, starting one if not. The
+/// single entry point every client verb uses: a stale socket is reaped rather
+/// than trusted, and a profile-scoped lock elects one spawner among
+/// concurrent invocations. A live server costs one probe and no lock.
 pub(crate) fn ensure_server(
     socket_path: &Path,
     session: &str,
@@ -910,10 +658,7 @@ pub(crate) fn ensure_server(
     ensure_server_with(socket_path, Some(session), seed_command, quiet, false)
 }
 
-/// [`ensure_server`] for a caller that must not get a seed session: a server
-/// started here runs `phux server --no-seed`, so `phux new --empty` ends up
-/// with only the empty session it creates (ADR-0105). A server that is
-/// already running is used as it is.
+/// [`ensure_server`] without a seed session (`phux new --empty`, ADR-0105).
 pub(crate) fn ensure_server_unseeded(
     socket_path: &Path,
     quiet: bool,
@@ -921,15 +666,9 @@ pub(crate) fn ensure_server_unseeded(
     ensure_server_with(socket_path, None, None, quiet, false)
 }
 
-/// [`ensure_server`] for `phux bootstrap`, which ssh runs on this host for
-/// `phux attach --ssh` (ADR-0120).
-///
-/// Seeds the session naked `phux` would, and hands an older running server
-/// to this binary in place, so the listener command it is about to send is
-/// understood. Differs in one way: a server started here is marked as
-/// started without a login shell, because ssh ran this command
-/// non-interactively and a server spawned from that environment would give
-/// every pane the profile-less `PATH` a launchd unit sees (phux-87rr).
+/// [`ensure_server`] for `phux bootstrap` (`phux attach --ssh`, ADR-0120): a
+/// server started here gets the login-shell marker, because ssh ran it
+/// non-interactively.
 pub(crate) fn ensure_server_for_bootstrap(socket_path: &Path) -> std::io::Result<()> {
     ensure_server_with(
         socket_path,
@@ -941,8 +680,7 @@ pub(crate) fn ensure_server_for_bootstrap(socket_path: &Path) -> std::io::Result
     .map(|_| ())
 }
 
-/// The shared body of [`ensure_server`] and [`ensure_server_unseeded`].
-/// `session: None` starts a server with no seed session.
+/// The shared body of the `ensure_server*` entry points.
 fn ensure_server_with(
     socket_path: &Path,
     session: Option<&str>,
@@ -951,9 +689,8 @@ fn ensure_server_with(
     login_shell: bool,
 ) -> std::io::Result<EnsureDisposition> {
     if socket::probe(socket_path) == SocketState::Live {
-        // A live socket can be the supervised server login already started.
-        // Sweep a leftover `--adopt` marker so the first `phux` command
-        // retires it, not only `phux service status` (phux-dqf3).
+        // A live socket may be a supervised server login started; retire a
+        // leftover `--adopt` marker.
         super::service::sweep_stale_adoption_marker(socket_path);
         if !quiet {
             reconcile_version_skew(socket_path);
@@ -961,22 +698,17 @@ fn ensure_server_with(
         return Ok(EnsureDisposition::Reused);
     }
 
-    // Serialise the spawn decision across concurrent invocations. A failure
-    // to acquire the lock is never fatal: falling through to an unserialised
-    // spawn is exactly the old behaviour, and the server's own bind-time
-    // probe still rejects a duplicate.
+    // Serialise the spawn decision. Failing to lock is not fatal: the server's
+    // own bind-time probe still rejects a duplicate.
     let guard = SpawnLock::acquire(&socket::spawn_lock_path(socket_path));
 
-    // Re-probe under the lock. Whoever held it before us most likely spawned
-    // the server we were about to duplicate.
+    // Re-probe under the lock: the previous holder likely spawned it.
     if socket::probe(socket_path) == SocketState::Live {
         super::service::sweep_stale_adoption_marker(socket_path);
         return Ok(EnsureDisposition::Joined);
     }
 
-    // Nothing is accepting. If a socket file is in the way it belonged to a
-    // dead server; remove it so `bind` can succeed. `reap_stale` re-probes
-    // and refuses to unlink anything live.
+    // Nothing is accepting; remove a dead server's socket entry.
     if let Err(err) = socket::reap_stale(socket_path) {
         tracing::warn!(
             path = %socket_path.display(),
@@ -985,15 +717,8 @@ fn ensure_server_with(
         );
     }
 
-    // The socket is free and something has to fill it. If an `--adopt` install
-    // armed a unit for exactly this socket, the supervisor gets first refusal:
-    // this is the moment the hand-over it was armed for becomes possible, and
-    // forking our own daemon here would take the socket the unit is waiting
-    // for and leave the adoption pending forever (ADR-0088).
-    //
-    // Only ever diverts on a *pending* adoption. A host with an ordinary
-    // installed unit still auto-spawns, because reviving a server the user
-    // stopped on purpose would contradict ADR-0080.
+    // A pending `--adopt` unit for this socket gets first refusal (ADR-0088);
+    // an ordinary installed unit does not, so a stopped server stays stopped.
     if matches!(
         super::service::complete_pending_adoption(socket_path, quiet),
         super::service::Handover::Started
@@ -1013,29 +738,12 @@ fn ensure_server_with(
     result
 }
 
-/// Hand a server running an older build over to this one, in place.
-///
-/// The gap this closes (phux-zomb.7): a package manager — Homebrew, Nix, a
-/// distro package — replaces the `phux` binary without telling the running
-/// server, which keeps serving the old build until something kills it. Nothing
-/// ever does, so the skew persists for days, and the symptoms (a client and
-/// server disagreeing about behaviour that changed between builds) look like
-/// random breakage. `phux update` already performs this handoff; every *other*
-/// way a binary gets upgraded had no hook at all.
-///
-/// The handoff itself is ADR-0032's re-exec: the server passes its listening
-/// fd to the new image, so panes and scrollback survive. That is what makes
-/// doing this automatically defensible rather than rude — the user loses
-/// nothing, and the alternative is silently talking to a stale server.
-///
-/// Best-effort throughout. A refused or failed upgrade leaves the old server
-/// running and says so once; the attach then proceeds against it, which is
-/// strictly better than refusing to work.
+/// Hand a server running an older build over to this one in place
+/// (ADR-0032 re-exec, panes survive), for binaries replaced by a package
+/// manager. Best-effort: on refusal the old server keeps running.
 fn reconcile_version_skew(socket_path: &Path) {
     let ours = env!("CARGO_PKG_VERSION");
     let Some(theirs) = phux_server::health::running_version() else {
-        // No history: a server from before this bookkeeping existed, or a
-        // state dir that was cleared. Nothing to compare, so nothing to do.
         return;
     };
     if theirs == ours {
@@ -1047,8 +755,7 @@ fn reconcile_version_skew(socket_path: &Path) {
     );
     match super::upgrade::request_upgrade(socket_path) {
         Ok(super::upgrade::UpgradeAck::Upgrading) => {
-            // The server re-execs and rebinds; wait for it to answer again so
-            // the caller's connect does not race the handoff.
+            // Wait for the re-exec'd server so the caller's connect does not race it.
             let deadline = Instant::now() + AUTO_SPAWN_SOCKET_TIMEOUT;
             while Instant::now() < deadline {
                 if socket::probe(socket_path) == SocketState::Live {
@@ -1069,19 +776,13 @@ fn reconcile_version_skew(socket_path: &Path) {
     }
 }
 
-/// An advisory `flock` held for the duration of a spawn decision.
-///
-/// Scoped to the profile's runtime directory, so a dev instance and the
-/// production instance never contend (phux-zomb.2). The lock file is created
-/// once and never unlinked: an unlinked lock file is a new inode, and holders
-/// of the old inode would no longer exclude each other.
+/// An advisory `flock` held for the duration of a spawn decision, scoped to
+/// the profile's runtime dir. The lock file is never unlinked (a new inode
+/// would not exclude holders of the old one).
 struct SpawnLock(Option<std::fs::File>);
 
 impl SpawnLock {
-    /// Take the lock, waiting up to [`SPAWN_LOCK_TIMEOUT`].
-    ///
-    /// Returns an unlocked guard on any failure — a machine that cannot lock
-    /// must still be able to start a terminal multiplexer.
+    /// Take the lock, waiting up to [`SPAWN_LOCK_TIMEOUT`]; unlocked on failure.
     fn acquire(path: &Path) -> Self {
         let Some(parent) = path.parent() else {
             return Self(None);
@@ -1170,24 +871,16 @@ mod tests {
         }
     }
 
-    /// phux-nbam: the auto-spawn idle backstop accepts exactly what
-    /// `--exit-after-idle` accepts.
-    ///
-    /// The parent parses the variable and passes the flag, so a value the
-    /// parent waves through but the child's clap parser rejects would turn a
-    /// naked `phux` into a spawn failure. Pinning both to `1..=86_400` is what
-    /// keeps that from being possible.
+    /// The idle backstop accepts exactly what `--exit-after-idle` accepts.
     #[test]
     fn the_auto_spawn_idle_backstop_accepts_what_the_flag_accepts() {
         assert_eq!(parse_auto_spawn_idle("600"), Some(600));
         assert_eq!(parse_auto_spawn_idle("1"), Some(1));
         assert_eq!(parse_auto_spawn_idle("86400"), Some(86_400));
 
-        // Rejected exactly where the flag's `range(1..=86_400)` rejects.
         assert_eq!(parse_auto_spawn_idle("0"), None);
         assert_eq!(parse_auto_spawn_idle("86401"), None);
 
-        // And on anything that is not a whole number of seconds.
         assert_eq!(parse_auto_spawn_idle(""), None);
         assert_eq!(parse_auto_spawn_idle("600s"), None);
         assert_eq!(parse_auto_spawn_idle("1.5"), None);
@@ -1195,55 +888,33 @@ mod tests {
         assert_eq!(parse_auto_spawn_idle("forever"), None);
     }
 
-    /// PHA-406 L18 review item 3: `phux config check` flags
-    /// `limits.metadata-value-bytes` below the built-in agent-session
-    /// record floor (`phux-config::check::limits_findings`), but a config
-    /// file is not the only way to reach this value — the clamp itself has
-    /// to live here too, or a config that ships one anyway silently
-    /// breaks the built-in writes `reject_set_metadata` checks this cap
-    /// ahead of.
+    /// `metadata-value-bytes` is clamped up to the agent-session record floor and
+    /// passes through above it.
     #[test]
-    fn metadata_value_bytes_below_the_agent_session_record_floor_is_clamped_up() {
-        let limits = phux_config::LimitsCfg {
-            metadata_value_bytes: 0,
-        };
-        let cfg = build_server_config(
-            None,
-            Path::new("/tmp/phux-test.sock"),
-            phux_config::DefaultsCfg::default(),
-            phux_config::VoiceCfg::default(),
-            &limits,
-            phux_server::hooks::HookCatalog::default(),
-            None,
-            None,
-        );
-        assert_eq!(
-            cfg.metadata_value_bytes,
-            u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES).unwrap()
-        );
-    }
-
-    /// A configured value already at or above the floor passes through
-    /// unclamped.
-    #[test]
-    fn metadata_value_bytes_at_or_above_the_floor_passes_through() {
-        let limits = phux_config::LimitsCfg {
-            metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
-        };
-        let cfg = build_server_config(
-            None,
-            Path::new("/tmp/phux-test.sock"),
-            phux_config::DefaultsCfg::default(),
-            phux_config::VoiceCfg::default(),
-            &limits,
-            phux_server::hooks::HookCatalog::default(),
-            None,
-            None,
-        );
-        assert_eq!(
-            cfg.metadata_value_bytes,
-            phux_config::DEFAULT_METADATA_VALUE_BYTES
-        );
+    fn metadata_value_bytes_is_clamped_to_the_agent_session_record_floor() {
+        let floor =
+            u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES).unwrap();
+        for (configured, expected) in [
+            (0, floor),
+            (
+                phux_config::DEFAULT_METADATA_VALUE_BYTES,
+                phux_config::DEFAULT_METADATA_VALUE_BYTES,
+            ),
+        ] {
+            let cfg = build_server_config(
+                None,
+                Path::new("/tmp/phux-test.sock"),
+                phux_config::DefaultsCfg::default(),
+                phux_config::VoiceCfg::default(),
+                &phux_config::LimitsCfg {
+                    metadata_value_bytes: configured,
+                },
+                phux_server::hooks::HookCatalog::default(),
+                None,
+                None,
+            );
+            assert_eq!(cfg.metadata_value_bytes, expected);
+        }
     }
 
     #[test]
@@ -1252,23 +923,16 @@ mod tests {
             Path::new("/home/u/.config/phux/config.toml"),
             &"config.toml: 3:14: expected `=` after key",
         );
-        // The path the user must edit.
         assert!(msg.contains("/home/u/.config/phux/config.toml"), "{msg}");
-        // The real loader error, verbatim — never a misattributed one.
         assert!(
             msg.contains("config.toml: 3:14: expected `=` after key"),
             "{msg}"
         );
-        // The remedy, exactly as the bead specifies it.
         assert!(msg.contains("run: phux config check"), "{msg}");
     }
 
-    /// The startup info line carries pid + version + socket and passes the
-    /// DEFAULT filter (`phux=info,warn`, `telemetry::DEFAULT_FILTER`) into a
-    /// file sink — the attribution contract for the shared server log
-    /// (phux-i0e8.5.1). A scoped subscriber writes to a temp file exactly
-    /// like the auto-spawn stderr redirect does, so passing here means the
-    /// line lands in `$XDG_STATE_HOME/phux/server.log` in production.
+    /// The startup line carries pid, version, and socket and passes the default
+    /// filter into a file sink.
     #[test]
     #[allow(clippy::expect_used, reason = "test")]
     fn startup_line_lands_in_file_at_default_filter() {
@@ -1281,8 +945,7 @@ mod tests {
             .with_writer(std::sync::Mutex::new(file))
             .with_ansi(false);
         let subscriber = tracing_subscriber::registry()
-            // Mirrors telemetry::DEFAULT_FILTER (private const): the filter
-            // a server gets when RUST_LOG is unset.
+            // Mirrors telemetry::DEFAULT_FILTER.
             .with(tracing_subscriber::EnvFilter::new("phux=info,warn"))
             .with(layer);
         tracing::subscriber::with_default(subscriber, || {
@@ -1308,8 +971,7 @@ mod tests {
         );
     }
 
-    /// The auto-spawn stderr sink opens under a `0o700` parent with the log
-    /// itself at `0o600` — state-dir and log hardening (ADR-0028).
+    /// The server log opens under a `0o700` parent at `0o600` (ADR-0028).
     #[cfg(unix)]
     #[test]
     #[allow(clippy::expect_used, reason = "test")]
@@ -1335,28 +997,18 @@ mod tests {
     }
 
     #[test]
-    fn configured_connectors_all_run_by_default() {
+    fn connectors_all_run_by_default_and_connect_selects_one() {
         let configured = vec![
             connector("one.example:4433", "/one"),
             connector("two.example:4433", "/two"),
         ];
         assert_eq!(select_connectors(configured.clone(), None), configured);
-    }
-
-    #[test]
-    fn connect_selects_one_configured_relay_with_its_credentials() {
-        let selected = select_connectors(
-            vec![
-                connector("one.example:4433", "/one"),
-                connector("two.example:4433", "/two"),
-            ],
-            Some("two.example:4433"),
+        assert_eq!(
+            select_connectors(configured, Some("two.example:4433")),
+            vec![connector("two.example:4433", "/two")]
         );
-        assert_eq!(selected, vec![connector("two.example:4433", "/two")]);
-    }
 
-    #[test]
-    fn connect_allows_an_ad_hoc_loopback_relay() {
+        // An unconfigured relay is allowed ad hoc, without credentials.
         let selected = select_connectors(Vec::new(), Some("127.0.0.1:4433"));
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].relay, "127.0.0.1:4433");

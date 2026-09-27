@@ -1,13 +1,6 @@
-//! Stalled peers for the `run` / `wait` deadline tests (phux-69pq.10).
-//!
-//! Both verbs own a `--timeout`, and before phux-69pq.10 they only checked
-//! it between screen reads, so a server that accepted the connection and
-//! then never answered held the CLI forever. These helpers stand up exactly
-//! that server on a private socket and assert the verb gives up with its
-//! documented timeout code, on time.
-//!
-//! The CLI entry points build their own runtime and block on it, so the peer
-//! runs on its own thread with its own runtime rather than as a task.
+//! Stalled peers for the `run` / `wait` deadline tests: a server that accepts
+//! and then never answers, on a private socket and its own thread, so the
+//! verbs must give up with their timeout code on time.
 
 #![allow(clippy::expect_used, reason = "test harness")]
 
