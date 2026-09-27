@@ -1,4 +1,4 @@
-//! Submodule for runtime internals.
+//! Control-plane command handlers and pane spawning.
 
 use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
@@ -29,16 +29,8 @@ use crate::terminal_actor::{
     TerminalHandle,
 };
 
-/// The command-result shape of a Terminal-only request aimed at a resource
-/// of another kind. Every command handler that reaches a Terminal facet
-/// maps [`ResourceHandle::terminal`]'s error through here, so the wire code
-/// for the condition is chosen in one place.
 /// The per-pane answer to "does this Terminal own a live `AgentSession`
-/// child?", bound for `terminal` (ADR-0103 §5).
-///
-/// One state-lock read per detector tick — the detector ticks at 100 to 500
-/// ms per pane and the read is a children walk over one slotmap, so this is
-/// cheaper than the screen projection it gates.
+/// child?" (ADR-0103 §5), read once per detector tick.
 fn live_session_probe(
     state: &SharedState,
     terminal: phux_core::ids::ResourceId,
@@ -47,6 +39,8 @@ fn live_session_probe(
     std::rc::Rc::new(move || state.with(|s| s.has_live_agent_session_child(terminal)))
 }
 
+/// The command-result shape of a Terminal-only request aimed at a resource
+/// of another kind.
 pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::WrongResourceKind,
@@ -54,36 +48,25 @@ pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
     }
 }
 
-/// The grid a pane is built at when nothing better is known: the classic
-/// VT100 default, and the same dims `phux_core::Registry::new_terminal`
-/// stamps on a fresh descriptor.
-///
-/// Every path that reaches this constant is one where the eventual geometry
-/// arrives later — a seed pane whose attaching client applies its viewport
-/// through `apply_attach_viewport` before any bootstrap exists, or a spawn
-/// from a caller that did not supply `SPAWN_RESOURCE.initial_size`. A
-/// layout-owning consumer that DOES know the tile should send it (phux-a5xj)
-/// rather than let the pane bootstrap here and be reflowed afterwards.
+/// The grid a pane is built at when its real geometry arrives later (an
+/// attaching viewport, or a spawn without `SPAWN_RESOURCE.initial_size`).
 pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = crate::state::HEADLESS_TERMINAL_DIMS;
 
 /// Who and what caused a pane's spawn, for its `pane_spawned` stamp
-/// (ADR-0123): the spawning connection and the idempotency key of its
-/// `SPAWN_RESOURCE`. `Default` is a server-driven spawn, such as a seed pane.
+/// (ADR-0123). `Default` is a server-driven spawn, such as a seed pane.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct SpawnAttribution {
     /// The connection that asked for the pane.
     pub(crate) actor: Option<ClientId>,
-    /// The spawn's idempotency key (`SPAWN_RESOURCE` field 17, ADR-0126).
+    /// The spawn's idempotency key (ADR-0126).
     pub(crate) operation_id: Option<phux_protocol::ids::IdempotencyKey>,
-    /// Seconds the pane is retained after its process exits (ADR-0124),
-    /// already resolved against `defaults.retain-on-exit*`; `None` closes it
-    /// at exit. Recorded in the lock that registers the pane.
+    /// Seconds the pane is retained after its process exits (ADR-0124);
+    /// `None` falls back to `defaults.retain-on-exit`.
     pub(crate) retain_secs: Option<u32>,
 }
 
-/// Where a session's seed pane came from: the agent-session provenance its
-/// create request carried, and who asked for it (ADR-0123). `Default` is a
-/// server-driven seed (the startup session, an attach `CreateIfMissing`).
+/// Where a session's seed pane came from: its agent-session provenance and
+/// who asked for it (ADR-0123). `Default` is a server-driven seed.
 #[derive(Debug, Default)]
 pub(crate) struct SeedOrigin {
     /// Opaque native agent-session provenance to install on the pane.
@@ -92,20 +75,9 @@ pub(crate) struct SeedOrigin {
     pub(crate) attribution: SpawnAttribution,
 }
 
-/// Journal a pane's `pane_spawned` (phux-8uly, [SPEC](../../../../docs/spec/L1.md)
-/// §7.1) in the lock that registers its actor.
-///
-/// Every Terminal the server creates is announced, the seed pane of a new
-/// session as much as a `SPAWN_RESOURCE` into an existing one, with the same
-/// event shape, so a server-wide follower (ADR-0089's fleet-inbox roster,
-/// `phux agent wait --any`) observes session creation, not merely the
-/// creations it asked for.
-///
-/// Journaling here, before the pane's exit watcher exists, is what makes
-/// the journal causal (ADR-0123): a process that exits at once still has
-/// its `pane_spawned` take a lower `seq` than its `pane_closed`. The
-/// spawner may still see `RESOURCE_SPAWNED` before the event; only the
-/// journal order has to be causal.
+/// Journal a pane's `pane_spawned` (L1 §7.1) in the lock that registers its
+/// actor, so it always takes a lower `seq` than the pane's `pane_closed`
+/// (ADR-0123).
 fn journal_pane_spawned(
     s: &mut crate::state::ServerState,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
@@ -123,69 +95,101 @@ fn journal_pane_spawned(
     let _ = s.record_and_fanout(record);
 }
 
-pub(crate) fn seed_session_with_actor(
-    state: &SharedState,
-    name: &str,
-    scrollback: phux_config::ScrollbackLimits,
-    root_token: &CancellationToken,
-) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
-    seed_session_with_actor_and_metadata(state, name, scrollback, root_token, SeedOrigin::default())
+/// Install agent-session provenance on a freshly registered pane.
+fn set_agent_session(
+    s: &mut crate::state::ServerState,
+    wire: phux_protocol::ids::ResourceId,
+    agent_session: Option<Vec<u8>>,
+) {
+    if let Some(value) = agent_session {
+        s.metadata_set(
+            &phux_protocol::wire::frame::Scope::Resource(wire),
+            phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
+            value,
+        );
+    }
 }
 
-fn seed_session_with_actor_and_metadata(
+/// Registry-side setup every PTY pane shares: stamp its spawn cwd and tell
+/// the child which pane and server it belongs to. Returns the wire id.
+fn register_pty_command(
+    s: &mut crate::state::ServerState,
+    terminal: phux_core::ids::ResourceId,
+    cmd: &mut portable_pty::CommandBuilder,
+) -> phux_protocol::ids::ResourceId {
+    stamp_spawn_cwd(s, terminal, spawn_cwd_of(cmd));
+    let wire = s.intern_terminal_wire(terminal);
+    crate::terminal_actor::apply_terminal_id(cmd, &wire);
+    crate::terminal_actor::apply_server_socket(cmd, s.server_socket_path());
+    wire
+}
+
+/// Build and start the actor for an already-registered pane: install its
+/// event (and, with a PTY, agent-state) sinks, journal `pane_spawned`, and
+/// start its drains and exit watcher. A build failure reaps the pane.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every input must be true of the pane before its actor becomes visible to another client"
+)]
+fn launch_pane_actor(
     state: &SharedState,
-    name: &str,
+    terminal: phux_core::ids::ResourceId,
+    cmd: Option<portable_pty::CommandBuilder>,
+    (cols, rows): (u16, u16),
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-    origin: SeedOrigin,
-) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
-    use phux_core::ids::ResourceId;
-    let SeedOrigin {
-        agent_session,
-        attribution,
-    } = origin;
-    let terminal: ResourceId = state.with_mut(|s| {
-        let terminal = s.seed_session(name).2;
-        if let Some(value) = agent_session {
-            let wire = s.intern_terminal_wire(terminal);
-            s.metadata_set(
-                &phux_protocol::wire::frame::Scope::Resource(wire),
-                phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
-                value,
-            );
-        }
-        terminal
-    });
-    // No-PTY actor: nothing to size against, so the default stands until a
-    // client's viewport arrives (phux-4hp's VIEWPORT_RESIZE wiring).
+    default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+    attribution: SpawnAttribution,
+) -> Result<phux_protocol::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+    let has_pty = cmd.is_some();
     let terminal_token = root_token.child_token();
-    let (cols, rows) = DEFAULT_SPAWN_DIMS;
-    let bundle =
-        match TerminalActor::build_with_token(cols, rows, None, scrollback, terminal_token.clone())
-        {
-            Ok(bundle) => bundle,
-            Err(err) => {
-                state.with_mut(|s| s.reap_terminal(terminal));
-                return Err(err);
-            }
-        };
+    let bundle = match TerminalActor::build_with_token_and_colors(
+        cols,
+        rows,
+        cmd,
+        scrollback,
+        terminal_token.clone(),
+        default_colors,
+    ) {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            state.with_mut(|s| s.reap_terminal(terminal));
+            return Err(err);
+        }
+    };
     let crate::terminal_actor::TerminalActorBundle {
         mut actor,
         handle,
         exit_notify,
         ..
     } = bundle;
-    // A no-PTY pane sources no output events, but its supervisory
-    // `terminal_control` (take / give) rides the same sink as every other
-    // pane's, so it is journaled like theirs (ADR-0123).
+    // Sinks go in before `actor.run()` consumes the actor.
     let (event_sink, event_source) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
     actor.set_event_sink(event_sink);
+    let agent_rx = has_pty.then(|| {
+        let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
+        actor.set_agent_state_sink(agent_tx);
+        actor.set_live_session_probe(live_session_probe(state, terminal));
+        agent_rx
+    });
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
+        if has_pty {
+            // ADR-0124: a spawn that did not ask gets the operator's default.
+            let retain = attribution
+                .retain_secs
+                .or_else(|| s.retain_policy().resolve(None));
+            if let Some(secs) = retain {
+                s.note_retain_request(terminal, secs);
+            }
+        }
         let wire = s.intern_terminal_wire(terminal);
         journal_pane_spawned(s, &wire, attribution);
         wire
     });
+    if let Some(agent_rx) = agent_rx {
+        spawn_agent_state_drain(state.clone(), wire_terminal_id.clone(), agent_rx);
+    }
     spawn_terminal_exit_watcher(
         state.clone(),
         terminal,
@@ -196,7 +200,39 @@ fn seed_session_with_actor_and_metadata(
             source: event_source,
         }),
     );
-    // docs/consumers/tui.md §9 (phux-r82.1): the pane's actor is live.
+    Ok(wire_terminal_id)
+}
+
+/// Seed `(session, window, pane)` named `name`; the pane runs `cmd` in a PTY,
+/// or is a no-PTY actor when `cmd` is `None`.
+fn seed_session(
+    state: &SharedState,
+    name: &str,
+    mut cmd: Option<portable_pty::CommandBuilder>,
+    scrollback: phux_config::ScrollbackLimits,
+    root_token: &CancellationToken,
+    default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+    origin: SeedOrigin,
+) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+    let terminal = state.with_mut(|s| {
+        let terminal = s.seed_session(name).2;
+        let wire = match cmd.as_mut() {
+            Some(cmd) => register_pty_command(s, terminal, cmd),
+            None => s.intern_terminal_wire(terminal),
+        };
+        set_agent_session(s, wire, origin.agent_session);
+        terminal
+    });
+    let wire_terminal_id = launch_pane_actor(
+        state,
+        terminal,
+        cmd,
+        DEFAULT_SPAWN_DIMS,
+        scrollback,
+        root_token,
+        default_colors,
+        origin.attribution,
+    )?;
     crate::hooks::fire_hook(
         state,
         crate::hooks::HookEvent::after_new_pane(&wire_terminal_id, Some(name)),
@@ -204,24 +240,25 @@ fn seed_session_with_actor_and_metadata(
     Ok(terminal)
 }
 
-/// Seed `(session, window, pane)` and spawn a **PTY-backed**
-/// `TerminalActor` running `cmd`. Sibling of the private
-/// `seed_session_with_actor` helper for the real server path
-/// (`phux-byc.5`).
-///
-/// Call sites:
-///
-/// * The `phux server` binary entry point, via
-///   [`super::ServerConfig::seed_with_pty`] (with
-///   [`super::ServerConfig::seed_command`]
-///   left `None` to fall back to
-///   [`crate::terminal_actor::default_shell_command`] — the resolved
-///   default shell: `defaults.shell`, then `$SHELL`, then `/bin/sh`
-///   per the byc.5 convention).
-/// * Anything embedding `phux-server` and wanting a specific command
-///   (e.g. an integration test driving a known fixture; see the
-///   `input_dispatch.rs` test, which seeds with `cat` to get
-///   deterministic echo).
+/// Seed a session whose pane is a no-PTY actor (no child process).
+pub(crate) fn seed_session_with_actor(
+    state: &SharedState,
+    name: &str,
+    scrollback: phux_config::ScrollbackLimits,
+    root_token: &CancellationToken,
+) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
+    seed_session(
+        state,
+        name,
+        None,
+        scrollback,
+        root_token,
+        None,
+        SeedOrigin::default(),
+    )
+}
+
+/// Seed `(session, window, pane)` with a PTY-backed pane running `cmd`.
 pub fn seed_session_with_pty(
     state: &SharedState,
     name: &str,
@@ -241,116 +278,15 @@ pub fn seed_session_with_pty_and_colors(
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
-    seed_session_with_pty_and_colors_and_metadata(
+    seed_session(
         state,
         name,
-        cmd,
+        Some(cmd),
         scrollback,
         root_token,
         default_colors,
         SeedOrigin::default(),
     )
-}
-
-fn seed_session_with_pty_and_colors_and_metadata(
-    state: &SharedState,
-    name: &str,
-    mut cmd: portable_pty::CommandBuilder,
-    scrollback: phux_config::ScrollbackLimits,
-    root_token: &CancellationToken,
-    default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
-    origin: SeedOrigin,
-) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
-    use phux_core::ids::ResourceId;
-    let SeedOrigin {
-        agent_session,
-        attribution,
-    } = origin;
-    // phux-p4vp: capture the spawn-time working directory before `cmd`
-    // is moved into the actor build below, so it can be stamped onto the
-    // pane's registry descriptor (see `stamp_spawn_cwd`).
-    let spawn_cwd = spawn_cwd_of(&cmd);
-    let terminal: ResourceId = state.with_mut(|s| {
-        let terminal = s.seed_session(name).2;
-        stamp_spawn_cwd(s, terminal, spawn_cwd);
-        let wire = s.intern_terminal_wire(terminal);
-        crate::terminal_actor::apply_terminal_id(&mut cmd, &wire);
-        crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
-        if let Some(value) = agent_session {
-            s.metadata_set(
-                &phux_protocol::wire::frame::Scope::Resource(wire),
-                phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
-                value,
-            );
-        }
-        terminal
-    });
-    let terminal_token = root_token.child_token();
-    let (cols, rows) = DEFAULT_SPAWN_DIMS;
-    let bundle = match TerminalActor::build_with_token_and_colors(
-        cols,
-        rows,
-        Some(cmd),
-        scrollback,
-        terminal_token.clone(),
-        default_colors,
-    ) {
-        Ok(bundle) => bundle,
-        Err(err) => {
-            state.with_mut(|s| s.reap_terminal(terminal));
-            return Err(err);
-        }
-    };
-    let crate::terminal_actor::TerminalActorBundle {
-        mut actor,
-        handle,
-        exit_notify,
-        ..
-    } = bundle;
-    // phux-y2t: wire the actor's agent-event sink and spawn a drain task
-    // that fans bell / title / dirty / idle events out to event-stream
-    // subscribers scoped to this pane. The wire `ResourceId` is interned
-    // up front (stable for the pane's lifetime) and captured by the drain.
-    let (event_sink, event_source) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
-    actor.set_event_sink(event_sink);
-    // ADR-0046: same shape as the event sink, and for the same reason — the
-    // sink MUST be installed before `actor.run()` moves the actor into the
-    // spawn, while the wire `ResourceId` the drain needs only exists after.
-    let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
-    actor.set_agent_state_sink(agent_tx);
-    actor.set_live_session_probe(live_session_probe(state, terminal));
-    let wire_terminal_id = state.with_mut(|s| {
-        let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
-        // ADR-0124: a spawn that did not ask gets the operator's default, so
-        // `defaults.retain-on-exit` covers seed and session-create panes too.
-        let retain = attribution
-            .retain_secs
-            .or_else(|| s.retain_policy().resolve(None));
-        if let Some(secs) = retain {
-            s.note_retain_request(terminal, secs);
-        }
-        let wire = s.intern_terminal_wire(terminal);
-        journal_pane_spawned(s, &wire, attribution);
-        wire
-    });
-    spawn_agent_state_drain(state.clone(), wire_terminal_id.clone(), agent_rx);
-    spawn_terminal_exit_watcher(
-        state.clone(),
-        terminal,
-        exit_notify,
-        root_token.clone(),
-        Some(PaneEvents {
-            wire: wire_terminal_id.clone(),
-            source: event_source,
-        }),
-    );
-    // docs/consumers/tui.md §9 (phux-r82.1): the pane's actor is live and
-    // its PTY child spawned.
-    crate::hooks::fire_hook(
-        state,
-        crate::hooks::HookEvent::after_new_pane(&wire_terminal_id, Some(name)),
-    );
-    Ok(terminal)
 }
 
 /// Registry ownership address for a newly spawned pane.
@@ -362,19 +298,13 @@ pub(crate) enum SpawnOwnership {
     Terminal(phux_protocol::ids::ResourceId),
 }
 
-/// Palette-seeded split variant. The spawning client's advertised defaults
-/// are installed before the child PTY is parsed.
-///
-/// `initial_size` is the `(cols, rows)` the caller already knows the new
-/// leaf will occupy (phux-a5xj, `SPAWN_RESOURCE.initial_size`). It sizes the
-/// libghostty grid, the PTY winsize, and the registry `dims` in the same
-/// transaction that creates the pane, so the bootstrap generation the server
-/// then captures is already the client's real geometry and the reflow
-/// `RESIZE_TERMINAL` that follows is a no-op instead of a tombstone. `None`
-/// keeps [`DEFAULT_SPAWN_DIMS`].
+/// Add a PTY pane under `ownership`. `initial_size` (`SPAWN_RESOURCE`) sizes
+/// the grid, PTY, and registry dims in the transaction that creates the pane,
+/// so its first bootstrap is already at the client's geometry. `Ok(None)`
+/// means the owner has no window to host the pane.
 #[allow(
     clippy::too_many_arguments,
-    reason = "one pane-creation transaction: ownership, argv, history bound, cancellation, palette, resume provenance, and geometry all have to be in hand before the actor is built, because every one of them must be true of the pane before it becomes visible to another client. A parameter struct would name the same set once instead of at each of the three call sites."
+    reason = "every input must be true of the pane before its actor becomes visible to another client"
 )]
 pub(crate) fn spawn_pane_with_pty_and_colors(
     state: &SharedState,
@@ -387,99 +317,34 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     initial_size: Option<(u16, u16)>,
     attribution: SpawnAttribution,
 ) -> Result<Option<phux_core::ids::ResourceId>, crate::terminal_actor::TerminalActorError> {
-    use phux_core::ids::ResourceId;
-    // Clamp exactly as `TerminalActor::handle_resize` does: libghostty has no
-    // zero-dimension grid. Callers upstream already drop an all-zero hint, so
-    // this is belt-and-braces for the in-process call sites.
-    let (cols, rows) = initial_size.map_or(DEFAULT_SPAWN_DIMS, |(cols, rows)| {
+    // libghostty has no zero-dimension grid.
+    let dims = initial_size.map_or(DEFAULT_SPAWN_DIMS, |(cols, rows)| {
         (cols.max(1), rows.max(1))
     });
-    // phux-p4vp: same spawn-time cwd capture as `seed_session_with_pty`.
-    let spawn_cwd = spawn_cwd_of(&cmd);
-    let Some(terminal): Option<ResourceId> = state.with_mut(|s| {
+    let Some(terminal) = state.with_mut(|s| {
         let terminal = match ownership {
             SpawnOwnership::Session(session) => s.add_pane_to_session(*session)?,
             SpawnOwnership::Terminal(owner) => s.add_pane_to_terminal_owner(owner)?,
         };
-        stamp_spawn_cwd(s, terminal, spawn_cwd);
-        // Keep the registry's recorded dims in step with the grid the actor
-        // is about to be built at, so `GET_STATE` and the ATTACHED snapshot
-        // report the pane's real geometry from its first instant rather than
-        // the `Registry::new_terminal` 80x24 placeholder.
         if let Some(pane) = s.registry_mut().terminal_mut(terminal) {
-            pane.dims = (cols, rows);
+            pane.dims = dims;
         }
-        let wire_terminal = s.intern_terminal_wire(terminal);
-        crate::terminal_actor::apply_terminal_id(&mut cmd, &wire_terminal);
-        crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
-        if let Some(value) = agent_session {
-            s.metadata_set(
-                &phux_protocol::wire::frame::Scope::Resource(wire_terminal),
-                phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
-                value,
-            );
-        }
+        let wire = register_pty_command(s, terminal, &mut cmd);
+        set_agent_session(s, wire, agent_session);
         Some(terminal)
     }) else {
         return Ok(None);
     };
-    let terminal_token = root_token.child_token();
-    let bundle = match TerminalActor::build_with_token_and_colors(
-        cols,
-        rows,
-        Some(cmd),
-        scrollback,
-        terminal_token.clone(),
-        default_colors,
-    ) {
-        Ok(bundle) => bundle,
-        Err(err) => {
-            state.with_mut(|s| s.reap_terminal(terminal));
-            return Err(err);
-        }
-    };
-    let crate::terminal_actor::TerminalActorBundle {
-        mut actor,
-        handle,
-        exit_notify,
-        ..
-    } = bundle;
-    // Same agent-event wiring as the seed path (phux-y2t): intern the wire id
-    // up front and spawn the per-pane event drain.
-    let (event_sink, event_source) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
-    actor.set_event_sink(event_sink);
-    // ADR-0046: same shape as the event sink, and for the same reason — the
-    // sink MUST be installed before `actor.run()` moves the actor into the
-    // spawn, while the wire `ResourceId` the drain needs only exists after.
-    let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(AGENT_STATE_SINK_CAPACITY);
-    actor.set_agent_state_sink(agent_tx);
-    actor.set_live_session_probe(live_session_probe(state, terminal));
-    let wire_terminal_id = state.with_mut(|s| {
-        let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
-        // ADR-0124: a spawn that did not ask gets the operator's default, so
-        // `defaults.retain-on-exit` covers seed and session-create panes too.
-        let retain = attribution
-            .retain_secs
-            .or_else(|| s.retain_policy().resolve(None));
-        if let Some(secs) = retain {
-            s.note_retain_request(terminal, secs);
-        }
-        let wire = s.intern_terminal_wire(terminal);
-        journal_pane_spawned(s, &wire, attribution);
-        wire
-    });
-    spawn_agent_state_drain(state.clone(), wire_terminal_id.clone(), agent_rx);
-    spawn_terminal_exit_watcher(
-        state.clone(),
+    let wire_terminal_id = launch_pane_actor(
+        state,
         terminal,
-        exit_notify,
-        root_token.clone(),
-        Some(PaneEvents {
-            wire: wire_terminal_id.clone(),
-            source: event_source,
-        }),
-    );
-    // docs/consumers/tui.md §9 (phux-r82.1): the split pane's actor is live.
+        Some(cmd),
+        dims,
+        scrollback,
+        root_token,
+        default_colors,
+        attribution,
+    )?;
     let session_name = state.with(|s| {
         let window = s.registry().resource(terminal)?.window?;
         let session = s.registry().window(window)?.session;
@@ -492,27 +357,16 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     Ok(Some(terminal))
 }
 
-/// The working directory a PTY child spawned from `cmd` starts in
-/// (phux-p4vp): the builder's explicit cwd when set, else the server
-/// process's own CWD (which the child inherits). `None` only when the
-/// server's CWD itself is unreadable.
+/// The directory a PTY child spawned from `cmd` starts in: the builder's cwd,
+/// else the server's own (which the child inherits).
 fn spawn_cwd_of(cmd: &portable_pty::CommandBuilder) -> Option<std::path::PathBuf> {
     cmd.get_cwd()
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
 }
 
-/// Stamp a freshly-spawned pane's working directory onto its registry
-/// descriptor (phux-p4vp).
-///
-/// `phux_core::Registry::new_terminal` initializes `TerminalDescriptor.cwd`
-/// to the empty path, and `build_session_snapshot` filters an empty path
-/// to a wire `cwd: None` — so without this stamp the ATTACHED
-/// `SessionSnapshot.resources[].cwd` never populates for normally spawned
-/// panes and the TUI sidebar's per-window VCS branch line stays blank.
-/// The stamped value is the spawn-time directory; attach refreshes it
-/// from the live PTY child (see
-/// [`crate::runtime::attach::refresh_registry_cwds`]).
+/// Stamp a new pane's spawn cwd onto its registry descriptor; without it the
+/// ATTACHED snapshot reports no cwd until attach refreshes it from the child.
 fn stamp_spawn_cwd(
     s: &mut crate::state::ServerState,
     terminal: phux_core::ids::ResourceId,
@@ -525,23 +379,12 @@ fn stamp_spawn_cwd(
     }
 }
 
-/// Bounded capacity of the per-pane agent-event sink (SPEC §7.5,
-/// phux-y2t). Small: events are coalesced (one `dirty` per burst, one
-/// `idle` to close it), and a full sink drops the event rather than
-/// stalling the actor's hot PTY-pump loop. Every drop is counted and
-/// journaled as a `source_gap` for the pane (ADR-0123), so raising this is
-/// never how a loss gets fixed.
+/// Per-pane agent-event sink capacity (SPEC §7.5). A full sink drops and
+/// journals a `source_gap` rather than stalling the PTY pump.
 pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 
-/// Bounded capacity of the per-pane agent-state sink (ADR-0046).
-///
-/// Tiny, because the detector is edge-filtered: it emits only on a real
-/// change of the derived `(kind, name, state)` tuple, so a steady `working`
-/// pane produces nothing at all. Eight is already far more than a pane can
-/// plausibly queue between drains, and a full sink drops rather than stalls —
-/// which is safe here in a way it would not be for an edge-triggered design:
-/// the detector re-derives from scratch on its next tick, so a dropped event
-/// is re-published, not lost.
+/// Per-pane agent-state sink capacity (ADR-0046). The detector is
+/// edge-filtered and re-derives each tick, so a dropped event is re-published.
 pub(crate) const AGENT_STATE_SINK_CAPACITY: usize = 8;
 
 /// Handle a client's `RESIZE_TERMINAL` (L1 §3.1).
@@ -4030,20 +3873,22 @@ pub(crate) fn handle_detach_clients(state: &SharedState, session: Option<&str>) 
     CommandResult::OkWith(CommandValue::Json(count.to_string()))
 }
 
-/// Create a named session and seed its pane, *without* attaching — the
-/// create-without-attach path the v0.3.0 "Option B" re-tier (ADR-0019 /
-/// ADR-0027) routes through the conventional
-/// [`phux_protocol::wire::frame::SESSION_CREATE_KEY`] L3 metadata write
-/// (replacing the removed `CREATE_SESSION` verb).
+/// A PTY command from a non-empty request argv.
+pub(crate) fn argv_command(argv: Option<Vec<String>>) -> Option<portable_pty::CommandBuilder> {
+    let mut argv = argv?.into_iter();
+    let mut builder = portable_pty::CommandBuilder::new(argv.next()?);
+    for arg in argv {
+        builder.arg(arg);
+    }
+    Some(builder)
+}
+
+/// Create a named session and seed its pane without attaching: the
+/// `SESSION_CREATE_KEY` metadata write (ADR-0019 / ADR-0027).
 ///
-/// Existence check and seed both run on the single-threaded runtime, so the
-/// lookup→create sequence is atomic with respect to other clients: two
-/// racing create requests for the same `name` cannot both succeed. Returns
-/// `Ok(wire_id)` on success (the seed pane's wire [`phux_core::ids::ResourceId`],
-/// which the
-/// caller publishes under a result key for the client to read back), or
-/// `Err(message)` if `name` is already taken or the seed fails. Because
-/// `SET_METADATA` has no reply frame, the error is for logging only.
+/// The existence check and seed run on the single-threaded runtime, so two
+/// racing creates for one `name` cannot both succeed. Returns the seed pane's
+/// wire id; `Err` is log-only because `SET_METADATA` has no reply frame.
 pub(crate) fn create_named_session(
     state: &SharedState,
     name: &str,
@@ -4068,46 +3913,24 @@ pub(crate) fn create_named_session(
         )
     });
 
-    let seed_result = if with_pty {
-        // Command precedence mirrors `resolve_create_if_missing`: an explicit
-        // server-wide override (set by tests for a deterministic child) wins,
-        // then the request `command`, then the default shell.
-        let mut seed_cmd = override_cmd.unwrap_or_else(|| match command {
-            Some(argv) if !argv.is_empty() => {
-                let mut head = argv.into_iter();
-                let program = head.next().unwrap_or_default();
-                let mut builder = portable_pty::CommandBuilder::new(program);
-                for arg in head {
-                    builder.arg(arg);
-                }
-                builder
-            }
-            _ => crate::terminal_actor::default_shell_command(&shell, login_shell),
+    let seed_cmd = with_pty.then(|| {
+        // A server-wide override wins, then the request argv, then the shell.
+        let mut seed_cmd = override_cmd.unwrap_or_else(|| {
+            argv_command(command).unwrap_or_else(|| {
+                crate::terminal_actor::default_shell_command(&shell, login_shell)
+            })
         });
-        // phux-0v1l: apply the wire cwd through the shared validate-and-fall-
-        // back helper, uniform with the attach CreateIfMissing seed path.
-        // Previously this passed the wire cwd through UNVALIDATED (a stale
-        // path failed the seed) and only applied it when there was no
-        // override command; now it is validated (existence + enterability),
-        // applied over a cwd-less builder, and dropped with a warn on an
-        // invalid path so a bad cwd never fails the create.
+        // An invalid cwd is dropped with a warn, never failing the create.
         crate::terminal_actor::apply_spawn_cwd(&mut seed_cmd, cwd, name);
         for (key, value) in env {
             seed_cmd.env(key, value);
         }
         crate::terminal_actor::apply_term(&mut seed_cmd, &term);
-        seed_session_with_pty_and_colors_and_metadata(
-            state, name, seed_cmd, scrollback, root_token, None, origin,
-        )
-    } else {
-        seed_session_with_actor_and_metadata(state, name, scrollback, root_token, origin)
-    };
-
-    match seed_result {
+        seed_cmd
+    });
+    match seed_session(state, name, seed_cmd, scrollback, root_token, None, origin) {
         Ok(core_terminal) => {
-            // A successful headless create arms the same last-session
-            // self-exit as an attached client. This keeps control-only
-            // servers from lingering after their managed sessions stop.
+            // A headless create arms the last-session self-exit like an attach.
             let wire = state.with_mut(|s| {
                 s.arm_self_exit();
                 s.intern_terminal_wire(core_terminal)
