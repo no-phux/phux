@@ -287,7 +287,10 @@ mod tests {
     #[test]
     fn build_kind_probe_round_trips_and_ignores_old_binaries() {
         for kind in [BuildKind::Release, BuildKind::Local, BuildKind::Dev] {
-            assert_eq!(BuildKind::parse(&format!("{}\n", kind.as_str())), Some(kind));
+            assert_eq!(
+                BuildKind::parse(&format!("{}\n", kind.as_str())),
+                Some(kind)
+            );
         }
         // A binary from before the probe prints its `--version` line.
         assert_eq!(BuildKind::parse("phux 0.45.0\n"), None);
