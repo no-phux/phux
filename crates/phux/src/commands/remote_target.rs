@@ -1,58 +1,21 @@
-//! `phux --remote [USER@]HOST[:PORT]` — the one-shot remote front door.
-//!
-//! Everything a remote attach needs already existed: a QUIC transport
-//! (ADR-0007), auto-provisioned TLS with a token store (ADR-0031), a
-//! `[[remote]]` registry that turns a name into an endpoint + pin + token
-//! (ADR-0055), a listener the server binds on its overlay address without
-//! being asked (ADR-0081). What did not exist is the spelling people
-//! actually reach for. `ssh user@host` needs no prior setup on the client,
-//! so `phux --remote user@host` must not either.
-//!
-//! This module is the resolution ladder that closes that gap, cheapest rung
+//! `phux --remote [USER@]HOST[:PORT]` — the one-shot remote front door: like
+//! `ssh user@host`, no prior client setup. The resolution ladder, cheapest
 //! first:
 //!
-//! 1. **A registered host.** The steady state, and the whole point: a
-//!    `[[remote]]` entry supplies the endpoint, the pin, and the token, so
-//!    the dial is a direct QUIC connection with no ssh anywhere in it.
-//! 2. **A pasted connect code.** `--code 'https://phux.sh/connect?...'`
-//!    — the same artifact `phux pair --qr` renders for a phone. Registers the host from
-//!    the link and dials. No ssh, no shell on the far end.
-//! 3. **A one-time ssh bootstrap.** No entry and no code: install and start
-//!    the far end's per-user service, run `phux pair` over the operator's
-//!    existing ssh trust, register what it mints, and dial. This happens once
-//!    per host; rung 1 catches every later invocation.
-//! 4. **An honest refusal** naming both remedies, when ssh cannot help.
+//! 1. a registered `[[remote]]` entry: a direct QUIC dial, no ssh;
+//! 2. a pasted `--code` connect link: register from the link and dial;
+//! 3. a one-time ssh bootstrap: install the far end's service, run `phux pair`
+//!    over ssh, register, and dial (rung 1 catches every later invocation);
+//! 4. a refusal naming both remedies.
 //!
-//! A registered host that stops answering is repaired here too, in the
-//! order an operator would try by hand ([`run`]): nobody answered, so
-//! start the server over ssh and dial again with the saved credentials;
-//! still refused, so re-pair; ssh itself failed, so say both. `phux attach
-//! NAME` reaches the same ladder through [`run_registered`], so the two
-//! spellings cannot differ. An `ssh://` entry that kept a paired `direct`
-//! route tries that route first and promotes it once it answers.
+//! A registered host that stops answering is repaired here too ([`run`]):
+//! start its server over ssh, then re-pair, then report both errors. `phux
+//! attach NAME` reaches the same ladder through [`run_registered`], and `phux
+//! host add HOST` registers through the same tail (ADR-0122).
 //!
-//! `phux host add HOST` is the same setup without the attach (ADR-0122);
-//! both register through one tail (`host::enroll_remote_over_ssh`).
-//!
-//! ## What `user@` means here
-//!
-//! It is a *label*, not a wire identity. phux runs one server per user
-//! (ADR-0003) and the QUIC preamble carries a bearer token, not a username —
-//! so which server you reach is decided by the address and port, and the
-//! `user@` half only names the ssh destination for rung 3 and the registry
-//! key that remembers the result. Two users on one host are two ports (or
-//! two registry entries), not one endpoint disambiguated on the wire. Being
-//! explicit about this is what keeps `--remote` from reading as a promise
-//! the protocol does not make.
-//!
-//! ## Why the ssh rung installs a service
-//!
-//! A remote attach is a request for work on that machine, not merely a request
-//! to mint credentials. Leaving the host paired but unable to answer until the
-//! operator discovers a second setup verb violates that intent. Rung 3
-//! therefore reuses the idempotent, per-user `phux service install` path before
-//! pairing. `--no-enroll` remains the explicit no-ssh/no-provisioning boundary,
-//! and a pasted connect code never shells into or changes the remote host.
+//! `user@` is a label for the ssh destination and registry key, not a wire
+//! identity: the server reached is decided by address and port (ADR-0003).
+//! `--no-enroll` is the no-ssh boundary; a pasted code never touches the host.
 
 use std::process::ExitCode;
 
@@ -83,13 +46,8 @@ pub(crate) struct RemoteTarget {
 }
 
 impl RemoteTarget {
-    /// Parse `host`, `user@host`, `host:port`, `user@host:port`, and their
-    /// bracketed-IPv6 spellings.
-    ///
-    /// Rejects a URI rather than guessing at it: `--remote quic://mini:8788`
-    /// is a real thing an operator will try, and the endpoint they want is
-    /// already expressible through `phux host add`, so the error names that
-    /// instead of quietly accepting a second endpoint grammar.
+    /// Parse `host`, `user@host`, `host:port`, `user@host:port`, and bracketed
+    /// IPv6. A URI is refused with a pointer to `phux host add`.
     pub(crate) fn parse(raw: &str) -> Result<Self, String> {
         Self::parse_labeled(raw, "--remote")
     }
@@ -136,12 +94,8 @@ impl RemoteTarget {
         Ok(Self { user, host, port })
     }
 
-    /// The registry key this target remembers itself under: the spelling the
-    /// operator typed, minus any port.
-    ///
-    /// Port is excluded on purpose. It belongs to the endpoint, and folding
-    /// it into the name would make `--remote mini` and `--remote mini:8788`
-    /// two hosts that are one machine.
+    /// The registry key: the typed spelling minus any port, so `mini` and
+    /// `mini:8788` are one host.
     pub(crate) fn registry_name(&self) -> String {
         self.user
             .as_ref()
@@ -200,18 +154,9 @@ fn parse_port(raw: &str, label: &str) -> Result<u16, String> {
         .ok_or_else(|| format!("{label} port {raw:?} must be 1..=65535"))
 }
 
-/// Find the registry entry that already describes this target.
-///
-/// Three matches, widest last, so an operator who enrolled `mini` with
-/// `phux host add` still gets a hit from `phux --remote me@mini`:
-///
-/// 1. the exact `user@host` spelling;
-/// 2. the bare host (what `enroll::default_name` registers);
-/// 3. any entry whose endpoint points at this host.
-///
-/// A config that cannot be read yields `None` rather than an error: the
-/// bootstrap rungs below are a working answer for an unregistered host, and
-/// that is exactly what an unreadable registry looks like from here.
+/// Find the registry entry for this target: the exact `user@host`, then the
+/// bare host, then any entry whose endpoint points at the host. An unreadable
+/// config yields `None`, falling through to the bootstrap rungs.
 pub(crate) fn find_entry(target: &RemoteTarget) -> Option<RemoteEntry> {
     let entries = remote::load_registry().ok()?;
     let name = target.registry_name();
@@ -246,11 +191,8 @@ fn endpoint_host(endpoint: &str) -> Option<String> {
     )
 }
 
-/// Apply an explicit `:PORT` from the target to a registered entry.
-///
-/// An override, not a rewrite: the config file is untouched, because
-/// `--remote mini:9999` is a statement about this dial, not a correction to
-/// what `mini` means. `ssh://` entries have no port to override.
+/// Apply an explicit `:PORT` to a registered entry for this dial only; the
+/// config is untouched and `ssh://` has no port.
 pub(crate) fn with_port_override(entry: RemoteEntry, target: &RemoteTarget) -> RemoteEntry {
     if target.port.is_none() {
         return entry;
@@ -343,19 +285,10 @@ pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
     }
 }
 
-/// Attach through a registered entry, repairing it over ssh when its saved
-/// route fails early enough that ssh can help.
-///
-/// The rungs, cheapest first, each one only after the previous failed:
-///
-/// 1. dial the saved route (promoting a kept `direct` route first);
-/// 2. nobody answered: start the server over ssh and dial again with the
-///    saved credentials — no re-pair, the host was enrolled before;
-/// 3. still refused: re-pair over ssh and dial once more;
-/// 4. ssh itself failed: report the dial error and the ssh error together,
-///    with both remedies.
-///
-/// `--no-enroll` stops after rung 1.
+/// Attach through a registered entry, repairing it over ssh on an early
+/// failure: dial the saved route (a kept `direct` first); if nobody answered,
+/// start the server over ssh and redial; if still refused, re-pair and redial;
+/// if ssh itself failed, report both. `--no-enroll` stops after the first dial.
 fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
     let entry = promote_direct_route(entry);
     let outcome = attach::run_attach_remote_outcome(&entry, args.session.clone(), args.rec);
@@ -486,11 +419,8 @@ fn endpoint_port(endpoint: &str) -> Option<u16> {
     port.parse::<u16>().ok().filter(|port| *port != 0)
 }
 
-/// Walk the ladder: registered, then pasted code, then ssh, then refuse.
-///
-/// `pub(crate)` because the headless session verbs' `--remote` resolves
-/// through this exact function (see `server_target`), so a target cannot
-/// mean one host to `phux attach` and another to `phux ls`.
+/// Walk the ladder: registered, pasted code, ssh, refuse. Shared with the
+/// headless verbs' `--remote` so a target means one host everywhere.
 pub(crate) fn resolve(
     target: &RemoteTarget,
     code: Option<&str>,
@@ -554,13 +484,8 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
     Ok(registered_entry(target, &new))
 }
 
-/// Read back the entry that was just registered.
-///
-/// Re-reading rather than synthesizing gives the returned entry its real
-/// registry index and turns a write that did not round-trip into a failure
-/// here, next to the write, instead of a confusing dial later. The synthesized
-/// fallback keeps a readable-but-unparseable config from blocking an attach
-/// whose credentials are already on disk.
+/// Read back the entry just registered, so a write that did not round-trip
+/// fails here; falls back to the synthesized entry if the config is unreadable.
 fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEntry {
     find_entry(target).unwrap_or_else(|| RemoteEntry {
         index: 0,
@@ -574,12 +499,9 @@ fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEnt
     })
 }
 
-/// Set the far end up over ssh — server, pairing, direct-route probe —
-/// register the result, and return the entry to dial.
-///
-/// `existing` keeps a repaired entry's name (an operator who enrolled
-/// `mini` and typed `--remote me@mini` gets `mini` rewritten, not a second
-/// entry); a cold target registers under the spelling that was typed.
+/// Set the far end up over ssh, register the result, and return the entry to
+/// dial. A repaired entry keeps its name; a cold target registers the typed
+/// spelling.
 fn register_over_ssh(
     target: &RemoteTarget,
     ssh_host: &str,

@@ -1,41 +1,13 @@
-//! `phux play` — replay a recording *as a pane* (ADR-0064).
+//! `phux play` — replay a recording *as a pane* (ADR-0064): an ordinary
+//! Terminal whose PTY is fed from the cast, so it can be attached, snapshot,
+//! resized, observed, and killed like any pane.
 //!
-//! This is deliberately not `asciinema play`. That command paints a cast
-//! onto whatever terminal you happen to be sitting in and leaves nothing
-//! behind; this one creates a **Terminal in the multiplexer whose PTY is fed
-//! from the cast**. The result is an ordinary pane: attachable, snapshotable
-//! with `phux snapshot`, resizable with `phux resize`, observable over
-//! `ATTACH_RESOURCE` by an agent, shareable with a second client, and
-//! killable with `phux kill`. Nothing else can build that, which is the only
-//! reason this verb exists — see ADR-0064 for the boundary and ADR-0060 for
-//! the scope line it moves.
-//!
-//! # Two processes, one verb
-//!
-//! [`run_play`] runs in one of two modes:
-//!
-//! * **launcher** (what a user invokes) — validate the cast, then
-//!   `SPAWN_RESOURCE` a pane whose *command* is this same binary in writer
-//!   mode. It never touches the pane it was pointed at; `TARGET` names where
-//!   the new pane goes, never what gets overwritten.
-//! * **writer** (`--pty-writer`, hidden) — the process running *inside* that
-//!   pane. Its stdout is the PTY, so writing the cast's `o` bytes to stdout
-//!   is exactly "feeding the PTY from the cast", and the server's existing
-//!   read path forwards them on the wire like any other program's output.
-//!
-//! The argv that joins them is built and consumed by the same binary, so
-//! there is no compatibility surface between the two halves and the flag
-//! stays hidden. A different `phux` version cannot end up on either end: the
-//! launcher spawns its own [`std::env::current_exe`].
-//!
-//! # Zero wire change
-//!
-//! `SPAWN_RESOURCE` already carries a `command`, the server already injects
-//! `PHUX_TERMINAL_ID` + `PHUX_SOCKET` into every spawned pane, and
-//! `RESIZE_TERMINAL` already exists (ADR-0062). Playback therefore adds no
-//! frame, no command tag, no `ServerFeature` bit, and no version bump — which
-//! under ADR-0061's hard `major.minor` gate is not a nicety but the
-//! difference between shipping this and breaking every client in the fleet.
+//! [`run_play`] has two modes. The launcher validates the cast and
+//! `SPAWN_RESOURCE`s a pane whose command is this same binary with the hidden
+//! `--pty-writer`; TARGET says where the pane goes, never what is overwritten.
+//! The writer runs inside that pane, where stdout is the PTY. Both halves are
+//! the same executable ([`std::env::current_exe`]), so the joining argv is not
+//! a compatibility surface. No wire change was needed.
 
 use std::io::BufReader;
 use std::num::NonZeroU16;
@@ -52,34 +24,17 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{SpawnSplit, cli_runtime, resize::parse_geometry};
 
-/// Sequence written between loop iterations: soft reset (DECSTR), leave the
-/// alternate screen, erase the screen *and* the scrollback, home the cursor.
-///
-/// Not `RIS` (`ESC c`), the sledgehammer a naive player reaches for: a full
-/// reset also drops the pane's grid size back to whatever the emulator
-/// considers default, which would undo the fit performed for this exact
-/// recording and make the second pass of a `--loop` wrap differently from
-/// the first. DECSTR clears the modes a recording can leave set (origin
-/// mode, insert mode, a scroll region) without touching geometry.
-///
-/// The explicit `?1049l` is there because DECSTR does not leave the
-/// alternate screen: a recording of `vim` or `htop` ends *inside* it, and
-/// without this the next pass would replay onto the alt buffer and the
-/// recording's own `?1049h` would then have nothing to restore.
+/// Written between loop passes: DECSTR, leave the alternate screen, erase
+/// screen and scrollback, home. Not `RIS`, which would also reset the grid size
+/// the pane was fitted to; `?1049l` because DECSTR does not leave the alt
+/// screen a `vim` recording ends in.
 const LOOP_RESET: &[u8] = b"\x1b[!p\x1b[?1049l\x1b[2J\x1b[3J\x1b[H";
 
-/// How long the writer sleeps between checks while holding the final frame.
-///
-/// Long, because there is nothing to check: the process is parked so the
-/// pane keeps existing, and every wakeup is pure overhead on a box that may
-/// be holding dozens of these.
+/// How long the writer sleeps between checks while holding the final frame;
+/// long, since there is nothing to check.
 const HOLD_TICK: Duration = Duration::from_secs(3600);
 
 /// Everything `phux play` was asked to do.
-///
-/// A struct rather than a dozen positional parameters, for the reason
-/// `RecArgs` gives: `clippy::too_many_arguments` is on and a call site with
-/// twelve bare values is unreadable regardless.
 #[derive(Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -131,17 +86,10 @@ pub(crate) fn run_play(args: &PlayArgs<'_>) -> ExitCode {
 
 // ---------------------------------------------------------------- launcher
 
-/// The user-facing half: validate, spawn a pane that plays, report it.
-///
-/// Validation happens *here*, in the caller's own terminal, and not in the
-/// pane. A typo'd path or a truncated cast must be a plain stderr line and a
-/// nonzero exit — not a pane that appears, prints an error into a grid
-/// nobody is looking at, and vanishes.
+/// The user-facing half: validate in the caller's terminal (so a bad file is
+/// a plain stderr line), spawn a pane that plays, report it.
 fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
-    // Absolute, because the pane's child does not inherit this process's
-    // working directory: it is spawned by the daemon, which is `setsid`'d
-    // away and may be running from `/`. A relative path that resolves here
-    // would resolve to nothing there.
+    // Absolute: the pane's child is spawned by the daemon, not from this cwd.
     let file = match std::fs::canonicalize(args.file) {
         Ok(path) => path,
         Err(err) => {
@@ -186,11 +134,8 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
         resource: None,
     };
 
-    // An omitted TARGET means `.`, the focused pane — so a human running
-    // this while attached sees the recording appear beside what they are
-    // looking at, rather than in whichever session the server last touched.
-    // Placement is the whole reason the default is not "unplaced": a pane
-    // outside the layout is a pane nobody watches.
+    // An omitted TARGET means `.`, so an attached human sees the recording
+    // appear beside what they are looking at.
     let target = args.target.unwrap_or(".");
     let spawned = match crate::commands::spawn::dispatch_spawn_placed(
         &socket_path,
@@ -225,13 +170,8 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
     }
 }
 
-/// Build the argv the pane runs: this binary, in writer mode.
-///
-/// Every option is passed explicitly, including `--socket` even when the
-/// user did not give one. The pane's child inherits `PHUX_SOCKET` from the
-/// server and would resolve the same path anyway, but "would anyway" is how
-/// a playback pane ends up dialing the default socket from a server bound
-/// somewhere else. The launcher already resolved the path; it says so.
+/// Build the writer argv: this binary in writer mode, with every option
+/// explicit, including the already-resolved `--socket`.
 fn writer_argv(exe: &Path, file: &Path, socket: &Path, spec: &PlayArgs<'_>) -> Vec<String> {
     let mut argv = vec![
         exe.to_string_lossy().into_owned(),
@@ -270,11 +210,8 @@ fn writer_argv(exe: &Path, file: &Path, socket: &Path, spec: &PlayArgs<'_>) -> V
     argv
 }
 
-/// Report the pane that is now playing.
-///
-/// The id is the payload: everything a caller does next — attach, snapshot,
-/// resize, kill — is addressed by it. The rest is what the caller cannot see
-/// from outside, namely how long this will take at the speed they chose.
+/// Report the pane that is now playing: its id, and the duration at the
+/// chosen speed.
 fn report(pane: &ResourceId, file: &Path, loaded: &Loaded, args: &PlayArgs<'_>) -> ExitCode {
     let length = pass_duration(&loaded.events, args.speed);
     let name = short_name(file);
@@ -324,13 +261,8 @@ fn short_name(file: &Path) -> String {
 
 // ------------------------------------------------------------------ writer
 
-/// The in-pane half: this process's stdout *is* the pane's PTY.
-///
-/// Diagnostics here go to the same PTY, which is correct and not a
-/// compromise: this process has no other channel, and the pane is exactly
-/// where a human or an agent will look for the reason a recording did not
-/// play. It is also why the launcher validates first — by the time this runs
-/// the only failures left are ones that appeared between the two.
+/// The in-pane half: stdout is the pane's PTY, which is also where its
+/// diagnostics belong. The launcher already validated.
 fn run_writer(args: &PlayArgs<'_>) -> ExitCode {
     let loaded = match load(args.file, args.idle_limit) {
         Ok(loaded) => loaded,
@@ -343,10 +275,8 @@ fn run_writer(args: &PlayArgs<'_>) -> ExitCode {
     };
     let pane = own_pane();
 
-    // Both of these are best-effort and both are about *not* corrupting the
-    // playback: one stops the line discipline from rewriting the recorded
-    // bytes, the other stops a stray keystroke from being echoed into the
-    // middle of a frame.
+    // Best-effort: keep the line discipline from rewriting recorded bytes and
+    // from echoing stray keystrokes into a frame.
     quiet_own_tty();
 
     if !args.no_fit {
@@ -367,10 +297,8 @@ fn run_writer(args: &PlayArgs<'_>) -> ExitCode {
         crate::output::bytes_now(LOOP_RESET);
     }
 
-    // A pane that erased itself the instant the last byte landed would be
-    // unobservable — the final frame is the artifact, and a caller that
-    // snapshots it is racing the process exit. Holding is therefore the
-    // default and `--close` is the opt-out; `phux kill @id` ends a held pane.
+    // Hold the final frame by default (it is the artifact); `--close` opts out
+    // and `phux kill @id` ends a held pane.
     set_title(&format!("phux play {} (ended)", short_name(args.file)));
     if args.close {
         return ExitCode::SUCCESS;
@@ -378,13 +306,8 @@ fn run_writer(args: &PlayArgs<'_>) -> ExitCode {
     hold_forever();
 }
 
-/// Play the events once, on deadlines anchored to *this* pass's start.
-///
-/// Re-anchoring per pass rather than extrapolating from the first pass is
-/// what keeps `--loop` honest on a loaded box: a pass that ran 200 ms late
-/// hands the next pass a fresh clock instead of a debt it can never repay.
-/// Within a pass nothing drifts, because every deadline comes from
-/// [`due_at`] and not from the previous event (see that module's docs).
+/// Play the events once, with deadlines anchored to this pass's start, so a
+/// late pass under load does not push its debt into the next.
 fn play_pass(
     rt: &tokio::runtime::Runtime,
     socket: &Path,
@@ -397,11 +320,8 @@ fn play_pass(
         sleep_until(anchor + due_at(event.time_ms, args.speed));
         match event.code {
             EventCode::Output => crate::output::bytes_now(event.data.as_bytes()),
-            // A recorded resize is a real event in the recording's life: the
-            // bytes after it were painted at the new geometry and will wrap
-            // wrong without it. `--no-fit` opts out of every size change,
-            // this one included, because a caller that pinned the pane's
-            // grid meant it.
+            // A recorded resize is replayed (later bytes were painted at that size)
+            // unless `--no-fit` pinned the grid.
             EventCode::Resize if !args.no_fit => {
                 if let (Some(pane), Ok(geometry)) = (pane, parse_geometry(&event.data)) {
                     let _ = rt.block_on(phux_client::resize::resize_to(
@@ -412,11 +332,7 @@ fn play_pass(
                     ));
                 }
             }
-            // `i` is recorded *input*. Replaying it would type the
-            // recording's keystrokes into a PTY whose reader is this
-            // process, which no consumer expects and phux never records
-            // anyway (ADR-0060 decision 5). `m` is a marker and `x` is the
-            // recorded exit status; neither paints.
+            // `i` (input) is never replayed into the PTY; `m` and `x` do not paint.
             EventCode::Resize | EventCode::Input | EventCode::Marker | EventCode::Exit => {}
         }
     }
@@ -430,21 +346,9 @@ fn sleep_until(deadline: Instant) {
     }
 }
 
-/// Resize the pane to the recording's own grid, and say so if it did not
-/// take.
-///
-/// A cast is a stream of bytes that were correct for one geometry. Played
-/// into a narrower pane, every line long enough to wrap does so in the wrong
-/// place and every absolute cursor address lands somewhere else — the output
-/// is not "slightly off", it is garbage. So the default is to make the pane
-/// match the recording, using the frame `phux resize` already uses.
-///
-/// When that fails the honest move is to say so and play anyway: the caller
-/// asked to see the recording, a wrapped recording is still legible, and the
-/// alternative — refusing — would make `phux play` unusable in exactly the
-/// case it is most useful, a pane inside a session someone is attached to
-/// (whose viewport owns the size under every `window-size` policy but
-/// `manual`).
+/// Resize the pane to the recording's grid (a cast played into the wrong
+/// size is garbage), and if that does not take, say so and play anyway: a
+/// viewer's viewport may own the size.
 fn fit(
     rt: &tokio::runtime::Runtime,
     socket: &Path,
@@ -465,14 +369,8 @@ fn fit(
         return;
     }
     let (have_cols, have_rows) = outcome.applied;
-    // One line, into the pane, before anything is painted — most recordings
-    // open by clearing the screen, so this would be invisible if it went
-    // after the first frame.
-    //
-    // Written with an explicit CRLF rather than through `outln!`, because
-    // `quiet_own_tty` has already cleared `OPOST` by the time this runs: a
-    // bare `\n` would move down a row and leave the cursor in column 68,
-    // which is precisely where the recording is about to start painting.
+    // One line into the pane before anything paints (recordings usually clear
+    // first), with an explicit CRLF because `OPOST` is already off.
     crate::output::bytes_now(
         format!(
             "phux play: this pane is {have_cols}x{have_rows} but the recording \
@@ -485,55 +383,21 @@ fn fit(
     );
 }
 
-/// The pane this process is running in, from the environment the server
-/// injects into every spawned Terminal.
-///
-/// `PHUX_TERMINAL_ID` names *which pane* and `PHUX_SOCKET` (already resolved
-/// into `--socket` by the launcher) names *which server*; only the pair
-/// identifies a Terminal. `None` — someone ran the hidden writer mode by
-/// hand outside a pane — degrades to "play the bytes, resize nothing", which
-/// is the most this process can honestly do.
+/// The pane this process runs in, from the injected `PHUX_TERMINAL_ID`.
+/// `None` outside a pane degrades to "play the bytes, resize nothing".
 fn own_pane() -> Option<ResourceId> {
     let raw = std::env::var("PHUX_TERMINAL_ID").ok()?;
     raw.parse::<u32>().ok().map(ResourceId::local)
 }
 
-/// Stop the tty's line discipline from editing the recording.
+/// Stop the tty's line discipline from editing the recording: clear `OPOST`
+/// (a cast's bytes already went through one `ONLCR`) and `ECHO` (nothing reads
+/// stdin). `ISIG` stays, so Ctrl-C stops playback.
 ///
-/// Two flags, two distinct corruptions:
-///
-/// * `OPOST` (specifically `ONLCR`) rewrites every `\n` this process writes
-///   into `\r\n`. The bytes in a cast came off a PTY *master*, i.e. they
-///   have already been through one terminal's `OPOST`; sending them through
-///   a second one applies it twice. For the common `\r\n` that is harmless,
-///   but a recording that deliberately emitted a bare line feed — a
-///   full-screen program advancing a row without returning the carriage —
-///   would have the column silently reset under it. Playback is supposed to
-///   deliver the recorded bytes, not a translation of them.
-/// * `ECHO` means a keystroke aimed at this pane by a human or by
-///   `phux send-keys` gets painted into the middle of a frame by the kernel.
-///   Nothing here reads stdin, so an echo can only ever be corruption.
-///
-/// `ISIG` is deliberately left alone: Ctrl-C in a playback pane should stop
-/// the playback, and with the signal disposition intact it does, for free.
-///
-/// # Why this only ever touches a tty this process *is*
-///
-/// Nothing here restores the old settings, and that is safe for exactly one
-/// tty: the PTY of a pane whose process is this one. It dies when this
-/// process does, so there is no "after" to restore for — and there could not
-/// be a reliable restore anyway, since the writer's normal end is a park that
-/// only a signal interrupts and a signal runs no destructor.
-///
-/// The guard is therefore `tcgetsid(stdout) == getpid()`: the server spawns a
-/// pane's process into its own session with the PTY as its controlling
-/// terminal, so the pane's process — and only it — is that session's leader.
-/// A `phux play --pty-writer` a curious user runs by hand from a shell (in a
-/// phux pane or not) is a *child* of the session leader, fails the test, and
-/// leaves the terminal alone. Getting this wrong in the permissive direction
-/// would leave that user's shell with no echo and no newline translation
-/// after the command exited, which is a far worse bug than the double
-/// `ONLCR` this avoids.
+/// Nothing is restored, so this only touches a tty this process owns: the guard
+/// is `tcgetsid(stdout) == getpid()`, true only for a pane's session leader. A
+/// writer run by hand from a shell fails it and leaves that shell's terminal
+/// alone.
 fn quiet_own_tty() {
     use std::io::IsTerminal as _;
     use std::os::fd::AsFd as _;
@@ -558,18 +422,9 @@ fn quiet_own_tty() {
     let _ = rustix::termios::tcsetattr(fd, rustix::termios::OptionalActions::Now, &termios);
 }
 
-/// Set the pane's terminal title (OSC 2), which the server already parses
-/// and republishes as a `title_changed` event (`phux watch`).
-///
-/// This is how "the recording finished" becomes visible from outside without
-/// painting a cell: the final frame stays exactly as the cast left it, and
-/// the fact that it is final lives in metadata instead. Verified rather than
-/// assumed — `phux watch @N --json` on a playback pane emits
-/// `{"event":"title_changed","title":"phux play demo.cast (ended)"}`.
-///
-/// A cast that sets its own title during playback simply wins for the
-/// duration, and the closing title is written after the last event either
-/// way.
+/// Set the pane title (OSC 2), which the server republishes as
+/// `title_changed`: how "the recording finished" is visible without painting a
+/// cell.
 fn set_title(title: &str) {
     // BEL-terminated rather than ST: universally understood, and it is what
     // the shell integrations in the wild emit.
@@ -585,12 +440,8 @@ fn hold_forever() -> ! {
 
 // ------------------------------------------------------------------ shared
 
-/// Read a cast and apply the one transformation both halves must agree on.
-///
-/// Called on both sides — the launcher to validate and to report the
-/// duration, the writer to play it — with identical inputs, so the length
-/// the user is told and the length they wait through are the same number by
-/// construction rather than by two implementations agreeing.
+/// Read a cast and apply the idle clamp. Both halves call this with the same
+/// inputs, so the reported and the played durations agree by construction.
 fn load(file: &Path, idle_flag: Option<f64>) -> Result<Loaded, ExitCode> {
     let handle = std::fs::File::open(file).map_err(|err| {
         eprintln!("phux: play: cannot read {}: {err}", file.display());
@@ -609,27 +460,14 @@ fn load(file: &Path, idle_flag: Option<f64>) -> Result<Loaded, ExitCode> {
     })
 }
 
-/// Resolve the idle clamp: the flag if given, else the recording's own
-/// `idle_time_limit` header field, else none.
-///
-/// Deferring to the header is what makes playback agree with the recorder
-/// that produced the file: `phux rec` writes the limit it clamped with, and
-/// asciinema's own player has honored that field since v2. Overriding it
-/// unconditionally with a phux default would silently re-clamp a file that
-/// was already clamped, and a caller who wants the raw timeline could never
-/// get it back.
-///
-/// `0` (or any non-positive value) means "no clamp" on both surfaces,
-/// matching `phux rec --idle-limit 0`.
+/// The idle clamp: the flag, else the cast header's `idle_time_limit` (what
+/// `phux rec` clamped with), else none. `0` or less means no clamp.
 fn effective_idle_limit(header: &CastHeader, flag: Option<f64>) -> Option<f64> {
     flag.or(header.idle_time_limit)
         .filter(|limit| limit.is_finite() && *limit > 0.0)
 }
 
-/// Parse `--speed` for clap's `value_parser`.
-///
-/// The bounds live in [`Speed`], next to the arithmetic that needs them; the
-/// wording lives here, next to the user.
+/// Parse `--speed` for clap; the bounds live in [`Speed`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SpeedArg(pub Speed);
 
@@ -759,10 +597,7 @@ mod tests {
 
     #[test]
     fn writer_argv_round_trips_through_the_cli_parser() {
-        // The launcher and the writer are the same binary, so the argv one
-        // builds MUST parse in the other. Asserting it here is what keeps a
-        // renamed flag from turning every playback pane into an instant
-        // clap usage error that only an e2e would catch.
+        // The writer argv the launcher builds must parse in the same binary.
 
         let file = Path::new("/tmp/demo.cast");
         let mut spec = args(file, Some(3), Some(1.5));

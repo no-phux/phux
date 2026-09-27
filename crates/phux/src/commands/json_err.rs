@@ -287,6 +287,12 @@ pub(crate) mod codes {
     /// decoder silently drops the trailing byte, D9) or a D9-or-later
     /// server's render failed on its own engine. Exit 2.
     pub(crate) const FORMAT_UNSUPPORTED: &str = "format_unsupported";
+    /// `phux watch --until` named a word outside the stream's `event`
+    /// vocabulary.
+    pub(crate) const UNKNOWN_EVENT_NAME: &str = "unknown_event_name";
+    /// The server closed a `phux watch` stream before any `--until` event
+    /// arrived.
+    pub(crate) const STREAM_ENDED: &str = "stream_ended";
 }
 
 /// One CLI failure, carrying everything both output channels need: a stable

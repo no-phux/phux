@@ -142,10 +142,6 @@ pub(crate) fn run_logs(
     ExitCode::SUCCESS
 }
 
-// ---------------------------------------------------------------------------
-// tailing
-// ---------------------------------------------------------------------------
-
 /// Tail `path` with the system `tail`, showing the last `lines` lines and
 /// following when asked.
 ///
@@ -197,10 +193,6 @@ fn client_log_target(dir: &Path, pid: Option<u32>) -> Result<PathBuf, String> {
             )
         })
 }
-
-// ---------------------------------------------------------------------------
-// the client-log scan (shared with `phux service prune-logs`)
-// ---------------------------------------------------------------------------
 
 /// Every `client-*.log` in the state dir, in directory order.
 pub(crate) fn client_log_paths(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -259,10 +251,6 @@ fn client_pid(path: &Path) -> Option<u32> {
         .ok()
 }
 
-// ---------------------------------------------------------------------------
-// the Cockpit log
-// ---------------------------------------------------------------------------
-
 /// Where the native macOS app writes its log. An explicit override is taken
 /// as given, even relative; otherwise the path hangs off `home`, and no home
 /// means no path — the caller says so rather than guessing a directory the
@@ -290,10 +278,6 @@ fn cockpit_log_path_from_env() -> Option<PathBuf> {
         .map(PathBuf::from);
     cockpit_log_path(override_path.as_deref(), home.as_deref())
 }
-
-// ---------------------------------------------------------------------------
-// the inventory
-// ---------------------------------------------------------------------------
 
 /// One log file's observable facts. `size: None` means the file does not
 /// exist yet — a normal state the inventory reports as such, never an error.

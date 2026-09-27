@@ -51,58 +51,29 @@ pub(crate) enum PairAction {
     },
 }
 
-/// Scheme, host, and path for the one-tap connect link (and the QR that
-/// encodes it). A device that opens or scans it gets the server URL, the
-/// cert fingerprint (MITM defense), and the token (credential) in one shot —
-/// no typing a 32-byte hex token by hand:
-/// `https://phux.sh/connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`,
-/// where `url` is mandatory — without it the device has nothing to dial and
-/// rejects the link — so a link is only emitted when an address is known.
+/// Prefix of the one-tap connect link (and its QR):
+/// `https://phux.sh/connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`.
+/// `url` is mandatory, so a link is only emitted when an address is known.
 ///
-/// The link is an https Universal Link rather than a custom URL scheme
-/// because it carries a bearer token. Custom schemes are not exclusive on
-/// iOS: any installed app may register one, and which app receives a given
-/// open is undefined, so a custom-scheme link hands the token to whichever
-/// app wins. A Universal Link opens only in the app that proves ownership of
-/// the domain, which closes that interception window. The token is exposed
-/// to the terminal, the QR image, and whatever carries the link regardless;
-/// the exclusivity guarantee covers only the final hop into the app.
+/// An https Universal Link rather than a custom scheme because it carries a
+/// bearer token: any iOS app may claim a custom scheme, but only the app that
+/// owns the domain receives a Universal Link.
 ///
-/// THIS SHAPE IS OWNED HERE, not by any consumer. [ADR-0031] is the decision
-/// record: "A remote consumer parsing the link must accept this exact shape."
-/// Ownership sits on the emitting side so that the two repos cannot each
-/// defer to the other and drift apart while both test suites stay green
-/// (docs/consumers/ios.md records the outage that made this explicit).
-/// Changing the shape is a change to ADR-0031 and a coordinated consumer
-/// update, never a silent edit here.
-///
-/// [ADR-0031]: ../../../../docs/adr/0031-remote-consumer-auth-and-encryption.md
+/// This shape is owned HERE, per ADR-0031: consumers must accept it exactly, and
+/// changing it means changing the ADR and the consumers together.
 const CONNECT_URI_PREFIX: &str = "https://phux.sh/connect";
 
-/// The host this link used before the public site moved to `phux.sh`.
-///
-/// It is still accepted by [`parse_connect_link`], because a link already
-/// printed, screenshotted, or saved in a password manager must keep pairing a
-/// laptop via `--code`. It is no longer *emitted*: `phux.phall.io` only
-/// redirects to `phux.sh`, and a redirect is fatal to a Universal Link —
-/// iOS treats any 3xx on the declared domain as no association at all, which
-/// silently sent every scanned QR to a browser instead of the app.
+/// The pre-`phux.sh` host. Still parsed (saved links must keep pairing), no
+/// longer emitted: it only redirects, and a redirect breaks a Universal Link.
 const LEGACY_HOST_CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
 
-/// The custom-scheme spelling of the same link. The query is identical;
-/// only the prefix differs. [`parse_connect_link`] accepts it so that a
-/// link minted by any phux release pairs a laptop via `--code`, and
-/// [`print_connect_link`] prints it beneath the https form for app builds
-/// that predate the Universal Link entitlement, which cannot claim the
-/// https link and would otherwise open it in a browser. The QR encodes the
-/// https form only.
+/// The custom-scheme spelling of the same link, parsed for `--code` and
+/// printed beneath the https form for app builds without the Universal Link
+/// entitlement. The QR encodes the https form only.
 const LEGACY_CONNECT_URI_PREFIX: &str = "phux://connect";
 
-/// Build the `https://phux.sh/connect?...` one-tap link. `url` is a
-/// ws(s):// URL, `token` lowercase hex, and `fingerprint` colon-separated
-/// hex — all query-safe as-is (RFC 3986 `pchar` allows `:` and `/` in query
-/// strings, and the mobile parser reads them unencoded). `name` is free-form
-/// operator input, so it alone is percent-encoded.
+/// Build the one-tap link. `url`, `token`, and `fingerprint` are query-safe
+/// as-is; only the free-form `name` is percent-encoded.
 fn build_connect_link(
     url: &str,
     name: Option<&str>,
@@ -123,10 +94,8 @@ fn build_connect_link(
     link
 }
 
-/// Respell a link from [`build_connect_link`] with the
-/// [`LEGACY_CONNECT_URI_PREFIX`]. The query is carried over byte-for-byte,
-/// so the two spellings can never disagree about the credentials they hold.
-/// `None` for a string that is not an https connect link.
+/// Respell an https connect link with [`LEGACY_CONNECT_URI_PREFIX`], carrying
+/// the query byte-for-byte. `None` for anything else.
 fn legacy_connect_link(link: &str) -> Option<String> {
     link.strip_prefix(CONNECT_URI_PREFIX)
         .map(|query| format!("{LEGACY_CONNECT_URI_PREFIX}{query}"))
@@ -152,12 +121,8 @@ fn percent_encode(value: &str) -> String {
     out
 }
 
-/// The credentials a connect link carries.
-///
-/// The link is the same artifact `phux pair` prints and `phux pair --qr`
-/// renders: a phone scans it, and a laptop pastes it into `phux attach
-/// --remote HOST --code '<link>'`. Both ends of the pairing therefore share
-/// one format, and `--code` needs no second credential shape to exist.
+/// The credentials a connect link carries: what a phone scans and what a
+/// laptop pastes into `phux attach --remote HOST --code '<link>'`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConnectLink {
     /// The `ws://`/`wss://` endpoint to dial.
@@ -170,19 +135,9 @@ pub(crate) struct ConnectLink {
     pub(crate) token: String,
 }
 
-/// Parse a connect link back into its parts.
-///
-/// The exact inverse of [`build_connect_link`], and pinned to it by
-/// `connect_link_round_trips`: the link shape is a cross-repo contract
-/// (see [`CONNECT_URI_PREFIX`]'s note on ownership), so the parser must
-/// never drift from the builder that feeds the QR. Both prefixes are
-/// accepted — the https form the builder emits and the
-/// [`LEGACY_CONNECT_URI_PREFIX`] form — so a `--code` pasted from any phux
-/// release parses; the query grammar is one and the same.
-///
-/// Strict about the two fields a dial cannot proceed without — a `url` and a
-/// `token` — and tolerant of unknown query keys, so a newer minting phux can
-/// add one without breaking an older `--code`.
+/// Parse a connect link: the exact inverse of [`build_connect_link`], also
+/// accepting the legacy prefixes. Strict about `url` and `token`, tolerant of
+/// unknown query keys.
 pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
     let trimmed = link.trim().trim_matches(|c| c == '\'' || c == '"');
     let query = trimmed
@@ -256,14 +211,9 @@ fn percent_decode(value: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|_| format!("connect code field {value:?} is not UTF-8"))
 }
 
-/// Resolve the ws(s):// URL the connect link embeds. `--host` wins: a full
-/// `ws://`/`wss://` URL passes through, a bare `host:port` gets the `wss://`
-/// the remote path always uses (ADR-0031: a routable bind is always TLS).
-/// Without `--host`, fall back to the first detected overlay address
-/// (ADR-0037) plus the port of `ws_addr` (the caller passes `PHUX_WS_ADDR`,
-/// the env the server's listener reads) when both are known. `None` when no
-/// address source exists; the caller then prints no link (the device enters
-/// the address itself).
+/// Resolve the ws(s):// URL the link embeds: `--host` wins (a bare
+/// `host:port` gets `wss://`); otherwise the first overlay address plus the
+/// `PHUX_WS_ADDR` port. `None` when no address source exists.
 fn resolve_server_url(
     host: Option<&str>,
     overlay: &[IpAddr],
@@ -284,21 +234,9 @@ fn resolve_server_url(
     })
 }
 
-/// Every server name this pairing run advertises, in the shape a TLS
-/// certificate SAN and a rustls `ServerName` both take: the host of the
-/// connect-link URL first, then each detected overlay address.
-///
-/// The link host is derived with [`WsTarget::parse`] — the same parser the
-/// dialer uses to pick its TLS server name — so a certificate minted from this
-/// list names exactly what a client will ask for, brackets stripped from a v6
-/// literal and no port. Overlay addresses are included beyond the link host
-/// because `phux pair` prints them all under "dial one of these from the
-/// device", and an address phux tells you to dial is an address its
-/// certificate should claim.
-///
-/// A URL that will not parse contributes nothing rather than erroring: this
-/// feeds a best-effort SAN list, and pairing must still mint a token on a host
-/// whose `--host` value is odd.
+/// Every server name this pairing run advertises, in SAN / `ServerName`
+/// form: the link host (via [`WsTarget::parse`], the dialer's own parser) and
+/// each overlay address. An unparseable URL contributes nothing.
 fn advertised_names(server_url: Option<&str>, overlay: &[IpAddr]) -> Vec<String> {
     use phux_client::attach::ws::WsTarget;
 
@@ -316,14 +254,9 @@ fn advertised_names(server_url: Option<&str>, overlay: &[IpAddr]) -> Vec<String>
     names
 }
 
-/// Warn when the certificate whose fingerprint is about to be printed does not
-/// name the address the link is about to advertise (phux-q9a0, ADR-0091).
-///
-/// Printed here because this is where the mismatch becomes user-visible: the
-/// link, the fingerprint, and the address all leave the machine together. The
-/// remedy is deliberately an explicit operator action — deleting the pair is
-/// the only way to widen the SANs, and it rotates the fingerprint every already
-/// paired device pins, so phux will not do it on anyone's behalf.
+/// Warn when the certificate being fingerprinted does not name the address
+/// the link advertises (ADR-0091). Widening the SANs rotates the fingerprint
+/// every paired device pins, so it stays an explicit operator action.
 fn warn_on_uncovered_names(cert: &std::path::Path, key: &std::path::Path, advertised: &[String]) {
     let Ok(uncovered) = phux_server::transport::tls::uncovered_names(cert, advertised) else {
         // Unreadable certificate: the fingerprint read alongside this already
@@ -360,19 +293,10 @@ fn render_qr(payload: &str) -> Result<String, String> {
         .map_err(|err| format!("could not encode pairing QR: {err}"))
 }
 
-/// Mint a token into the store and print it with the certificate fingerprint.
-///
-/// Defaults match the server's seamless path (ADR-0031): the token store and
-/// the auto-generated certificate live at shared paths under the state dir, so
-/// `phux pair` with no flags pairs against the same material the server will
-/// read. The certificate is provisioned here if absent, so pairing works before
-/// the first server start.
-///
-/// When the server address is known (`--host`, or a detected overlay address
-/// plus the `PHUX_WS_ADDR` port), the credentials are also printed as an
-/// `https://phux.sh/connect` one-tap link, and `--qr` renders that
-/// same link as a scannable terminal QR (ADR-0031's "shown as a QR" pairing
-/// idiom).
+/// Mint a token into the store and print it with the certificate
+/// fingerprint. Defaults are the shared paths the server reads (ADR-0031), and
+/// the certificate is provisioned if absent. With a known address the
+/// credentials are also printed as a connect link, and `--qr` renders it.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "CLI entry point owns the args clap dispatch hands it; taking them by value keeps the call site clean"
@@ -412,10 +336,8 @@ pub(crate) fn run_pair(
     };
     let token = minted.secret().to_owned();
 
-    // `--json` keeps stdout a single document (the repo-wide contract in
-    // docs/consumers/agents.md): the human blocks below are suppressed and
-    // every diagnostic still goes to stderr. `phux host add` consumes
-    // this over ssh, which is what keeps a 64-hex token out of human hands.
+    // `--json` keeps stdout a single document; `phux host add` consumes it over
+    // ssh.
     if !json {
         print_credential_block(&minted.id, &token);
     }
@@ -465,12 +387,8 @@ struct CertificatePaths {
     key: PathBuf,
 }
 
-/// Resolve the certificate and key paths pairing works against.
-///
-/// Defaults match the server's seamless path (ADR-0031): with no flag and no
-/// environment override, both land on the shared paths under the state dir
-/// that the server itself reads, so `phux pair` pairs against the same
-/// material the server will read.
+/// Resolve the certificate and key paths: by default the shared paths the
+/// server itself reads.
 fn resolve_certificate_paths(cert: Option<PathBuf>) -> CertificatePaths {
     let operator_supplied = cert.is_some() || std::env::var_os("PHUX_WS_TLS_CERT").is_some();
     let cert = cert
@@ -497,22 +415,10 @@ struct PairAddresses {
     advertised: Vec<String>,
 }
 
-/// Resolve every address this pairing run advertises.
-///
-/// Address resolution comes FIRST, before the certificate is provisioned,
-/// because SANs can only be chosen at generation time (phux-q9a0,
-/// ADR-0091). This is the one place that knows the address the link will
-/// advertise, so it is the one place that can name it in the certificate.
-///
-/// Best-effort (ADR-0037): `detect` is infallible by construction — it
-/// returns an empty vec when nothing is detected — so this block can
-/// never affect the exit code.
-///
-/// phux-onbd: fall back to the port the server auto-binds on the overlay
-/// address when `PHUX_WS_ADDR` is unset. Without this, pairing on an
-/// otherwise perfectly working host printed "--qr needs a server address"
-/// and left the user to discover a port number and pass `--host` by hand —
-/// while the server was already listening on exactly that address.
+/// Resolve every address this run advertises. Runs before the certificate
+/// is provisioned, because SANs are chosen at generation time (ADR-0091).
+/// Best-effort; falls back to the server's auto-bind port on the overlay
+/// address when `PHUX_WS_ADDR` is unset.
 fn resolve_pair_addresses(host: Option<&str>) -> PairAddresses {
     let overlay = phux_config::overlay::detect();
     let ws_addr = std::env::var("PHUX_WS_ADDR").ok().or_else(|| {
@@ -544,12 +450,9 @@ fn provision_pairing_certificate(certificate: &CertificatePaths, advertised: &[S
     }
 }
 
-/// Mint a credential into the store, reporting a failure and the non-durable
-/// case on stderr. `None` means the caller must exit with a failure code.
-///
-/// When `replace_token` is set, any live credential matching that bearer is
-/// revoked in the same rewrite that mints the new one (`phux host add`
-/// re-enrollment).
+/// Mint a credential, reporting failures on stderr (`None` means exit with
+/// failure). `replace_token` revokes the matching old bearer in the same
+/// rewrite.
 fn mint_pairing_credential(
     tokens: &std::path::Path,
     replace_token: Option<&str>,
@@ -614,10 +517,8 @@ fn print_overlay_addresses(overlay: &[IpAddr]) {
     outln!();
 }
 
-/// Print the one-tap connect link, and its QR form when `--qr` asked for one.
-///
-/// Without an address there is no link to print, and `--qr` then has nothing
-/// to encode — that is the one case the operator has to be told about.
+/// Print the connect link, and its QR under `--qr`; without an address,
+/// `--qr` warns that there is nothing to encode.
 fn print_connect_link(link: Option<&str>, qr: bool) {
     let Some(link) = link else {
         if qr {
@@ -903,13 +804,9 @@ fn migrate_legacy_credentials(tokens: &std::path::Path) -> bool {
     }
 }
 
-/// Emit the machine-readable pairing document.
-///
-/// `quic_addr` and `ws_addr` are reported as the server's *configured bind*
-/// (from the environment the listener reads), not a dialable address — the
-/// consumer pairs them with an overlay address to build an endpoint. They are
-/// null when this host has no listener configured, which is exactly the
-/// signal `phux host add` uses to fall back to `ssh://`.
+/// Emit the machine-readable pairing document. `quic_addr`/`ws_addr` are the
+/// configured binds, null without a listener, which is what makes
+/// `phux host add` fall back to `ssh://`.
 #[allow(
     clippy::too_many_arguments,
     reason = "one argument per pairing document source keeps secret-bearing output construction explicit"
@@ -1181,10 +1078,8 @@ mod tests {
         );
     }
 
-    /// The parser is the builder's exact inverse. The link shape is a
-    /// cross-repo contract (phux-mobile reads it too), so a change to either
-    /// side that the other does not follow must fail here rather than in the
-    /// field.
+    /// The parser is the builder's exact inverse; the shape is a cross-repo
+    /// contract.
     #[test]
     fn connect_link_round_trips() {
         let link = build_connect_link(
@@ -1234,10 +1129,7 @@ mod tests {
         assert_eq!(parsed.token, "tok");
     }
 
-    /// The custom-scheme spelling is the same link under another prefix: a
-    /// `--code` pasted from a phux that emits `phux://connect` parses to the
-    /// identical credentials, and the printed fallback line is derived from
-    /// the https form byte-for-byte rather than built a second time.
+    /// The custom-scheme spelling parses to identical credentials.
     #[test]
     fn legacy_scheme_is_the_same_link_under_another_prefix() {
         let link = build_connect_link("wss://mini:8787", Some("studio mini"), Some("AB:CD"), "tok");
@@ -1258,12 +1150,7 @@ mod tests {
         assert_eq!(legacy_connect_link("https://example.com/connect?x=1"), None);
     }
 
-    /// A link minted before the site moved to `phux.sh` still pairs.
-    ///
-    /// The emitted host changed because `phux.phall.io` is a zone redirect,
-    /// and a redirect is fatal to a Universal Link. The *parser* must not
-    /// follow: a link already printed, screenshotted, or saved in a password
-    /// manager is still a valid credential, and `--code` has to take it.
+    /// A link minted before the move to `phux.sh` still pairs.
     #[test]
     fn connect_link_still_parses_the_legacy_host() {
         let parsed = parse_connect_link(

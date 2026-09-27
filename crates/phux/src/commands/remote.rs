@@ -1,40 +1,16 @@
-//! The remote half of the machine registries (ADR-0055, ADR-0066).
+//! The remote half of the machine registries (ADR-0055, ADR-0066): a
+//! `[[remote]]` entry stores the endpoint, the certificate pin, and a token-file
+//! path once, so `phux attach NAME` resolves through it. The verbs live in
+//! [`super::host`].
 //!
-//! `phux attach mini` should not require the operator to retype a 64-hex
-//! token and a 64-hex fingerprint. A `[[remote]]` entry stores the endpoint,
-//! the certificate pin, and a path to the token file once; attach resolves
-//! the name through it.
+//! An entry may also remember `ssh` (the destination it was enrolled through,
+//! used to restart a stopped server) and `direct` (a paired `quic://` endpoint
+//! kept beside an `ssh://` one, tried first and promoted once it answers).
 //!
-//! The user-facing verbs live in [`super::host`]: `phux host add|ls|rm`
-//! (role `remote`, the default) operates on this registry. The former
-//! `phux remote` verb tree was absorbed into `phux host` (ADR-0066) and
-//! removed in v0.12.1 once its deprecation window closed (phux-dpjf);
-//! `phux host enroll` was folded into `phux host add` (ADR-0122).
-//!
-//! Beside the endpoint and its credentials an entry may remember how it was
-//! made: `ssh`, the destination `phux host add` enrolled through, is what a
-//! stopped server is restarted over when an attach finds the saved route
-//! dead; `direct`, a paired `quic://` endpoint kept while `endpoint` is
-//! `ssh://`, is what a later attach tries first and promotes once it
-//! answers. `host ls --json` carries both as nullable keys under the same
-//! `schema_version` 1: readers tolerate keys they do not know, so adding
-//! two is not a break.
-//!
-//! Three endpoint schemes, in increasing order of setup cost:
-//!
-//! * `ssh://HOST` — no pairing at all. Attach re-execs `ssh -t HOST phux
-//!   attach`, so the session still lives on the remote server and survives
-//!   the ssh connection dropping. This is the zero-ceremony path, and it is
-//!   what `phux host add` falls back to when a host has no reachable
-//!   listener, and what `phux host add` records when no direct route
-//!   answers.
-//! * `quic://HOST:PORT` — the real remote transport (ADR-0031). Needs a
-//!   token and a pin.
-//! * `wss://HOST:PORT` — the same, for networks that block UDP.
-//!
-//! The registry is a sibling of `[[satellites]]`, not a reuse of it: a
-//! satellite is a peer a *hub* dials for its users, a remote is a server
-//! *this consumer* dials for itself. See [`phux_config::remote`].
+//! Endpoint schemes: `ssh://HOST` (no pairing; attach re-execs `ssh -t HOST phux
+//! attach`), `quic://HOST:PORT` (token and pin, ADR-0031), and `wss://HOST:PORT`
+//! (the same, where UDP is blocked). A remote is a server this consumer dials
+//! for itself; a satellite (`[[satellites]]`) is one a hub dials for its users.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -69,10 +45,8 @@ pub(crate) struct RemoteEntry {
 }
 
 impl RemoteEntry {
-    /// The destination to hand `ssh` when this entry's server needs
-    /// starting: the one it was enrolled through, else the ssh host of an
-    /// `ssh://` endpoint, else the entry's own name (an operator who typed
-    /// `phux host add mini` can `ssh mini`).
+    /// The destination to hand `ssh` when this entry's server needs starting:
+    /// the enrolled one, else an `ssh://` endpoint's host, else the entry name.
     pub(crate) fn ssh_destination(&self) -> String {
         if let Some(ssh) = &self.ssh {
             return ssh.clone();
@@ -96,11 +70,8 @@ pub(crate) enum Endpoint {
 }
 
 impl Endpoint {
-    /// Classify a registry endpoint URI.
-    ///
-    /// Validation lives here rather than at dial time so `phux host add`
-    /// rejects a typo while the operator is still looking at what they
-    /// typed.
+    /// Classify a registry endpoint URI, so `phux host add` rejects a typo up
+    /// front.
     pub(crate) fn parse(endpoint: &str) -> Result<Self, String> {
         let trimmed = endpoint.trim();
         if let Some(rest) = trimmed.strip_prefix("quic://") {
@@ -158,13 +129,9 @@ pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
     Ok(entries)
 }
 
-/// Look up one remote by name, or `None` when the registry has no such
-/// entry.
-///
-/// Returns `None` — not an error — on a *config* failure too, because this
-/// is called on the `phux attach NAME` hot path where an unreadable config
-/// must fall through to the local-session interpretation rather than block
-/// an attach.
+/// Look up one remote by name. A config failure is also `None`: on the
+/// `phux attach NAME` hot path an unreadable config falls through to the local
+/// session.
 pub(crate) fn find(name: &str) -> Option<RemoteEntry> {
     load_registry()
         .ok()?
@@ -173,10 +140,6 @@ pub(crate) fn find(name: &str) -> Option<RemoteEntry> {
 }
 
 /// Validated fields for a new or updated entry.
-///
-/// Fields are `pub(crate)` so `phux host add --role remote` (the ADR-0066
-/// umbrella) can report what it just registered without re-deriving the
-/// trimmed name from raw input.
 #[derive(Debug, Clone)]
 pub(crate) struct NewRemote {
     pub(crate) name: String,
@@ -273,10 +236,8 @@ pub(crate) fn validate_name(name: &str) -> Result<String, String> {
     Ok(trimmed.to_owned())
 }
 
-/// The token file is read at dial time from whatever directory the operator
-/// happened to run `phux attach` in, so a relative path would resolve
-/// somewhere else. Require absolute. Existence is not required: enrollment
-/// may write the config entry before the token lands.
+/// The token file is read relative to wherever `phux attach` runs, so it must
+/// be absolute (existence is not required: enrollment may write it later).
 fn validate_token_file(path: &Path) -> Result<PathBuf, String> {
     if path.as_os_str().is_empty() || !path.is_absolute() {
         return Err(format!(
@@ -314,10 +275,8 @@ pub(crate) fn remove_entry(entry: &RemoteEntry) -> Result<(), String> {
     doc.commit()
 }
 
-/// Write every field, clearing the ones this entry omits.
-///
-/// `add` replaces the whole entry, so an absent flag removes the key rather
-/// than leaving stale auth material pointed at a new endpoint.
+/// Write every field, clearing omitted ones, so re-adding never leaves stale
+/// auth material pointing at a new endpoint.
 fn fill_table(table: &mut Table, new: &NewRemote) {
     table.insert("name", value(&new.name));
     table.insert("endpoint", value(&new.endpoint));

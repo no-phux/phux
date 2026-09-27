@@ -11,40 +11,14 @@ use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
 
-/// Stable error codes this verb reports.
-///
-/// These belong in [`crate::commands::json_err::codes`] alongside the rest of
-/// the closed vocabulary; they are declared here only because that module is
-/// owned by a concurrent change in this wave. Fold them in when the two land.
-mod codes {
-    /// `--until` named a word outside the stream's `event` vocabulary. A
-    /// usage error at argv-parse time rather than a wait for an event that
-    /// can never arrive.
-    pub(super) const UNKNOWN_EVENT_NAME: &str = "unknown_event_name";
-    /// The server closed the stream before any `--until` event arrived. Not
-    /// a timeout (no deadline fired) and not success (the gate was never
-    /// satisfied).
-    pub(super) const STREAM_ENDED: &str = "stream_ended";
-}
-
 /// The `event` name emitted for a `phux.agent/v1` record change.
 const AGENT_STATE_EVENT: &str = "agent_state";
 
-/// The `event` names this stream emits — and therefore exactly the words
-/// `--until` accepts.
-///
-/// This list *is* the compatibility unit of `phux watch --json`: the stream
-/// carries no `schema_version` (see [`run_watch`]), so the vocabulary is what
-/// a consumer branches on, and naming an event on the command line pins it in
-/// the frozen CLI surface (ADR-0071). Keep it sorted and in step with
-/// [`watch_event_kind`] and [`AGENT_STATE_EVENT`]; this module's vocabulary
-/// tests fail if it drifts from either.
-///
-/// `unknown` is in the list because it is a name this stream really prints:
-/// it is what [`watch_event_kind`] renders for an event tag this binary
-/// predates. Omitting it would leave a line a consumer can see but cannot
-/// name, which is precisely the asymmetry the vocabulary-as-contract rule
-/// exists to prevent.
+/// The `event` names this stream emits, and so exactly the words `--until`
+/// accepts. The stream carries no `schema_version`, so this vocabulary is its
+/// compatibility unit (frozen by ADR-0071). Keep it sorted and in step with
+/// [`watch_event_kind`] and [`AGENT_STATE_EVENT`]; `unknown` is included because
+/// the stream really prints it for an event tag this binary predates.
 pub(crate) const WATCH_EVENT_NAMES: &[&str] = &[
     AGENT_STATE_EVENT,
     "approval_decided",
@@ -65,12 +39,9 @@ pub(crate) const WATCH_EVENT_NAMES: &[&str] = &[
     "unknown",
 ];
 
-/// The `--until` gate names frozen at 1.0 (ADR-0071 point 6).
-///
-/// `--until unknown` keeps matching every event outside this set: the events
-/// named later (`cwd_changed`, `terminal_control`, `journal_gap`,
-/// `source_gap`) printed as `unknown` before they had names, so a gate
-/// written then still matches them. Their own names gate on exactly one kind.
+/// The `--until` gate names frozen at 1.0 (ADR-0071 point 6). `--until
+/// unknown` keeps matching events named later, which printed as `unknown`
+/// before they had names.
 pub(crate) const FROZEN_GATE_NAMES: &[&str] = &[
     AGENT_STATE_EVENT,
     "asked",
@@ -109,63 +80,20 @@ pub(crate) struct WatchArgs<'a> {
     pub(crate) socket: Option<PathBuf>,
 }
 
-/// `phux watch [TARGET]` — stream a pane's live events (SPEC §7.5,
-/// ADR-0022 'events', `phux-y2t`).
+/// `phux watch [TARGET]` — stream a pane's live events and its
+/// `phux.agent/v1` record, one line per item, until EOF or Ctrl-C, without
+/// attaching or resizing. `--json` keeps stdout pure NDJSON.
 ///
-/// Resolves `TARGET` (a selector; default: the focused session) to a pane
-/// client-side, subscribes to the server's `EVENT` stream *and* to the
-/// pane's `phux.agent/v1` L3 record (ADR-0040 / ADR-0046), and prints one
-/// line per item until EOF (server gone) or Ctrl-C. The subscription
-/// neither attaches nor resizes the pane.
+/// No `schema_version` on this stream (ADR-0071): a per-line field is overhead
+/// and a header line is missed by reconnecting consumers. The binary version
+/// and the `event` vocabulary are the contract; consumers ignore unknown events
+/// and fields (see `docs/consumers/agents.md`).
 ///
-/// `--json` emits one JSON object per line and keeps stdout pure (the
-/// resolved-target diagnostics and connect errors go to stderr); the
-/// human form is a compact one-liner.
-///
-/// **Decision: no `schema_version` field on this stream** (ADR-0071,
-/// phux-k8u0), unlike every other `--json` document in this crate. Two
-/// alternatives were rejected: a per-line field is repeated overhead on a
-/// hot, high-volume path for a value that essentially never changes within
-/// a run; a versioned header line would be invisible to the common consumer
-/// shape here — one that attaches, disconnects, and reconnects, or `tail`s
-/// an existing pipe, and so may never observe line one. Instead the stream
-/// is versioned by the binary itself (`phux --version`) and the
-/// compatibility unit is the closed-but-growing `event` name vocabulary: a
-/// consumer that does not recognize an `event` value, or a field on one it
-/// does, ignores it exactly as [`watch_event_kind`]'s catch-all arm and
-/// [`AgentEvent::Unknown`] already do server-side. A shape-breaking change
-/// to an existing event is a breaking change to the CLI's frozen JSON
-/// surface like any other and requires the major version bump ADR-0071
-/// already mandates. Written up in full at `docs/consumers/agents.md`
-/// (the `phux watch` entry, §3).
-///
-/// # Bounding the stream
-///
-/// `--until EVENT` (repeatable) turns the stream into a **gate**: the first
-/// item whose `event` name is in the set is printed and the watch exits 0.
-/// `--timeout SECS` puts a deadline on it and exits 124 on expiry, the same
-/// code `phux wait` and `phux agent wait` use. Together they replace the
-/// background-and-kill shell pipeline every agent recipe had to write
-/// (`phux watch --json @11 & sleep 30; kill $!`), which is four places to
-/// get a subprocess wrong for something the stream can bound itself.
-///
-/// Three deliberate choices in the exit mapping:
-///
-/// - **A deadline always means 124**, `--until` or not. The number then
-///   answers exactly one question — did the deadline fire — which is what
-///   124 means for `wait`, for `agent wait`, and for GNU `timeout`, the tool
-///   this flag exists to stop people from wrapping around `watch`.
-/// - **A server EOF with an unsatisfied `--until` is a failure (exit 1)**,
-///   not success. The stream that would have carried the event went away;
-///   reporting 0 would tell a caller its event happened. Without `--until`
-///   there is no gate to fail, so EOF stays the clean exit 0 that
-///   unbounded `watch` has always returned.
-/// - **Ctrl-C stays exit 0** in every combination: the user asked to stop.
-///
-/// The bounded run keeps the NDJSON contract intact — stdout is still one
-/// event object per line and nothing else, so no summary or result document
-/// is appended on timeout. The 124 diagnostic is prose on stderr, matching
-/// what `wait` and `agent wait` already print at 124.
+/// `--until EVENT` gates the stream: the first matching item is printed and the
+/// watch exits 0. `--timeout SECS` always exits 124 on expiry, like `wait`. A
+/// server EOF with an unsatisfied `--until` exits 1 (the event did not happen);
+/// without `--until`, EOF is exit 0. Ctrl-C is always exit 0. Diagnostics go to
+/// stderr; no summary is appended to stdout.
 pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
     let WatchArgs {
         session,
@@ -184,7 +112,7 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
             return json_err::emit(
                 json,
                 &json_err::CliError::new(
-                    codes::UNKNOWN_EVENT_NAME,
+                    json_err::codes::UNKNOWN_EVENT_NAME,
                     format!("'{name}' is not an event this stream emits"),
                     format!("use one of: {}", WATCH_EVENT_NAMES.join(", ")),
                 ),
@@ -223,12 +151,9 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
             },
         };
 
-        // Stream until the gate is satisfied, the deadline fires, EOF, or
-        // Ctrl-C. `tokio::select!` races the stream against the interrupt so
-        // Ctrl-C exits cleanly (exit 0 — the user asked to stop, not a
-        // failure); the deadline lives inside `watch_resumable` so it also
-        // covers the connect. `resume` outlives the stream, so every ending,
-        // Ctrl-C included, still reports where to resume.
+        // Race the stream against Ctrl-C (exit 0); the deadline lives in
+        // `watch_resumable` so it also covers the connect. `resume` outlives the
+        // stream so every ending reports where to resume.
         let mut resume = ResumeState::new(after);
         let code = {
             let stream = phux_client::watch::watch_resumable(
@@ -276,7 +201,7 @@ fn watch_exit(
         Ok(WatchOutcome::Ended) => json_err::emit(
             json,
             &json_err::CliError::new(
-                codes::STREAM_ENDED,
+                json_err::codes::STREAM_ENDED,
                 format!(
                     "the server closed the event stream before {} arrived",
                     gate_alternatives(until),
@@ -296,10 +221,8 @@ fn watch_exit(
     }
 }
 
-/// The last stderr line: where to resume this watch with `--after`
-/// (ADR-0123). Under `--json` it is one JSON object, like every other
-/// stderr line in that mode. A server with no event journal issues no
-/// cursor, so nothing is printed.
+/// The last stderr line: where to resume with `--after` (ADR-0123), as JSON
+/// under `--json`. Nothing without an event journal.
 fn report_cursor(resume: &ResumeState, json: bool) {
     let cursor = resume.cursor();
     if json {
@@ -325,12 +248,7 @@ fn report_cursor(resume: &ResumeState, json: bool) {
     }
 }
 
-/// The `--until` names as one prose alternation ("asked or idle"), for the
-/// diagnostics that have to say what the watch was waiting for.
-///
-/// Only ever called with a non-empty set on the EOF path; the timeout path
-/// guards on emptiness itself, because a bare `--timeout` really was waiting
-/// for nothing in particular.
+/// The `--until` names as prose ("asked or idle") for diagnostics.
 fn gate_alternatives(until: &[String]) -> String {
     until.join(" or ")
 }
@@ -345,11 +263,8 @@ fn describe_gate(until: &[String]) -> String {
     }
 }
 
-/// The `event` name this item renders under — the value `--until` matches
-/// and the value the `--json` line carries.
-///
-/// One function so the gate and the printer can never disagree about what a
-/// line is called.
+/// The `event` name this item renders under: what `--until` matches and the
+/// `--json` line carries.
 pub(crate) const fn watch_item_event(item: &WatchItem) -> &'static str {
     match item {
         WatchItem::Event(ev) => watch_event_kind(&ev.event),
@@ -365,12 +280,7 @@ pub(crate) fn print_watch_item(item: &WatchItem, json: bool) {
     }
 }
 
-/// Render one [`AgentStateUpdate`] to stdout as the `agent_state` line.
-///
-/// The event name joins the same closed-but-growing vocabulary the rest of
-/// this stream uses (see the `run_watch` docs): a consumer that does not
-/// recognize `agent_state` ignores the line, and no `schema_version` rides
-/// along.
+/// Render one [`AgentStateUpdate`] as the `agent_state` line.
 pub(crate) fn print_agent_state(update: &AgentStateUpdate, json: bool) {
     let terminal = update
         .terminal
@@ -388,11 +298,8 @@ pub(crate) fn print_agent_state(update: &AgentStateUpdate, json: bool) {
     }
 }
 
-/// The compact human suffix for an `agent_state` line: the agent's name and
-/// kind, the transition, and the effective attention. A cleared record (the
-/// tombstone) renders the name it had and the state it was last in, because
-/// "the agent you were waiting on is gone" is the whole point of emitting
-/// the line at all.
+/// The human suffix for an `agent_state` line: name, kind, transition, and
+/// effective attention. A cleared record still names the agent it was.
 fn agent_state_detail(update: &AgentStateUpdate) -> String {
     use std::fmt::Write as _;
 
@@ -425,15 +332,9 @@ fn agent_state_detail(update: &AgentStateUpdate) -> String {
     out
 }
 
-/// Build the `--json` line for an agent-state change.
-///
-/// `state` is `null` on a cleared record rather than the key being absent,
-/// so a consumer keyed on `state` sees the record go away instead of
-/// silently reading the previous value forever. `attention` is the
-/// *effective* level — the ADR-0046 detector never writes the field and
-/// L3 §3.7 derives it from `state`, so the declared value would be absent
-/// on every server-derived line. `from` is present only when this watch
-/// session already saw a record for the same Terminal.
+/// Build the `--json` line for an agent-state change. `state` is `null` on a
+/// cleared record, `attention` is the effective level (derived from `state`),
+/// and `from` appears only when this watch already saw a record for the pane.
 pub(crate) fn agent_state_json(
     update: &AgentStateUpdate,
     terminal: Option<&str>,
@@ -484,10 +385,8 @@ pub(crate) fn agent_state_json(
     serde_json::to_string(&serde_json::Value::Object(obj))
 }
 
-/// Render one [`phux_client::watch::WatchEvent`] to stdout — one line, as
-/// JSON (`--json`) or a compact human form. Keeps stdout pure JSON under
-/// `--json` (no human framing). A serialization failure is reported to
-/// stderr and the line skipped rather than aborting the stream.
+/// Render one watch event as a line (JSON or compact human form). A
+/// serialization failure is reported on stderr and the line skipped.
 pub(crate) fn print_watch_event(ev: &WatchEvent, json: bool) {
     if json {
         match watch_event_json(ev) {
@@ -541,19 +440,14 @@ fn exit_suffix(code: Option<i32>) -> String {
     code.map_or_else(String::new, |code| format!(" exit={code}"))
 }
 
-/// The stable `event` name of an event: the value `--until` matches and the
-/// `--json` line carries. One vocabulary with MCP `phux_watch`
-/// ([`phux_client::watch::event_name`]); an event tag this binary predates
-/// renders as `unknown` rather than failing the stream.
+/// The stable `event` name of an event, shared with MCP `phux_watch`; an
+/// unknown tag renders as `unknown`.
 const fn watch_event_kind(event: &AgentEvent) -> &'static str {
     phux_client::watch::event_name(event)
 }
 
-/// Build the `--json` line for a watch event: one JSON object with the
-/// stable `event` name, the `terminal` selector when scoped, the event's
-/// payload fields, and the journal stamp (`seq`, `ts_ms`, and `actor`) when
-/// the server journals. The projection is
-/// [`phux_client::watch::event_json`], which MCP `phux_watch` shares.
+/// Build the `--json` line for a watch event via
+/// [`phux_client::watch::event_json`], shared with MCP `phux_watch`.
 pub(crate) fn watch_event_json(ev: &WatchEvent) -> Result<String, serde_json::Error> {
     serde_json::to_string(&phux_client::watch::event_json(ev))
 }
@@ -569,14 +463,11 @@ mod tests {
         watch_event_json, watch_event_kind, watch_item_event,
     };
 
-    /// Build the JSON line for an event and parse it back, asserting the
-    /// shape the `phux watch --json` contract promises: one object with a
-    /// stable `event` name, an optional `terminal` selector, and the
-    /// event's payload field.
     fn pane(selector: &str) -> phux_protocol::ids::ResourceId {
         phux_protocol::ids::ResourceId::local(selector.trim_start_matches('@').parse().unwrap())
     }
 
+    /// Build an event's JSON line and parse it back.
     fn json_of(event: AgentEvent, terminal: Option<&str>) -> serde_json::Value {
         let ev = WatchEvent {
             terminal: terminal.map(pane),
@@ -853,10 +744,8 @@ mod tests {
         assert_eq!(sorted.as_slice(), WATCH_EVENT_NAMES);
     }
 
-    /// The single most important invariant of the gate: the name `--until`
-    /// matches is byte-for-byte the `event` value on the `--json` line. If
-    /// these two ever diverge, a caller waits for an event they can watch
-    /// arriving on their own stdout.
+    /// The name `--until` matches is byte-for-byte the `event` value on the
+    /// `--json` line.
     #[test]
     fn until_matches_exactly_the_name_the_json_line_carries() {
         for event in every_event() {
@@ -882,11 +771,8 @@ mod tests {
         assert_eq!(watch_item_event(&item), "agent_state");
     }
 
-    /// `unknown` stays a real, waitable name for a tag this binary predates.
-    /// The journal-era events (ADR-0123) have names of their own now:
-    /// `cwd_changed` and `terminal_control` used to print as `unknown`, and
-    /// `journal_gap` / `source_gap` are new. Pinned so that widening the
-    /// vocabulary stays a deliberate change to the frozen surface.
+    /// `unknown` stays a waitable name; the journal-era events (ADR-0123) have
+    /// their own.
     #[test]
     fn journal_era_events_are_named_and_unknown_tags_stay_unknown() {
         assert_eq!(

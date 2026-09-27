@@ -1,44 +1,17 @@
-//! The shared ssh middle of `phux host add HOST` — bring another
-//! machine's server up and pair with it over ssh (ADR-0055, ADR-0066,
-//! ADR-0122).
+//! The shared ssh middle of `phux host add HOST` (ADR-0055, ADR-0066,
+//! ADR-0122): bring another machine's server up and pair with it over ssh.
+//! Enrollment grants no authority ssh did not already grant; it removes the
+//! hand-copying of a token and a fingerprint.
 //!
-//! The remote path already worked and was still unusable: `phux pair` prints
-//! a 64-hex token and a 64-hex fingerprint, and the operator retypes both
-//! into a command line they retype again on every attach. The unexploited
-//! asset is ssh. Anyone self-hosting a phux server already holds ssh trust to
-//! that host — they used it to install phux — and that channel is
-//! authenticated, confidential, and already inside their threat model.
+//! Over one ssh channel: confirm `phux` is installed; make sure a server runs
+//! and stays running (install the service, adopt a live server, or fall back to
+//! `phux server --ensure`); run `phux pair --json` (migrating a legacy token
+//! store once); probe the direct routes; and return the first that answers, or
+//! `ssh://HOST` with the first candidate kept as `direct`. A host with nothing
+//! dialable is not an error.
 //!
-//! So enrollment grants no authority ssh did not already grant: whoever can
-//! `ssh HOST` can run `phux pair` there and read the token themselves. What
-//! it removes is a transcription error class, and the reason nobody used the
-//! remote path.
-//!
-//! The flow, all over one ssh channel, in the order an operator would do it
-//! by hand:
-//!
-//! 1. confirm `phux` is on the remote `PATH` ([`remote_phux_version`]);
-//! 2. make sure a server is running there and will keep running
-//!    ([`ensure_remote_server`]): install the remote's service unit, adopt
-//!    a server that is already live, or fall back to an unsupervised
-//!    `phux server --ensure`;
-//! 3. run `phux pair --json` there and read back token + fingerprint,
-//!    migrating a pre-versioned token store once if that is what stops it;
-//! 4. list the direct routes worth trying — an operator-supplied address,
-//!    the host's detected overlay addresses, the host ssh itself connects
-//!    to — and dial each one briefly with the minted credentials;
-//! 5. hand back the first route that answered, or `ssh://HOST` and the
-//!    first candidate as a `direct` route to promote later.
-//!
-//! Step 5 is the one that ends benignly: a host with nothing dialable is
-//! not an error. An `ssh://` entry still gives the operator `phux attach
-//! HOST` against a server whose sessions outlive the connection.
-//!
-//! Nothing here prints: `phux host add` and the attach repair rung each own
-//! an output contract, so events carry the facts and the caller renders
-//! them. Nothing here writes a registry either — the role-specific tails
-//! in `host` own the token path and the entry, so this one flow cannot
-//! drift into deciding trust direction.
+//! Nothing here prints or writes a registry: callers render the events, and
+//! the role-specific tails in `host` own the token path and the entry.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -51,17 +24,12 @@ use phux_client::attach::connection::Connection;
 /// `docs/remote-access.md` uses throughout.
 const DEFAULT_QUIC_PORT: u16 = 8788;
 
-/// How long one direct-route probe may take before the route is judged
-/// unreachable. A reachable host answers a QUIC handshake in one round trip;
-/// this only fires on a filtered path, where the alternative is waiting out
-/// quinn's idle timeout.
+/// How long one direct-route probe may take; only a filtered path waits
+/// this long.
 const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 
-/// Test seam for [`PROBE_DEADLINE`], in milliseconds. The fleet tests dial
-/// TEST-NET addresses that can never answer; without a shorter deadline
-/// every candidate costs the full five seconds. Never documented for
-/// operators: shortening it turns a slow but reachable host into an
-/// `ssh://` entry.
+/// Test seam for [`PROBE_DEADLINE`], in milliseconds. Undocumented for
+/// operators: shortening it turns a slow host into an `ssh://` entry.
 const PROBE_DEADLINE_ENV: &str = "PHUX_DIRECT_PROBE_TIMEOUT_MS";
 
 /// ssh's exit status when ssh itself failed (resolution, connection,
@@ -71,16 +39,12 @@ const SSH_FAILED: i32 = 255;
 /// A POSIX shell's "command not found".
 const COMMAND_NOT_FOUND: i32 = 127;
 
-/// What `phux service install` says when a live server already holds the
-/// socket. The operator's remedy is `--adopt`; here it is taken for them,
-/// because "a server is already running" is exactly the state enrollment
-/// wants.
+/// `phux service install`'s refusal when a live server holds the socket;
+/// enrollment answers it with `--adopt`.
 const SERVICE_INCUMBENT_LIVE: &str = "a server is already running on";
 
-/// What `phux pair` says when the token store predates versioning. The
-/// migration is a documented, secret-preserving conversion (`phux doctor`
-/// names it as the remedy), so enrollment performs it once rather than
-/// stopping to relay the instruction.
+/// `phux pair`'s refusal for a pre-versioning token store; enrollment runs
+/// the documented migration once.
 const LEGACY_TOKEN_STORE: &str = "legacy token store requires explicit migration";
 
 /// What `phux pair --json` reported on the remote host.
@@ -92,11 +56,8 @@ pub(crate) struct PairReport {
 }
 
 impl PairReport {
-    /// Parse the document `phux pair --json` writes.
-    ///
-    /// Tolerant of fields it does not know so a newer remote phux can add
-    /// keys without breaking an older `phux host add`; strict about the
-    /// two it cannot proceed without.
+    /// Parse `phux pair --json`: tolerant of unknown fields, strict about the two
+    /// it needs.
     pub(crate) fn parse(stdout: &str) -> Result<Self, String> {
         let value = pair_document_in(stdout)
             .ok_or_else(|| "remote `phux pair --json` emitted no JSON document".to_owned())?;
@@ -134,13 +95,9 @@ impl PairReport {
     }
 }
 
-/// The JSON object `phux pair --json` printed, wherever it sits in stdout.
-///
-/// The document is pretty-printed over many lines, and a shell startup file
-/// that prints on a non-interactive login can put text in front of it. Only
-/// an object with a `token` key counts: a bare array element such as
-/// `"100.64.0.2"` is valid JSON on its own line and must not be mistaken
-/// for the document.
+/// The `phux pair --json` object wherever it sits in stdout (pretty-printed,
+/// possibly after shell startup noise). Only an object with a `token` key
+/// counts.
 fn pair_document_in(stdout: &str) -> Option<serde_json::Value> {
     let is_document = |value: &serde_json::Value| value.get("token").is_some();
     if let Some(value) = serde_json::from_str::<serde_json::Value>(stdout.trim())
@@ -171,16 +128,10 @@ fn pair_document_in(stdout: &str) -> Option<serde_json::Value> {
         .filter(is_document)
 }
 
-/// The direct routes worth dialing for an enrolled host, most likely first.
-///
-/// * an operator-supplied `--endpoint` is the only candidate — they know
-///   their network, and a full `wss://` URI is registered without a probe
-///   (the probe speaks QUIC);
-/// * otherwise every detected overlay address, then the host ssh itself
-///   connects to (`ssh -G`), each on the QUIC port — but only when the
-///   remote produced a certificate fingerprint, since ADR-0031 refuses an
-///   unpinned routable dial and registering one would just move the
-///   failure later.
+/// The direct routes worth dialing, most likely first: an operator
+/// `--endpoint` alone, otherwise each overlay address then the host `ssh -G`
+/// names, on the QUIC port, and only when a fingerprint exists (ADR-0031
+/// refuses an unpinned routable dial).
 pub(crate) fn candidate_endpoints(
     ssh_target_host: &str,
     report: &PairReport,
@@ -212,19 +163,12 @@ pub(crate) fn candidate_endpoints(
 }
 
 /// The local path a remote's token is written to.
-///
-/// Under the state dir beside the rest of phux's credential material, named
-/// for the remote so two enrollments never collide.
 pub(crate) fn token_path(state_dir: &Path, name: &str) -> PathBuf {
     state_dir.join("remotes").join(format!("{name}.token"))
 }
 
-/// The local path a satellite's token is written to.
-///
-/// A deliberate sibling of [`token_path`], not a merge: the `remotes/` and
-/// `satellites/` directories mirror the split registries (ADR-0066 keeps the
-/// trust directions apart), so an entry's role is readable from where its
-/// credential lives.
+/// The local path a satellite's token is written to; `remotes/` and
+/// `satellites/` mirror the split registries.
 pub(crate) fn satellite_token_path(state_dir: &Path, name: &str) -> PathBuf {
     state_dir.join("satellites").join(format!("{name}.token"))
 }
@@ -275,12 +219,8 @@ pub(crate) enum ServicePolicy {
     Skip,
 }
 
-/// A progress event from the shared ssh middle.
-///
-/// The middle does not print: `phux host add` and the attach repair rung
-/// each own an output contract — different `--json` suppression rules,
-/// different prefixes — so events carry the facts and the caller renders
-/// them with [`EnrollEvent::describe`].
+/// A progress event from the shared ssh middle, rendered by the caller with
+/// [`EnrollEvent::describe`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EnrollEvent {
     /// `phux --version` answered on the host.
@@ -351,12 +291,7 @@ impl EnrollEvent {
     }
 }
 
-/// Why the shared ssh middle stopped.
-///
-/// Three variants, because the callers phrase exactly three remedies: an
-/// unreachable host has a check-your-ssh fix, a missing `phux` has an
-/// install-it fix, and everything else on the pairing path shares one
-/// look-at-the-host-or-`--ssh-only` fix.
+/// Why the ssh middle stopped: one variant per remedy the callers phrase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EnrollFailure {
     /// ssh itself failed (exit 255): resolution, connection, authentication.
@@ -391,10 +326,8 @@ pub(crate) struct EnrollRequest<'a> {
     pub(crate) quic_port: u16,
     /// Whether to install the host's service unit.
     pub(crate) service: ServicePolicy,
-    /// Bearer token already held for this name, when re-enrolling. After the
-    /// server is up, the middle probes with it first and reuses it when a
-    /// direct route answers; otherwise it mints with `--replace-token` so the
-    /// previous credential is revoked in the same rewrite.
+    /// Bearer token already held for this name when re-enrolling: probed first
+    /// and reused if a direct route answers, else revoked via `--replace-token`.
     pub(crate) previous_token: Option<&'a str>,
     /// Certificate fingerprint saved with [`Self::previous_token`], required
     /// to probe a previous credential (ADR-0031 refuses an unpinned dial).
@@ -418,12 +351,8 @@ pub(crate) struct EnrollOutcome {
     pub(crate) supervision: Option<Supervision>,
 }
 
-/// The shared middle of every ssh enrollment: confirm phux is installed on
-/// the host, make sure a server is running and supervised, mint pairing
-/// material there, and find a direct route that answers.
-///
-/// Role-agnostic on purpose — nothing here touches a registry or writes a
-/// token.
+/// The shared middle of every ssh enrollment. Role-agnostic: nothing here
+/// touches a registry or writes a token.
 pub(crate) fn enroll_over_ssh(
     req: &EnrollRequest<'_>,
     on_event: &mut dyn FnMut(EnrollEvent),
@@ -449,10 +378,8 @@ pub(crate) fn enroll_over_ssh(
         }
     };
 
-    // Prefer the credential already held for this name once the server is
-    // up: start-then-retry is cheaper and safer than minting another live
-    // bearer into remote-tokens (ADR-0122). Only mint (and revoke the old
-    // secret) when that probe fails.
+    // Reuse the credential already held before minting another live bearer
+    // (ADR-0122).
     let report = if let Some(report) = try_reuse_previous_credential(req, on_event) {
         on_event(EnrollEvent::CredentialReused);
         report
@@ -519,12 +446,8 @@ pub(crate) fn enroll_over_ssh(
 }
 
 /// Make sure a server is running on `ssh_host` and, under
-/// [`ServicePolicy::Install`], that it will keep running.
-///
-/// The attach repair rung calls this on its own when a saved route stops
-/// answering: the host was enrolled before, so what is missing is the
-/// server, not the credentials. It confirms `phux` first so a host that
-/// lost its install is reported as that.
+/// [`ServicePolicy::Install`], that it keeps running. Confirms `phux` first so a
+/// lost install is reported as that.
 pub(crate) fn ensure_remote_server(
     ssh_host: &str,
     remote_phux: &str,
@@ -536,23 +459,11 @@ pub(crate) fn ensure_remote_server(
         .map_err(EnrollFailure::Pair)
 }
 
-/// [`ensure_remote_server`] once `phux` is known to be there.
-///
-/// Under [`ServicePolicy::Install`], `phux service install --quic` is the
-/// one idempotent call that covers every state the host can be in:
-///
-/// * no unit yet: the unit is written, loaded, and started;
-/// * a unit that is loaded but stopped — a server that exited cleanly
-///   (`phux kill --server`, or the operator's own `kill`) stays stopped
-///   under the deliberate restart policy — is reloaded: `install` unloads
-///   and re-bootstraps the unit, which starts it;
-/// * a live server already holding the socket: `install` refuses, and the
-///   refusal is answered with `--adopt`, which writes and arms the unit
-///   without touching that server's panes.
-///
-/// A host with no service manager, or an install that fails for any other
-/// reason, still gets a server: `phux server --ensure` is the same start the
-/// naked `phux` does, minus supervision.
+/// [`ensure_remote_server`] once `phux` is known to be there. Under
+/// [`ServicePolicy::Install`], `phux service install --quic` covers every state:
+/// no unit (written and started), a stopped unit (reloaded), or a live server
+/// holding the socket (refused, then answered with `--adopt`). Anything else
+/// falls back to an unsupervised `phux server --ensure`.
 fn ensure_remote_server_after_version(
     ssh_host: &str,
     remote_phux: &str,
@@ -611,11 +522,8 @@ fn ensure_remote_server_after_version(
     )
 }
 
-/// After the server is up, dial with the previously enrolled credential.
-///
-/// Returns `Some` when a direct route answers so the caller can keep that
-/// token instead of minting another. `None` when there is no previous
-/// credential, no pin to probe with, or every candidate refuses it.
+/// After the server is up, dial with the previous credential; `Some` when a
+/// direct route accepts it.
 fn try_reuse_previous_credential(
     req: &EnrollRequest<'_>,
     on_event: &mut dyn FnMut(EnrollEvent),
@@ -789,13 +697,9 @@ impl SshOutput {
     }
 }
 
-/// Run a command on the remote host over ssh, capturing both streams.
-///
-/// Honors `$PHUX_SSH`, the same seam the federation hub's satellite dialer
-/// uses, so a custom ssh wrapper works for both. `BatchMode=yes` turns a
-/// missing key into a prompt-free error rather than a hung enrollment
-/// waiting on a password nobody is watching for. `Err` is "ssh could not be
-/// run at all"; a command that ran and failed is an `Ok` with its status.
+/// Run a command on the remote host over ssh (honoring `$PHUX_SSH`), with
+/// `BatchMode=yes` so a missing key errors instead of prompting. `Err` means ssh
+/// could not run at all.
 pub(crate) fn ssh_run(ssh_host: &str, argv: &[&str]) -> Result<SshOutput, String> {
     let program = ssh_program();
     let output = Command::new(&program)
@@ -958,10 +862,8 @@ mod tests {
 
     #[test]
     fn a_pretty_printed_document_with_a_multi_line_array_is_read_whole() {
-        // What the real `phux pair --json` prints: `serde_json` pretty
-        // output, where an overlay address sits alone on its own line as a
-        // bare JSON string. Scanning lines from the end for "anything that
-        // parses" picked that string up and reported no token.
+        // Pretty-printed output puts an overlay address alone on a line as a bare
+        // JSON string; it must not be mistaken for the document.
         let stdout = "Last login: never\n{\n  \"cert_fingerprint\": \"AB:CD\",\n  \"overlay_addresses\": [\n    \"100.79.155.27\"\n  ],\n  \"quic_addr\": null,\n  \"schema_version\": 1,\n  \"token\": \"863e\",\n  \"ws_addr\": \":8787\"\n}\n";
         let parsed = PairReport::parse(stdout).expect("parse");
         assert_eq!(parsed.token, "863e");
