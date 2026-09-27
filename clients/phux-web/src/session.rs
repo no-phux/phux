@@ -19,13 +19,15 @@ use phux_client_core::session::{
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
-    ImageProtocolSet, ServerFeature,
+    ImageProtocolSet, ServerFeature, ServerFeatureExt,
 };
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
+use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, ViewportInfo,
+    AttachTarget, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, PathQueryResult,
+    PathResults, ViewportInfo,
 };
 use phux_protocol::{PROTOCOL_VERSION, ResourceKind};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecodeKind, NativeDecoder, Terminal, Vt};
@@ -525,6 +527,12 @@ pub struct Session {
     bootstrap_limits: Option<BootstrapLimits>,
     selected_profile: Option<BootstrapProfile>,
     terminal_reply_supported: bool,
+    path_query_supported: bool,
+    path_request_id: u32,
+    path_pending: Option<u32>,
+    path_target: Option<ResourceId>,
+    path_results: Option<PathResults>,
+    path_error: Option<String>,
     failed: bool,
     render_visible: bool,
     attach_ready: bool,
@@ -560,6 +568,12 @@ impl Session {
             bootstrap_limits: None,
             selected_profile: None,
             terminal_reply_supported: false,
+            path_query_supported: false,
+            path_request_id: 0,
+            path_pending: None,
+            path_target: None,
+            path_results: None,
+            path_error: None,
             failed: false,
             render_visible: false,
             attach_ready: false,
@@ -595,9 +609,106 @@ impl Session {
         self.attach_ready
     }
 
+    /// Whether this peer explicitly offers host-side path discovery.
+    #[must_use]
+    pub const fn path_query_supported(&self) -> bool {
+        self.path_query_supported
+    }
+
+    /// Results for the latest query, if it completed for the current pane.
+    #[must_use]
+    pub fn path_results(&self) -> Option<&PathResults> {
+        self.path_results.as_ref()
+    }
+
+    /// Display-only refusal for the latest query.
+    #[must_use]
+    pub fn path_error(&self) -> Option<&str> {
+        self.path_error.as_deref()
+    }
+
+    /// True while awaiting a reply from the selected host.
+    #[must_use]
+    pub const fn path_pending(&self) -> bool {
+        self.path_pending.is_some()
+    }
+
+    /// Cancel the UI's interest in the outstanding request. The server may still reply.
+    pub fn cancel_path_query(&mut self) {
+        self.path_pending = None;
+        self.path_target = None;
+        self.path_results = None;
+        self.path_error = None;
+    }
+
+    /// Start one host query, replacing any prior query. No browser filesystem is read.
+    #[must_use]
+    pub fn path_query_frame(
+        &mut self,
+        root: &str,
+        query: &str,
+        recursive: bool,
+    ) -> Option<Vec<u8>> {
+        if !self.path_query_supported || !self.attach_ready || self.failed {
+            return None;
+        }
+        let target = self.first_published_terminal()?;
+        let host = target.host().cloned();
+        self.path_request_id = self.path_request_id.wrapping_add(1).max(1);
+        self.path_pending = Some(self.path_request_id);
+        self.path_target = Some(target);
+        self.path_results = None;
+        self.path_error = None;
+        Some(encode(&FrameKind::PathQuery {
+            request_id: self.path_request_id,
+            root: root.to_owned(),
+            query: query.to_owned(),
+            recursive,
+            host,
+        }))
+    }
+
+    /// Insert a selected, original server path as editable POSIX shell text.
+    /// The kernel checks the pane's current input lease before emitting a paste.
+    #[must_use]
+    pub fn paste_path_row(&mut self, index: usize) -> Option<Vec<u8>> {
+        let target = self.eligible_path_target()?;
+        let path = &self.path_results.as_ref()?.rows.get(index)?.path;
+        let text = shell_quote_path(path)?;
+        let (outcome, applied) = self.apply_kernel(KernelInput::Action(KernelAction::Input {
+            terminal_id: &target,
+            event: &InputEvent::Paste(PasteEvent {
+                trust: PasteTrust::Untrusted,
+                data: text.into_bytes(),
+            }),
+        }));
+        if !applied {
+            return None;
+        }
+        let frame = outcome.send.into_iter().next();
+        if frame.is_some() {
+            self.cancel_path_query();
+        }
+        frame
+    }
+
+    fn eligible_path_target(&self) -> Option<ResourceId> {
+        let target = self.path_target.as_ref()?;
+        if self.path_pending.is_some() || self.first_published_terminal().as_ref() != Some(target) {
+            return None;
+        }
+        let kernel = self.kernel.as_ref()?;
+        matches!(
+            kernel.input_eligibility(target),
+            InputEligibility::Eligible { .. }
+        )
+        .then(|| target.clone())
+    }
+
     /// Permanently fail this session after a transport or framing violation.
     pub fn fail_protocol(&mut self, _message: &str) {
         self.failed = true;
+        self.cancel_path_query();
     }
 
     /// Frame sent when the transport opens. Stateful frames wait for `HELLO_OK`.
@@ -653,6 +764,15 @@ impl Session {
         if self.failed {
             return Outcome::default();
         }
+        if let FrameKind::HelloOk { server_caps, .. } = &frame {
+            self.path_query_supported = server_caps
+                .features_ext
+                .contains(ServerFeatureExt::PathQuery);
+        }
+        if let FrameKind::PathResults { request_id, result } = frame {
+            self.accept_path_results(request_id, result);
+            return Outcome::default();
+        }
         let agent_frame = frame_resource_id(&frame).is_some_and(|id| self.is_agent_session(id));
         let mut outcome = self.reduce_frame(frame);
         if agent_frame && outcome.fatal.is_some() {
@@ -660,6 +780,21 @@ impl Session {
             outcome.fatal = None;
         }
         outcome
+    }
+
+    fn accept_path_results(&mut self, request_id: u32, result: PathQueryResult) {
+        if !self.path_query_supported || self.path_pending != Some(request_id) {
+            return;
+        }
+        if self.path_target.as_ref() != self.first_published_terminal().as_ref() {
+            self.cancel_path_query();
+            return;
+        }
+        self.path_pending = None;
+        match result {
+            Ok(results) => self.path_results = Some(results),
+            Err(error) => self.path_error = Some(error.message),
+        }
     }
 
     fn reduce_frame(&mut self, frame: FrameKind) -> Outcome {
@@ -769,6 +904,7 @@ impl Session {
                     outcome.badges = true;
                 }
                 self.focused_terminal = Some(focused_terminal);
+                self.cancel_path_query();
                 self.terminal_order = terminal_ids;
                 self.render_visible = false;
                 outcome
@@ -937,6 +1073,7 @@ impl Session {
                     reason,
                 });
                 if applied && was_focused {
+                    self.cancel_path_query();
                     self.focused_terminal = self.first_published_terminal();
                 }
                 if applied && was_agent {
@@ -1139,6 +1276,15 @@ impl Session {
             .published(&terminal_id)
             .map(|replica| replica.geometry())
     }
+}
+
+/// Single quotes keep shell metacharacters inert, including embedded apostrophes.
+/// Reject terminal controls rather than pasting an executable newline or escape.
+fn shell_quote_path(path: &str) -> Option<String> {
+    if !path.starts_with('/') || path.chars().any(char::is_control) {
+        return None;
+    }
+    Some(format!("'{}'", path.replace('\'', "'\\''")))
 }
 
 fn browser_monotonic_ms() -> u64 {

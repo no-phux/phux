@@ -37,6 +37,8 @@ use web_sys::{
 use crate::framing::FrameBuffer;
 use crate::{Metrics, render};
 
+mod path_picker;
+
 const CONNECT_DEADLINE_MS: u32 = 10_000;
 const MAX_OUTBOUND_BYTES: usize = 1024 * 1024;
 const PHUX_WS_PROTOCOL: &str = "phux.v1";
@@ -226,6 +228,7 @@ pub async fn run_hosted(
     ensure_app_live(&app)?;
 
     install_keyboard(&app)?;
+    path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
     Ok(app_attempt.complete())
@@ -272,6 +275,7 @@ async fn run_websocket(
     ensure_app_live(&app)?;
 
     install_keyboard(&app)?;
+    path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
     Ok(app_attempt.complete())
@@ -391,6 +395,7 @@ async fn run_webtransport_loaded(
     ensure_app_live(&app)?;
 
     install_keyboard(&app)?;
+    path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
     Ok(app_attempt.complete())
@@ -723,6 +728,7 @@ impl OutboundQueue {
 struct AppBindings {
     websocket: Option<WebSocketBindings>,
     keyboard: Option<KeyboardBinding>,
+    path_picker: Option<path_picker::PickerBinding>,
     blink: Option<BlinkBinding>,
     bootstrap_expiry: Option<BlinkBinding>,
     wt_reader_cancel: Option<oneshot::Sender<()>>,
@@ -735,6 +741,9 @@ impl AppBindings {
         }
         if let Some(keyboard) = self.keyboard.take() {
             keyboard.dispose();
+        }
+        if let Some(picker) = self.path_picker.take() {
+            picker.dispose();
         }
         if let Some(blink) = self.blink.take() {
             blink.dispose();
@@ -1561,6 +1570,12 @@ impl BatchEffects {
 }
 
 fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
+    let path_reply = matches!(
+        frame,
+        FrameKind::PathResults { .. }
+            | FrameKind::Attached { .. }
+            | FrameKind::ResourceClosed { .. }
+    );
     let mut a = app.borrow_mut();
     let outcome = a.session.on_frame(frame);
     if let Some(message) = outcome.fatal {
@@ -1584,6 +1599,9 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
     }
     if a.session.is_attach_ready() {
         a.signal_ready();
+    }
+    if path_reply {
+        path_picker::paint(&a);
     }
     BatchEffects {
         flow: ReceiveFlow::Continue,
@@ -1645,6 +1663,9 @@ fn install_keyboard(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         .ok_or_else(|| JsValue::from_str("no document"))?;
     let weak = Rc::downgrade(app);
     let onkey = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
+        if path_picker::is_picker_event(&e) {
+            return;
+        }
         let Some(app) = weak.upgrade() else {
             return;
         };
