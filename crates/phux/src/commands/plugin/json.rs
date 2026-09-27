@@ -8,7 +8,7 @@ pub(super) fn print_plugins_json(entries: &[RegistryEntry]) -> ExitCode {
         "schema_version": 1,
         "plugins": plugins,
     });
-    print_json(&doc)
+    crate::output::json(&doc)
 }
 
 pub(super) fn print_plugin_json(key: &str, entry: &RegistryEntry) -> ExitCode {
@@ -16,7 +16,7 @@ pub(super) fn print_plugin_json(key: &str, entry: &RegistryEntry) -> ExitCode {
         "schema_version": 1,
         key: plugin_json(entry),
     });
-    print_json(&doc)
+    crate::output::json(&doc)
 }
 
 pub(super) fn print_validation_json(entries: &[RegistryEntry]) -> ExitCode {
@@ -26,7 +26,7 @@ pub(super) fn print_validation_json(entries: &[RegistryEntry]) -> ExitCode {
         "valid": true,
         "plugins": plugins,
     });
-    print_json(&doc)
+    crate::output::json(&doc)
 }
 
 fn plugin_json(entry: &RegistryEntry) -> serde_json::Value {
@@ -48,24 +48,4 @@ fn plugin_json(entry: &RegistryEntry) -> serde_json::Value {
         "links": entry.manifest.links,
         "workspaces": entry.manifest.workspaces,
     })
-}
-
-pub(super) fn print_json(value: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(value) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        // Only ever called on a `--json` path, so the failure is the
-        // contract line (code `json_serialize`), never prose.
-        Err(err) => crate::commands::json_err::emit(
-            true,
-            &crate::commands::json_err::CliError::new(
-                crate::commands::json_err::codes::JSON_SERIALIZE,
-                format!("could not render plugin JSON: {err}"),
-                "this is a phux bug; run `phux doctor` and report it",
-            ),
-            1,
-        ),
-    }
 }

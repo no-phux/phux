@@ -125,21 +125,7 @@ impl Report {
             }
             return ExitCode::SUCCESS;
         }
-        match serde_json::to_string_pretty(&self.document) {
-            Ok(text) => {
-                outln!("{text}");
-                ExitCode::SUCCESS
-            }
-            Err(error) => json_err::emit(
-                true,
-                &CliError::new(
-                    codes::JSON_SERIALIZE,
-                    format!("could not encode JSON: {error}"),
-                    "",
-                ),
-                1,
-            ),
-        }
+        crate::output::json(&self.document)
     }
 }
 

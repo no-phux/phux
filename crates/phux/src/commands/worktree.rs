@@ -142,26 +142,6 @@ fn removal_json(
     })
 }
 
-/// Print `doc` on stdout, or report the (unreachable) serialization failure
-/// on the `--json` contract line.
-fn print_json(doc: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(doc) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => crate::commands::json_err::emit(
-            true,
-            &crate::commands::json_err::CliError::new(
-                crate::commands::json_err::codes::JSON_SERIALIZE,
-                format!("could not render worktree JSON: {err}"),
-                "this is a phux bug; run `phux doctor` and report it",
-            ),
-            1,
-        ),
-    }
-}
-
 /// Report a failure: under `--json` one contract line on stderr with stdout
 /// empty (ADR-0065 §4), otherwise the historical prose. Exit is `1` either way.
 fn fail_json(json: bool, code: &'static str, message: &str, remedy: &str) -> ExitCode {
@@ -229,7 +209,7 @@ fn print_list_json(entries: &[BoundWorktree]) -> ExitCode {
             })
         })
         .collect();
-    print_json(&serde_json::json!({ "schema_version": 1, "worktrees": rows }))
+    crate::output::json(&serde_json::json!({ "schema_version": 1, "worktrees": rows }))
 }
 
 fn print_list_human(entries: &[BoundWorktree]) {
@@ -469,7 +449,7 @@ fn emit_binding(
         );
         return ExitCode::SUCCESS;
     }
-    print_json(&binding_json(branch, path, session, terminal_id))
+    crate::output::json(&binding_json(branch, path, session, terminal_id))
 }
 
 fn default_worktree_path(root: &Path, branch: &str) -> PathBuf {
@@ -562,7 +542,7 @@ fn run_open(
 /// every `open` answers the same. Satellite panes are skipped.
 fn seed_terminal_of(name: &str, socket: Option<&Path>) -> Option<u32> {
     let socket_path = socket.map_or_else(default_socket_path, Path::to_path_buf);
-    let selector = crate::selector::parse(name).ok()?;
+    let selector = phux_client::selector::parse(name).ok()?;
     let rt = cli_runtime().ok()?;
     rt.block_on(async {
         let snapshot = phux_client::state::get_state(&socket_path)
@@ -608,7 +588,7 @@ fn run_remove(
     match git_bytes(&root, &args) {
         Ok(_) => {
             if json {
-                return print_json(&removal_json(
+                return crate::output::json(&removal_json(
                     entry.branch.as_deref(),
                     &entry.path,
                     &name,

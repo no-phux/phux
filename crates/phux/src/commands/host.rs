@@ -44,7 +44,7 @@ use super::JsonOpt;
 use super::enroll::{self, EnrollEvent, EnrollFailure, EnrollRequest, ServicePolicy};
 use super::json_err::{self, CliError, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
-use super::remote_target::RemoteTarget;
+use super::remote_target::{RemoteTarget, endpoint_host};
 use super::satellite as satellite_registry;
 use super::service;
 
@@ -445,24 +445,6 @@ fn ssh_form_flag_given(opts: &AddOpts) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-/// The host an endpoint URI addresses, for the default name of a bare-URI
-/// add.
-fn endpoint_host(endpoint: &str) -> Option<String> {
-    let rest = endpoint.split_once("://").map(|(_, rest)| rest)?;
-    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    let host = if let Some(inner) = authority.strip_prefix('[') {
-        inner.split_once(']').map(|(host, _)| host)?
-    } else if authority.matches(':').count() > 1 {
-        authority
-    } else {
-        authority
-            .split_once(':')
-            .map_or(authority, |(host, _)| host)
-    };
-    (!host.is_empty()).then(|| host.to_owned())
 }
 
 /// `phux host add`.
@@ -932,7 +914,7 @@ fn report_registered(
         if let Some(hub) = hub {
             doc["hub_service"] = serde_json::Value::String(hub.as_json_str().to_owned());
         }
-        return print_doc(&doc);
+        return crate::output::json(&doc);
     }
     let role = match row.role {
         HostRole::Remote => "",
@@ -1009,7 +991,7 @@ fn run_list(role: Option<HostRole>, json: bool) -> ExitCode {
 
     if json {
         let hosts: Vec<_> = rows.iter().map(row_json).collect();
-        return print_doc(&serde_json::json!({
+        return crate::output::json(&serde_json::json!({
             "schema_version": 1,
             "hosts": hosts,
         }));
@@ -1114,26 +1096,6 @@ fn row_json(row: &HostRow) -> serde_json::Value {
     })
 }
 
-fn print_doc(doc: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(doc) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        // Only reached on a `--json` path, so the failure is the contract
-        // line, never prose.
-        Err(err) => json_err::emit(
-            true,
-            &CliError::new(
-                codes::JSON_SERIALIZE,
-                format!("could not render host JSON: {err}"),
-                "this is a phux bug; run `phux doctor` and report it",
-            ),
-            1,
-        ),
-    }
-}
-
 /// Decide which registry `host rm NAME` removes from. A name in both with no
 /// `--role` is refused (exit 2): `rm` is destructive, so never guess.
 fn resolve_rm_role(
@@ -1226,7 +1188,9 @@ fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
         Err((err, code)) => return json_err::emit(json, &err, code),
     };
     if json {
-        return print_doc(&serde_json::json!({"schema_version": 1, "host": row_json(&row)}));
+        return crate::output::json(
+            &serde_json::json!({"schema_version": 1, "host": row_json(&row)}),
+        );
     }
     outln!("{} ({})", row.name, row.role.as_str());
     outln!("  Endpoint: {}", row.endpoint);
@@ -1386,7 +1350,7 @@ fn run_rename(name: &str, new_name: &str, role: Option<HostRole>, json: bool) ->
         return json_err::emit(json, &registry_failure(err), 1);
     }
     if json {
-        return print_doc(
+        return crate::output::json(
             &serde_json::json!({"schema_version": 1, "renamed": {"from": name, "to": new_name, "role": row.role.as_str()}, "requires_restart": row.role == HostRole::Satellite}),
         );
     }
@@ -1412,7 +1376,7 @@ fn run_enabled(name: &str, enabled: bool, json: bool) -> ExitCode {
     row.enabled = Some(enabled);
     let state = if enabled { "enabled" } else { "disabled" };
     if json {
-        return print_doc(
+        return crate::output::json(
             &serde_json::json!({"schema_version": 1, "host": row_json(&row), "requires_restart": true}),
         );
     }
@@ -1467,7 +1431,7 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
     }
 
     if json {
-        return print_doc(&serde_json::json!({
+        return crate::output::json(&serde_json::json!({
             "schema_version": 1,
             "removed": { "name": name, "role": resolved.as_str() },
         }));
@@ -1485,8 +1449,8 @@ mod tests {
 
     use super::{
         AddMode, AddOpts, HostRole, HostRow, add_failure_error, auth_display, edit_host_field_at,
-        empty_state, endpoint_host, finish_enroll_in, keeps_credentials, render_table,
-        resolve_host_role, resolve_rm_role, role_flag_mismatch, sort_rows,
+        empty_state, finish_enroll_in, keeps_credentials, render_table, resolve_host_role,
+        resolve_rm_role, role_flag_mismatch, sort_rows,
     };
     use crate::commands::JsonOpt;
     use crate::commands::enroll::EnrollFailure;
@@ -1672,22 +1636,6 @@ mod tests {
             AddMode::classify("mini", Some("ssh://mini"), &named_pair).is_err(),
             "--name and a NAME positional contradict"
         );
-    }
-
-    #[test]
-    fn endpoint_host_reads_every_registry_scheme() {
-        assert_eq!(endpoint_host("quic://mini:8788").as_deref(), Some("mini"));
-        assert_eq!(
-            endpoint_host("wss://me@mini.ts.net:8787").as_deref(),
-            Some("mini.ts.net")
-        );
-        assert_eq!(endpoint_host("ssh://mini").as_deref(), Some("mini"));
-        assert_eq!(
-            endpoint_host("quic://[fd7a::1]:8788").as_deref(),
-            Some("fd7a::1")
-        );
-        assert_eq!(endpoint_host("not-a-uri"), None);
-        assert_eq!(endpoint_host("quic://"), None);
     }
 
     /// The three shared-middle failure classes map onto the error contract

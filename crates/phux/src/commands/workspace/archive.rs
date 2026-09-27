@@ -11,9 +11,9 @@ use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{Command, FrameKind, SpawnResult};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::agent::{
-    AgentSessionRecord, PreparedAgentSession, fetch_record_index, prepare,
-};
+use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
+
+use crate::commands::agent::{PreparedAgentSession, prepare};
 use crate::commands::new::{create_session_via_metadata, preflight_atomic_agent_session_create};
 use crate::commands::spawn::{dispatch_spawn_async, report_spawn_error};
 use crate::commands::{cli_runtime, partial, report_no_server};
@@ -600,13 +600,7 @@ async fn write_restored_layout(
 
 /// Emit the restore summary document on stdout.
 fn render_restore_summary(summary: &RestoreSummary) -> ExitCode {
-    match serde_json::to_string_pretty(summary) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => fail(&format!("could not render restore summary: {err}")),
-    }
+    crate::output::json(summary)
 }
 
 /// [`prepare_archived_agent`]'s failure, split by whether it is a security

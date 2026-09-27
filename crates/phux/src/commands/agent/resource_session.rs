@@ -125,12 +125,12 @@ pub(super) fn run_session_open(
         drop(scope);
         match outcome {
             Ok(opened) => {
-                let resource = crate::selector::format_terminal_id(&opened.resource);
+                let resource = phux_client::selector::format_terminal_id(&opened.resource);
                 if json {
                     let document = serde_json::json!({
                         "schema_version": SCHEMA_VERSION,
                         "resource": resource,
-                        "parent": crate::selector::format_terminal_id(&opened.parent),
+                        "parent": phux_client::selector::format_terminal_id(&opened.parent),
                         "provider": provider,
                         "native_id": native_id,
                     });
@@ -180,7 +180,10 @@ pub(super) fn run_session_close(target: &str, socket: Option<PathBuf>) -> ExitCo
         drop(scope);
         match outcome {
             Ok(()) => {
-                outln!("{}\tclosed", crate::selector::format_terminal_id(&session));
+                outln!(
+                    "{}\tclosed",
+                    phux_client::selector::format_terminal_id(&session)
+                );
                 ExitCode::SUCCESS
             }
             Err(err) => report_session_error(false, &err, &socket_path, verb),
@@ -237,7 +240,7 @@ pub(super) fn run_emit(
                 if json {
                     let document = serde_json::json!({
                         "schema_version": SCHEMA_VERSION,
-                        "resource": crate::selector::format_terminal_id(&session),
+                        "resource": phux_client::selector::format_terminal_id(&session),
                         "seq": emitted.seq,
                         "ts_ms": emitted.ts_ms,
                         "type": record.kind(),
@@ -331,11 +334,11 @@ pub(super) fn run_log(
             let facet = info.as_ref().and_then(|info| info.agent.as_ref());
             let document = serde_json::json!({
                 "schema_version": SCHEMA_VERSION,
-                "resource": crate::selector::format_terminal_id(&session),
+                "resource": phux_client::selector::format_terminal_id(&session),
                 "parent": info
                     .as_ref()
                     .and_then(|info| info.parent.as_ref())
-                    .map(crate::selector::format_terminal_id),
+                    .map(phux_client::selector::format_terminal_id),
                 "provider": facet.map(|facet| facet.provider.clone()),
                 "native_id": facet.and_then(|facet| facet.native_id.clone()),
                 "records": buffered,
@@ -393,7 +396,7 @@ impl Scope {
     async fn pick(&self, socket_path: &Path, selector: &Selector) -> Option<ResourceId> {
         let candidates =
             phux_client::state::resolve_targets(socket_path, selector, &self.snapshot).await;
-        crate::selector::pick_target_pane(&candidates, &self.snapshot.focused_resource)
+        phux_client::selector::pick_target_pane(&candidates, &self.snapshot.focused_resource)
     }
 
     /// The parent Terminal `open` binds to.
@@ -529,7 +532,7 @@ fn report_session_error(
             format!(
                 "open one with `phux agent session open {} --provider <P>`; `phux ls --json` \
                  lists every resource with its kind and parent",
-                crate::selector::format_terminal_id(terminal)
+                phux_client::selector::format_terminal_id(terminal)
             ),
         ),
         AgentSessionError::AmbiguousSession { .. } => (

@@ -12,7 +12,7 @@ use phux_config::plugin::{PluginAgentAttention, PluginAgentState, PluginManifest
 use phux_protocol::ids::ResourceId;
 use serde::Serialize;
 
-use crate::commands::agent::{fetch_agent_index, format_terminal};
+use crate::commands::agent::fetch_agent_index;
 
 /// Everything the projection can learn from a running server.
 #[derive(Debug, Default)]
@@ -211,7 +211,7 @@ fn binding_for(pane: &ResourceId, record: &AgentRecord, asked: bool) -> RuntimeB
     }
     .effective_attention();
     RuntimeBinding {
-        terminal: format_terminal(pane),
+        terminal: phux_client::selector::format_terminal_id(pane),
         name: record.name.clone(),
         kind: record.kind.clone(),
         state,

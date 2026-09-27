@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use phux_client::spatial::{SpatialError, SpatialOp, SpatialOutcome};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::json_err::{self, CliError, codes};
+use crate::commands::json_err::{self, CliError};
 use crate::commands::{SpawnSplit, cli_runtime};
 
 pub(crate) use phux_client::spatial::Direction;
@@ -130,21 +130,7 @@ fn print_success(json: bool, outcome: &SpatialOutcome) -> ExitCode {
         outln!("{}", outcome.summary);
         return ExitCode::SUCCESS;
     }
-    match serde_json::to_string_pretty(&outcome.document) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &CliError::new(
-                codes::JSON_SERIALIZE,
-                err.to_string(),
-                "this is a phux bug; run `phux doctor` and report it",
-            ),
-            1,
-        ),
-    }
+    crate::output::json(&outcome.document)
 }
 
 #[cfg(test)]

@@ -120,7 +120,7 @@ where
             Err(err) => return report_no_server(&err, &socket_path, verb),
         };
         // `%name` resolves to exactly one pane or refuses (ADR-0075 point 3).
-        let pane = if let crate::selector::Selector::Agent(name) = &selector {
+        let pane = if let phux_client::selector::Selector::Agent(name) = &selector {
             match phux_client::state::resolve_agent_target(&socket_path, name, &snapshot, false)
                 .await
             {
@@ -132,7 +132,7 @@ where
         } else {
             let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
             let Some(pane) =
-                crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+                phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
             else {
                 // A miss under a partial fleet view is unresolved, not absent.
                 return partial::report_target_miss(target, &degradation);
@@ -151,7 +151,7 @@ where
 /// `SELECTOR<TAB>record-json` (or `SELECTOR<TAB>-` for a cleared record) —
 /// one line, machine-splittable, mirroring `phux tag`'s confirmation output.
 fn render_record(pane: &ResourceId, record: Option<&AgentRecord>) -> String {
-    let selector = crate::selector::format_terminal_id(pane);
+    let selector = phux_client::selector::format_terminal_id(pane);
     record.map_or_else(
         || format!("{selector}\t-"),
         |rec| {

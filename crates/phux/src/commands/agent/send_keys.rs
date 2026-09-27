@@ -170,7 +170,7 @@ pub(super) fn run_agent_send_keys(
             Ok(id) => id,
             Err(code) => return code,
         };
-        let label = crate::selector::format_terminal_id(&pane);
+        let label = phux_client::selector::format_terminal_id(&pane);
         let verify = |record: &AgentRecord| {
             identity_mismatch(record, expect_agent.as_deref(), expect_kind.as_deref())
         };

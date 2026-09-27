@@ -463,7 +463,7 @@ fn shell_line_refusal(integration_id: &str, err: &ShellLineError) -> Refusal {
 async fn drive(
     req: &StartRequest<'_>,
     plan: &Plan,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     socket_path: &Path,
 ) -> ExitCode {
     let terminal = match resolve_target(socket_path, selector, "agent start", req.json).await {
@@ -479,7 +479,7 @@ async fn drive(
                 format!(
                     "{} is a satellite pane; acknowledged input and agent metadata are \
                      hub-local",
-                    crate::selector::format_terminal_id(&terminal)
+                    phux_client::selector::format_terminal_id(&terminal)
                 ),
                 "run `phux agent start` against the satellite's own server",
                 EXIT_USAGE,
@@ -587,7 +587,7 @@ async fn recheck_occupant(
                 format!(
                     "{} began hosting '{}' ({}) while the preconditions were being checked; \
                      nothing was typed",
-                    crate::selector::format_terminal_id(terminal),
+                    phux_client::selector::format_terminal_id(terminal),
                     occupant.name,
                     occupant.state.as_str()
                 ),
@@ -647,7 +647,7 @@ fn check_name_free(
         .filter(|(id, record)| {
             *id != terminal && record.name.trim().eq_ignore_ascii_case(name.trim())
         })
-        .map(|(id, _)| crate::selector::format_terminal_id(id))
+        .map(|(id, _)| phux_client::selector::format_terminal_id(id))
         .collect();
     if holders.is_empty() {
         return Ok(());
@@ -679,7 +679,7 @@ fn check_pane_free(
         codes::AGENT_PANE_BUSY,
         format!(
             "{} already hosts '{}'{} ({})",
-            crate::selector::format_terminal_id(terminal),
+            phux_client::selector::format_terminal_id(terminal),
             occupant.name,
             occupant
                 .kind
@@ -717,7 +717,7 @@ fn check_cwd_agreement(
             "integration '{}' wants to run in {} but {} is in {pane_cwd}",
             plan.integration_id,
             plan.resolved_cwd.display(),
-            crate::selector::format_terminal_id(terminal),
+            phux_client::selector::format_terminal_id(terminal),
         ),
         "`agent start` never `cd`s someone's shell; run it from that directory, or use \
          `phux launch`, which spawns its own pane with the right cwd",
@@ -728,7 +728,7 @@ fn check_cwd_agreement(
 /// The available-shell precondition (shared verdict with `phux run`),
 /// rendered as this verb's refusals.
 async fn check_shell_available(socket_path: &Path, terminal: &ResourceId) -> Result<(), Refusal> {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     match pane_shell_availability(socket_path, terminal).await {
         ShellAvailability::Available => Ok(()),
         ShellAvailability::BusyProcess(foreground) => Err(Refusal::new(
@@ -1007,7 +1007,7 @@ fn submit_verdict(verdict: ApplyVerdict) -> SubmitFailure {
 
 /// Turn a wait error into its refusal.
 fn wait_refusal(terminal: &ResourceId, err: AgentWaitError) -> Refusal {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     match err {
         // Unreachable in practice: this verb binds the record itself before
         // subscribing. It stays an error rather than an unwrap.
@@ -1039,7 +1039,7 @@ fn wait_refusal(terminal: &ResourceId, err: AgentWaitError) -> Refusal {
 
 /// `--no-wait`: the honest escape hatch. Submitted, readiness unclaimed.
 fn report_submitted(req: &StartRequest<'_>, plan: &Plan, terminal: &ResourceId) -> ExitCode {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     if req.json {
         let document = serde_json::json!({
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -1066,7 +1066,7 @@ async fn report_ready(
     latency: Duration,
     socket_path: &Path,
 ) -> ExitCode {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     let record = result.record.as_ref();
     let observed_kind = record.and_then(|rec| rec.kind.as_deref()).unwrap_or("");
     match kind_verdict(record, &plan.kind) {
@@ -1202,7 +1202,7 @@ fn report_timeout(
     terminal: &ResourceId,
     result: &AgentWaitResult,
 ) -> ExitCode {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     emit(
         req.json,
         &Refusal::new(

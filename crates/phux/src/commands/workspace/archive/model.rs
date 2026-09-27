@@ -219,7 +219,7 @@ fn validate_archive(archive: &WorkspaceArchive) -> Result<(), String> {
         }
         for pane in session.windows.iter().flat_map(|window| &window.panes) {
             if let Some(agent) = &pane.agent_session {
-                crate::commands::agent::AgentSessionRecord::new(
+                phux_client::agent_session_record::AgentSessionRecord::new(
                     &agent.plugin_id,
                     &agent.integration_id,
                     &agent.native_id,

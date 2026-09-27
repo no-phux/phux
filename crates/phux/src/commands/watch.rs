@@ -285,7 +285,7 @@ pub(crate) fn print_agent_state(update: &AgentStateUpdate, json: bool) {
     let terminal = update
         .terminal
         .as_ref()
-        .map(crate::selector::format_terminal_id);
+        .map(phux_client::selector::format_terminal_id);
 
     if json {
         match agent_state_json(update, terminal.as_deref()) {
@@ -398,7 +398,7 @@ pub(crate) fn print_watch_event(ev: &WatchEvent, json: bool) {
     let terminal = ev
         .terminal
         .as_ref()
-        .map(crate::selector::format_terminal_id);
+        .map(phux_client::selector::format_terminal_id);
     let scope = terminal.as_deref().unwrap_or("server");
     outln!(
         "{scope}\t{}{}",

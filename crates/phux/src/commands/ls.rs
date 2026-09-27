@@ -338,7 +338,7 @@ fn satellite_terminal_lines(
         .map(|pane| {
             format!(
                 "  {}: satellite terminal",
-                crate::selector::format_terminal_id(&pane.id)
+                phux_client::selector::format_terminal_id(&pane.id)
             )
         })
         .collect()
@@ -372,7 +372,7 @@ fn flat_session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
         if pane.id.host().is_some() {
             lines.push(format!(
                 "{}: satellite terminal",
-                crate::selector::format_terminal_id(&pane.id)
+                phux_client::selector::format_terminal_id(&pane.id)
             ));
         }
     }
@@ -396,7 +396,7 @@ fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec
             }
             lines.push(format!(
                 "  {}",
-                crate::selector::format_terminal_id(&pane.id)
+                phux_client::selector::format_terminal_id(&pane.id)
             ));
             for child in children {
                 let facet = child.agent.as_ref();
@@ -404,7 +404,7 @@ fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec
                 let state = facet.map_or("unknown", |facet| facet.state.as_str());
                 lines.push(format!(
                     "    {}: agent session {provider} ({state})",
-                    crate::selector::format_terminal_id(&child.id)
+                    phux_client::selector::format_terminal_id(&child.id)
                 ));
             }
         }
@@ -450,16 +450,7 @@ pub(crate) fn print_sessions_json(
 ) -> ExitCode {
     let list: SessionListJson =
         phux_client::session_list::document(snapshot, degradation, hosts_complete);
-    match serde_json::to_string_pretty(&list) {
-        Ok(s) => {
-            outln!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("phux: failed to serialize session list as JSON: {err}");
-            ExitCode::FAILURE
-        }
-    }
+    crate::output::json(&list)
 }
 
 #[cfg(test)]
@@ -631,7 +622,7 @@ mod tests {
                     .with_parent(Some(ResourceId::local(7))),
             ]);
         let terminals: Vec<String> = phux_client::resource::terminals(&snapshot)
-            .map(|pane| crate::selector::format_terminal_id(&pane.id))
+            .map(|pane| phux_client::selector::format_terminal_id(&pane.id))
             .collect();
         assert_eq!(terminals, ["@7"]);
         let resources: Vec<(String, String, Option<String>)> = snapshot
@@ -639,11 +630,11 @@ mod tests {
             .iter()
             .map(|pane| {
                 (
-                    crate::selector::format_terminal_id(&pane.id),
+                    phux_client::selector::format_terminal_id(&pane.id),
                     phux_client::resource::kind_name(pane.kind).to_owned(),
                     pane.parent
                         .as_ref()
-                        .map(crate::selector::format_terminal_id),
+                        .map(phux_client::selector::format_terminal_id),
                 )
             })
             .collect();

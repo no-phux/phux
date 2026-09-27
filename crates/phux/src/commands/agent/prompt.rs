@@ -136,7 +136,7 @@ pub(super) fn run_agent_prompt(
                 Ok(id) => id,
                 Err(code) => return code,
             };
-        let label = crate::selector::format_terminal_id(&pane);
+        let label = phux_client::selector::format_terminal_id(&pane);
         // ADR-0076 point 4: the same identity comparison `agent send-keys` does.
         let verify = |record: &AgentRecord| {
             super::send_keys::identity_mismatch(

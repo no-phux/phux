@@ -122,16 +122,7 @@ pub(crate) fn run_snapshot(
         let screen = project(screen, unwrap, tail);
 
         if json {
-            match serde_json::to_string_pretty(&screen) {
-                Ok(s) => {
-                    outln!("{s}");
-                    ExitCode::SUCCESS
-                }
-                Err(err) => {
-                    eprintln!("phux: failed to serialize snapshot: {err}");
-                    ExitCode::FAILURE
-                }
-            }
+            crate::output::json(&screen)
         } else if format.is_some() {
             print_rendered_capture(&screen)
         } else if unwrap {
@@ -198,16 +189,7 @@ fn run_rendered(
             }
         };
         if json {
-            match serde_json::to_string_pretty(&frame) {
-                Ok(s) => {
-                    outln!("{s}");
-                    ExitCode::SUCCESS
-                }
-                Err(err) => {
-                    eprintln!("phux: failed to serialize rendered frame: {err}");
-                    ExitCode::FAILURE
-                }
-            }
+            crate::output::json(&frame)
         } else {
             print_rendered_box(&frame);
             ExitCode::SUCCESS

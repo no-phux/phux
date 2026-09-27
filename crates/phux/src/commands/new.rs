@@ -129,7 +129,7 @@ fn run_new_empty_attached(
 fn run_new_empty_json(rt: &tokio::runtime::Runtime, target: &ServerTarget, name: &str) -> ExitCode {
     ensure_local_unseeded_server(target, true);
     match rt.block_on(create_empty_session_via_metadata(target, name, true)) {
-        Ok(()) => print_json_document(&empty_session_json(name)),
+        Ok(()) => crate::output::json(&empty_session_json(name)),
         Err(code) => code,
     }
 }
@@ -153,20 +153,6 @@ fn ensure_local_unseeded_server(target: &ServerTarget, json: bool) {
         && let Err(err) = ensure_server_unseeded(path, json)
     {
         tracing::debug!(error = %err, "auto-spawn failed on the --empty create path");
-    }
-}
-
-/// Pretty-print a `--json` result document on stdout.
-fn print_json_document(payload: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(payload) {
-        Ok(s) => {
-            outln!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("phux: failed to serialize create result as JSON: {err}");
-            ExitCode::FAILURE
-        }
     }
 }
 
@@ -326,7 +312,7 @@ pub(crate) fn run_new_json(
         true,
         idempotency_key,
     )) {
-        Ok(terminal_id) => print_json_document(&new_session_json(name, terminal_id)),
+        Ok(terminal_id) => crate::output::json(&new_session_json(name, terminal_id)),
         Err(code) => code,
     }
 }

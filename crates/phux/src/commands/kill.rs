@@ -10,7 +10,7 @@ use phux_server::runtime::default_socket_path;
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use crate::commands::{cli_runtime, report_no_server, warn_interleaved_degradation};
 use crate::commands::{confirm, partial};
-use crate::selector;
+use phux_client::selector;
 
 /// Why `kill --server` refuses `--remote`: the server accepts `SHUTDOWN` on
 /// its local socket only, so refuse before dialing.

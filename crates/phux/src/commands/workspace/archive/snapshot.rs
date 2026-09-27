@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::commands::agent::AgentSessionRecord;
+use phux_client::agent_session_record::AgentSessionRecord;
 use phux_client::layout::{LayoutState, WindowState, Workspace, kill_pane, leaves};
 use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::wire::info::{

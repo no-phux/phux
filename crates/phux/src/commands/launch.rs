@@ -192,16 +192,7 @@ fn run_list(config_path: &std::path::Path, json: bool) -> ExitCode {
             })
             .collect();
         let payload = serde_json::json!({ "schema_version": 1, "integrations": items });
-        return match serde_json::to_string_pretty(&payload) {
-            Ok(rendered) => {
-                outln!("{rendered}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => {
-                eprintln!("phux: could not render launch list JSON: {err}");
-                ExitCode::FAILURE
-            }
-        };
+        return crate::output::json(&payload);
     }
     if integrations.is_empty() {
         outln!(
@@ -226,16 +217,7 @@ fn print_resolved(resolved: &ResolvedLaunch, argv: &[String], json: bool) -> Exi
             "working_directory": working_directory_slug(resolved.working_directory),
             "argv": argv,
         });
-        return match serde_json::to_string_pretty(&payload) {
-            Ok(rendered) => {
-                outln!("{rendered}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => {
-                eprintln!("phux: could not render launch JSON: {err}");
-                ExitCode::FAILURE
-            }
-        };
+        return crate::output::json(&payload);
     }
     outln!("{} ({})", resolved.integration_id, resolved.plugin_id);
     outln!("  cwd: {}", resolved.cwd.display());
@@ -261,16 +243,7 @@ fn print_launched(
             "plugin": resolved.plugin_id,
             "argv": argv,
         });
-        return match serde_json::to_string_pretty(&payload) {
-            Ok(rendered) => {
-                outln!("{rendered}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => {
-                eprintln!("phux: could not render launch result JSON: {err}");
-                ExitCode::FAILURE
-            }
-        };
+        return crate::output::json(&payload);
     }
     outln!(
         "Launched {} in pane @{id}. Next: `phux agent show @{id}`.",

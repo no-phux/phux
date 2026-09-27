@@ -109,23 +109,7 @@ pub(crate) fn run_logs(
         cockpit_log_path_from_env(),
     );
     if json {
-        return match serde_json::to_string_pretty(&json_doc(&inventory)) {
-            Ok(rendered) => {
-                outln!("{rendered}");
-                ExitCode::SUCCESS
-            }
-            // A `--json` path, so the failure is the shared contract line
-            // (phux-i0e8.8.3), never prose.
-            Err(err) => crate::commands::json_err::emit(
-                true,
-                &crate::commands::json_err::CliError::new(
-                    crate::commands::json_err::codes::JSON_SERIALIZE,
-                    format!("could not render the log inventory as JSON: {err}"),
-                    "this is a phux bug; run `phux doctor` and report it",
-                ),
-                1,
-            ),
-        };
+        return crate::output::json(&json_doc(&inventory));
     }
     out!("{}", render_human(&inventory));
     ExitCode::SUCCESS

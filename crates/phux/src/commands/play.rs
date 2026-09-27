@@ -220,7 +220,7 @@ fn report(pane: &ResourceId, file: &Path, loaded: &Loaded, args: &PlayArgs<'_>) 
         outln!("{}", play_json(pane, file, loaded, args, duration_ms));
         return ExitCode::SUCCESS;
     }
-    let id = crate::selector::format_terminal_id(pane);
+    let id = phux_client::selector::format_terminal_id(pane);
     let secs = length.as_secs_f64();
     let speed = args.speed.get();
     let events = loaded.events.len();

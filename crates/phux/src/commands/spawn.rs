@@ -11,12 +11,12 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::agent::AgentSessionRecord;
 use crate::commands::json_err::{CliError, codes};
 use crate::commands::{
     SpawnSplit, cli_runtime, json_err, parse_selector, request_command, resolve_targets,
 };
 use crate::exit_codes::EXIT_USAGE;
+use phux_client::agent_session_record::AgentSessionRecord;
 
 /// What `phux spawn` asks the server to keep for it: the pane after its
 /// process exits (`--retain`, ADR-0124), and the answer to a retry
@@ -279,7 +279,7 @@ pub(crate) fn dispatch_spawn_placed(
         };
         let candidates = resolve_targets(socket_path, &selector, &snapshot).await;
         let Some(owner) =
-            crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+            phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         else {
             eprintln!("phux: no such target");
             return Err(ExitCode::FAILURE);
@@ -353,18 +353,9 @@ pub(crate) fn dispatch_spawn_placed(
 fn print_spawned(terminal_id: &ResourceId, replayed: bool, json: bool) -> ExitCode {
     if json {
         let payload = phux_client::spawn::spawned_document(terminal_id, replayed);
-        return match serde_json::to_string_pretty(&payload) {
-            Ok(s) => {
-                outln!("{s}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => {
-                eprintln!("phux: failed to serialize spawn result as JSON: {err}");
-                ExitCode::FAILURE
-            }
-        };
+        return crate::output::json(&payload);
     }
-    let selector = crate::selector::format_terminal_id(terminal_id);
+    let selector = phux_client::selector::format_terminal_id(terminal_id);
     let verb = if replayed {
         "Found pane (an earlier spawn with this key)"
     } else {

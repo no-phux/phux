@@ -2962,13 +2962,15 @@ fn no_server_lines(
     lines
 }
 
-/// Parse an optional target string into a [`crate::selector::Selector`],
+/// Parse an optional target string into a [`phux_client::selector::Selector`],
 /// defaulting to the focused session when absent. On a parse error,
 /// prints a diagnostic and returns the failure exit code for the caller to
 /// bubble.
-pub(crate) fn parse_selector(session: Option<&str>) -> Result<crate::selector::Selector, ExitCode> {
-    session.map_or(Ok(crate::selector::Selector::Current), |target| {
-        crate::selector::parse(target).map_err(|err| {
+pub(crate) fn parse_selector(
+    session: Option<&str>,
+) -> Result<phux_client::selector::Selector, ExitCode> {
+    session.map_or(Ok(phux_client::selector::Selector::Current), |target| {
+        phux_client::selector::parse(target).map_err(|err| {
             eprintln!("phux: invalid target '{target}': {err}");
             ExitCode::FAILURE
         })
@@ -2998,7 +3000,7 @@ pub(crate) fn parse_selector(session: Option<&str>) -> Result<crate::selector::S
 /// and keep the historical prose.
 pub(crate) async fn resolve_target(
     socket_path: &Path,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     verb: &str,
     json: bool,
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
@@ -3011,7 +3013,7 @@ pub(crate) async fn resolve_target(
 /// shape is refused (ADR-0075 point 5) rather than resolved.
 pub(crate) async fn resolve_target_for_input(
     socket_path: &Path,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     verb: &str,
     json: bool,
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
@@ -3020,7 +3022,7 @@ pub(crate) async fn resolve_target_for_input(
 
 async fn resolve_target_with(
     socket_path: &Path,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     verb: &str,
     json: bool,
     for_input: bool,
@@ -3033,7 +3035,7 @@ async fn resolve_target_with(
     // never travels the set-valued path below where `pick_target_pane` would
     // narrow it (ADR-0075 point 3). A Terminal-facet verb acts on the named
     // agent's pane; the session verbs resolve their own side.
-    if let crate::selector::Selector::Agent(name) = selector {
+    if let phux_client::selector::Selector::Agent(name) = selector {
         let target =
             phux_client::state::resolve_agent_target(socket_path, name, &snapshot, for_input)
                 .await
@@ -3042,8 +3044,10 @@ async fn resolve_target_with(
         return Ok(target.terminal);
     }
     let candidates = resolve_targets(socket_path, selector, &snapshot).await;
-    let picked = crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
-        .ok_or_else(|| partial::report_target_miss_keeping_status_for(json, None, &degradation))?;
+    let picked = phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+        .ok_or_else(|| {
+        partial::report_target_miss_keeping_status_for(json, None, &degradation)
+    })?;
     // A hit is still worth a word: the pane we picked is the best of what a
     // partial fleet offered, and the user is about to act on it.
     partial::warn_partial_view(verb, &degradation);
@@ -3114,7 +3118,7 @@ pub(crate) fn report_agent_resolve_error(
 /// the caller reports it as a selector miss, never a hang.
 pub(crate) async fn resolve_targets(
     socket_path: &Path,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
 ) -> Vec<phux_protocol::ids::ResourceId> {
     phux_client::state::resolve_targets(socket_path, selector, snapshot).await
@@ -3203,7 +3207,7 @@ mod tests {
     use phux_client::attach::AttachError;
 
     use crate::commands::{attach_error_lines, no_server_lines, parse_selector};
-    use crate::selector::Selector;
+    use phux_client::selector::Selector;
 
     fn refused_io() -> AttachError {
         AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))

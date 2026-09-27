@@ -326,8 +326,8 @@ const SKILL_REMEDY: &str = "document it in .agents/skills/using-phux/SKILL.md (t
 /// to `Selector` (a new sigil) fails to compile here, which is the point — a
 /// grammar the skill does not teach is a grammar an agent cannot type. Keep
 /// the tokens as they appear in the skill's selector table.
-fn taught_selector_token(selector: &crate::selector::Selector) -> &'static str {
-    use crate::selector::Selector;
+fn taught_selector_token(selector: &phux_client::selector::Selector) -> &'static str {
+    use phux_client::selector::Selector;
 
     match selector {
         Selector::Current => "`.`",
@@ -363,7 +363,7 @@ fn skill_teaches_every_selector_sigil_the_parser_accepts() {
         "#build",
         "%reviewer",
     ] {
-        let Ok(selector) = crate::selector::parse(probe) else {
+        let Ok(selector) = phux_client::selector::parse(probe) else {
             continue;
         };
         let token = taught_selector_token(&selector);
@@ -375,7 +375,7 @@ fn skill_teaches_every_selector_sigil_the_parser_accepts() {
     }
 
     assert!(
-        crate::selector::parse("=").is_err(),
+        phux_client::selector::parse("=").is_err(),
         "`=` is refused for headless callers; if that changed, teach it"
     );
     assert!(

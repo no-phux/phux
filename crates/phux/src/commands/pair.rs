@@ -587,7 +587,7 @@ fn run_pair_ls(tokens: &std::path::Path, json: bool) -> ExitCode {
                 })
             })
             .collect();
-        return print_action_json(&serde_json::json!({
+        return crate::output::json(&serde_json::json!({
             "schema_version": 1,
             "operation": "ls",
             "tokens_path": tokens.display().to_string(),
@@ -638,7 +638,7 @@ fn run_pair_prune(tokens: &std::path::Path, unused_for: &str, json: bool) -> Exi
         );
     }
     if json {
-        return print_action_json(&serde_json::json!({
+        return crate::output::json(&serde_json::json!({
             "schema_version": 1,
             "operation": "prune",
             "unused_for": unused_for,
@@ -680,7 +680,7 @@ fn run_pair_rotate(
         );
     }
     if json {
-        return print_action_json(&serde_json::json!({
+        return crate::output::json(&serde_json::json!({
             "schema_version": 1,
             "operation": "rotate",
             "credential_id": rotated.id,
@@ -723,7 +723,7 @@ fn run_pair_revoke(tokens: &std::path::Path, credential_id: &str, json: bool) ->
         );
     }
     if json {
-        return print_action_json(&serde_json::json!({
+        return crate::output::json(&serde_json::json!({
             "schema_version": 1,
             "operation": "revoke",
             "credential_id": credential_id,
@@ -764,19 +764,6 @@ fn parse_unused_for(raw: &str) -> Result<chrono::Duration, String> {
         }
     };
     Ok(chrono::Duration::seconds(seconds))
-}
-
-fn print_action_json(document: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(&document) {
-        Ok(text) => {
-            outln!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("phux pair: could not encode JSON: {error}");
-            ExitCode::FAILURE
-        }
-    }
 }
 
 fn migrate_legacy_credentials(tokens: &std::path::Path) -> bool {
@@ -832,16 +819,7 @@ fn print_pair_json(
         credential_id,
         generation,
     );
-    match serde_json::to_string_pretty(&document) {
-        Ok(text) => {
-            outln!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("phux pair: could not encode JSON: {err}");
-            ExitCode::FAILURE
-        }
-    }
+    crate::output::json(&document)
 }
 
 /// The `phux pair --json` document. Pure, so the shape (including

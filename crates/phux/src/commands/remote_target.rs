@@ -172,23 +172,21 @@ pub(crate) fn find_entry(target: &RemoteTarget) -> Option<RemoteEntry> {
         .cloned()
 }
 
-/// The host an endpoint URI addresses, for the third match above.
-fn endpoint_host(endpoint: &str) -> Option<String> {
+/// The host an endpoint URI addresses (`None` when it has none).
+pub(crate) fn endpoint_host(endpoint: &str) -> Option<String> {
     let rest = endpoint.split_once("://").map(|(_, rest)| rest)?;
     let authority = rest.split(['/', '?']).next().unwrap_or(rest);
     let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    if let Some(inner) = authority.strip_prefix('[') {
-        return inner.split_once(']').map(|(host, _)| host.to_owned());
-    }
-    if authority.matches(':').count() > 1 {
-        return Some(authority.to_owned());
-    }
-    Some(
+    let host = if let Some(inner) = authority.strip_prefix('[') {
+        inner.split_once(']').map(|(host, _)| host)?
+    } else if authority.matches(':').count() > 1 {
+        authority
+    } else {
         authority
             .split_once(':')
             .map_or(authority, |(host, _)| host)
-            .to_owned(),
-    )
+    };
+    (!host.is_empty()).then(|| host.to_owned())
 }
 
 /// Apply an explicit `:PORT` to a registered entry for this dial only; the
@@ -707,6 +705,7 @@ mod tests {
             Some("fd7a::1")
         );
         assert_eq!(endpoint_host("not-a-uri"), None);
+        assert_eq!(endpoint_host("quic://"), None);
     }
 
     #[test]

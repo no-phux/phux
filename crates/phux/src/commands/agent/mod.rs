@@ -30,11 +30,8 @@ use self::detect::infer_agent_state;
 use self::model::{AgentStateReport, PaneEvidence};
 use self::record::{run_agent_clear, run_agent_set};
 
-pub(crate) use self::model::format_terminal;
 pub(crate) use self::record::fetch_agent_index;
-pub(crate) use self::session::{
-    AgentSessionRecord, PreparedAgentSession, fetch_record_index, prepare, prepare_for_launch,
-};
+pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch};
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum AgentAction {
@@ -653,7 +650,7 @@ fn run_agent_one(
         };
         // `%name` is singular (ADR-0075 point 3): the agent's pane, or a
         // refusal that names why — never `pick_target_pane` over a set.
-        let target_id = if let crate::selector::Selector::Agent(name) = &selector {
+        let target_id = if let phux_client::selector::Selector::Agent(name) = &selector {
             match phux_client::state::resolve_agent_target(&socket_path, name, &snapshot, false)
                 .await
             {
@@ -663,7 +660,7 @@ fn run_agent_one(
         } else {
             let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
             let Some(target_id) =
-                crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+                phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
             else {
                 return partial::report_target_miss(target, &degradation);
             };
@@ -673,7 +670,7 @@ fn run_agent_one(
         let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
         let Some(state) = states
             .into_iter()
-            .find(|state| state.terminal == format_terminal(&target_id))
+            .find(|state| state.terminal == phux_client::selector::format_terminal_id(&target_id))
         else {
             return partial::report_target_miss(target, &degradation);
         };
@@ -728,7 +725,7 @@ async fn pane_evidence(
         let mut children = phux_client::resource::children_of(snapshot, &pane.id);
         match (children.next(), children.next()) {
             (Some(child), None) => child.agent.as_ref().map(|facet| model::SessionEvidence {
-                resource: format_terminal(&child.id),
+                resource: phux_client::selector::format_terminal_id(&child.id),
                 provider: facet.provider.clone(),
                 native_id: facet.native_id.clone(),
                 state: phux_client::agent_meta::AgentMetaState::from(facet.state.clone()),
@@ -737,7 +734,7 @@ async fn pane_evidence(
         }
     };
     PaneEvidence {
-        terminal: format_terminal(&pane.id),
+        terminal: phux_client::selector::format_terminal_id(&pane.id),
         session: session.map_or_else(|| "unknown".to_owned(), |s| s.name.clone()),
         window: window_label(window),
         title: pane.title.clone(),

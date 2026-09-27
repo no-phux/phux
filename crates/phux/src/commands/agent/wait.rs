@@ -63,7 +63,7 @@ fn satellite_refusal(terminal: &ResourceId) -> Option<json_err::CliError> {
         format!(
             "{} is on a federation satellite; phux.agent/v1 records are hub-local \
              and do not federate, so this hub can never observe its lifecycle",
-            crate::selector::format_terminal_id(terminal)
+            phux_client::selector::format_terminal_id(terminal)
         ),
         "run `phux agent wait` against the satellite's own server. \
          `phux watch <TARGET>` still streams that pane's agent events across the \
@@ -124,7 +124,7 @@ pub(super) fn run_agent_wait(
                         format!(
                             "{} declares no phux.agent/v1 record, so it has no agent \
                              lifecycle to wait on",
-                            crate::selector::format_terminal_id(&terminal)
+                            phux_client::selector::format_terminal_id(&terminal)
                         ),
                         "declare one with `phux agent set <TARGET> --name ...`, or run \
                          `phux agent install-claude` so the agent publishes its own; \
@@ -216,7 +216,7 @@ async fn report_any(socket_path: &Path, result: &FleetAgentWaitResult, json: boo
     if json {
         let document = serde_json::json!({
             "schema_version": RESULT_SCHEMA_VERSION,
-            "terminal": matched.map(|matched| crate::selector::format_terminal_id(&matched.terminal)),
+            "terminal": matched.map(|matched| phux_client::selector::format_terminal_id(&matched.terminal)),
             "satisfied": result.satisfied(),
             "edge": matched.map(|matched| serde_json::json!({
                 "from": matched.edge.from.as_str(),
@@ -255,7 +255,7 @@ async fn report_any(socket_path: &Path, result: &FleetAgentWaitResult, json: boo
     } else if let Some(matched) = matched {
         outln!(
             "{}\t{}\t{} -> {}\tvia {}",
-            crate::selector::format_terminal_id(&matched.terminal),
+            phux_client::selector::format_terminal_id(&matched.terminal),
             matched.record.name,
             matched.edge.from.as_str(),
             matched.edge.to.as_str(),
@@ -280,7 +280,7 @@ fn report(
     provenance: Option<&AgentStateReport>,
     json: bool,
 ) -> ExitCode {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     if json {
         let document = serde_json::json!({
             "schema_version": RESULT_SCHEMA_VERSION,

@@ -83,21 +83,7 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
 /// [`tags_document`] pins.
 fn print_rows(json: bool, rows: &[(ResourceId, Vec<String>)]) -> ExitCode {
     if json {
-        return match serde_json::to_string_pretty(&tags_document(rows)) {
-            Ok(rendered) => {
-                outln!("{rendered}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => json_err::emit(
-                true,
-                &CliError::new(
-                    codes::JSON_SERIALIZE,
-                    err.to_string(),
-                    "this is a phux bug; run `phux doctor` and report it",
-                ),
-                1,
-            ),
-        };
+        return crate::output::json(&tags_document(rows));
     }
     for (id, tags) in rows {
         outln!("{}", render_tags(id, tags));

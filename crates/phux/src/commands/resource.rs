@@ -20,7 +20,7 @@ use phux_server::runtime::default_socket_path;
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::{ResourceAction, cli_runtime, parse_selector, resolve_target};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_PARTIAL_VIEW, EXIT_USAGE, EXIT_WAIT_TIMEOUT};
-use crate::selector::Selector;
+use phux_client::selector::Selector;
 
 /// `phux resource <action>`.
 pub(crate) fn run_resource(action: &ResourceAction, socket: Option<PathBuf>) -> ExitCode {
@@ -160,7 +160,7 @@ fn report_wait(wait: &ResourceWait, json: bool) -> ExitCode {
         );
     }
     let code = if json {
-        print_document(&wait.to_json())
+        crate::output::json(&wait.to_json())
     } else {
         print_wait_human(wait)
     };
@@ -179,7 +179,7 @@ const fn wait_exit_code(outcome: WaitOutcome) -> u8 {
 }
 
 fn print_wait_human(wait: &ResourceWait) -> ExitCode {
-    let resource = crate::selector::format_terminal_id(&wait.resource);
+    let resource = phux_client::selector::format_terminal_id(&wait.resource);
     let resume = wait
         .cursor
         .as_ref()
@@ -219,7 +219,7 @@ fn describe_exit(wait: &ResourceWait) -> String {
 fn print_show(details: &ResourceDetails, json: bool) -> ExitCode {
     let doc = details.to_json();
     if json {
-        return print_document(&doc);
+        return crate::output::json(&doc);
     }
     for key in [
         "resource",
@@ -262,7 +262,7 @@ fn human_field(doc: &serde_json::Value, key: &str) -> Option<String> {
 
 fn print_methods(report: &ResourceMethods, json: bool) -> ExitCode {
     if json {
-        return print_document(&report.to_json());
+        return crate::output::json(&report.to_json());
     }
     for judged in &report.methods {
         let entry = judged.to_json();
@@ -340,20 +340,6 @@ fn report_wait_failure(json: bool, socket: &Path, err: &ResourceWaitError) -> Ex
     json_err::emit(json, &failure, code)
 }
 
-fn print_document(doc: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(doc) {
-        Ok(text) => {
-            outln!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &CliError::new(codes::JSON_SERIALIZE, err.to_string(), ""),
-            EXIT_FAILURE,
-        ),
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, reason = "tests")]
 mod tests {
@@ -419,14 +405,14 @@ mod tests {
 
     #[test]
     fn a_direct_id_is_taken_as_given() {
-        let selector = crate::selector::parse("@9").expect("selector");
+        let selector = phux_client::selector::parse("@9").expect("selector");
         assert_eq!(direct_id(&selector), Some(ResourceId::local(9)));
-        let satellite = crate::selector::parse("edge/@4").expect("selector");
+        let satellite = phux_client::selector::parse("edge/@4").expect("selector");
         assert_eq!(
             direct_id(&satellite),
             Some(ResourceId::satellite("edge", 4))
         );
-        let session = crate::selector::parse("work").expect("selector");
+        let session = phux_client::selector::parse("work").expect("selector");
         assert_eq!(direct_id(&session), None);
     }
 

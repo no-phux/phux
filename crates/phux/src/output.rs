@@ -6,7 +6,7 @@
 
 use std::fmt;
 use std::io::{self, ErrorKind, Write};
-use std::process;
+use std::process::{self, ExitCode};
 
 /// Status handed to the OS when a write fails for a reason that is *not* the
 /// reader leaving. Mirrors `ExitCode::FAILURE`, which these paths cannot
@@ -46,7 +46,7 @@ pub(crate) fn bytes_now(buf: &[u8]) {
 
 /// Turn a stdout write result into the process outcome: a closed reader
 /// exits 0, anything else is one stderr line and a failing status.
-pub(crate) fn settle(result: io::Result<()>) {
+fn settle(result: io::Result<()>) {
     let Err(err) = result else { return };
     if err.kind() == ErrorKind::BrokenPipe {
         give_up();
@@ -85,4 +85,25 @@ macro_rules! out {
     ($($arg:tt)*) => {
         $crate::output::fragment(::core::format_args!($($arg)*))
     };
+}
+
+/// Print `value` as one pretty-printed JSON document. phux's own documents
+/// always serialize, so a failure is reported as a bug on the `--json` error
+/// contract.
+pub(crate) fn json(value: &impl serde::Serialize) -> ExitCode {
+    match serde_json::to_string_pretty(value) {
+        Ok(rendered) => {
+            outln!("{rendered}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::JSON_SERIALIZE,
+                format!("could not render JSON: {err}"),
+                "this is a phux bug; run `phux doctor` and report it",
+            ),
+            1,
+        ),
+    }
 }

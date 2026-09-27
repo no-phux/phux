@@ -33,7 +33,6 @@ mod environment;
 mod exit_codes;
 mod feature_names;
 mod refdocs;
-mod selector;
 mod skill;
 
 #[cfg(test)]
@@ -2308,5 +2307,4 @@ mod tests {
             "-s without --json stays valid"
         );
     }
-
 }

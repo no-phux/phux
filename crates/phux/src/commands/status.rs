@@ -124,7 +124,7 @@ fn build_report(
         .resources
         .iter()
         .filter(|pane| pane.id.host().is_some())
-        .map(|pane| crate::selector::format_terminal_id(&pane.id))
+        .map(|pane| phux_client::selector::format_terminal_id(&pane.id))
         .collect();
     StatusReport {
         socket: socket_path.to_path_buf(),
@@ -276,21 +276,7 @@ fn status_document(report: &StatusReport) -> serde_json::Value {
 
 /// Print the success document on stdout.
 fn print_json(report: &StatusReport) -> ExitCode {
-    match serde_json::to_string_pretty(&status_document(report)) {
-        Ok(s) => {
-            outln!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &json_err::CliError::new(
-                json_err::codes::JSON_SERIALIZE,
-                format!("failed to serialize status as JSON: {err}"),
-                "re-run without --json",
-            ),
-            1,
-        ),
-    }
+    crate::output::json(&status_document(report))
 }
 
 /// The `--json` answer when nothing listens: `running: false` on stdout,
