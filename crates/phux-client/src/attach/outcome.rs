@@ -1,16 +1,8 @@
-//! The attach loop's exit vocabulary: the error every attach path funnels
-//! into, and the "how did it end" explanation the CLI prints after teardown.
+//! The attach exit vocabulary.
 //!
-//! Lifted out of `super::driver` under phux-4fbs.4. Eleven attach siblings
-//! (plus `crate::layout_ops`) need nothing from the driver but these two
-//! types, and importing them from the driver made every one of those modules
-//! a back-edge into the file that owns the `tokio::select!` lifecycle. This
-//! module depends on nothing inside `attach` except `super::render` when `tui`
-//! is enabled, so the dependency now runs strictly one way: the driver and its
-//! siblings both read this vocabulary, and it reads nothing back.
-//!
-//! `phux_client::attach::{AttachEnd, AttachError}` — the only path any other
-//! crate uses — is unchanged; `super`'s re-export still publishes both.
+//! The error every attach path funnels into, and the "how did it end"
+//! explanation the CLI prints after teardown. A leaf module, so callers that
+//! need only these types import nothing heavier.
 
 use std::io;
 
@@ -18,59 +10,36 @@ use phux_client_runtime::reconnect::{TOKEN_REFUSED, is_fatal_refusal_detail};
 use phux_protocol::wire::frame::DetachReason;
 use phux_protocol::wire::framing::FramingError;
 
-/// Errors the attach loop can surface to its caller.
-///
-/// Most variants wrap a richer underlying cause; the driver is careful to
-/// fail fast rather than silently dropping protocol violations.
-///
-/// This is the client-facing attach-loop error vocabulary. It is distinct
-/// from `phux-server/src/state/client.rs::AttachError`, which describes
-/// failures in the server's internal registry attach operation.
+/// Errors an attach or control-plane connection can surface. Distinct from
+/// the server's internal registry `AttachError`.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AttachError {
-    /// Local I/O error — UDS connect, socket read/write, stdin/stdout, or
-    /// terminal ioctl.
+    /// Local I/O error: socket connect/read/write, stdin/stdout, or ioctl.
     #[error("attach loop io error: {0}")]
     Io(#[source] io::Error),
 
-    /// A remote transport could not be established: QUIC handshake, TLS
-    /// certificate verification (a fingerprint that did not match the pin), or
-    /// a refused/oversized auth preamble. Distinguished from local [`Self::Io`]
-    /// so the CLI can point at the address, the pin, and the token rather than a
-    /// missing socket file.
+    /// A host answered but the remote transport could not be established
+    /// (TLS pin mismatch, refused or oversized auth preamble).
     #[error("transport connect error: {0}")]
     Connect(String),
 
-    /// The remote host did not answer the dial: connection refused, no
-    /// route, or handshake timeout. Distinguished from [`Self::Connect`]
-    /// (which covers pin and auth failures on a host that answered) so the
-    /// CLI can hint at overlay reachability instead of credentials.
+    /// The remote host did not answer the dial (refused, no route, timeout),
+    /// so the CLI hints at reachability rather than credentials.
     #[error("transport connect error: {0}")]
     Unreachable(String),
 
     /// The server closed the connection without sending `DETACHED`.
-    /// Distinguished from a clean detach so the CLI can surface "server
-    /// went away" vs "you detached".
     #[error("connection closed by server before DETACHED")]
     Disconnected,
 
-    /// The server sent something we cannot interpret — undecodable frame,
-    /// or a valid frame we don't expect at this point in the lifecycle.
+    /// An undecodable frame, or a valid one unexpected at this point.
     #[error("protocol error: {0}")]
     Protocol(String),
 
-    /// The server broke `docs/spec/proto.md` §5 framing: a length outside
-    /// `1..=MAX_FRAME_LEN`, or a message whose size disagrees with the length
-    /// it declares.
-    ///
-    /// Split out of [`Self::Protocol`] as a *typed* variant on purpose. §5
-    /// obliges the receiving peer — either peer, per the spec text — to answer
-    /// with `ERROR { code: FRAME_TOO_LARGE }` before closing. Decode sites
-    /// keep this error typed rather than flattening it to a string;
-    /// [`super::connection::Connection::recv`] / `try_recv` hold the write
-    /// half and emit the goodbye (phux-85ot) before returning this variant.
-    /// The rendered message is unchanged from the string form it replaces.
+    /// A SPEC §5 framing violation. Kept typed so
+    /// [`super::connection::Connection::recv`] can answer it with
+    /// `ERROR { FRAME_TOO_LARGE }` before closing, as §5 requires.
     #[error("protocol error: server sent a malformed frame: {0}")]
     Framing(#[from] FramingError),
 
@@ -78,9 +47,7 @@ pub enum AttachError {
     #[error("terminal control error: {0}")]
     Terminal(String),
 
-    /// Stdin is not a terminal. The attach loop needs a TTY because raw
-    /// mode and alt-screen toggling require one. We bail early instead of
-    /// silently no-op'ing.
+    /// Stdin is not a terminal; attach needs one for raw mode.
     #[error("stdin is not a terminal; attach requires an interactive TTY")]
     NotATty,
 
@@ -88,25 +55,13 @@ pub enum AttachError {
     #[error("libghostty: {0}")]
     Ghostty(#[from] libghostty_vt::Error),
 
-    /// The server replied with a structured `ERROR` frame instead of
-    /// `ATTACHED`. The session may not exist, the protocol version may
-    /// have been rejected, or some other ATTACH-time server policy
-    /// refused the request. The CLI surfaces this as actionable text.
+    /// The server answered with a structured `ERROR` instead of the reply.
     #[error("server refused attach: {0}")]
     Refused(String),
 
-    /// `GET_SCREEN` asked for a rendered capture (`format != 0`,
-    /// `phux snapshot --format html|vt`, D9) and the reply carried no
-    /// `rendered` field despite an `Ok` result. No feature bit gates
-    /// `format`, since bits are scarce: a pre-D9 peer's decoder stops
-    /// reading the `GET_SCREEN` body after `cells` and never even sees
-    /// the trailing `format` byte, so it silently answers as if
-    /// `format: 0` were asked. The same signature also covers a render
-    /// that failed on a D9-or-later server's own engine, which is kept
-    /// non-fatal there rather than failing the whole read — see
-    /// `phux_client::snapshot::get_screen_scrollback_format`, which
-    /// builds this variant's message from `ScreenState::rendered_error`
-    /// when the server reported one.
+    /// `GET_SCREEN` asked for a rendered capture and the `Ok` reply carried
+    /// none: an older server ignores the `format` byte, or the server's own
+    /// render failed (see `snapshot::get_screen_scrollback_format`).
     #[error("{0}")]
     FormatUnsupported(String),
 }
@@ -122,17 +77,13 @@ impl From<phux_dial::DialError> for AttachError {
         match value {
             phux_dial::DialError::Io(err) => Self::Io(err),
             phux_dial::DialError::Connect(msg) => Self::Connect(msg),
-            // Same repair class as a WebSocket 401: the host answered and
-            // refused the token, so the CLI re-pairs rather than treating
-            // it as overlay loss.
+            // The host refused the token: re-pair, not an overlay loss.
             phux_dial::DialError::AuthRefused(msg) => {
                 Self::Connect(format!("{TOKEN_REFUSED} ({msg})"))
             }
             phux_dial::DialError::Unreachable(msg) => Self::Unreachable(msg),
-            // A stalled lane IS a disconnection — the peer is gone, we just
-            // had to ask to find out. Mapping it here is what routes a
-            // half-open `wss://` socket into the same bounded reconnect the
-            // UDS graceful-upgrade blink uses, instead of hanging forever.
+            // A stalled lane is a disconnection; mapping it here routes a
+            // half-open `wss://` socket into the bounded reconnect.
             phux_dial::DialError::Stalled(msg) => {
                 tracing::info!(reason = %msg, "WebSocket lane stalled; treating it as a disconnect");
                 Self::Disconnected
@@ -142,23 +93,11 @@ impl From<phux_dial::DialError> for AttachError {
 }
 
 impl AttachError {
-    /// Whether this failure is a refusal that retrying with the same
-    /// credentials cannot change: the host answered and rejected the
-    /// pairing token (ADR-0031), as a QUIC `AUTH_FAILED` preamble reply or
-    /// an HTTP 401/403 on the WebSocket upgrade.
-    ///
-    /// ADR-0133 keeps that rule in `phux-client-runtime::reconnect`, which
-    /// states it over a [`phux_dial::DialError`]. A reconnect probe no
-    /// longer holds one — [`From<phux_dial::DialError>`] has already
-    /// flattened the dial failure into this vocabulary by the time the
-    /// policy asks — so this reads the runtime's rule over the rendered
-    /// detail instead of restating it.
-    ///
-    /// Everything else answers `false` and is worth the reconnect ladder: a
-    /// 503, an unreachable host, a stalled lane, a local I/O error. So does
-    /// [`Self::Refused`], which is the *server's* `ATTACH` policy declining
-    /// a session rather than the transport declining the client, and is
-    /// reached only past a connection this rule has already allowed.
+    /// Whether this is a transport refusal no retry with the same credentials
+    /// can change (a refused pairing token, ADR-0031). Applies the
+    /// `phux-client-runtime::reconnect` rule to the flattened detail.
+    /// [`Self::Refused`] is the server's `ATTACH` policy, not the transport,
+    /// and stays retryable.
     #[must_use]
     pub fn is_fatal_refusal(&self) -> bool {
         match self {
@@ -168,55 +107,29 @@ impl AttachError {
     }
 }
 
-/// phux-i0e8.2.2: how a successful attach loop ended.
-///
-/// Threaded out of every `run_*` entry point so the CLI can tell "you
-/// detached" from "your last pane died" — before this, an OOM-killed
-/// shell tore the whole TUI down with zero explanation and looked
-/// exactly like a phux crash. Either way the attach was *successful*
-/// (the process exits `0`); this is an explanation, not an error.
+/// How a successful attach loop ended: an explanation, not an error, so the
+/// CLI can tell "you detached" from "your last pane died".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachEnd {
-    /// The server ended the attach with `DETACHED`, or the client tore its
-    /// own attach down after asking for one.
+    /// The server sent `DETACHED`, or the client tore its attach down.
     Detached {
-        /// The `DETACHED` frame's reason, or `None` when the server stated
-        /// none — a server predating `0.7.0-draft.7`, a reason this build
-        /// does not recognise, or an ending this client drove locally
-        /// without a server frame.
-        ///
-        /// `None` and `Some(Requested)` are both the quiet, expected ending
-        /// and explain themselves; every other reason is something the user
-        /// did not ask for and gets words on the cooked terminal.
+        /// The `DETACHED` reason, or `None` when none was stated or known.
+        /// `None` and `Requested` are the quiet, expected endings.
         reason: Option<DetachReason>,
     },
-    /// The last pane's process exited, so there was nothing left to
-    /// render or route input to and the consumer-owned detach policy
-    /// (phux-4r1) left the session.
+    /// The last pane's process exited, leaving nothing to attach to.
     LastPaneClosed {
-        /// The dead pane's `_exit(n)` code, or `None` for signal kills /
-        /// unknown causes — the same shape `RESOURCE_CLOSED` carries on
-        /// the wire.
+        /// The pane's exit code, or `None` for signal kills / unknown causes.
         exit_status: Option<i32>,
     },
 }
 
 impl AttachEnd {
-    /// One-line explanation for the cooked terminal after teardown, or
-    /// `None` when the ending needs no words (a plain detach).
-    ///
-    /// Printed by `exit_after_detach` on the production path (which
-    /// exits the process before the CLI regains control — see its doc
-    /// comment) and available to CLI callers holding a returned
-    /// `AttachEnd` on any path that does return.
+    /// One-line explanation for the terminal after teardown, or `None` when
+    /// the ending needs no words (a detach the user asked for).
     #[must_use]
     pub fn explanation(self) -> Option<String> {
         match self {
-            // A detach the user asked for needs no words. Anything else —
-            // the server shut down, the session was killed, another client
-            // took over, the connection broke the protocol — is an ending
-            // the user did not choose, and before phux-l83x the wire could
-            // not tell them apart.
             Self::Detached { reason } => match reason {
                 None | Some(DetachReason::Requested) => None,
                 Some(reason) => Some(format!("phux: detached: {}", reason.describe())),
@@ -229,12 +142,8 @@ impl AttachEnd {
     }
 }
 
-/// phux-i0e8.2.2: human phrase for a `RESOURCE_CLOSED` exit status.
-///
-/// The wire carries `Some(n)` for a plain `_exit(n)` and `None` for
-/// signal kills / unknown causes (frame.rs `ResourceClosed`). One
-/// spelling shared by the survivor notice and the last-pane exit
-/// explanation, so both surfaces read as one vocabulary.
+/// Human phrase for a `RESOURCE_CLOSED` exit status, shared by every surface
+/// that reports a pane exit.
 #[must_use]
 pub fn describe_exit(exit_status: Option<i32>) -> String {
     exit_status.map_or_else(
@@ -245,96 +154,64 @@ pub fn describe_exit(exit_status: Option<i32>) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// phux-i0e8.2.2: one wording for every exit shape, shared by the
-    /// survivor notice and the last-pane explanation.
-    #[test]
-    fn describe_exit_covers_all_shapes() {
-        assert_eq!(super::describe_exit(Some(0)), "exited 0");
-        assert_eq!(super::describe_exit(Some(137)), "exited 137");
-        assert_eq!(super::describe_exit(Some(-1)), "exited -1");
-        assert_eq!(super::describe_exit(None), "killed (signal or unknown)");
-    }
+    use phux_dial::DialError;
 
-    /// The link between "the WebSocket keepalive noticed a stalled peer" and
-    /// "the client enters its reconnect window": `attach_with_reconnect`
-    /// reconnects on `Disconnected` and on nothing else, so a `Stalled` that
-    /// mapped to `Io` or `Connect` would detect the network switch and then
-    /// exit on it anyway. The other variants must NOT collapse into
-    /// `Disconnected` — a pin mismatch or an unreachable host is a fault to
-    /// report, not a blip to wait out.
+    use super::AttachError;
+
+    /// The reconnect loop retries on `Disconnected` and nothing else, so a
+    /// stalled WebSocket lane must map there, and faults worth reporting
+    /// (pin mismatch, unreachable host) must not.
     #[test]
     fn a_stalled_lane_maps_to_disconnected_and_nothing_else_does() {
+        let err = |e: DialError| AttachError::from(e);
         assert!(matches!(
-            super::AttachError::from(phux_dial::DialError::Stalled("no pong".to_owned())),
-            super::AttachError::Disconnected
-        ));
-
-        assert!(matches!(
-            super::AttachError::from(phux_dial::DialError::Unreachable("no route".to_owned())),
-            super::AttachError::Unreachable(_)
+            err(DialError::Stalled("no pong".to_owned())),
+            AttachError::Disconnected
         ));
         assert!(matches!(
-            super::AttachError::from(phux_dial::DialError::Connect("pin mismatch".to_owned())),
-            super::AttachError::Connect(_)
+            err(DialError::Unreachable("no route".to_owned())),
+            AttachError::Unreachable(_)
         ));
         assert!(matches!(
-            super::AttachError::from(phux_dial::DialError::AuthRefused("unauthorized".to_owned())),
-            super::AttachError::Connect(msg) if msg.contains("pairing token refused")
+            err(DialError::Connect("pin mismatch".to_owned())),
+            AttachError::Connect(_)
         ));
         assert!(matches!(
-            super::AttachError::from(phux_dial::DialError::Io(std::io::Error::from(
-                std::io::ErrorKind::BrokenPipe
-            ))),
-            super::AttachError::Io(_)
+            err(DialError::AuthRefused("unauthorized".to_owned())),
+            AttachError::Connect(msg) if msg.contains("pairing token refused")
+        ));
+        assert!(matches!(
+            err(DialError::Io(std::io::ErrorKind::BrokenPipe.into())),
+            AttachError::Io(_)
         ));
     }
 
-    /// ADR-0133: a dial failure that no retry with the same credentials can
-    /// satisfy stays fatal after it is flattened into this vocabulary, and
-    /// everything the ladder could still heal stays retryable. The reconnect
-    /// probe keys on exactly this, so a wording change on either side of the
-    /// `From` impl that lost the verdict would fail here rather than quietly
-    /// walk a 401 through a 60-second countdown.
+    /// Refusals no retry can satisfy stay fatal after flattening; everything
+    /// the reconnect ladder could heal stays retryable.
     #[test]
     fn only_the_refusals_no_retry_can_satisfy_are_fatal() {
-        let fatal = [
-            phux_dial::DialError::AuthRefused("unauthorized".to_owned()),
-            phux_dial::DialError::Connect(
-                "WebSocket handshake: HTTP error: 401 Unauthorized".to_owned(),
-            ),
-            phux_dial::DialError::Connect(
-                "WebSocket handshake: HTTP error: 403 Forbidden".to_owned(),
+        let http =
+            |status: &str| DialError::Connect(format!("WebSocket handshake: HTTP error: {status}"));
+        let cases = [
+            (DialError::AuthRefused("unauthorized".to_owned()), true),
+            (http("401 Unauthorized"), true),
+            (http("403 Forbidden"), true),
+            (http("503 Service Unavailable"), false),
+            (DialError::Unreachable("no route".to_owned()), false),
+            (DialError::Stalled("no pong".to_owned()), false),
+            (
+                DialError::Io(std::io::ErrorKind::ConnectionRefused.into()),
+                false,
             ),
         ];
-        for error in fatal {
+        for (error, fatal) in cases {
             let rendered = error.to_string();
-            assert!(
-                super::AttachError::from(error).is_fatal_refusal(),
-                "{rendered} must end the reconnect"
+            assert_eq!(
+                AttachError::from(error).is_fatal_refusal(),
+                fatal,
+                "{rendered}"
             );
         }
-
-        let retryable = [
-            phux_dial::DialError::Connect(
-                "WebSocket handshake: HTTP error: 503 Service Unavailable".to_owned(),
-            ),
-            phux_dial::DialError::Unreachable("no route".to_owned()),
-            phux_dial::DialError::Stalled("no pong".to_owned()),
-            phux_dial::DialError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)),
-        ];
-        for error in retryable {
-            let rendered = error.to_string();
-            assert!(
-                !super::AttachError::from(error).is_fatal_refusal(),
-                "{rendered} may heal and is worth the ladder"
-            );
-        }
-
-        // A server that declines the ATTACH is not the transport refusing
-        // the client: the connection it arrived on was already allowed.
-        assert!(
-            !super::AttachError::Refused("no such session".to_owned()).is_fatal_refusal(),
-            "a server-side ATTACH refusal is not a transport refusal"
-        );
+        assert!(!AttachError::Refused("no such session".to_owned()).is_fatal_refusal());
     }
 }
