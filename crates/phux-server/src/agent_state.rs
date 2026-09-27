@@ -1,63 +1,26 @@
 //! Authority over the `phux.agent/v1` record (ADR-0046 §E).
 //!
-//! Two writers can reach one Terminal's record: a human/agent/plugin issuing
-//! an explicit `SET_METADATA`, and the server-side detector. They must not
-//! fight over it. The arbitration rule, normatively:
+//! An explicit `SET_METADATA` that supplies a `state` outranks the detector
+//! until `DELETE`; one that supplies only identity is preserved field for
+//! field while the detector fills `state` around it. The detector deletes
+//! only records it wrote. The one exception (`docs/spec/L3.md` §3.7): on
+//! positive evidence that the declared occupant is gone, the server may
+//! withdraw the declaration ([`withdraw_state`]: `state` becomes
+//! `"unknown"`, identity preserved, never a `DELETE`).
 //!
-//! > An explicit `SET_METADATA` on `phux.agent/v1` that supplies a `state`
-//! > outranks the detector; the detector makes no further writes to that
-//! > Terminal until the record is `DELETE`d. An explicit write that supplies
-//! > only identity (`name` / `kind` / `session`) is preserved field-for-field
-//! > and the detector fills `state` around it. The detector deletes only
-//! > records it itself wrote.
+//! **I1.** Every detector write reasserts `kind`, `name`, and `state`
+//! together, composed against the bytes read under the same lock, except
+//! fields an explicit writer owns. The correction event is best-effort, so
+//! only this reassertion self-heals.
 //!
-//! One narrow exception, and it is the whole of ADR-0046's "why" (see
-//! `docs/spec/L3.md` §3.7, "Server as a producer"): a declaration outranks
-//! the derivation *for as long as the pane is occupied by the agent it
-//! describes*. On positive evidence that the declared occupant is gone the
-//! server may **withdraw** the declaration — set `state` to `"unknown"`,
-//! never substitute a derived value and never `DELETE` — preserving `name`,
-//! `kind` and `session`. A `kill -9` runs no `EXIT` trap and issues no
-//! `agent clear`, so without this a declared pane is wedged in a lie with no
-//! path back to truth, which is precisely the failure mode level-triggering
-//! exists to prevent. [`withdraw_state`] is that write, and it is the only
-//! one the server makes over a declaration.
+//! **I2.** `state: "unknown"` is the only state that may pair with a
+//! possibly stale `kind`. Where an explicit writer owns `kind`, the server
+//! cannot correct it, so [`explicit_kind_is_contradicted`] withholds state
+//! instead.
 //!
-//! # Two invariants the drain must hold
-//!
-//! **I1.** Every `metadata_set` on `phux.agent/v1` writes `kind`, `name` and
-//! `state` in the SAME write, from the SAME source tuple, composed against
-//! the SAME `existing` bytes read under the SAME state-lock. There is no path
-//! that updates `state` without reasserting the `kind` the detector currently
-//! believes — except where an explicit writer owns `kind`. This is why
-//! [`compose`] no longer preserves a `kind` (or `name`) the detector itself
-//! authored: the correction event is best-effort (`try_send`, dropped on a
-//! full sink), so level-triggered reassertion on every write is the only
-//! thing that self-heals.
-//!
-//! **I2.** `state: "unknown"` is the ONLY value that may pair with a possibly
-//! stale `kind`, because `"unknown"` describes no process and therefore
-//! cannot describe a *different* one. Every correction and withdrawal path
-//! lands there. A subscriber must never observe one record whose `kind` and
-//! `state` come from two different processes, not even for a tick.
-//!
-//! I2 is what forces [`explicit_kind_is_contradicted`]. I1 reasserts a `kind`
-//! the DETECTOR authored, which repairs the occupant-change case on its own —
-//! but only where the detector owns the `kind`. Where an explicit writer owns
-//! it, `docs/spec/L3.md` §3.7 requires the server to preserve it, so the
-//! reassertion cannot run and a derived `state` would land beside a `kind`
-//! describing a process that is gone. The server may not correct that `kind`;
-//! what it can do, and what §3.7's withdrawal bullet names in as many words,
-//! is decline to assert a state about it. See that function for the rule.
-//!
-//! The declaration cannot be inferred from the stored bytes. The client's
-//! `AgentMetaState` decodes an absent or unrecognized `state` to `Unknown`,
-//! so `unknown` and "absent" are indistinguishable on the way back out — and
-//! the detector's own writes carry a `state` too. So declaration is tracked
-//! explicitly, populated ONLY from the `SET_METADATA` entry point. The
-//! detector's drain writes through `ServerState::metadata_set` directly and
-//! therefore never passes through it, which is exactly what makes the
-//! bookkeeping honest.
+//! Declaration cannot be read back from the bytes (absent and `unknown`
+//! decode alike), so it is tracked explicitly, fed only by the
+//! `SET_METADATA` entry point, which the detector's drain never passes.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -71,46 +34,24 @@ use phux_protocol::ids::ResourceId as WireResourceId;
 use crate::agent_detect::record::AgentRecordJson;
 
 /// Where a claim about a Terminal's agent `state` came from, ordered by
-/// authority (ADR-0103 decision 5).
-///
-/// The ladder answers one question: when two sources describe the same pane
-/// and disagree, which one lands in the record? Rank is a property of how
-/// close the source sits to the agent's own knowledge of itself, not of how
-/// fresh its evidence is - a screen scrape is fresher than anything and knows
-/// least.
-///
-/// Orthogonal to [`AgentRecordArbiter`], which arbitrates between the SERVER
-/// and an explicit `SET_METADATA` writer (ADR-0046 §E). This ranks the
-/// server's own sources against each other; a declaration still outranks all
-/// four of them.
+/// authority (ADR-0103 §5): closeness to the agent's own knowledge, not
+/// freshness. A declaration ([`AgentRecordArbiter`]) outranks all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(
     dead_code,
     reason = "the Stream producer lands with the AgentSession engine; the ladder is defined and pinned by tests here so the screen detector's side of the precedence is already correct when it does"
 )]
 pub(crate) enum EvidenceSource {
-    /// Derived from the pane's grid by the rule set (ADR-0046). Inferential,
-    /// self-healing, and the weakest thing in the room: it reads pixels an
-    /// agent painted for a human and guesses what they mean.
+    /// Derived from the grid by the rules (ADR-0046): the weakest source.
     Screen,
-    /// The PTY's foreground process group (`agent_detect::identify`). It
-    /// establishes IDENTITY and departure rather than lifecycle state, and it
-    /// is positive evidence rather than inference, so it outranks the screen.
+    /// The PTY's foreground process group: identity and departure, positive
+    /// evidence rather than inference.
     Process,
-    /// An opt-in integration reporting through `REPORT_AGENT_STATE`
-    /// (ADR-0085). The agent itself is speaking, so it outranks anything the
-    /// server infers - but it is edge-triggered and lossy, which is why it
-    /// does not outrank a stream it could have been carried on.
+    /// `REPORT_AGENT_STATE` from an integration (ADR-0085): the agent
+    /// speaking, but lossy and edge-triggered.
     Hook,
-    /// A record on a live `AgentSession` child's stream (ADR-0103).
-    ///
-    /// The producer is the `AgentSession` engine, which derives state from
-    /// the records the agent appends (`prompt` / `tool_start` mean working;
-    /// `ask` and a `permission` / `elicitation` notification mean blocked;
-    /// `stop` means done; `session_end` retracts). Top of the ladder because
-    /// it is the agent describing itself over a sequenced, gap-detecting
-    /// channel it owns - the same evidence a hook carries, minus the lossiness
-    /// that caps a hook's rank.
+    /// A live `AgentSession` child's record stream (ADR-0103): the agent
+    /// describing itself over a sequenced, gap-detecting channel.
     Stream,
 }
 
@@ -119,11 +60,8 @@ pub(crate) enum EvidenceSource {
     reason = "read by the ladder's own tests and by the AgentSession engine, which lands with that engine"
 )]
 impl EvidenceSource {
-    /// Rank within the ladder: higher wins. Same shape and same reason as
-    /// [`crate::agent_asked::AskedSource::priority`], which ranks the ask
-    /// ladder (ADR-0036) - a deliberately separate ledger, because "who is
-    /// asking" and "what state is the pane in" have different sources and
-    /// different retraction rules.
+    /// Rank within the ladder: higher wins. Separate from the ask ladder
+    /// ([`crate::agent_asked::AskedSource::priority`]).
     pub(crate) const fn priority(self) -> u8 {
         match self {
             Self::Screen => 0,
@@ -133,12 +71,8 @@ impl EvidenceSource {
         }
     }
 
-    /// Whether evidence from `self` may publish over a record an `incumbent`
-    /// source currently holds.
-    ///
-    /// Reflexive on purpose: a source re-asserting its own claim is a
-    /// refresh, not a usurpation, and the edge filter - not the ladder - is
-    /// what keeps that quiet.
+    /// Whether `self` may publish over `incumbent`. Reflexive: re-asserting
+    /// one's own claim is a refresh.
     pub(crate) const fn outranks(self, incumbent: Self) -> bool {
         self.priority() >= incumbent.priority()
     }
@@ -147,43 +81,23 @@ impl EvidenceSource {
 /// Who currently owns each Terminal's `phux.agent/v1` record.
 #[derive(Debug, Default)]
 pub(crate) struct AgentRecordArbiter {
-    /// Terminals whose record was written by an explicit `SET_METADATA` that
-    /// SUPPLIED a `state`. The detector stands down for these until `DELETE`.
+    /// Terminals whose record an explicit `SET_METADATA` wrote with a
+    /// `state`; the detector stands down until `DELETE`.
     declared: HashSet<WireResourceId>,
-    /// Terminals whose current record the detector authored — so it may
-    /// rewrite or retract it, and only it.
+    /// Terminals whose current record the detector wrote (and may retract).
     detector_owned: HashSet<WireResourceId>,
-    /// Terminals whose STORED record carries identity a human authored
-    /// (`name` / `session` / `attention`).
-    ///
-    /// Distinct from [`Self::detector_owned`], and it has to be: after an
-    /// identity-only `SET_METADATA` the detector is deliberately left running
-    /// to fill `state` in, and its very next write re-acquires ownership. So
-    /// "the detector wrote the record currently stored" is TRUE of a record
-    /// whose name the human chose — and using that alone to authorize a
-    /// `DELETE` on retract destroys their label. The detector owns the `state`
-    /// field; it never owns the identity.
+    /// Terminals whose stored record carries human-authored identity
+    /// (`name` / `session` / `attention`). The detector may own the `state`
+    /// of such a record but must never `DELETE` it.
     explicit_identity: HashSet<WireResourceId>,
-    /// Terminals whose STORED record carries a `kind` an explicit writer set.
-    ///
-    /// Deliberately separate from [`Self::explicit_identity`], which excludes
-    /// `kind` on the grounds that "kind is not identity" — true of the
-    /// *retract* question that set was built for (a bare kind is not something
-    /// a human would miss), and false of the *correction* question:
-    /// `docs/spec/L3.md` §3.7 requires a server to preserve the `kind` of an
-    /// identity-only declaration, and now that the detector reasserts the
-    /// `kind` it authored on every write (I1), an explicitly-set one needs a
-    /// bucket of its own or it would be overwritten with the rest.
+    /// Terminals whose stored `kind` an explicit writer set, which the
+    /// detector must preserve (§3.7). Separate from `explicit_identity`,
+    /// since a bare kind does not protect a record from deletion.
     explicit_kind: HashSet<WireResourceId>,
 }
 
-/// Which identity fields of a stored record belong to an explicit writer and
-/// must therefore survive a detector write.
-///
-/// Every field NOT owned here is reasserted from the detector's report on
-/// every single write — that is invariant I1, and it is what makes a dropped
-/// [`crate::agent_detect::AgentDetectEvent::Reidentified`] harmless rather
-/// than a permanent lie.
+/// Which identity fields of a stored record an explicit writer owns; every
+/// other field is reasserted on each detector write (I1).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct IdentityOwnership {
     /// An explicit writer supplied `name`; keep theirs.
@@ -193,8 +107,7 @@ pub(crate) struct IdentityOwnership {
 }
 
 impl IdentityOwnership {
-    /// Nothing is owned: every field is the detector's to write. The shape of
-    /// a pane no human has ever labelled.
+    /// Nothing owned: every field is the detector's.
     #[cfg(test)]
     pub(crate) const DETECTOR: Self = Self {
         name: false,
@@ -205,20 +118,9 @@ impl IdentityOwnership {
 impl AgentRecordArbiter {
     /// Note an explicit `SET_METADATA` on this Terminal's agent record.
     ///
-    /// The Terminal becomes `declared` **iff** the write supplied a real
-    /// `state` — a bare identity declaration (`name`/`kind`/`session` only,
-    /// or an explicit `"unknown"`) leaves the detector free to fill `state`
-    /// in around it, which is the useful half of the feature: a human names
-    /// the agent, the detector tracks its lifecycle.
-    ///
-    /// Either way the detector no longer owns the record, so it must not
-    /// delete it. A write that supplies `name`, `session` or `attention` also
-    /// marks the record as carrying human-authored identity, which the
-    /// detector must never retract even once it owns the `state` again.
-    ///
-    /// `SET_METADATA` replaces the stored value wholesale, so a later write
-    /// that drops those fields drops the mark with them: this tracks what is
-    /// IN THE STORE, not what was ever written.
+    /// Supplying a real `state` makes it declared; identity-only writes
+    /// leave the detector to fill in `state`. Either way the detector loses
+    /// ownership. Marks track what is in the store (writes replace wholesale).
     pub(crate) fn note_explicit_set(&mut self, terminal: &WireResourceId, value: &[u8]) {
         self.detector_owned.remove(terminal);
         let record = AgentRecordJson::decode(value);
@@ -230,8 +132,7 @@ impl AgentRecordArbiter {
         } else {
             self.declared.remove(terminal);
         }
-        // `kind` is not identity: the detector derives it itself, and a record
-        // holding nothing but a kind is not something a human would miss.
+        // A kind alone is not identity a human would miss...
         let supplies_identity = record
             .as_ref()
             .is_some_and(|r| !r.name.is_empty() || r.session.is_some() || r.attention.is_some());
@@ -240,10 +141,7 @@ impl AgentRecordArbiter {
         } else {
             self.explicit_identity.remove(terminal);
         }
-        // ... but a kind an explicit writer DID supply is still theirs, and
-        // L3.md §3.7 says to preserve it. Tracked separately from
-        // `explicit_identity` precisely because it must not, on its own,
-        // protect a record from the retract `DELETE`.
+        // ...but an explicitly supplied kind is still preserved (§3.7).
         let supplies_kind = record
             .as_ref()
             .is_some_and(|r| r.kind.as_ref().is_some_and(|k| !k.is_empty()));
@@ -254,9 +152,8 @@ impl AgentRecordArbiter {
         }
     }
 
-    /// Note an explicit `DELETE_METADATA`. The declaration is withdrawn, the
-    /// human's identity is gone from the store with the rest of the record,
-    /// and the detector resumes full ownership.
+    /// Note an explicit `DELETE_METADATA`: everything clears and the detector
+    /// resumes full ownership.
     pub(crate) fn note_explicit_delete(&mut self, terminal: &WireResourceId) {
         self.declared.remove(terminal);
         self.detector_owned.remove(terminal);
@@ -264,38 +161,26 @@ impl AgentRecordArbiter {
         self.explicit_kind.remove(terminal);
     }
 
-    /// Withdraw a declaration whose subject is provably gone (`docs/spec/L3.md`
-    /// §3.7, "Server as a producer"; ADR-0046 point 8).
+    /// Withdraw a declaration whose subject is provably gone (§3.7).
     ///
-    /// Clears `declared` and NOTHING else. The human's `name`, `session` and
-    /// `kind` are still theirs — the withdrawal preserves them in the record
-    /// and this preserves the bookkeeping that protects them. `detector_owned`
-    /// is deliberately NOT set: the detector has not authored this record, and
-    /// must not gain the right to `DELETE` it by having withdrawn a state it
-    /// never wrote. Its next `State` write acquires ownership the normal way.
-    ///
-    /// Not a deletion, and not a substitution of a derived value — the two
-    /// things §3.7 forbids. Losing information only in the honest direction.
+    /// Clears `declared` only: identity bookkeeping stays, and the detector
+    /// does not gain ownership (its next write acquires it normally).
     pub(crate) fn note_declaration_withdrawn(&mut self, terminal: &WireResourceId) {
         self.declared.remove(terminal);
     }
 
-    /// Whether the stored record carries identity a human authored, in which
-    /// case the detector may withdraw its `state` but must not `DELETE` the
-    /// key.
+    /// Whether the stored record carries human identity (withdraw, never
+    /// `DELETE`).
     pub(crate) fn has_explicit_identity(&self, terminal: &WireResourceId) -> bool {
         self.explicit_identity.contains(terminal)
     }
 
-    /// Whether the stored record's `kind` was supplied by an explicit writer,
-    /// in which case the detector must preserve it rather than reassert its
-    /// own (`docs/spec/L3.md` §3.7).
+    /// Whether an explicit writer supplied the stored `kind` (preserve it).
     pub(crate) fn has_explicit_kind(&self, terminal: &WireResourceId) -> bool {
         self.explicit_kind.contains(terminal)
     }
 
-    /// The ownership bits for one Terminal, read together so a caller cannot
-    /// take them from two different states of the world.
+    /// The ownership bits for one Terminal, read together.
     pub(crate) fn identity_ownership(&self, terminal: &WireResourceId) -> IdentityOwnership {
         IdentityOwnership {
             name: self.has_explicit_identity(terminal),
@@ -303,8 +188,8 @@ impl AgentRecordArbiter {
         }
     }
 
-    /// Whether a human has declared this Terminal's state, in which case the
-    /// detector must not write.
+    /// Whether a human declared this Terminal's state (detector must not
+    /// write).
     pub(crate) fn is_declared(&self, terminal: &WireResourceId) -> bool {
         self.declared.contains(terminal)
     }
@@ -319,8 +204,7 @@ impl AgentRecordArbiter {
         self.detector_owned.remove(terminal);
     }
 
-    /// Whether the detector authored the record currently stored, and may
-    /// therefore delete it.
+    /// Whether the detector wrote the stored record (and may delete it).
     pub(crate) fn detector_owns(&self, terminal: &WireResourceId) -> bool {
         self.detector_owned.contains(terminal)
     }
@@ -334,33 +218,14 @@ impl AgentRecordArbiter {
     }
 }
 
-/// Compose the record the detector should write, preserving every field an
-/// explicit (state-less) declaration supplied.
+/// Compose the detector's record, preserving fields an explicit writer
+/// owns.
 ///
-/// `existing` is the currently-stored value, if any. `name` and `kind` come
-/// from the detector's manifest and yield ONLY to a field `owned` says an
-/// explicit writer supplied: if someone called their pane "reviewer", it stays
-/// "reviewer" while the detector tracks its state. `session` is carried
-/// through untouched.
-///
-/// An identity-only store (non-empty `name` / `kind`, empty `state`) is also
-/// treated as explicit even when `owned` has not been marked yet. A concurrent
-/// `SET_METADATA` can land the bytes before the arbiter bit; the detector must
-/// still merge, never clobber (phux-uaon).
-///
-/// Everything else is **reasserted on every write**. That is invariant I1, and
-/// it is not an optimization to skip: the previous rule ("keep whatever kind is
-/// already there") meant that when a pane's occupant changed, the record kept
-/// the OLD kind and gained a state derived from the NEW one — nothing looked
-/// stale, and the kind was a lie. The corrective event is best-effort
-/// (`try_send`), so only level-triggered reassertion actually self-heals.
-///
-/// An empty stored `name` or `kind` is not an owned one: `name` is REQUIRED and
-/// non-empty per `docs/spec/L3.md` §3.7, so a blank is filled whoever "owns" it.
-///
-/// `attention` is deliberately NOT set by the detector — `docs/spec/L3.md`
-/// §3.7 already derives it from `state` when absent — but a declared one is
-/// preserved.
+/// `name` and `kind` come from the manifest unless `owned` (or an
+/// identity-only stored record that beat the arbiter bit) says otherwise;
+/// a blank stored value is always filled. `session` passes through; a
+/// declared `attention` is preserved. Everything else is reasserted every
+/// write (I1).
 pub(crate) fn compose(
     existing: Option<&[u8]>,
     kind: &str,
@@ -371,9 +236,8 @@ pub(crate) fn compose(
     let prior = existing.and_then(AgentRecordJson::decode);
     let record = match prior {
         Some(mut prior) => {
-            // Empty `state` is how an identity-only SET lands in the store
-            // (`#[serde(default)]`). The detector always writes a real
-            // lifecycle word, so this cannot be a record we authored.
+            // An empty `state` marks an identity-only SET; the detector
+            // always writes a real word.
             let identity_only = prior.state.is_empty();
             if prior.name.is_empty() || !(owned.name || identity_only) {
                 prior.name.clear();
@@ -398,54 +262,16 @@ pub(crate) fn compose(
     record.encode()
 }
 
-/// Whether the detector has positive evidence that the `kind` an explicit
-/// writer stored describes a process that is NOT in the pane (phux-w7z2.45).
+/// Whether the explicit `kind` stored for a pane is contradicted by what
+/// the detector sees (I2).
 ///
-/// # The interaction this exists for
-///
-/// The Claude hook shim declares `--name claude --kind claude`, so a shim pane
-/// is `explicit_kind` for its whole life. On a `claude` -> `codex` handover in
-/// that pane the record therefore keeps `kind: claude` — `docs/spec/L3.md` §3.7
-/// requires a server to preserve the `kind` of an identity-only declaration —
-/// and then takes codex's DERIVED state beside it. Nothing looks stale: the
-/// state is fresh, the name is present, the kind is a lie. That is precisely
-/// the failure phux-w7z2.27 was filed to fix, surviving on the largest
-/// population of panes, and it is why I1's reassertion is not enough on its own.
-///
-/// # What the server is allowed to do about it
-///
-/// Not correct the `kind`: §3.7 lists it on two MUST-preserve lists and the
-/// server does not get to overrule an explicit writer's field. What §3.7 does
-/// permit, in the withdrawal bullet, is to set `state` to `"unknown"` "when it
-/// has positive evidence that the declared occupant of the pane is gone: for
-/// example, the PTY's foreground process group ... resolves to a different
-/// one" — our exact evidence, named in the spec's own example. So the server
-/// keeps every field the writer owns and stops asserting a state it cannot
-/// attribute honestly. Losing information only in the honest direction.
-///
-/// The landing shape (`kind` present, `state: unknown`) is the WITHDRAWN shape
-/// ADR-0075 point 6's `%name` write gate already refuses, so a fleet driver
-/// declines to deliver input into the pane rather than delivering it to the
-/// wrong agent. That is the outcome .27 was protecting.
-///
-/// # Why "contradicted" and not merely "different"
-///
-/// `phux agent set --name reviewer --kind my-agent` on a pane running claude
-/// is the documented useful half of the feature, and its `kind` differs from
-/// the detector's on every single tick. An open-vocabulary slug the detector
-/// has no manifest for asserts nothing the detector can check, so it cannot be
-/// contradicted and the detector keeps filling `state` in as before. Only a
-/// `kind` the detector could ITSELF have produced — one with a loaded manifest
-/// — is falsifiable, and only then by a different such kind.
-///
-/// # Self-healing, and free
-///
-/// Level-triggered, with no memory: the moment the pane's occupant matches the
-/// stored `kind` again, or an explicit writer refreshes it (the shim's next
-/// `SessionStart`), or `phux agent clear` removes it, the detector resumes.
-/// And the frozen write is byte-identical to the record already stored, so
-/// `metadata_set` suppresses it: a contradicted pane costs ZERO writes and
-/// ZERO broadcasts per tick, not one (ADR-0046 decision 7).
+/// A shim declares `kind: claude`; after a switch to codex the preserved
+/// kind would sit beside codex's derived state. §3.7 forbids correcting the
+/// kind but permits withdrawing state on positive evidence the occupant is
+/// gone, so the server withholds state (the shape `%name` writes refuse).
+/// Only a kind with a loaded manifest can be contradicted: an open slug
+/// like `my-agent` asserts nothing checkable. Stateless, and the frozen
+/// write dedups to zero broadcasts.
 pub(crate) fn explicit_kind_is_contradicted(
     existing: Option<&[u8]>,
     detected: &str,
@@ -461,19 +287,13 @@ pub(crate) fn explicit_kind_is_contradicted(
     if stored.eq_ignore_ascii_case(detected) {
         return false;
     }
-    // Only a kind the detector could have derived is a claim the detector is
-    // in a position to falsify. Kinds are lowercase slugs; a writer who typed
-    // one in another case is given the benefit of the doubt by the lookup
-    // missing, which errs toward leaving them alone.
+    // Only a kind with a manifest is falsifiable; a case mismatch errs
+    // toward leaving the writer alone.
     rules.manifest(&stored.to_lowercase()).is_some()
 }
 
-/// The `state` word currently stored for a pane, if any.
-///
-/// Read before a detector write so the `agent-state-changed` hook can report
-/// the edge it crossed rather than only where it landed. An absent or
-/// undecodable record yields `None`, which the hook renders as "no prior
-/// state" — honestly distinct from a transition out of `idle`.
+/// The stored `state`, if any, so the `agent-state-changed` hook can report
+/// the edge crossed; `None` for absent or undecodable.
 pub(crate) fn stored_state(existing: Option<&[u8]>) -> Option<String> {
     let record = AgentRecordJson::decode(existing?)?;
     if record.state.is_empty() {
@@ -482,36 +302,13 @@ pub(crate) fn stored_state(existing: Option<&[u8]>) -> Option<String> {
     Some(record.state)
 }
 
-/// Withdraw the `state` from a stored record, preserving every field a human
-/// authored.
+/// Withdraw `state` from a stored record, preserving what a human authored.
 ///
-/// The counterpart to [`compose`], for two paths:
-///
-/// 1. the retract of a record that also carries human-authored identity (see
-///    [`AgentRecordArbiter::has_explicit_identity`]) — `DELETE`ing the key
-///    there would wipe the name, session and attention the human chose, and
-///    they are unrecoverable, because restarting the agent only re-creates the
-///    detector's own view of it; and
-/// 2. the withdrawal of an explicit **declaration** whose subject is provably
-///    gone (see [`AgentRecordArbiter::note_declaration_withdrawn`]).
-///
-/// Either way the state falls back to the vocabulary's `unknown`: the agent is
-/// gone, and a dead process must not lie about being `working`. `unknown` is
-/// also the only value safe to pair with a `kind` this function does not
-/// touch (I2) — it describes no process, so it cannot describe the wrong one.
-///
-/// `attention` is cleared with the state, and that is not incidental: L3 §3.7
-/// derives `attention` from `state` when absent, so a record left reading
-/// `state: unknown, attention: high` heals into a pane that is nothing at all
-/// and still wearing a red badge — a notification for a process that no longer
-/// exists. §3.7's MUST-preserve list is `name`, `kind` and `session`;
-/// `attention` is deliberately not on it.
-///
-/// Byte-idempotent: withdrawing an already-withdrawn record yields identical
-/// bytes, so `metadata_set` suppresses the broadcast and a repeated withdrawal
-/// costs nothing.
-///
-/// `None` when there is no stored record to rewrite.
+/// Used to retract a record carrying human identity (a `DELETE` would lose
+/// it for good) and to withdraw a declaration whose subject is gone. State
+/// becomes `unknown` (safe beside any `kind`, I2); `attention` is cleared
+/// with it, since §3.7 derives it from state. Byte-idempotent. `None` when
+/// nothing is stored.
 pub(crate) fn withdraw_state(existing: Option<&[u8]>) -> Option<Vec<u8>> {
     let mut record = AgentRecordJson::decode(existing?)?;
     record.state.clear();
@@ -536,13 +333,10 @@ mod tests {
         WireResourceId::new(id)
     }
 
-    /// A pane no explicit writer has ever touched: every identity field is
-    /// the detector's to assert.
+    /// A pane no explicit writer has touched.
     const DETECTOR: IdentityOwnership = IdentityOwnership::DETECTOR;
 
-    /// The ownership bits an arbiter would report after `value` was written
-    /// by an explicit `SET_METADATA` — so the `compose` cases below are wired
-    /// exactly as the drain wires them, rather than to hand-picked bools.
+    /// The ownership an arbiter reports after `value` is explicitly written.
     fn ownership_after(value: &[u8]) -> IdentityOwnership {
         let mut arb = AgentRecordArbiter::default();
         let t = terminal(1);
@@ -559,8 +353,7 @@ mod tests {
         assert!(arb.is_declared(&t));
     }
 
-    /// The useful half: a human names the agent, the detector keeps tracking
-    /// its lifecycle.
+    /// A human names the agent; the detector keeps tracking its state.
     #[test]
     fn an_identity_only_declaration_leaves_the_detector_running() {
         let mut arb = AgentRecordArbiter::default();
@@ -587,8 +380,7 @@ mod tests {
         assert!(!arb.is_declared(&t));
     }
 
-    /// The detector may only delete what it wrote. A human's record is not
-    /// its to retract.
+    /// The detector deletes only what it wrote.
     #[test]
     fn the_detector_only_owns_records_it_wrote() {
         let mut arb = AgentRecordArbiter::default();
@@ -600,8 +392,7 @@ mod tests {
         assert!(!arb.detector_owns(&t));
     }
 
-    /// An explicit write over a detector-authored record transfers ownership
-    /// away, so the detector can no longer delete it.
+    /// An explicit write over a detector record transfers ownership away.
     #[test]
     fn an_explicit_set_takes_ownership_from_the_detector() {
         let mut arb = AgentRecordArbiter::default();
@@ -612,14 +403,8 @@ mod tests {
         assert!(!arb.is_declared(&t), "but it may still fill in `state`");
     }
 
-    /// THE label-eater. `phux agent set --name reviewer` is deliberately NOT a
-    /// declaration — the detector keeps running so it can fill `state` in. But
-    /// its very next write re-acquires `detector_owned`, so by the time the
-    /// agent exits, "the detector authored the stored record" is true of a
-    /// record whose NAME the human chose. Authorizing the retract `DELETE` off
-    /// that bit alone destroys their name, session and attention — and
-    /// unrecoverably, since restarting the agent only re-creates the detector's
-    /// own view of it. Ownership of `state` is not ownership of the identity.
+    /// An identity-only label survives the detector re-acquiring `state`
+    /// ownership: retraction must not delete the human's name.
     #[test]
     fn a_detector_write_over_a_humans_name_does_not_make_the_record_deletable() {
         let mut arb = AgentRecordArbiter::default();
@@ -640,9 +425,7 @@ mod tests {
         );
     }
 
-    /// A `SET_METADATA` replaces the stored value wholesale, so a later write
-    /// that drops the identity fields drops the mark with them. The set tracks
-    /// what is IN THE STORE, not what was ever written to it.
+    /// A later write dropping identity fields drops the mark.
     #[test]
     fn an_explicit_set_without_identity_fields_clears_the_mark() {
         let mut arb = AgentRecordArbiter::default();
@@ -656,8 +439,7 @@ mod tests {
         );
     }
 
-    /// A `kind` is not identity: the detector derives it itself, so a record
-    /// holding nothing else is not something a human would miss.
+    /// A bare `kind` is not identity.
     #[test]
     fn a_bare_kind_is_not_human_authored_identity() {
         let mut arb = AgentRecordArbiter::default();
@@ -709,12 +491,7 @@ mod tests {
 
     // --- the explicit-kind bucket (L3 §3.7's preserve list) ----------------
 
-    /// `explicit_identity` deliberately excludes `kind` ("a bare kind is not
-    /// something a human would miss") — correct for the DELETE question it
-    /// governs, and not an answer to the preserve question. L3 §3.7 lists
-    /// `kind` alongside `name` and `session`, and now that the detector
-    /// reasserts its own `kind` on every write, an explicitly-set one needs a
-    /// bucket of its own or it is quietly overwritten.
+    /// An explicit `kind` is preserved even though it is not identity.
     #[test]
     fn an_explicit_kind_is_tracked_even_though_it_is_not_identity() {
         let mut arb = AgentRecordArbiter::default();
@@ -755,10 +532,8 @@ mod tests {
 
     // --- withdrawing a declaration (phux-w7z2.13) --------------------------
 
-    /// THE wedge, at the arbiter. A declared pane whose process is confirmed
-    /// gone has its declaration withdrawn — and only that. The human's label
-    /// is still theirs, and the detector does NOT inherit the right to delete
-    /// a record it never wrote.
+    /// Withdrawing a gone occupant's declaration keeps the label and does
+    /// not grant the detector delete rights.
     #[test]
     fn withdrawing_a_declaration_clears_only_the_declaration() {
         let mut arb = AgentRecordArbiter::default();
@@ -783,8 +558,7 @@ mod tests {
         );
     }
 
-    /// And the detector picks the record back up the ordinary way: its next
-    /// write is what makes the record its own.
+    /// The detector's next write makes the record its own.
     #[test]
     fn after_a_withdrawal_the_detector_reacquires_by_writing() {
         let mut arb = AgentRecordArbiter::default();
@@ -810,9 +584,8 @@ mod tests {
         );
     }
 
-    /// phux-uaon: the store is the source of truth for an identity-only SET
-    /// that beat the arbiter bit. `owned` says the detector wrote everything;
-    /// the bytes say a human named the pane and supplied no `state`. Merge.
+    /// An identity-only SET that beat the arbiter bit is merged, not
+    /// clobbered.
     #[test]
     fn compose_preserves_an_identity_only_name_without_ownership_bits() {
         let existing = br#"{"name":"reviewer","session":"fleet-7"}"#;
@@ -831,8 +604,7 @@ mod tests {
         );
     }
 
-    /// Same race, other field: an identity-only `kind` must survive even when
-    /// `owned.kind` is still false.
+    /// Same race for `kind`.
     #[test]
     fn compose_preserves_an_identity_only_kind_without_ownership_bits() {
         let existing = br#"{"name":"reviewer","kind":"my-agent"}"#;
@@ -894,14 +666,7 @@ mod tests {
         assert_eq!(got.session.as_deref(), Some("s"));
     }
 
-    /// THE .27 half, at the composition seam. A `kind` the DETECTOR wrote is
-    /// reasserted from the current report on every single write.
-    ///
-    /// Previously any already-present `kind` was preserved, so when a pane's
-    /// occupant changed the record kept the old `kind` and gained a state
-    /// derived from the new occupant's screen: a fresh state, a present name,
-    /// and a kind that was simply a lie. Nothing about the record looked
-    /// stale, which is what made it undetectable from the outside.
+    /// A detector-written `kind` is reasserted from the current report.
     #[test]
     fn compose_reasserts_a_kind_the_detector_authored() {
         let existing = br#"{"name":"claude","kind":"claude","state":"working"}"#;
@@ -916,8 +681,7 @@ mod tests {
         assert_eq!(got.state, "idle");
     }
 
-    /// The other side of the same rule: a `kind` an explicit writer supplied
-    /// is theirs, and `docs/spec/L3.md` §3.7 says to preserve it.
+    /// An explicit `kind` is preserved (§3.7).
     #[test]
     fn compose_preserves_an_explicitly_set_kind() {
         let existing = br#"{"name":"reviewer","kind":"my-agent"}"#;
@@ -930,8 +694,7 @@ mod tests {
         assert_eq!(got.state, "working");
     }
 
-    /// Garbage in the store must not stop the detector from writing a clean
-    /// record over it.
+    /// Garbage in the store does not block a clean write.
     #[test]
     fn compose_over_malformed_bytes_starts_fresh() {
         let bytes = compose(Some(b"}{ nonsense"), "claude", "claude", "idle", DETECTOR);
@@ -940,11 +703,7 @@ mod tests {
         assert_eq!(got.state, "idle");
     }
 
-    /// The dedup contract: recomposing an unchanged state yields byte-identical
-    /// output, which is what makes `metadata_set` suppress the broadcast.
-    ///
-    /// Reasserting `kind` and `name` on every write must not disturb this —
-    /// they are reasserted to the SAME values, so the bytes do not move.
+    /// Recomposing an unchanged state is byte-identical (dedup).
     #[test]
     fn compose_is_stable_across_repeats() {
         let first = compose(None, "claude", "claude", "working", DETECTOR);
@@ -954,8 +713,7 @@ mod tests {
 
     // --- a contradicted explicit kind (phux-w7z2.45) ------------------------
 
-    /// Two kinds the detector has manifests for, so "the detector could have
-    /// derived this" is true of both — and one it has never heard of.
+    /// Two kinds with manifests.
     fn detectable() -> RuleSet {
         let mut set = RuleSet::default();
         for kind in ["claude", "codex"] {
@@ -967,11 +725,7 @@ mod tests {
         set
     }
 
-    /// THE .45 case. A shim pane declares `kind: claude`; the human kills
-    /// claude and runs codex in it. The record must not take codex's derived
-    /// state while still reading `kind: claude` — a state and a kind from two
-    /// different processes is exactly the lie .27 was filed to remove, and I2
-    /// forbids it whoever owns the field.
+    /// A declared `kind: claude` pane now running codex is contradicted.
     #[test]
     fn a_declared_kind_the_pane_no_longer_runs_is_contradicted() {
         let stored = br#"{"name":"claude","kind":"claude","state":"working"}"#;
@@ -982,11 +736,7 @@ mod tests {
         ));
     }
 
-    /// The regression guard for the documented useful half. An
-    /// open-vocabulary slug the detector has no manifest for asserts nothing
-    /// the detector can check, so it is never contradicted and the detector
-    /// keeps filling `state` in around it — which is the entire point of
-    /// `phux agent set --name reviewer --kind my-agent`.
+    /// An open-vocabulary kind is never contradicted.
     #[test]
     fn an_open_vocabulary_kind_the_detector_cannot_derive_is_never_contradicted() {
         let stored = br#"{"name":"reviewer","kind":"my-agent"}"#;
@@ -1015,10 +765,8 @@ mod tests {
         );
     }
 
-    /// Nothing to contradict: no record, no `kind`, an empty `kind`, or bytes
-    /// that do not decode. Every one of these leaves the detector free, which
-    /// is the fail-open direction — this predicate can only ever WITHHOLD a
-    /// state, so an over-eager one is the expensive mistake.
+    /// Nothing to contradict (no record, no or empty kind, bad bytes):
+    /// fail open.
     #[test]
     fn a_record_without_a_usable_kind_contradicts_nothing() {
         let rules = detectable();
@@ -1040,8 +788,7 @@ mod tests {
         ));
     }
 
-    /// A server with no manifests loaded (`PHUX_AGENT_DETECT=0`, or an
-    /// operator whose overrides all failed to compile) can falsify nothing.
+    /// With no manifests loaded nothing can be contradicted.
     #[test]
     fn an_empty_rule_set_contradicts_nothing() {
         let stored = br#"{"name":"claude","kind":"claude"}"#;
@@ -1054,16 +801,7 @@ mod tests {
 
     // --- withdraw_state ----------------------------------------------------
 
-    /// The retract path for a record a human named. Their fields survive; the
-    /// fields describing a process that no longer exists do not.
-    ///
-    /// The `attention` assertion INVERTED here, deliberately. It previously
-    /// pinned `attention: "high"` surviving into a withdrawn record — a pane
-    /// that is nothing at all, wearing a red "needs you" badge, for a process
-    /// that is gone. L3 §3.7's MUST-preserve list is `name`, `kind` and
-    /// `session`; `attention` is deliberately not on it, and §3.7 derives it
-    /// from `state` when absent. Clearing it is both spec-legal and the only
-    /// honest reading of `unknown`.
+    /// Withdrawal keeps name, kind, and session; drops state and attention.
     #[test]
     fn withdraw_state_keeps_the_human_fields_and_drops_the_detectors() {
         let stored = br#"{"name":"reviewer","kind":"claude","state":"working","attention":"high","session":"fleet-7"}"#;
@@ -1079,10 +817,7 @@ mod tests {
         );
     }
 
-    /// The write-rate guard for the withdrawal path: withdrawing twice yields
-    /// identical bytes, so `metadata_set` suppresses the second broadcast. A
-    /// withdrawal that varied — a timestamp, a counter, a `withdrawn_at` —
-    /// would be a write and a `METADATA_CHANGED` per subscriber per tick.
+    /// Withdrawing twice is byte-identical (no second broadcast).
     #[test]
     fn withdraw_state_is_byte_idempotent() {
         let stored = br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#;
@@ -1100,9 +835,7 @@ mod tests {
         assert!(withdraw_state(Some(b"}{ nonsense")).is_none());
     }
 
-    /// The state ladder, end to end (ADR-0103 decision 5): `Stream` >
-    /// `Hook` > `Process` > `Screen`, strictly, with no rung able to
-    /// displace one above it.
+    /// `Stream > Hook > Process > Screen`, strictly.
     #[test]
     fn the_evidence_ladder_runs_stream_hook_process_screen() {
         use EvidenceSource::{Hook, Process, Screen, Stream};
@@ -1123,8 +856,6 @@ mod tests {
                 "{lower:?} must not publish over {upper:?}",
             );
         }
-        // Transitivity is not free from the pairwise checks alone, and the
-        // top-to-bottom pair is the one the detector's suppression relies on.
         assert!(Stream.outranks(Screen) && !Screen.outranks(Stream));
         assert!(
             Stream.outranks(Stream),
