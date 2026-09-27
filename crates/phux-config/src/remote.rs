@@ -1,22 +1,9 @@
-//! Client-side remote-server registry schema (ADR-0055).
+//! Client-side remote-server registry schema (ADR-0055): `[[remote]]`
+//! entries `phux attach <name>` resolves.
 //!
-//! A `[[remote]]` entry names a phux server this machine attaches *to*, so
-//! `phux attach mini` resolves an endpoint, a certificate pin, and a token
-//! without the operator retyping two 64-hex strings.
-//!
-//! Deliberately a sibling of [`crate::satellite`] rather than a reuse of it.
-//! The fields line up because both describe "a phux server reachable over a
-//! pinned TLS transport," but the trust direction is opposite — a satellite
-//! is a peer a *hub* dials on behalf of its users, a remote is a server *this
-//! consumer* dials on behalf of itself. Collapsing them would let
-//! `phux host add` edit federation topology.
-//!
-//! Two keys remember how the entry was made so a later attach can act on
-//! it without the operator retyping anything: `ssh` is the destination
-//! `phux host add` enrolled through, which is what a stopped server is
-//! restarted over; `direct` is a paired `quic://` endpoint kept while
-//! `endpoint` is `ssh://`, so an attach can try the direct route first and
-//! promote it once it answers.
+//! A sibling of [`crate::satellite`], not a reuse: the trust direction is
+//! opposite (a satellite is dialed by a hub for its users; a remote by this
+//! client for itself).
 
 use std::path::PathBuf;
 
@@ -26,19 +13,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteConfigEntry {
-    /// Local label. This is the name `phux attach <name>` resolves; it is a
-    /// lookup key in one operator's config, not a routable identity and not
-    /// ADR-0052's SNI route name.
+    /// Local label `phux attach <name>` resolves (not a routable identity).
     pub name: String,
 
     /// Transport endpoint URI: `quic://HOST:PORT`, `wss://HOST:PORT`, or
     /// `ssh://HOST` for the stdio bridge.
     pub endpoint: String,
 
-    /// Path to a file holding the pairing bearer token minted by `phux pair`
-    /// on the remote host: one hex token on one line, owner-only
-    /// permissions. The token never appears in `config.toml`; this key only
-    /// points at it.
+    /// Path to the pairing token file `phux pair` minted; the token itself
+    /// never appears in `config.toml`.
     #[serde(
         default,
         rename = "token-file",
@@ -46,10 +29,8 @@ pub struct RemoteConfigEntry {
     )]
     pub token_file: Option<PathBuf>,
 
-    /// SHA-256 fingerprint pin of the remote's TLS leaf certificate, in the
-    /// colon-or-bare hex shape `phux pair` prints. Not a secret — pinning it
-    /// is what defeats a man-in-the-middle on a routable endpoint, and
-    /// ADR-0031 refuses a non-loopback dial without one.
+    /// SHA-256 pin of the remote's TLS leaf certificate (required for a
+    /// non-loopback dial, ADR-0031).
     #[serde(
         default,
         rename = "cert-fingerprint",
@@ -57,22 +38,17 @@ pub struct RemoteConfigEntry {
     )]
     pub cert_fingerprint: Option<String>,
 
-    /// Session to attach on arrival. Absent means the remote server's own
-    /// last-attach memory decides, exactly as a local naked `phux` does.
+    /// Session to attach on arrival; absent lets the server decide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
 
-    /// The ssh destination this entry was enrolled through (`me@mini`, or
-    /// a `~/.ssh/config` alias), exactly as it is typed after `ssh`. An
-    /// attach that finds the saved endpoint not answering restarts the
-    /// server over it; absent, the entry's name is used as the destination.
+    /// The ssh destination the entry was enrolled through, used to restart a
+    /// server that does not answer; absent, the name is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<String>,
 
-    /// A paired direct endpoint (`quic://HOST:PORT`) that did not answer
-    /// when the entry was written, kept beside an `ssh://` endpoint so a
-    /// later attach can try it first and promote it to `endpoint` once it
-    /// does. Meaningless, and cleared, once `endpoint` is itself direct.
+    /// A paired `quic://` endpoint kept beside an `ssh://` one, tried first
+    /// and promoted to `endpoint` once it answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct: Option<String>,
 }
