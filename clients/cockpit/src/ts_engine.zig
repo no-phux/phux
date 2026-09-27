@@ -27,6 +27,7 @@ pub const new_session = @import("cockpit/native/new_session.zig");
 pub const new_session_runtime = @import("cockpit/native/new_session_runtime.zig");
 pub const self_update = @import("cockpit/native/self_update.zig");
 pub const directory_picker = @import("cockpit/native/directory_picker.zig");
+pub const path_picker = @import("cockpit/native/path_picker.zig");
 pub const session_commands = @import("cockpit/native/session_commands.zig");
 pub const phux_peer_channel_key = @import("cockpit/phux_support.zig").phux_peer_channel_key;
 pub const PhuxProvider = @import("cockpit/phux_support.zig").PhuxProvider;

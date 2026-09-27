@@ -40,6 +40,7 @@ export const DIR_SCOPE_INSTEAD = 2;
 export interface DirectoryRow {
   readonly index: number;
   readonly symlink: boolean;
+  readonly directory: boolean;
   readonly name: Uint8Array;
 }
 
@@ -47,6 +48,8 @@ export interface DirectoryPage {
   readonly status: number;
   readonly request: Uint8Array;
   readonly truncated: boolean;
+  readonly warming: boolean;
+  readonly hasParent: boolean;
   readonly total: number;
   readonly offset: number;
   readonly path: Uint8Array;
@@ -97,7 +100,8 @@ function readRows(bytes: Uint8Array, start: number, count: number): { rows: read
     if (at + 4 > bytes.length) return null;
     const nameEnd = at + 4 + bytes[at + 3];
     if (nameEnd > bytes.length) return null;
-    rows.push({ index: bytes[at] + bytes[at + 1] * 256, symlink: (bytes[at + 2] & 1) === 1, name: bytes.subarray(at + 4, nameEnd) });
+    rows.push({ index: bytes[at] + bytes[at + 1] * 256, symlink: (bytes[at + 2] & 1) === 1,
+      directory: (bytes[at + 2] & 2) === 2, name: bytes.subarray(at + 4, nameEnd) });
     at = nameEnd;
   }
   return { rows: rows.length === 0 ? NO_ROWS : rows, end: at };
@@ -121,6 +125,8 @@ export function directoryPage(bytes: Uint8Array): DirectoryPage | null {
     status: bytes[1],
     request: bytes.slice(2, 6),
     truncated: (bytes[6] & 1) === 1,
+    warming: (bytes[6] & 4) === 4,
+    hasParent: (bytes[6] & 8) === 8,
     total: bytes[8] + bytes[9] * 256,
     offset: bytes[10] + bytes[11] * 256,
     path: bytes.subarray(13, pathEnd),

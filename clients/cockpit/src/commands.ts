@@ -37,7 +37,7 @@ export function commandDefinition(index: number): CommandDefinition | null {
 }
 
 export function terminalCommand(name: string): boolean {
-  for (const command of ["terminal.close", "terminal.copy", "terminal.paste", "terminal.select-all", "terminal.clear", "terminal.find", "terminal.find-next", "terminal.find-previous", "pane.split-right", "pane.split-down", "pane.previous", "pane.next", "tab.previous", "tab.next", "tab.move-left", "tab.move-right", "directory.open"]) {
+  for (const command of ["terminal.close", "terminal.copy", "terminal.paste", "terminal.select-all", "terminal.clear", "terminal.find", "terminal.find-next", "terminal.find-previous", "pane.split-right", "pane.split-down", "pane.previous", "pane.next", "tab.previous", "tab.next", "tab.move-left", "tab.move-right", "directory.open", "path.insert"]) {
     if (name === command) return true;
   }
   return false;

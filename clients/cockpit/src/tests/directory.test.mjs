@@ -14,17 +14,17 @@ const u32 = n => [n % 256, Math.floor(n / 256) % 256, Math.floor(n / 65536) % 25
 const u16 = n => [n % 256, Math.floor(n / 256)];
 
 /// A `cockpit.directory` reply as the engine encodes it.
-function reply({ status = 2, request = 1, truncated = false, noOpenHere = false, total = 0, offset = 0, path = '/work', query = '', rows = [], message = '', scope = 0, host = '', via = '' } = {}) {
+function reply({ status = 2, request = 1, truncated = false, warming = false, hasParent = false, noOpenHere = false, total = 0, offset = 0, path = '/work', query = '', rows = [], message = '', scope = 0, host = '', via = '' } = {}) {
   const p = bytes(path);
   const q = bytes(query);
   const m = bytes(message);
   const h = bytes(host);
   const v = bytes(via);
-  const flags = (truncated ? 1 : 0) | (noOpenHere ? 2 : 0);
+  const flags = (truncated ? 1 : 0) | (noOpenHere ? 2 : 0) | (warming ? 4 : 0) | (hasParent ? 8 : 0);
   const out = [1, status, ...u32(request), flags, 0, ...u16(total), ...u16(offset), p.length, ...p, q.length, ...q, rows.length];
-  for (const [index, name, symlink] of rows) {
+  for (const [index, name, symlink, directory] of rows) {
     const n = bytes(name);
-    out.push(...u16(index), symlink ? 1 : 0, n.length, ...n);
+    out.push(...u16(index), (symlink ? 1 : 0) | (directory ? 2 : 0), n.length, ...n);
   }
   out.push(m.length, ...m, scope, h.length, ...h, v.length, ...v);
   return new Uint8Array(out);
@@ -71,6 +71,81 @@ function listed() {
   [model] = step(model, { kind: 'directory_loaded', body: LISTED });
   return model;
 }
+
+test('Insert Path uses its own host query, searches recursively, and inserts without opening a tab', () => {
+  assert.deepEqual(commandMsg('path.insert'), { kind: 'path_open' });
+  let [model, command] = step(initialModel()[0], { kind: 'path_open' });
+  assert.equal(command.cmds[1].name, 'cockpit.path');
+  assert.deepEqual(command.cmds[1].payload, request(1, 0, 0, 0));
+  assert.equal(text(model.dirTitle), 'Insert Path');
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, path: '', request: 41 }) });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 41, total: 2,
+    rows: [[0, 'src', false, true], [1, 'Cargo.toml']] }) });
+  assert.equal(text(model.dirRows[0].label), 'src/');
+  [model, command] = step(model, { kind: 'dir_pick', index: 0 });
+  assert.equal(command.name, 'cockpit.path');
+  assert.deepEqual(command.payload, request(4, 41, 0, 0));
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, request: 42, path: '/work/src' }) });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 42, path: '/work/src', total: 1,
+    rows: [[0, 'main.rs']] }) });
+  [model, command] = step(model, { kind: 'dir_pick', index: 0 });
+  assert.equal(command.name, 'cockpit.path');
+  assert.deepEqual(command.payload, request(6, 42, 0, 0));
+  assert.equal(model.dirClosing, true);
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 42, path: '/work/src' }) });
+  assert.equal(model.dirOpen, false);
+  assert.equal(model.dirInsert, true);
+});
+
+test('Insert Path refuses stale replies, searches with the captured root, and cancels late completions', () => {
+  let [model] = step(initialModel()[0], { kind: 'path_open' });
+  let command;
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 17, total: 1,
+    rows: [[0, 'Cargo.toml']] }) });
+  [model, command] = step(model, { kind: 'dir_edit', edit: { kind: 'insert_text', text: bytes('cargo') } });
+  assert.equal(command.name, 'cockpit.path');
+  assert.deepEqual(command.payload, request(3, 17, 0, 0, 'cargo'));
+  const pending = model;
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 17, query: '', total: 1,
+    rows: [[0, 'old']] }) });
+  assert.equal(model.dirRows.length, 0);
+  [model] = step(pending, { kind: 'directory_loaded', body: reply({ status: 1, request: 18, query: 'cargo' }) });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 18, query: 'cargo', total: 1,
+    rows: [[0, '/work/Cargo.toml']] }) });
+  assert.equal(text(model.dirRows[0].label), '/work/Cargo.toml');
+  [model] = step(model, { kind: 'dir_close' });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 18, query: 'cargo' }) });
+  assert.equal(model.dirOpen, false);
+});
+
+test('warming path search can refresh and only a known parent is navigable', () => {
+  let [model] = step(initialModel()[0], { kind: 'path_open' });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 3, warming: true, hasParent: true, total: 1, rows: [[0, 'file']] }) });
+  assert.equal(model.dirHasParent, true);
+  assert.match(text(model.dirNotice), /warming/);
+  let command;
+  [model, command] = step(model, { kind: 'dir_retry' });
+  assert.equal(command.name, 'cockpit.path');
+  assert.deepEqual(command.payload, request(3, 3, 0, 0));
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 4, status: 1 }) });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 4, total: 0 }) });
+  assert.equal(model.dirHasParent, false);
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 4, hasParent: true }) });
+  [model, command] = step(model, { kind: 'dir_edit', edit: { kind: 'insert_text', text: bytes('work') } });
+  assert.deepEqual(command.payload, request(3, 4, 0, 0, 'work'));
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, request: 5, query: 'work' }) });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 5, query: 'work', hasParent: true }) });
+  assert.equal(model.dirSearching, true);
+  [model, command] = step(model, { kind: 'dir_parent' });
+  assert.equal(command.name, 'cockpit.path');
+  assert.deepEqual(command.payload, request(5, 5, 0, 0));
+  assert.equal(model.dirSearching, false);
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, request: 6, path: '/' }) });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 6, path: '/', total: 1,
+    rows: [[0, 'work', false, true]] }) });
+  [, command] = step(model, { kind: 'dir_pick', index: 0 });
+  assert.deepEqual(command.payload, request(4, 6, 0, 0), 'parent navigation returns to browsing directories');
+});
 
 test('a satellite listing names its host in the heading, and a hub that cannot list it says whose directories show', () => {
   let [model] = opened();
@@ -234,7 +309,7 @@ test('Enter on a directory descends with the listing it came from; the next repl
   assert.deepEqual([...model.dirRequest], u32(2));
   // `..` goes up from there.
   [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 2, path: '/work/cockpit', total: 2, rows: [[DIR_HERE, ''], [DIR_UP, '']] }) });
-  [, cmd] = step(model, { kind: 'dir_pick', index: DIR_UP });
+  [, cmd] = step(model, { kind: 'dir_parent' });
   assertDirectoryRequest(cmd, request(4, 2, 0, 0));
 });
 

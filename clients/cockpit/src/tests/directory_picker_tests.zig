@@ -11,6 +11,7 @@ const support = @import("../cockpit/phux_support.zig");
 const model_module = @import("../cockpit/model.zig");
 const ts_engine = @import("../cockpit/native/ts_engine.zig");
 const picker = @import("../cockpit/native/directory_picker.zig");
+const path_picker = @import("../cockpit/native/path_picker.zig");
 
 const testing = std.testing;
 
@@ -288,4 +289,26 @@ test "without a Phux provider the picker says so instead of failing" {
     var request: [11]u8 = undefined;
     const reply = parse(try picker.handle(engine, requestBytes(.open, 0, 0, 0, "", &request), &out));
     try testing.expectEqual(picker.Status.unavailable, reply.status);
+}
+
+test "Insert Path without a focused Phux pane fails closed and never opens a tab" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start("hello_directory.bin");
+    defer rig.engine.destroy();
+    const bytes = requestBytes(.open, 0, 0, 0, "", &rig.request);
+    const result = try path_picker.handle(rig.engine, &ChannelFx{}, bytes, &rig.out);
+    const answer = parse(result);
+    try testing.expectEqual(picker.Status.unsupported, answer.status);
+    try testing.expect(answer.bytes.len > 0);
+    try testing.expectEqual(@as(usize, 0), rig.engine.creation.count());
+    try testing.expect(!rig.outgoingContains("/work"));
+}
+
+test "Insert Path shell word is literal and leaves Enter unsent" {
+    const shell_words = @import("../cockpit/shell_words.zig");
+    const paths = [_][]const u8{"/work/a'b $HOME;\nxyz"};
+    var out: [shell_words.max_quoted_bytes]u8 = undefined;
+    const quoted = shell_words.quotePaths(&paths, &out).?;
+    try testing.expectEqualStrings("'/work/a'\\''b $HOME;\nxyz' ", quoted);
+    try testing.expect(quoted[quoted.len - 1] != '\n');
 }
