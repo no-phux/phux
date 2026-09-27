@@ -20,6 +20,8 @@ use std::time::Duration;
 use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use tokio::sync::{mpsc, oneshot};
 
+use phux_config::instance::{BuildKind, PROBE_BUILD_KIND_ENV, build_kind};
+
 use super::RuntimeFlags;
 use crate::state::SharedState;
 use crate::terminal_actor::{PaneUpgradeHandle, UpgradeHandleRequest};
@@ -518,7 +520,52 @@ fn resume_args(blob_fd: RawFd, socket_path: &Path, flags: RuntimeFlags) -> Vec<O
 fn validate_binary(exe: &Path) -> Result<(), UpgradeError> {
     probe_binary(exe, &["--version"])?;
     probe_binary(exe, &["config", "check"])?;
-    Ok(())
+    refuse_build_kind_change(exe)
+}
+
+/// Keep a server on its kind of build across a hot swap.
+///
+/// The swap re-execs whatever sits at the installed path, so a dev build
+/// copied over the installed binary would otherwise become the production
+/// server with every live pane in it. A deliberate switch is a restart, not
+/// an upgrade.
+fn refuse_build_kind_change(exe: &Path) -> Result<(), UpgradeError> {
+    let output = Command::new(exe)
+        .arg("--version")
+        .env(PROBE_BUILD_KIND_ENV, "1")
+        .output()?;
+    let candidate = output
+        .status
+        .success()
+        .then(|| BuildKind::parse(&String::from_utf8_lossy(&output.stdout)))
+        .flatten();
+    upgrade_kind_refusal(build_kind(), candidate).map_or(Ok(()), |reason| {
+        Err(UpgradeError::Validation(format!(
+            "{reason}: {}. To switch deliberately, stop this server and start the other build",
+            exe.display()
+        )))
+    })
+}
+
+/// Why a server of kind `current` must not re-exec into `candidate`
+/// (`None`: a binary that predates the build-kind probe).
+fn upgrade_kind_refusal(current: BuildKind, candidate: Option<BuildKind>) -> Option<String> {
+    let refused = match (current, candidate) {
+        (BuildKind::Dev, _) | (BuildKind::Release, Some(BuildKind::Release)) => false,
+        (_, Some(BuildKind::Dev)) | (BuildKind::Release, _) => true,
+        (BuildKind::Local, _) => false,
+    };
+    refused.then(|| {
+        let target = candidate.map_or("an unidentified build", |kind| match kind {
+            BuildKind::Dev => "a dev build",
+            BuildKind::Local => "a local build",
+            BuildKind::Release => "a release build",
+        });
+        format!(
+            "refusing to hot-swap a {} server into {target}",
+            current.as_str()
+        )
+    })
 }
 
 fn probe_binary(exe: &Path, args: &[&str]) -> Result<(), UpgradeError> {
@@ -931,6 +978,26 @@ mod tests {
             message.contains("extends layer missing"),
             "validation error must carry the loader diagnostic: {message}"
         );
+    }
+
+    #[test]
+    fn a_production_server_never_hot_swaps_into_a_dev_build() {
+        use BuildKind::{Dev, Local, Release};
+        for current in [Release, Local] {
+            let refusal = upgrade_kind_refusal(current, Some(Dev))
+                .expect("a dev build must never replace a production server");
+            assert!(refusal.contains("a dev build"), "{refusal}");
+        }
+        // A stamped release only ever becomes another stamped release: a
+        // copied-out local `--release` build or a pre-probe binary is refused.
+        assert!(upgrade_kind_refusal(Release, Some(Local)).is_some());
+        assert!(upgrade_kind_refusal(Release, None).is_some());
+        assert!(upgrade_kind_refusal(Release, Some(Release)).is_none());
+        // An unstamped server can move onto a release; dev servers are free.
+        assert!(upgrade_kind_refusal(Local, Some(Release)).is_none());
+        assert!(upgrade_kind_refusal(Local, None).is_none());
+        assert!(upgrade_kind_refusal(Dev, Some(Release)).is_none());
+        assert!(upgrade_kind_refusal(Dev, Some(Dev)).is_none());
     }
 
     #[test]

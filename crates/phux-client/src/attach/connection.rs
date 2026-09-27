@@ -575,6 +575,9 @@ impl Connection {
     }
 
     async fn connect_uds_transport(socket: &Path) -> Result<Self, AttachError> {
+        phux_config::socket::refuse_dev_on_production(socket).map_err(|refusal| {
+            AttachError::Io(io::Error::new(io::ErrorKind::PermissionDenied, refusal))
+        })?;
         let stream = UnixStream::connect(socket).await.map_err(AttachError::Io)?;
         // Read the peer credentials while the stream is still whole: the
         // split halves do not expose them, and the pid is free to capture

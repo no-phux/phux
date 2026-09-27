@@ -46,6 +46,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// socket cannot be connected or the splice fails mid-stream.
 pub(crate) fn run_stdio_bridge(socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
+    if let Err(refusal) = phux_config::socket::refuse_dev_on_production(&socket_path) {
+        eprintln!("phux stdio-bridge: {refusal}");
+        return ExitCode::FAILURE;
+    }
     let origin = ssh_origin_from_env(
         std::env::var("SSH_CONNECTION").ok().as_deref(),
         std::env::var("SSH_CLIENT").ok().as_deref(),

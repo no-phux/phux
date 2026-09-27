@@ -1523,6 +1523,13 @@ fn dispatch(
 
 #[must_use]
 pub fn run() -> ExitCode {
+    // A server about to hot-swap into this binary asks what kind of build it
+    // is (`phux_config::instance::BuildKind`) before anything else runs.
+    if std::env::var_os(phux_config::instance::PROBE_BUILD_KIND_ENV).is_some() {
+        let kind = phux_config::instance::build_kind();
+        output::bytes(format!("{}\n", kind.as_str()).as_bytes());
+        return ExitCode::SUCCESS;
+    }
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Key material never belongs on a `phux workload` command line, and argv
     // is echoed in too many places (parse errors, paths in messages) to scrub

@@ -78,6 +78,68 @@ fn sanitize_profile(raw: &str) -> String {
     }
 }
 
+/// Which kind of build this executable is, for the dev/production boundary.
+///
+/// Profiles keep a dev build's *default* paths apart, but an explicit
+/// `--socket`, `PHUX_SOCKET`, `PHUX_PROFILE=default`, or a dev binary copied
+/// over the installed one all walk straight past a default. [`BuildKind`] is
+/// what the hard guards key on instead ([`crate::socket::refuse_dev_on_production`]
+/// and the server's upgrade check): a [`BuildKind::Dev`] process never
+/// connects to, binds, or becomes the day-to-day server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildKind {
+    /// A distributed artifact: stamped `PHUX_RELEASE_ARTIFACT=1` at compile
+    /// time by `scripts/build-release-binaries.sh`, the only script the
+    /// release and next-release workflows build with.
+    Release,
+    /// An optimised build nobody stamped and that sits outside `target/`:
+    /// `cargo install --path`, an app-bundled CLI, a copied `--release`.
+    Local,
+    /// A development build ([`is_dev_build`]).
+    Dev,
+}
+
+impl BuildKind {
+    /// The token `PHUX_PROBE_BUILD_KIND=1 phux` prints; see [`Self::parse`].
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::Local => "local",
+            Self::Dev => "dev",
+        }
+    }
+
+    /// Parse a probe's output. `None` for a binary that predates the probe
+    /// and answered with something else (its `--version` line).
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "release" => Some(Self::Release),
+            "local" => Some(Self::Local),
+            "dev" => Some(Self::Dev),
+            _ => None,
+        }
+    }
+}
+
+/// The environment variable that makes `phux` print its [`BuildKind`] and
+/// exit, before parsing anything. A binary that predates it ignores the
+/// variable and runs the accompanying `--version` instead.
+pub const PROBE_BUILD_KIND_ENV: &str = "PHUX_PROBE_BUILD_KIND";
+
+/// Classify this executable.
+#[must_use]
+pub fn build_kind() -> BuildKind {
+    if is_dev_build() {
+        return BuildKind::Dev;
+    }
+    if option_env!("PHUX_RELEASE_ARTIFACT").is_some_and(|stamp| stamp == "1") {
+        return BuildKind::Release;
+    }
+    BuildKind::Local
+}
+
 /// Whether this executable is a development build rather than a released one.
 ///
 /// Two independent signals, either of which is sufficient:
@@ -120,14 +182,24 @@ fn exe_is_under_cargo_target(exe: &Path) -> bool {
 /// unsuffixed so paths created by earlier releases stay valid.
 #[must_use]
 pub fn runtime_dir() -> PathBuf {
-    let profile = profile();
+    runtime_dir_for(&profile())
+}
+
+/// The runtime directory the day-to-day installation uses in this
+/// environment, whatever profile this process resolved.
+#[must_use]
+pub fn default_profile_runtime_dir() -> PathBuf {
+    runtime_dir_for(DEFAULT_PROFILE)
+}
+
+fn runtime_dir_for(profile: &str) -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         let mut path = PathBuf::from(dir);
-        path.push(suffixed("phux", &profile));
+        path.push(suffixed("phux", profile));
         return path;
     }
     let mut path = PathBuf::from("/tmp");
-    path.push(suffixed(&format!("phux-{}", user_segment()), &profile));
+    path.push(suffixed(&format!("phux-{}", user_segment()), profile));
     path
 }
 
@@ -210,6 +282,20 @@ mod tests {
         // the day-to-day socket by a sanitising accident.
         assert_eq!(sanitize_profile("///"), DEV_PROFILE);
         assert_eq!(sanitize_profile("..."), DEV_PROFILE);
+    }
+
+    #[test]
+    fn build_kind_probe_round_trips_and_ignores_old_binaries() {
+        for kind in [BuildKind::Release, BuildKind::Local, BuildKind::Dev] {
+            assert_eq!(BuildKind::parse(&format!("{}\n", kind.as_str())), Some(kind));
+        }
+        // A binary from before the probe prints its `--version` line.
+        assert_eq!(BuildKind::parse("phux 0.45.0\n"), None);
+    }
+
+    #[test]
+    fn test_binaries_are_dev_builds() {
+        assert_eq!(build_kind(), BuildKind::Dev);
     }
 
     #[test]
