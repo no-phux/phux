@@ -293,17 +293,27 @@ impl<'a> Pump<'a> {
 
     async fn step(&mut self) -> Result<(), ConnectionEnd> {
         let expiry = self.expiry_wait();
+        let reading = self.has_inbound_room();
         tokio::select! {
             () = self.signals.outbound.notified() => self.flush_outbound().await,
             () = closed(&mut self.signals.close) => Err(ConnectionEnd::Closed),
             () = signal(&mut self.signals.resync) => Err(ConnectionEnd::Resync),
-            () = signal(&mut self.signals.nudge) => self.start_probe().await,
+            // A paused read has a backlog the peer just sent: it is alive,
+            // and a probe answer could not be read before its deadline.
+            () = signal(&mut self.signals.nudge) => if reading { self.start_probe().await } else { Ok(()) },
             () = wait_for_probe(&mut self.probe_deadline), if self.probe_deadline.is_some() => {
                 Err(ConnectionEnd::Dropped(Some("liveness probe timed out".to_owned())))
             }
             () = tokio::time::sleep(expiry) => self.expire_inputs().await,
-            inbound = self.io.read_frames(self.name) => self.accept_inbound(inbound).await,
+            inbound = self.io.read_frames(self.name), if reading => self.accept_inbound(inbound).await,
         }
+    }
+
+    /// Backpressure: a queued-delivery consumer that has fallen behind
+    /// pauses reads until it drains, leaving the backlog in the socket.
+    fn has_inbound_room(&self) -> bool {
+        let control = lock(self.shared);
+        control.options().deliver_inbound != InboundDelivery::Queued || control.has_inbound_room()
     }
 
     fn expiry_wait(&self) -> Duration {
@@ -359,9 +369,7 @@ impl<'a> Pump<'a> {
             // A binding that keeps its own per-frame state on one owning
             // thread takes delivery itself; the socket is still ours.
             let fed = if control.options().deliver_inbound == InboundDelivery::Queued {
-                frames
-                    .into_iter()
-                    .try_for_each(|frame| control.queue_inbound(frame))
+                control.queue_inbound_batch(frames)
             } else {
                 control.feed_bytes_batch(&frames)
             };

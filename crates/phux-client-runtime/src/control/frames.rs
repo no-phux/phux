@@ -26,23 +26,35 @@ impl ControlPlane {
 
     /// Retain one frame for the consumer to feed itself, under
     /// [`InboundDelivery::Queued`](super::InboundDelivery::Queued).
-    ///
-    /// Overflowing either ceiling is a protocol-level failure, exactly as
-    /// it was when a socket-owning embedder enforced the same bounds: a
-    /// consumer that stopped draining cannot be allowed to grow the queue
-    /// without limit.
     pub fn queue_inbound(&mut self, frame: Vec<u8>) -> Result<(), ControlError> {
-        let bytes = self.inbound_bytes.saturating_add(frame.len());
-        if self.inbound.len() >= super::MAX_QUEUED_INBOUND_FRAMES
-            || bytes > super::MAX_QUEUED_INBOUND_BYTES
-        {
+        self.queue_inbound_batch(vec![frame])
+    }
+
+    /// Retain one transport read's frames whole.
+    ///
+    /// The driver stops reading while [`Self::has_inbound_room`] is false,
+    /// so the ceilings are backpressure, not a failure: a batch read while
+    /// there was room always lands, and the queue stays within the
+    /// ceilings plus one read. Queueing past a full queue is a
+    /// protocol-level failure: that caller ignored the backpressure.
+    pub fn queue_inbound_batch(&mut self, frames: Vec<Vec<u8>>) -> Result<(), ControlError> {
+        if !self.has_inbound_room() {
             return Err(ControlError::Protocol(
                 "inbound frame queue overflowed; the consumer stopped draining".to_owned(),
             ));
         }
-        self.inbound_bytes = bytes;
-        self.inbound.push(frame);
+        for frame in frames {
+            self.inbound_bytes = self.inbound_bytes.saturating_add(frame.len());
+            self.inbound.push(frame);
+        }
         Ok(())
+    }
+
+    /// Whether the driver may read another batch for the consumer.
+    #[must_use]
+    pub const fn has_inbound_room(&self) -> bool {
+        self.inbound.len() < super::MAX_QUEUED_INBOUND_FRAMES
+            && self.inbound_bytes < super::MAX_QUEUED_INBOUND_BYTES
     }
 
     /// Drain the retained inbound frames.

@@ -346,7 +346,11 @@ impl Client {
     #[must_use]
     pub fn take_inbound(&self) -> Vec<Vec<u8>> {
         self.inner.wake_pending.store(false, Ordering::Release);
-        lock(&self.inner.control).take_inbound()
+        let frames = lock(&self.inner.control).take_inbound();
+        // A driver paused on a full queue re-checks for room on this
+        // permit; with nothing outbound its flush is a no-op.
+        self.inner.outbound.notify_one();
+        frames
     }
 
     /// Whether a drain would find anything: a retained inbound frame, or an
