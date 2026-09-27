@@ -1,16 +1,6 @@
-//! Paste event translation: wire → libghostty-vt with safety + bracketing.
-//!
-//! libghostty exposes paste as two free functions
-//! (`paste::is_safe`, `paste::encode`) rather than a typed event, so there
-//! is no libghostty struct to `From`-convert into. Instead, the wire
-//! [`PasteEvent`] flows through [`PerTerminalPasteEncoder::encode`], which:
-//!
-//! 1. Classifies untrusted payloads with `paste::is_safe`.
-//! 2. Rejects untrusted payloads that are not safe.
-//! 3. Encodes via `paste::encode`, choosing the `bracketed` flag from the
-//!    pane's DEC mode 2004 state.
-//!
-//! See `docs/spec/input.md` §5 and ADR-0006.
+//! Paste encoding: untrusted payloads that fail `paste::is_safe` are
+//! rejected, and the rest are encoded with bracketing chosen by the pane's
+//! DEC 2004 mode (docs/spec/input.md §5, ADR-0006).
 
 use libghostty_vt::{
     Error, Terminal as GhosttyTerminal,
@@ -112,80 +102,37 @@ impl PerTerminalPasteEncoder {
 mod tests {
     use super::*;
 
-    fn make_terminal() -> GhosttyTerminal<'static, 'static> {
-        {
-            let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
-            terminal
-                .set_scrollback_max_lines(Some(1000))
-                .expect("Terminal::new");
-            terminal
-        }
-    }
-
-    #[test]
-    fn trusted_paste_encodes_without_bracketing_when_mode_2004_off() {
-        let terminal = make_terminal();
-        let mut enc = PerTerminalPasteEncoder::new();
-        let ev = PasteEvent {
-            trust: PasteTrust::Trusted,
-            data: b"hello".to_vec(),
-        };
-        let out = enc.encode(&ev, &terminal).expect("encode");
-        match out {
-            PasteOutcome::Encoded(b) => {
-                // No bracket markers in non-bracketed mode.
-                assert_eq!(b, b"hello", "unexpected payload {b:?}");
-            }
-            PasteOutcome::Rejected => panic!("trusted should not be rejected"),
-        }
-    }
-
-    #[test]
-    fn trusted_paste_brackets_when_mode_2004_on() {
-        let mut terminal = make_terminal();
+    fn encode(trust: PasteTrust, data: &[u8], bracketed: bool) -> Option<Vec<u8>> {
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
         terminal
-            .set_mode(Mode::BRACKETED_PASTE, true)
-            .expect("enable 2004");
-        let mut enc = PerTerminalPasteEncoder::new();
-        let ev = PasteEvent {
-            trust: PasteTrust::Trusted,
-            data: b"hi".to_vec(),
+            .set_mode(Mode::BRACKETED_PASTE, bracketed)
+            .expect("mode 2004");
+        let event = PasteEvent {
+            trust,
+            data: data.to_vec(),
         };
-        let out = enc.encode(&ev, &terminal).expect("encode");
-        match out {
-            PasteOutcome::Encoded(b) => {
-                // Bracketed paste wraps payload with ESC [200~ ... ESC [201~.
-                assert!(
-                    b.starts_with(b"\x1b[200~") && b.ends_with(b"\x1b[201~"),
-                    "expected bracketed-paste wrapping, got {b:?}"
-                );
-            }
-            PasteOutcome::Rejected => panic!("trusted should not be rejected"),
+        match PerTerminalPasteEncoder::new()
+            .encode(&event, &terminal)
+            .expect("encode")
+        {
+            PasteOutcome::Encoded(bytes) => Some(bytes.to_vec()),
+            PasteOutcome::Rejected => None,
         }
     }
 
     #[test]
-    fn untrusted_unsafe_is_rejected_by_default() {
-        let terminal = make_terminal();
-        let mut enc = PerTerminalPasteEncoder::new();
-        // Newline makes `is_safe` return false.
-        let ev = PasteEvent {
-            trust: PasteTrust::Untrusted,
-            data: b"rm -rf /\n".to_vec(),
-        };
-        let out = enc.encode(&ev, &terminal).expect("encode");
-        assert!(matches!(out, PasteOutcome::Rejected));
-    }
-
-    #[test]
-    fn untrusted_safe_is_allowed_by_default() {
-        let terminal = make_terminal();
-        let mut enc = PerTerminalPasteEncoder::new();
-        let ev = PasteEvent {
-            trust: PasteTrust::Untrusted,
-            data: b"safe payload".to_vec(),
-        };
-        let out = enc.encode(&ev, &terminal).expect("encode");
-        assert!(matches!(out, PasteOutcome::Encoded(_)));
+    fn paste_trust_and_bracketing_table() {
+        use PasteTrust::{Trusted, Untrusted};
+        assert_eq!(
+            encode(Trusted, b"hello", false).as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert_eq!(
+            encode(Trusted, b"hi", true).as_deref(),
+            Some(&b"\x1b[200~hi\x1b[201~"[..])
+        );
+        // A newline makes an untrusted payload unsafe.
+        assert_eq!(encode(Untrusted, b"rm -rf /\n", false), None);
+        assert!(encode(Untrusted, b"safe payload", false).is_some());
     }
 }

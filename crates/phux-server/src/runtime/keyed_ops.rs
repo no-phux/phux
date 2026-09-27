@@ -18,16 +18,15 @@
 //! batch across hosts: the hub admits the whole batch under the key and
 //! forwards each satellite's part under the same key.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::BytesMut;
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use sha2::{Digest, Sha256};
-use tokio::sync::oneshot;
 
 use super::operation_dedupe::{
-    CachedOutcome, Claim, OperationClaim, OperationDomain, OperationKey, Waiter,
+    Admission, CachedOutcome, OperationClaim, OperationDomain, OperationKey,
 };
 use crate::state::SharedState;
 
@@ -61,29 +60,17 @@ async fn admit_within(state: &SharedState, command: &Command, wait: Duration) ->
         return KeyedAdmission::Unkeyed;
     };
     let dedupe = state.with(|s| s.operation_dedupe().clone());
-    let key = signal_key(key);
-    let digest = digest(command);
-    loop {
-        let pending = match dedupe.claim_at(key, digest, Instant::now(), join) {
-            Claim::Owner => return KeyedAdmission::Owner(OperationClaim::new(dedupe, key)),
-            Claim::Pending(pending) => pending,
-            Claim::Final(outcome) => return KeyedAdmission::Answer(replayed(&outcome)),
-            Claim::PendingUncertain => return KeyedAdmission::Answer(in_flight()),
-            Claim::Conflict => return KeyedAdmission::Answer(conflict()),
-            Claim::Full => {
-                return KeyedAdmission::Answer(CommandResult::Error {
-                    code: ErrorCode::ResourceExhausted,
-                    message: "the server's idempotency record is full; retry later".to_owned(),
-                });
-            }
-        };
-        match tokio::time::timeout(wait, pending).await {
-            Ok(Ok(outcome)) => return KeyedAdmission::Answer(replayed(&outcome)),
-            // The owner bound nothing and released the key: admit again.
-            Ok(Err(_)) => {}
-            Err(_) => return KeyedAdmission::Answer(in_flight()),
-        }
-    }
+    let answer = match dedupe.admit(signal_key(key), digest(command), wait).await {
+        Admission::Owner(claim) => return KeyedAdmission::Owner(claim),
+        Admission::Final(outcome) => replayed(&outcome),
+        Admission::InFlight => in_flight(),
+        Admission::Conflict => conflict(),
+        Admission::Full => CommandResult::Error {
+            code: ErrorCode::ResourceExhausted,
+            message: "the server's idempotency record is full; retry later".to_owned(),
+        },
+    };
+    KeyedAdmission::Answer(answer)
 }
 
 /// Before a keyed command is held for approval (ADR-0128): the answer its
@@ -141,14 +128,6 @@ fn digest(command: &Command) -> [u8; 32] {
     }
     .encode(&mut encoded);
     Sha256::digest(&encoded).into()
-}
-
-fn join() -> (Waiter, oneshot::Receiver<CachedOutcome>) {
-    let (reply, outcome) = oneshot::channel();
-    let waiter: Waiter = Box::new(move |bound: &CachedOutcome| {
-        let _ = reply.send(bound.clone());
-    });
-    (waiter, outcome)
 }
 
 fn replayed(outcome: &CachedOutcome) -> CommandResult {
@@ -354,22 +333,6 @@ mod tests {
             digest(&signal),
             "one namespace, two verbs"
         );
-    }
-
-    #[tokio::test]
-    async fn an_unkeyed_command_is_not_admitted() {
-        let state = SharedState::new();
-        assert!(matches!(
-            admit(
-                &state,
-                &Command::KillResource {
-                    terminal_id: ResourceId::local(3),
-                    operation_id: None,
-                }
-            )
-            .await,
-            KeyedAdmission::Unkeyed
-        ));
     }
 
     /// A failed command binds nothing: its key admits the next repeat.

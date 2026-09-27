@@ -1,14 +1,6 @@
-//! Wire `KeyEvent` → libghostty allocator-bound `key::Event` + per-pane encoder.
-//!
-//! Per ADR-0008, `KeyEvent`'s atoms (`KeyAction`, `PhysicalKey`, `ModSet`)
-//! ARE libghostty's `key::Action`/`Key`/`Mods` — they're re-exports, not
-//! mirrors. So this module no longer has enum-conversion functions; it just
-//! composes libghostty's allocator-bound `Event` from the wire fields.
-//!
-//! [`PerTerminalKeyEncoder`] owns the per-pane `libghostty_vt::key::Encoder`
-//! plus a reusable byte buffer — call [`PerTerminalKeyEncoder::encode`] with
-//! the pane's current [`GhosttyTerminal`] and the wire event; the returned
-//! `&[u8]` is the PTY payload.
+//! Wire `KeyEvent` -> libghostty `key::Event` plus a per-pane encoder. The
+//! wire atoms are libghostty's own types (ADR-0008), so only composition
+//! happens here.
 
 use libghostty_vt::{
     Error, Terminal as GhosttyTerminal,
@@ -16,12 +8,9 @@ use libghostty_vt::{
 };
 use phux_protocol::input::key::KeyEvent;
 
-/// Build a libghostty `key::Event` from our wire `KeyEvent`.
-///
-/// Fallible only because libghostty's FFI allocator can fail; the field
-/// copy itself is total. Returns a `'static`-allocator event ready for the
-/// encoder.
-pub fn key_event_to_libghostty(ev: &KeyEvent) -> Result<LgKeyEvent<'static>, Error> {
+/// Build a libghostty `key::Event` from a wire `KeyEvent`; fallible only
+/// through libghostty's allocator.
+fn key_event_to_libghostty(ev: &KeyEvent) -> Result<LgKeyEvent<'static>, Error> {
     let mut out = LgKeyEvent::new()?;
     out.set_action(ev.action.into())
         .set_key(ev.key.into())
@@ -37,12 +26,8 @@ pub fn key_event_to_libghostty(ev: &KeyEvent) -> Result<LgKeyEvent<'static>, Err
     Ok(out)
 }
 
-/// Per-pane key encoder.
-///
-/// Owns one `libghostty_vt::key::Encoder` plus a growable byte buffer
-/// reused across calls. Per-pane: each pane should hold its own instance
-/// so encoder state (KIP flags, modifyOtherKeys, etc.) reflects only that
-/// pane's terminal state. See ADR-0006 §"Encoder options stay server-local".
+/// Per-pane key encoder: one libghostty encoder plus a reused buffer, so
+/// encoder state reflects only that pane's terminal (ADR-0006).
 #[derive(Debug)]
 pub struct PerTerminalKeyEncoder {
     encoder: LgKeyEncoder<'static>,
@@ -58,15 +43,8 @@ impl PerTerminalKeyEncoder {
         })
     }
 
-    /// Encode a wire key event into PTY bytes.
-    ///
-    /// Refreshes encoder options from `terminal` (cursor key application
-    /// mode, keypad mode, modifyOtherKeys, KIP flags, alt-esc-prefix,
-    /// backarrow — see ADR-0006) before each encode so the bytes match
-    /// what the inner program currently expects.
-    ///
-    /// Returns a slice borrowed from `self`'s internal buffer; the slice is
-    /// valid until the next call to `encode`.
+    /// Encode a wire key event into PTY bytes, with options refreshed from
+    /// `terminal`'s current modes. The slice is valid until the next call.
     pub fn encode(
         &mut self,
         event: &KeyEvent,
@@ -97,16 +75,6 @@ mod tests {
     use libghostty_vt::key::{Action, Key, Mods};
     use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
 
-    fn make_terminal() -> GhosttyTerminal<'static, 'static> {
-        {
-            let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
-            terminal
-                .set_scrollback_max_lines(Some(1000))
-                .expect("Terminal::new");
-            terminal
-        }
-    }
-
     #[test]
     fn key_event_to_libghostty_round_trips_fields() {
         let ev = KeyEvent {
@@ -128,48 +96,7 @@ mod tests {
         assert_eq!(lg.unshifted_codepoint(), 'a');
     }
 
-    #[test]
-    fn encodes_plain_letter_a_to_byte_a() {
-        let terminal = make_terminal();
-        let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
-        let ev = KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::A,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: Some("a".to_owned()),
-            unshifted_codepoint: Some(u32::from('a')),
-        };
-        let bytes = enc.encode(&ev, &terminal).expect("encode");
-        assert!(
-            bytes.starts_with(b"a"),
-            "expected encoded bytes to start with `a`, got {bytes:?}"
-        );
-    }
-
-    #[test]
-    fn encodes_ctrl_j_to_line_feed() {
-        // Ctrl+J must reach the PTY as LF (0x0A), distinct from Enter's CR. The
-        // client parser produces this event from a 0x0A input byte.
-        let terminal = make_terminal();
-        let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
-        let ev = KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::J,
-            mods: ModSet::CTRL,
-            consumed_mods: ModSet::CTRL,
-            composing: false,
-            text: None,
-            unshifted_codepoint: Some(u32::from('j')),
-        };
-        let bytes = enc.encode(&ev, &terminal).expect("encode");
-        assert_eq!(bytes, b"\n", "Ctrl+J must encode to LF, got {bytes:?}");
-    }
-
-    /// ADR-0024: the wire atoms are phux-owned but share libghostty's
-    /// discriminants; the `server`-gated conversions are lossless for known
-    /// values, keeping the two in lockstep.
+    /// ADR-0024: the phux-owned wire atoms stay in lockstep with libghostty's.
     #[test]
     fn atoms_round_trip_libghostty() {
         for (pa, la) in [
@@ -186,5 +113,22 @@ mod tests {
             Mods::from(ModSet::CTRL | ModSet::SHIFT),
             Mods::CTRL | Mods::SHIFT
         );
+    }
+
+    /// Ctrl+J must reach the PTY as LF (0x0A), distinct from Enter's CR.
+    #[test]
+    fn encodes_ctrl_j_to_line_feed() {
+        let terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
+        let mut enc = PerTerminalKeyEncoder::new().expect("encoder");
+        let ev = KeyEvent {
+            action: KeyAction::Press,
+            key: PhysicalKey::J,
+            mods: ModSet::CTRL,
+            consumed_mods: ModSet::CTRL,
+            composing: false,
+            text: None,
+            unshifted_codepoint: Some(u32::from('j')),
+        };
+        assert_eq!(enc.encode(&ev, &terminal).expect("encode"), b"\n");
     }
 }

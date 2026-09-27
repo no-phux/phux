@@ -213,33 +213,29 @@ impl DedupeStore {
         }
     }
 
-    fn set_final(&mut self, key: OperationKey, outcome: CachedOutcome) -> Vec<Waiter> {
+    /// Move `key` to `state`, returning the waiters of a pending operation.
+    fn resolve(&mut self, key: OperationKey, state: EntryState) -> Vec<Waiter> {
         let Some(entry) = self.entries.get_mut(&key) else {
             return Vec::new();
         };
-        match std::mem::replace(&mut entry.state, EntryState::Final(outcome)) {
+        match std::mem::replace(&mut entry.state, state) {
             EntryState::Pending(waiters) => waiters,
             EntryState::Retryable | EntryState::Final(_) => Vec::new(),
         }
     }
 
-    fn set_retryable(&mut self, key: OperationKey) -> Vec<Waiter> {
-        let Some(entry) = self.entries.get_mut(&key) else {
-            return Vec::new();
-        };
-        match std::mem::replace(&mut entry.state, EntryState::Retryable) {
-            EntryState::Pending(waiters) => waiters,
-            EntryState::Retryable | EntryState::Final(_) => Vec::new(),
-        }
+    fn set_final(&mut self, key: OperationKey, outcome: CachedOutcome) -> Vec<Waiter> {
+        self.resolve(key, EntryState::Final(outcome))
     }
 
     /// Forget an unresolved operation that bound nothing, returning its
     /// waiters. A finished one is kept.
     fn release(&mut self, key: OperationKey) -> Vec<Waiter> {
-        let Some(entry) = self.entries.get(&key) else {
-            return Vec::new();
-        };
-        if !matches!(entry.state, EntryState::Pending(_)) {
+        let pending = self
+            .entries
+            .get(&key)
+            .is_some_and(|entry| matches!(entry.state, EntryState::Pending(_)));
+        if !pending {
             return Vec::new();
         }
         let waiters = match self.entries.remove(&key).map(|entry| entry.state) {
@@ -312,7 +308,7 @@ impl OperationDedupe {
     /// Keep the id-to-digest binding but not `notice`, which only the
     /// current waiters receive.
     pub(crate) fn set_retryable(&self, key: OperationKey, notice: &CachedOutcome) {
-        let waiters = self.lock().set_retryable(key);
+        let waiters = self.lock().resolve(key, EntryState::Retryable);
         notify(waiters, notice);
     }
 
@@ -328,6 +324,61 @@ impl OperationDedupe {
     pub(crate) fn unbind(&self, key: OperationKey, outcome: &CachedOutcome) {
         self.lock().unbind(key, outcome);
     }
+
+    /// Admit `key` for an operation that may await: a repeat joins an
+    /// unresolved owner for up to `wait`, and admits itself again if the
+    /// owner releases the key having bound nothing.
+    pub(crate) async fn admit(
+        &self,
+        key: OperationKey,
+        digest: [u8; 32],
+        wait: Duration,
+    ) -> Admission {
+        loop {
+            let pending = match self.claim_at(key, digest, Instant::now(), join_outcome) {
+                Claim::Owner => return Admission::Owner(OperationClaim::new(self.clone(), key)),
+                Claim::Pending(pending) => pending,
+                Claim::Final(outcome) => return Admission::Final(outcome),
+                Claim::PendingUncertain => return Admission::InFlight,
+                Claim::Conflict => return Admission::Conflict,
+                Claim::Full => return Admission::Full,
+            };
+            match tokio::time::timeout(wait, pending).await {
+                Ok(Ok(outcome)) => return Admission::Final(outcome),
+                Ok(Err(_)) => {}
+                Err(_) => return Admission::InFlight,
+            }
+        }
+    }
+}
+
+/// The answer to [`OperationDedupe::admit`].
+#[derive(Debug)]
+pub(crate) enum Admission {
+    /// The caller runs the operation.
+    Owner(OperationClaim),
+    /// The operation already finished with this outcome.
+    Final(CachedOutcome),
+    /// The same operation is still unresolved.
+    InFlight,
+    /// The key is bound to a different payload.
+    Conflict,
+    /// The store is full.
+    Full,
+}
+
+/// A repeat that receives the outcome its operation resolves with.
+pub(crate) fn join_outcome() -> (Waiter, tokio::sync::oneshot::Receiver<CachedOutcome>) {
+    let (reply, outcome) = tokio::sync::oneshot::channel();
+    let waiter: Waiter = Box::new(move |bound: &CachedOutcome| {
+        let _ = reply.send(bound.clone());
+    });
+    (waiter, outcome)
+}
+
+/// A repeat that waits for nothing.
+pub(crate) fn join_nothing() -> (Waiter, ()) {
+    (Box::new(|_| {}), ())
 }
 
 fn notify(waiters: Vec<Waiter>, outcome: &CachedOutcome) {
@@ -373,19 +424,7 @@ mod tests {
         OperationKey::new(OperationDomain::Input, bytes)
     }
 
-    fn no_join() -> (Waiter, ()) {
-        (Box::new(|_| {}), ())
-    }
-
-    fn channel_join() -> (Waiter, tokio::sync::oneshot::Receiver<CachedOutcome>) {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        (
-            Box::new(move |outcome: &CachedOutcome| {
-                let _ = tx.send(outcome.clone());
-            }),
-            rx,
-        )
-    }
+    use super::{join_nothing as no_join, join_outcome as channel_join};
 
     fn spawned(id: u32) -> CachedOutcome {
         CachedOutcome::Spawn {
