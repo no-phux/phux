@@ -1,45 +1,10 @@
-//! phux-l96p.10: a consumer that falls far enough behind must still converge.
-//!
-//! The pane's output broadcast is bounded, so a consumer the server cannot
-//! drain fast enough eventually takes a `RecvError::Lagged` and its pump misses
-//! a window of `RESOURCE_OUTPUT`. What the pump sends *next* is the whole
-//! story: the session kernel applies live output strictly in sequence, so a
-//! `RESOURCE_OUTPUT` whose `seq` skips the dropped window is a protocol error,
-//! not a hiccup. The real client detaches on it — "live sequence gap at N;
-//! expected M" — and the pane goes dark for good. That is what a remote
-//! WebSocket attach hit on `seq 1 300000`.
-//!
-//! The server's answer is an in-band resync: the pump asks the actor to
-//! re-broadcast the whole grid and republishes it as a fresh bootstrap
-//! generation. The answer only works if the pump stops forwarding the *old*
-//! generation's live frames the moment the gap opens — otherwise the client is
-//! already gone, and a pump still awaiting mailbox capacity for frames nobody
-//! can use consumes the broadcast at the client's speed, which is exactly how
-//! the resync it just asked for gets overwritten before it arrives.
-//!
-//! This test drives the production `handle_client` loop over the real wire with
-//! a deliberately stalled consumer, forces the lag, and asserts the two things
-//! that separate "recovers" from "never comes back":
-//!
-//! * every `RESOURCE_OUTPUT` it receives is exactly the next `seq` its
-//!   generation expects — the same rule `phux-client-core`'s kernel enforces,
-//!   so "no gap here" means "the real client would not have detached"; and
-//! * it ends up holding the pane's *current* screen, reached through a
-//!   replacement generation rather than a stale one.
-//!
-//! The lag is driven, not timed (phux-8kpb): the pane dumps only once the test
-//! opens a gate, the test reads nothing until the server's own grid shows the
-//! dump's last line, and the ring is shrunk to [`TEST_OUTPUT_BROADCAST`] slots,
-//! so the stalled pump has certainly been lapped. The pane then stays alive
-//! and quiet, so the resync is always answered and never overwritten. See
-//! `lagged_attach_terminal_resync.rs` for the race the timed shape had.
-//!
-//! Before the fix this fails on the first assertion, seconds into the drain.
-
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::doc_markdown, reason = "tests")]
+//! phux-l96p.10: an ATTACH consumer that lags the bounded output broadcast
+//! must converge on a replacement bootstrap generation, never see a live
+//! `seq` gap (the client kernel detaches on one). The lag is driven, not
+//! timed (phux-8kpb): the pane dumps only after the test opens a gate, the
+//! test reads nothing until the server's own grid shows the dump's tail, and
+//! the ring is shrunk so the stalled pump is certainly lapped.
+//! `attach/lagged_attach_terminal_resync.rs` pins the `ATTACH_RESOURCE` pump.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -55,32 +20,25 @@ use phux_server_testkit::{
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 
-/// What the seed pane prints when it is finished. Converging on this, rather
-/// than on any intermediate line, is what makes "the consumer holds the
-/// current screen" an assertion rather than a hope.
+/// Last line the pane prints; converging on it proves the screen is current.
 const TAIL_MARKER: &str = "LAGTEST_DONE";
 
-/// Lines the pane dumps once the gate opens: ~6.9 MB, several times what the
-/// stalled consumer's mailbox, writer batch and socket buffers can hold.
+/// ~6.9 MB: several times what the stalled consumer can buffer.
 const DUMP_LINES: u32 = 1_000_000;
 
-/// Broadcast ring used by this test, so the dump laps the stalled pump however
-/// the reader coalesces it. Production stays at 256.
+/// Shrunk ring so the dump laps the stalled pump (production: 256).
 const TEST_OUTPUT_BROADCAST: usize = 4;
 
-/// Bound on each event-driven wait below. A hang guard, never a timing
-/// assertion: every wait ends on a specific frame or screen state.
+/// Hang guard; every wait ends on a specific frame or screen state.
 const HANG_GUARD: Duration = Duration::from_secs(60);
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
 
-/// Identity of one bootstrap generation on the wire.
 type Generation = (ResourceId, StreamId, BootstrapId);
 
-/// The seed pane's workload: wait for `gate`, dump, print the marker, then
-/// stay alive. A pane that exited would be reaped — taking the session, and
-/// any resync still owed to a fenced pump, with it.
+/// Wait for `gate`, dump, print the marker, then stay alive (an exited pane
+/// would be reaped along with any resync owed to a fenced pump).
 fn burst_cmd(gate: &Path) -> String {
     format!(
         "while [ ! -e '{}' ]; do sleep 0.02; done; seq 1 {DUMP_LINES}; \
@@ -89,15 +47,11 @@ fn burst_cmd(gate: &Path) -> String {
     )
 }
 
-/// Per-generation live-sequence expectation, mirroring the client kernel's
-/// `expect_next_seq`: a bootstrap sets the base, and every subsequent
-/// `RESOURCE_OUTPUT` on that generation must be the very next sequence.
+/// Per-generation `expect_next_seq`, as the client kernel enforces it.
 #[derive(Default)]
 struct SequenceOracle {
     next: HashMap<Generation, u64>,
     generations: usize,
-    /// The pane the most recent bootstrap opened, so the test can ask the
-    /// server for that pane's own screen.
     pane: Option<ResourceId>,
 }
 
@@ -108,7 +62,6 @@ impl SequenceOracle {
         self.generations += 1;
     }
 
-    /// Panics with the diagnosis the real client would have printed.
     fn observe(&mut self, key: &Generation, seq: u64) {
         let expected = self.next.get_mut(key).unwrap_or_else(|| {
             panic!("RESOURCE_OUTPUT seq={seq} names a generation that was never opened")
@@ -122,13 +75,9 @@ impl SequenceOracle {
     }
 }
 
-/// What one drained frame meant to the consumer.
 enum Applied {
-    /// A generation finished publishing.
     BootstrapReady,
-    /// The server ended the session instead of resyncing.
     Fatal(String),
-    /// Anything else, already folded into the oracle and the screen.
     Other,
 }
 
@@ -187,7 +136,6 @@ fn lagged_consumer_converges_on_a_replacement_generation() {
         let mut oracle = SequenceOracle::default();
         let mut screen = Screen::new(COLS, ROWS).expect("screen oracle");
 
-        // Drain the opening bootstrap so the pump is live before the stall.
         loop {
             let (_, frame) = recv_typed(&mut stream).await;
             if matches!(
@@ -202,18 +150,12 @@ fn lagged_consumer_converges_on_a_replacement_generation() {
             .clone()
             .expect("the opening bootstrap names its pane");
 
-        // The stall, driven rather than timed. Nothing is read from the
-        // attached socket until the pane's server-side grid shows the end of
-        // the dump, so the writer blocks, the mailbox fills, and the rest of
-        // the dump laps the ring. The probe carries no subscription, so
-        // polling it unblocks nothing.
+        // Stall: read nothing until the server's grid shows the dump's tail.
+        // The probe has no subscription, so polling it unblocks nothing.
         let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         std::fs::write(&gate, b"").expect("open the dump gate");
         wait_for_server_screen_text(&mut probe, &pane, TAIL_MARKER, HANG_GUARD).await;
 
-        // Resume and drain until the pane's last line is on screen. Every
-        // frame is checked on the way through, so a single gapped `seq` fails
-        // here exactly as the real client would have.
         let started = Instant::now();
         loop {
             assert!(
@@ -229,9 +171,7 @@ fn lagged_consumer_converges_on_a_replacement_generation() {
             }
         }
 
-        // A gap answered by a resync opens a *new* generation; the opening
-        // bootstrap alone would leave this at one, which would mean the run
-        // never actually lagged and the test proved nothing.
+        // One generation would mean the run never lagged.
         assert!(
             oracle.generations > 1,
             "consumer converged without ever taking a broadcast gap",

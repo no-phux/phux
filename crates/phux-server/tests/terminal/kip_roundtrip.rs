@@ -1,88 +1,19 @@
-//! phux-0o8: kitty-keyboard-protocol (KIP) round-trip harness for real,
-//! host-provided TUIs under `TERM=ghostty`.
+//! phux-0o8: kitty keyboard protocol round-trips for real host TUIs under
+//! `TERM=ghostty`, driven over the wire (the encoder pivots to CSI-u only when
+//! the app pushes kitty flags) and asserted on the rendered screen.
 //!
-//! Context: phux-7vx swapped the default `TERM` from `ghostty` to
-//! `xterm-256color` because ghostty's terminfo advertises the `fullkbd`
-//! extended capability, ncurses TUIs (htop being the canonical reproducer)
-//! push the kitty progressive-enhancement flags (`CSI > N u`) on startup,
-//! libghostty's per-pane encoder then correctly pivots to CSI-u for every
-//! keypress — and htop does not parse incoming CSI-u for the keys it owns,
-//! so `q` stops quitting. phux-ign later made the default a config knob
-//! (`defaults.term`) plus a per-spawn wire field. phux-0o8 asks: does the
-//! full phux stack round-trip KIP for representative TUIs, and if so,
-//! should the default flip back to `ghostty`?
+//! The TUIs are host-provided, not nix-pinned, so each test probes for its
+//! binary and the `ghostty` terminfo and skips (passing, with a greppable
+//! `SKIP(kip_roundtrip::..)` line) when either is missing. Findings
+//! (2026-07-10): fzf, less, nvim, vim and btop all pass under ghostty; only
+//! nvim pushes kitty flags, so it is the one genuine CSI-u round trip. htop,
+//! the phux-7vx ncurses `fullkbd` reproducer, was never available, so the
+//! default `TERM` stays `xterm-256color` (`defaults.term` opts in).
 //!
-//! This file is the automated half of that evidence. Each test drives the
-//! REAL wire path — `handle_client` → per-Terminal key encoder (which
-//! pivots to CSI-u if and only if the inner app pushed kitty flags into
-//! the pane's libghostty `Terminal`) → PTY → the actual TUI binary — and
-//! asserts an observable reaction (rendered query text, a search jump, a
-//! clean quit) through the `Screen` VT oracle.
-//!
-//! HONESTY CONSTRAINTS, deliberately load-bearing:
-//!
-//! - The TUIs are host-provided, NOT nix-pinned (`flake.nix` declares none
-//!   of them). Every test therefore probes for its binary and for the
-//!   `ghostty` terminfo entry at runtime and SKIPS (passing, with a loud
-//!   `SKIP(kip_roundtrip)` line on stderr) when either is missing. In the
-//!   nix CI sandbox these tests skip; they only bite on developer hosts
-//!   that have the apps. That makes them evidence + regression tooling,
-//!   not a reproducible CI proof — which is exactly why the findings
-//!   below, not these tests alone, justify the default-TERM decision.
-//! - htop — the canonical phux-7vx reproducer — is not installed on the
-//!   machine this harness was developed on. Its probe is `#[ignore]`d
-//!   rather than skipped-by-probe so that running it is always a
-//!   deliberate act; see `htop_quits_on_q_under_term_ghostty`.
-//! - "the app quit" is observed as the probed pane's `RESOURCE_CLOSED`
-//!   with `CloseReason::Exited`. That requires the probed pane NOT to be
-//!   its session's only Terminal — a sole Terminal's natural exit
-//!   respawns a default shell in place instead of closing the pane — so
-//!   every probe pins a second, inert pane into the same window before
-//!   the scenario runs (phux-5y00). See `TuiProbe::pin_anchor_pane`.
-//!
-//! FINDINGS (2026-07-10, macOS host, all probes green on first run):
-//!
-//! | app  | version        | kitty query | kitty push | reactions under ghostty |
-//! |------|----------------|-------------|------------|-------------------------|
-//! | fzf  | 0.74.0 (brew)  | no          | no         | pass                    |
-//! | less | 668 (/usr/bin) | no          | no         | pass                    |
-//! | nvim | 0.12.4 (brew)  | yes         | yes        | pass                    |
-//! | vim  | 9.1 (/usr/bin) | yes         | no         | pass                    |
-//! | btop | 1.4.7 (brew)   | no          | no         | pass                    |
-//! | htop | NOT INSTALLED  | —           | —          | UNTESTED                |
-//!
-//! - nvim is the only app observed pushing kitty progressive enhancement
-//!   (`CSI > … u` in its output stream), i.e. the only one that actually
-//!   exercised the CSI-u encoder pivot end-to-end: after its push, every
-//!   key below (`kip roundtrip ok`, Esc, `:q!`, Enter) went to nvim as
-//!   CSI-u and nvim parsed all of them back. That is a genuine
-//!   full-stack KIP round-trip through phux.
-//! - vim 9.1 *queried* KIP (`CSI ? u`) but did not push; fzf/less/btop
-//!   showed no kitty activity at all. For those four, the ghostty run
-//!   proves "no regression under TERM=ghostty", not "KIP works".
-//! - Crucially, none of the five is an ncurses `fullkbd` consumer. The
-//!   phux-7vx failure mode was specifically ncurses reading `fullkbd`
-//!   from the ghostty terminfo and pushing flags the app cannot parse
-//!   back — and the app on that path (htop) could NOT be tested (not
-//!   installed, not nix-pinned).
-//!
-//! DECISION: the default stays `TERM=xterm-256color`. The evidence bar
-//! for flipping was "ALL representative TUIs round-trip cleanly", and the
-//! canonical regression app is untested — flipping on this evidence would
-//! be gambling exactly where we already lost once. Users who want
-//! ghostty's extended terminfo have two deliberate opt-ins: server-wide
-//! `defaults.term = "ghostty"` in config, or the per-spawn
-//! `SPAWN_RESOURCE.term` wire field. See `docs/consumers/tui.md` §4.2 and
-//! `crates/phux-config/src/default.toml`.
+//! "The app quit" is the probed pane's `RESOURCE_CLOSED { Exited }`, which
+//! needs a second pane in the window (a sole Terminal's exit respawns a shell
+//! in place, phux-5y00); see `TuiProbe::pin_anchor_pane`.
 
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-// `Screen` owns a `!Send` `libghostty_vt::Terminal` (ADR-0014); these
-// tests run on a `LocalSet` so non-Send futures are fine.
-#![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
-// This harness reports runtime skips (host-provided binaries) and
-// kitty-activity forensics on stderr — that reporting is the point.
 #![allow(clippy::print_stderr, reason = "skip markers + KIP forensics")]
 
 use std::path::PathBuf;
@@ -90,172 +21,74 @@ use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-use phux_protocol::wire::frame::{
-    CloseReason, FrameKind, SpawnResult, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN,
-};
+use phux_protocol::wire::frame::{CloseReason, FrameKind, SpawnResult};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use phux_server::DEFAULT_GROUP_ID;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd_and_term, try_recv_typed, wait_for_server_screen_text,
+    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local,
+    seed_pty, send_frame, spawn_server_with, try_recv_typed, wait_for_server_screen_text,
     wait_for_socket,
 };
 
-// ---------------------------------------------------------------------------
-// Host probes: this harness depends on host-provided binaries and terminfo.
-// ---------------------------------------------------------------------------
+use super::common::{named_key, sh};
 
-/// Locate `bin` on `$PATH`, falling back to the conventional macOS /
-/// Linux install prefixes nextest might not have on its `PATH`.
+/// `bin` on `$PATH` or a conventional install prefix nextest may not have.
 fn find_program(bin: &str) -> Option<PathBuf> {
-    let path_hits = std::env::var_os("PATH").map(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(bin))
-            .collect::<Vec<_>>()
-    });
-    let fallbacks = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-        .into_iter()
-        .map(|dir| PathBuf::from(dir).join(bin));
-    path_hits
-        .into_iter()
-        .flatten()
-        .chain(fallbacks)
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .chain(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map(PathBuf::from))
+        .map(|dir| dir.join(bin))
         .find(|candidate| candidate.is_file())
 }
 
-/// `true` when the host terminfo database has an entry for `ghostty`.
-/// Without it the TUIs under test refuse to start (`Error opening
-/// terminal: ghostty`), which would test nothing about phux.
-fn ghostty_terminfo_available() -> bool {
-    std::process::Command::new("infocmp")
+/// `false` (after printing a skip marker) unless `bin` and the `ghostty`
+/// terminfo entry both exist on this host.
+fn require_tui(test: &str, bin: &str) -> bool {
+    let reason = if find_program(bin).is_none() {
+        format!("`{bin}` not installed on this host")
+    } else if !std::process::Command::new("infocmp")
         .arg("ghostty")
         .output()
         .is_ok_and(|out| out.status.success())
-}
-
-/// Print a loud, greppable skip marker. The test then returns early and
-/// PASSES — see the module docs for why runtime-skip is the honest shape
-/// for host-provided (non-nix-pinned) fixtures.
-fn skip(test: &str, reason: &str) {
-    eprintln!("SKIP(kip_roundtrip::{test}): {reason}");
-}
-
-/// Probe for one TUI + the ghostty terminfo entry; `None` means skip
-/// (already reported to stderr).
-fn require_tui(test: &str, bin: &str) -> Option<PathBuf> {
-    let Some(path) = find_program(bin) else {
-        skip(test, &format!("`{bin}` not installed on this host"));
-        return None;
+    {
+        "no `ghostty` terminfo entry on this host".to_owned()
+    } else {
+        return true;
     };
-    if !ghostty_terminfo_available() {
-        skip(test, "no `ghostty` terminfo entry on this host");
-        return None;
-    }
-    Some(path)
+    eprintln!("SKIP(kip_roundtrip::{test}): {reason}");
+    false
 }
 
-// ---------------------------------------------------------------------------
-// Key-event builders: mirror the client's `c0_or_ascii_to_key` translation
-// (crates/phux-client/src/attach/input.rs) so the wire events here are
-// byte-for-byte the shape a real attached client produces.
-// ---------------------------------------------------------------------------
-
-/// Map an ASCII letter (either case) to its [`PhysicalKey`].
-fn letter_to_physical(upper: u8) -> PhysicalKey {
-    match upper {
-        b'A' => PhysicalKey::A,
-        b'B' => PhysicalKey::B,
-        b'C' => PhysicalKey::C,
-        b'D' => PhysicalKey::D,
-        b'E' => PhysicalKey::E,
-        b'F' => PhysicalKey::F,
-        b'G' => PhysicalKey::G,
-        b'H' => PhysicalKey::H,
-        b'I' => PhysicalKey::I,
-        b'J' => PhysicalKey::J,
-        b'K' => PhysicalKey::K,
-        b'L' => PhysicalKey::L,
-        b'M' => PhysicalKey::M,
-        b'N' => PhysicalKey::N,
-        b'O' => PhysicalKey::O,
-        b'P' => PhysicalKey::P,
-        b'Q' => PhysicalKey::Q,
-        b'R' => PhysicalKey::R,
-        b'S' => PhysicalKey::S,
-        b'T' => PhysicalKey::T,
-        b'U' => PhysicalKey::U,
-        b'V' => PhysicalKey::V,
-        b'W' => PhysicalKey::W,
-        b'X' => PhysicalKey::X,
-        b'Y' => PhysicalKey::Y,
-        b'Z' => PhysicalKey::Z,
-        other => panic!("not an ASCII uppercase letter: {other:#x}"),
-    }
-}
-
-/// Physical key + implied-Shift for a printable ASCII byte. Mirrors the
-/// client's `ascii_to_physical` / `ascii_shift_mods` pair: punctuation
-/// routes through the same `phux_config::keybind::punct_to_key` table the
-/// chord parser uses.
-fn printable_to_physical(c: char) -> (PhysicalKey, bool) {
-    match c {
-        ' ' => (PhysicalKey::Space, false),
-        '0' => (PhysicalKey::Digit0, false),
-        '1' => (PhysicalKey::Digit1, false),
-        '2' => (PhysicalKey::Digit2, false),
-        '3' => (PhysicalKey::Digit3, false),
-        '4' => (PhysicalKey::Digit4, false),
-        '5' => (PhysicalKey::Digit5, false),
-        '6' => (PhysicalKey::Digit6, false),
-        '7' => (PhysicalKey::Digit7, false),
-        '8' => (PhysicalKey::Digit8, false),
-        '9' => (PhysicalKey::Digit9, false),
-        'a'..='z' => (letter_to_physical(c.to_ascii_uppercase() as u8), false),
-        'A'..='Z' => (letter_to_physical(c as u8), true),
-        _ => phux_config::keybind::punct_to_key(c)
-            .unwrap_or_else(|| panic!("no PhysicalKey mapping for {c:?}")),
-    }
-}
-
-/// What this key would produce with no modifiers held (US layout), for
-/// `unshifted_codepoint`. Mirrors the client's `ascii_unshifted`.
-const fn ascii_unshifted(c: char) -> char {
-    match c {
-        'A'..='Z' => c.to_ascii_lowercase(),
-        '!' => '1',
-        '@' => '2',
-        '#' => '3',
-        '$' => '4',
-        '%' => '5',
-        '^' => '6',
-        '&' => '7',
-        '*' => '8',
-        '(' => '9',
-        ')' => '0',
-        '_' => '-',
-        '+' => '=',
-        '{' => '[',
-        '}' => ']',
-        '|' => '\\',
-        ':' => ';',
-        '"' => '\'',
-        '<' => ',',
-        '>' => '.',
-        '?' => '/',
-        '~' => '`',
-        other => other,
-    }
-}
-
-/// One printable-ASCII press, exactly as the attached client would
-/// translate it from the host TTY.
+/// One printable-ASCII press, shaped as the attached client translates it
+/// from the host TTY (US layout: shifted glyphs carry `Shift` and their
+/// unshifted codepoint).
 fn printable_key(c: char) -> KeyEvent {
-    let (key, shifted) = printable_to_physical(c);
+    const SHIFTED: &str = "!1@2#3$4%5^6&7*8(9)0_-+={[}]|\\:;\"'<,>.?/~`";
+    let (key, shifted) = match c {
+        ' ' => (PhysicalKey::Space, false),
+        '0'..='9' => (
+            PhysicalKey::try_from(6 + (c as u32 - '0' as u32)).unwrap(),
+            false,
+        ),
+        'a'..='z' => (
+            PhysicalKey::try_from(20 + (c as u32 - 'a' as u32)).unwrap(),
+            false,
+        ),
+        'A'..='Z' => (
+            PhysicalKey::try_from(20 + (c as u32 - 'A' as u32)).unwrap(),
+            true,
+        ),
+        _ => phux_config::keybind::punct_to_key(c).unwrap_or_else(|| panic!("no key for {c:?}")),
+    };
+    let chars: Vec<char> = SHIFTED.chars().collect();
+    let unshifted = chars
+        .chunks(2)
+        .find(|pair| pair[0] == c)
+        .map_or_else(|| c.to_ascii_lowercase(), |pair| pair[1]);
     let mods = if shifted {
         ModSet::SHIFT
     } else {
@@ -268,156 +101,76 @@ fn printable_key(c: char) -> KeyEvent {
         consumed_mods: mods,
         composing: false,
         text: Some(c.to_string()),
-        unshifted_codepoint: Some(ascii_unshifted(c) as u32),
+        unshifted_codepoint: Some(unshifted as u32),
     }
 }
 
-/// A named (no-text) key press: Enter, Escape, arrows, …
-const fn named_key(key: PhysicalKey) -> KeyEvent {
-    KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods: ModSet::empty(),
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text: None,
-        unshifted_codepoint: None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The probe driver: one attached client, one seed pane running the TUI.
-// ---------------------------------------------------------------------------
-
-/// A wire-attached probe around one TUI-in-a-pane. Accumulates every
-/// `RESOURCE_OUTPUT` chunk twice: rendered through the [`Screen`] oracle
-/// (for reaction assertions) and raw (for kitty-activity forensics).
+/// A wire-attached probe around one TUI-in-a-pane: the probed pane's output
+/// feeds a [`Screen`] oracle and is kept raw for kitty forensics.
 struct TuiProbe {
     stream: UnixStream,
-    /// HELLO'd socket path for a second, unsubscribed `GET_SCREEN` probe.
-    /// `wait_for_server_screen_text` must not share the attached stream:
-    /// that helper skips `RESOURCE_OUTPUT`, which would blind the Screen
-    /// oracle.
     socket_path: PathBuf,
     terminal_id: ResourceId,
     screen: Screen,
     raw: Vec<u8>,
-    /// The probed pane's `RESOURCE_CLOSED`, once it arrives.
-    closed: Option<TerminalClose>,
-    /// The server dropped the connection. Never expected here (the anchor
-    /// pane below keeps the session non-empty, so the phux-60s last-session
-    /// self-exit cannot fire), so this is a fault, not an ending.
+    closed: Option<(CloseReason, Option<i32>)>,
     transport_eof: bool,
 }
 
-/// What the probed pane's `RESOURCE_CLOSED` reported.
-#[derive(Debug, Clone, Copy)]
-struct TerminalClose {
-    reason: CloseReason,
-    exit_status: Option<i32>,
-}
-
 impl TuiProbe {
-    /// Attach to the pre-seeded session, consuming the
-    /// `ATTACHED`/`TERMINAL_SNAPSHOT` handshake. The snapshot payload is
-    /// REPLAYED into the accumulators, not discarded: per frame.rs, the
-    /// snapshot's `vt_replay_bytes` reproduce the grid state at emission,
-    /// so any pane output that raced ahead of the attach (e.g. the seed
-    /// command's first paint) arrives here and never again as
-    /// `RESOURCE_OUTPUT`. Dropping it would blind the `Screen` oracle to
-    /// the pane's first paint and make fast-printing scenarios flake.
+    /// Attach and replay the bootstrap into the oracle (output that raced the
+    /// attach arrives only there), then pin the anchor pane.
     async fn attach(mut stream: UnixStream, socket_path: PathBuf) -> Self {
         send_frame(&mut stream, &attach_by_name("default")).await;
-        let (type_byte, attached) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_ATTACHED, "first frame must be ATTACHED");
-        let terminal_id = match attached {
-            FrameKind::Attached { snapshot, .. } => {
-                assert_eq!(snapshot.resources.len(), 1);
-                snapshot.resources[0].id.clone()
-            }
+        let terminal_id = match recv_typed(&mut stream).await.1 {
+            FrameKind::Attached { snapshot, .. } => snapshot.resources[0].id.clone(),
             other => panic!("expected ATTACHED, got {other:?}"),
         };
-        let (type_byte, begin) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_BOOTSTRAP_BEGIN);
-        assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
         let mut probe = Self {
             stream,
             socket_path,
             terminal_id,
-            screen: Screen::new(80, 24).expect("screen oracle"),
+            screen: Screen::new(80, 24).unwrap(),
             raw: Vec::new(),
             closed: None,
             transport_eof: false,
         };
-        let (_, chunk) = recv_typed(&mut probe.stream).await;
-        match chunk {
-            FrameKind::BootstrapChunk { payload, .. } => {
-                probe.raw.extend_from_slice(&payload);
-                probe.screen.write(&payload);
+        loop {
+            match recv_typed(&mut probe.stream).await.1 {
+                FrameKind::BootstrapChunk { payload, .. } => {
+                    probe.raw.extend_from_slice(&payload);
+                    probe.screen.write(&payload);
+                }
+                FrameKind::BootstrapReady { .. } => break,
+                _ => {}
             }
-            other => panic!("expected BOOTSTRAP_CHUNK, got {other:?}"),
         }
-        let (_, ready) = recv_typed(&mut probe.stream).await;
-        assert!(matches!(ready, FrameKind::BootstrapReady { .. }));
         probe.pin_anchor_pane().await;
         probe
     }
 
-    /// Spawn a second, inert Terminal into the probed pane's window.
-    ///
-    /// Load-bearing, not scaffolding. The seed pane runs the TUI, so
-    /// without this it is the ONLY Terminal in the only session — and
-    /// `ServerState::should_replace_last_shell` then turns that pane's
-    /// natural exit into "respawn a default shell in place" rather than a
-    /// close (`crates/phux-server/src/state/sessions.rs`,
-    /// `runtime/client.rs::replace_last_shell`). The app really did quit,
-    /// but the pane stays, no `RESOURCE_CLOSED` is ever sent, and what the
-    /// probe observes then depends on whether that respawn happened to
-    /// succeed — which is exactly the nondeterminism `expect_closed` used
-    /// to trip over. A second Terminal in the same window puts the probed
-    /// pane back on the ordinary close path, which is the path
-    /// `expect_closed` is written about, and keeps the session non-empty
-    /// so the phux-60s last-session self-exit cannot race it either.
-    ///
-    /// `/bin/cat` is the repo's inert PTY fixture: with no argv and nobody
-    /// writing to it, it emits nothing and never exits on its own. The
-    /// probe filters every frame by `terminal_id` regardless, so the
-    /// anchor cannot reach the `Screen` oracle or the raw forensics buffer.
+    /// Spawn an inert `/bin/cat` into the probed pane's window so the TUI's
+    /// natural exit closes its pane instead of respawning a shell in place
+    /// (and the session never empties, so the server cannot self-exit).
     async fn pin_anchor_pane(&mut self) {
-        const ANCHOR_REQUEST_ID: u32 = 9001;
-        let spawn = FrameKind::SpawnResource {
-            request_id: ANCHOR_REQUEST_ID,
-            group: DEFAULT_GROUP_ID,
-            command: Some(vec!["/bin/cat".to_owned()]),
-            cwd: None,
-            env: None,
-            term: None,
-            satellite: None,
-            // Ownership address, not geometry: pins the new pane into the
-            // window that owns the probed pane, so the two really are in
-            // one session (layout stays client-owned L3 metadata).
+        let spawn = Spawn {
             owner_terminal: Some(self.terminal_id.clone()),
-            agent_session: None,
-            initial_size: None,
-            resource: None,
+            ..Spawn::command(&["/bin/cat"])
         };
-        send_frame(&mut self.stream, &spawn).await;
+        send_frame(&mut self.stream, &spawn.frame(9001)).await;
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        // Pump rather than `recv_typed`: the probed pane is already
-        // painting, and dropping its output here would blind the oracle
-        // exactly as dropping the bootstrap replay would.
+        // Pump rather than skip: the probed pane is already painting.
         while let Some(frame) = self.pump_once(deadline).await {
-            let FrameKind::ResourceSpawned { request_id, result } = frame else {
-                continue;
-            };
-            assert_eq!(request_id, ANCHOR_REQUEST_ID, "unexpected spawn reply");
-            assert!(
-                matches!(result, SpawnResult::Ok(_)),
-                "anchor pane spawn failed: {result:?}",
-            );
-            return;
+            if let FrameKind::ResourceSpawned {
+                request_id: 9001,
+                result,
+            } = frame
+            {
+                assert!(matches!(result, SpawnResult::Ok(_)), "anchor: {result:?}");
+                return;
+            }
         }
-        panic!("anchor pane never spawned; the probed pane would be the session's only Terminal");
+        panic!("anchor pane never spawned");
     }
 
     async fn send_key(&mut self, event: KeyEvent) {
@@ -428,33 +181,24 @@ impl TuiProbe {
         send_frame(&mut self.stream, &frame).await;
     }
 
-    /// Type a printable-ASCII string one keypress at a time.
     async fn type_str(&mut self, s: &str) {
         for c in s.chars() {
             self.send_key(printable_key(c)).await;
         }
     }
 
-    /// Pump one server frame, folding the probed pane's output into the
-    /// accumulators and returning the frame. `None` when the probed pane
-    /// closed, the transport died, or the deadline elapsed.
-    ///
-    /// Every frame is matched against `self.terminal_id`: since the anchor
-    /// pane joined the session this connection carries two panes' traffic,
-    /// and only the probed one is evidence about the app under test.
+    /// Pump one frame, folding the probed pane's output into the oracle.
+    /// `None` once the pane closed, the transport died, or `deadline` passed.
     async fn pump_once(&mut self, deadline: tokio::time::Instant) -> Option<FrameKind> {
         if self.closed.is_some() || self.transport_eof {
             return None;
         }
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return None;
-        }
-        let Ok(maybe) = timeout(deadline - now, try_recv_typed(&mut self.stream)).await else {
-            return None;
-        };
-        let Some((_type_byte, frame)) = maybe else {
-            self.transport_eof = true; // server closed the connection
+        let remaining = deadline.checked_duration_since(tokio::time::Instant::now())?;
+        let Some((_, frame)) = timeout(remaining, try_recv_typed(&mut self.stream))
+            .await
+            .ok()?
+        else {
+            self.transport_eof = true;
             return None;
         };
         match &frame {
@@ -470,10 +214,7 @@ impl TuiProbe {
                 reason,
                 ..
             } if *terminal_id == self.terminal_id => {
-                self.closed = Some(TerminalClose {
-                    reason: *reason,
-                    exit_status: *exit_status,
-                });
+                self.closed = Some((*reason, *exit_status));
                 return None;
             }
             _ => {}
@@ -481,125 +222,60 @@ impl TuiProbe {
         Some(frame)
     }
 
-    /// Drain output until the rendered screen contains `needle` or the
-    /// deadline elapses. Returns whether the needle appeared.
-    async fn wait_screen_contains(&mut self, needle: &str) -> bool {
+    async fn expect_screen_contains(&mut self, needle: &str, what: &str) {
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        loop {
-            if self.screen.contains(needle) {
-                return true;
-            }
-            if self.pump_once(deadline).await.is_none() {
-                return self.screen.contains(needle);
-            }
+        while !self.screen.contains(needle) {
+            let progressed = self.pump_once(deadline).await.is_some();
+            assert!(
+                progressed || self.screen.contains(needle),
+                "{what}: {needle:?} never appeared.\n--- screen ---\n{}",
+                self.screen.snapshot_text()
+            );
         }
     }
 
-    /// Assert-flavored wrapper: panics with the rendered screen on miss.
-    async fn expect_screen_contains(&mut self, needle: &str, what: &str) {
-        assert!(
-            self.wait_screen_contains(needle).await,
-            "{what}: {needle:?} never appeared on screen.\n--- screen ---\n{}\n--- end ---",
-            self.screen.snapshot_text(),
-        );
-    }
-
-    /// Poll the pane actor's grid via `GET_SCREEN` until `needle` appears.
-    ///
-    /// Uses a fresh unsubscribed connection so replies are not interleaved
-    /// with this probe's `RESOURCE_OUTPUT`. `deadline` is a hang guard, not
-    /// a latency assertion (phux-7y78).
+    /// Poll the server's own grid on a separate unsubscribed connection (the
+    /// attached stream's output must keep feeding the oracle).
     async fn wait_server_screen_text(&self, needle: &str, deadline: Duration) {
         let mut control = wait_for_socket(&self.socket_path, SOCKET_CONNECT_DEADLINE).await;
         wait_for_server_screen_text(&mut control, &self.terminal_id, needle, deadline).await;
     }
 
-    /// Drain until the probed pane's `RESOURCE_CLOSED` arrives, and assert
-    /// it reports a natural process exit — i.e. the app really quit, of its
-    /// own accord, in reaction to the keys this probe sent.
-    ///
-    /// `CloseReason::Exited` is the assertion that carries the meaning:
-    /// `Killed` / `ParentClosed` / `ServerShutdown` would each be a pane
-    /// that went away for a reason having nothing to do with the keystroke
-    /// under test, and the old "any close at all" check could not tell
-    /// those apart from a quit.
-    ///
-    /// The exit status is reported, not asserted, on purpose: it comes from
-    /// a `try_wait` retry loop on PTY EOF with a 20ms budget
-    /// (`resource/terminal/io.rs::reap_child_if_any`), so a loaded host can
-    /// legitimately report `None` for a child that exited cleanly a moment
-    /// later. `reason` is claimed from the close ledger and has no such
-    /// race, which is why it is the one that gets asserted.
+    /// The app really quit: its pane closed as `Exited`, not killed or torn
+    /// down. The exit status races a 20ms reap budget, so it is only reported.
     async fn expect_closed(&mut self, what: &str) {
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
         while self.pump_once(deadline).await.is_some() {}
-        assert!(
-            !self.transport_eof,
-            "{what}: server dropped the transport before RESOURCE_CLOSED.\n\
-             --- screen ---\n{}\n--- end ---",
-            self.screen.snapshot_text(),
-        );
-        let Some(close) = self.closed else {
-            panic!(
-                "{what}: pane never closed.\n--- screen ---\n{}\n--- end ---",
-                self.screen.snapshot_text(),
-            );
+        let screen = self.screen.snapshot_text();
+        assert!(!self.transport_eof, "{what}: transport dropped.\n{screen}");
+        let Some((reason, status)) = self.closed else {
+            panic!("{what}: pane never closed.\n{screen}");
         };
         assert_eq!(
-            close.reason,
+            reason,
             CloseReason::Exited,
-            "{what}: pane closed as {:?} (exit status {:?}), not a natural \
-             process exit.\n--- screen ---\n{}\n--- end ---",
-            close.reason,
-            close.exit_status,
-            self.screen.snapshot_text(),
+            "{what} (status {status:?}).\n{screen}"
         );
         eprintln!(
-            "kip_roundtrip({what}): exit status = {:?}",
-            close.exit_status
+            "kip_roundtrip({what}): exit status {status:?}, kitty push {}, kitty query {}",
+            contains_csi_u(&self.raw, b'>'),
+            contains_csi_u(&self.raw, b'?'),
         );
     }
-
-    /// Forensics: did the app push kitty progressive enhancement
-    /// (`CSI > … u`) into the pane? This is app→terminal traffic, so it
-    /// rides the pane's output stream verbatim. A hit means the per-pane
-    /// encoder pivoted to CSI-u for every key sent afterwards.
-    fn saw_kitty_push(&self) -> bool {
-        contains_csi_u(&self.raw, b'>')
-    }
-
-    /// Forensics: did the app *query* kitty support (`CSI ? u`)? Apps
-    /// that probe-then-push (nvim) emit this first; libghostty answers on
-    /// the PTY input side, which this stream does not carry.
-    fn saw_kitty_query(&self) -> bool {
-        contains_csi_u(&self.raw, b'?')
-    }
 }
 
-/// Scan `haystack` for `ESC [ <intro> <digits/;/:> u` — the kitty keyboard
-/// push (`intro == b'>'`) or query (`intro == b'?'`) shapes.
+/// `ESC [ <intro> <digits;:> u`: a kitty keyboard push (`>`) or query (`?`).
 fn contains_csi_u(haystack: &[u8], intro: u8) -> bool {
-    let mut i = 0;
-    while let Some(esc_off) = haystack[i..].iter().position(|&b| b == 0x1b) {
-        let seq = &haystack[i + esc_off..];
-        if seq.len() >= 3 && seq[1] == b'[' && seq[2] == intro {
-            let params = &seq[3..];
-            let end = params
+    haystack.windows(3).enumerate().any(|(i, w)| {
+        w == [0x1b, b'[', intro]
+            && haystack[i + 3..]
                 .iter()
-                .position(|&b| !(b.is_ascii_digit() || b == b';' || b == b':'));
-            if let Some(end) = end
-                && params[end] == b'u'
-            {
-                return true;
-            }
-        }
-        i += esc_off + 1;
-    }
-    false
+                .find(|b| !(b.is_ascii_digit() || **b == b';' || **b == b':'))
+                == Some(&b'u')
+    })
 }
 
-/// Spawn a server whose seed pane runs `cmd` under `TERM=<term>`, attach,
-/// and hand the probe plus the shutdown plumbing to `scenario`.
+/// Seed a pane running `cmd` under `TERM=<term>`, attach, run `scenario`.
 fn run_tui_probe<F>(cmd: CommandBuilder, term: &str, scenario: F)
 where
     F: AsyncFnOnce(&mut TuiProbe),
@@ -607,233 +283,110 @@ where
     run_local(async move {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd_and_term(socket_path.clone(), "default", cmd, term);
+        let (shutdown_tx, _server) =
+            spawn_server_with(socket_path.clone(), Some("default"), |cfg| {
+                seed_pty(cfg, cmd);
+                term.clone_into(&mut cfg.term);
+            });
         let stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
         let mut probe = TuiProbe::attach(stream, socket_path).await;
-
         scenario(&mut probe).await;
-
-        drop(probe);
-        shutdown_tx.send(()).ok();
-        let _ = timeout(phux_server_testkit::SERVER_JOIN_DEADLINE, server_handle).await;
+        drop(shutdown_tx);
     });
 }
 
-/// Shell out through `$SHELL`-independent `/bin/sh -c` so pipelines work.
-fn sh_c(pipeline: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.arg("-c");
-    cmd.arg(pipeline);
-    cmd
-}
-
-// ---------------------------------------------------------------------------
-// Harness self-check: the seed pane really does see the configured TERM.
-// ---------------------------------------------------------------------------
-
-/// Pin the plumbing every ghostty-run below depends on: a seed pane
-/// spawned through [`spawn_server_with_seed_cmd_and_term`] must see
-/// `TERM=ghostty` in its environment. Without this check a regression in
-/// the `ServerConfig::term` → `apply_term` path would silently turn every
-/// probe in this file into an xterm-256color control run. No host TUI
-/// needed — `/bin/sh` is POSIX-guaranteed — so this one never skips.
+/// Every ghostty run below depends on `defaults.term` reaching the seed
+/// pane's environment; otherwise they silently become xterm control runs.
 #[test]
 fn harness_seed_pane_sees_configured_term() {
-    let cmd = sh_c("printf 'TERM_IS[%s]' \"$TERM\"; sleep 5");
+    let cmd = sh("printf 'TERM_IS[%s]' \"$TERM\"; sleep 5");
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
         probe
-            .expect_screen_contains("TERM_IS[ghostty]", "seed pane TERM env")
+            .expect_screen_contains("TERM_IS[ghostty]", "seed TERM")
             .await;
     });
 }
 
-// ---------------------------------------------------------------------------
-// fzf — type-to-filter + accept. fzf reads keys from /dev/tty (the pane's
-// PTY) while its candidate list arrives on stdin.
-// ---------------------------------------------------------------------------
-
-async fn fzf_scenario(probe: &mut TuiProbe) {
-    // fzf's initial paint: prompt plus the full 3-candidate list.
-    probe
-        .expect_screen_contains("charlie", "fzf initial list")
-        .await;
-
-    // Type-to-filter: the query must echo back AND the match counter
-    // must drop to exactly one candidate. Both are round-trips: fzf
-    // received each key, reacted, and repainted.
-    probe.type_str("brav").await;
-    probe
-        .expect_screen_contains("> brav", "fzf query echo")
-        .await;
-    probe
-        .expect_screen_contains("1/3", "fzf match counter")
-        .await;
-
-    // Accept: fzf prints the selection and exits; the pipeline (and so
-    // the pane) exits with it.
-    probe.send_key(named_key(PhysicalKey::Enter)).await;
-    probe.expect_closed("fzf accept/exit").await;
-
-    eprintln!(
-        "kip_roundtrip(fzf): kitty push seen = {}, kitty query seen = {}",
-        probe.saw_kitty_push(),
-        probe.saw_kitty_query(),
-    );
-}
-
-/// fzf under `TERM=ghostty`: filter + accept must round-trip.
 #[test]
 fn fzf_filters_and_accepts_under_term_ghostty() {
-    let Some(_fzf) = require_tui("fzf_ghostty", "fzf") else {
+    if !require_tui("fzf_ghostty", "fzf") {
         return;
-    };
-    let cmd = sh_c("printf 'alpha\\nbravo\\ncharlie\\n' | fzf");
-    run_tui_probe(cmd, "ghostty", fzf_scenario);
+    }
+    let cmd = sh("printf 'alpha\\nbravo\\ncharlie\\n' | fzf");
+    run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
+        probe.expect_screen_contains("charlie", "fzf list").await;
+        probe.type_str("brav").await;
+        probe.expect_screen_contains("> brav", "fzf query").await;
+        probe
+            .expect_screen_contains("1/3", "fzf match counter")
+            .await;
+        probe.send_key(named_key(PhysicalKey::Enter)).await;
+        probe.expect_closed("fzf accept").await;
+    });
 }
 
-/// Control run: the identical fzf scenario under the shipped default
-/// `TERM=xterm-256color`. Keeps the harness honest — if this one fails
-/// too, the harness (not ghostty) is broken.
-#[test]
-fn fzf_filters_and_accepts_under_default_xterm() {
-    let Some(_fzf) = require_tui("fzf_xterm", "fzf") else {
-        return;
-    };
-    let cmd = sh_c("printf 'alpha\\nbravo\\ncharlie\\n' | fzf");
-    run_tui_probe(cmd, "xterm-256color", fzf_scenario);
-}
-
-// ---------------------------------------------------------------------------
-// less — search prompt, search jump, quit.
-// ---------------------------------------------------------------------------
-
-/// less under `TERM=ghostty`: `/137<Enter>` must jump, `q` must quit.
 #[test]
 fn less_searches_and_quits_under_term_ghostty() {
-    let Some(_less) = require_tui("less_ghostty", "less") else {
+    if !require_tui("less_ghostty", "less") {
         return;
-    };
-    // 200 numbered lines from a temp file; `-c` clears per repaint so the
-    // search jump fully redraws row 0.
+    }
     let tmp = TempDir::new().unwrap();
     let file = tmp.path().join("numbers.txt");
-    let body: String = (1..=200).fold(String::new(), |mut acc, n| {
-        use std::fmt::Write as _;
-        let _ = writeln!(acc, "line-{n}");
-        acc
-    });
-    std::fs::write(&file, body).unwrap();
+    let body: Vec<String> = (1..=200).map(|n| format!("line-{n}")).collect();
+    std::fs::write(&file, body.join("\n")).unwrap();
     let mut cmd = CommandBuilder::new("less");
-    cmd.arg(file.to_str().unwrap());
-
+    cmd.arg(&file);
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
+        probe.expect_screen_contains("line-1", "less page").await;
+        probe.type_str("/line-137").await;
         probe
-            .expect_screen_contains("line-1", "less initial page")
+            .expect_screen_contains("/line-137", "less search prompt")
             .await;
-
-        // `/` opens the search prompt; the typed pattern must echo.
-        probe.send_key(printable_key('/')).await;
-        probe.type_str("line-137").await;
-        probe
-            .expect_screen_contains("/line-137", "less search prompt echo")
-            .await;
-
-        // Enter executes the search: the match scrolls to the top row.
         probe.send_key(named_key(PhysicalKey::Enter)).await;
-        probe
-            .expect_screen_contains("line-137", "less search jump")
-            .await;
-
-        // q quits less; the pane closes.
+        probe.expect_screen_contains("line-137", "less jump").await;
         probe.send_key(printable_key('q')).await;
         probe.expect_closed("less quit").await;
-
-        eprintln!(
-            "kip_roundtrip(less): kitty push seen = {}, kitty query seen = {}",
-            probe.saw_kitty_push(),
-            probe.saw_kitty_query(),
-        );
     });
 }
 
-// ---------------------------------------------------------------------------
-// nvim — the KIP app: modern nvim probes for and enables the kitty
-// keyboard protocol when the terminal supports it, so under TERM=ghostty
-// every key below goes over the wire, pivots to CSI-u in the per-pane
-// encoder, and must be parsed back by nvim. This is the genuine
-// round-trip the bead asks for.
-// ---------------------------------------------------------------------------
-
-/// nvim under `TERM=ghostty`: insert-mode text entry and `:q!` must
-/// round-trip even after nvim enables the kitty keyboard protocol.
+/// nvim pushes kitty flags, so every key after startup crosses the wire as
+/// CSI-u and must be parsed back: the genuine KIP round trip.
 #[test]
 fn nvim_kip_insert_and_quit_under_term_ghostty() {
-    let Some(_nvim) = require_tui("nvim_ghostty", "nvim") else {
+    if !require_tui("nvim_ghostty", "nvim") {
         return;
-    };
+    }
     let mut cmd = CommandBuilder::new("nvim");
     cmd.arg("--clean");
-
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        // `--clean` still draws the default statusline: "[No Name]".
         probe
             .expect_screen_contains("[No Name]", "nvim startup")
             .await;
-
-        // Enter insert mode and type a sentinel.
         probe.send_key(printable_key('i')).await;
         probe.type_str("kip roundtrip ok").await;
         probe
-            .expect_screen_contains("kip roundtrip ok", "nvim insert-mode echo")
+            .expect_screen_contains("kip roundtrip ok", "nvim insert")
             .await;
-
-        // Esc back to normal mode, then :q! to quit without saving.
         probe.send_key(named_key(PhysicalKey::Escape)).await;
         probe.type_str(":q!").await;
-        probe
-            .expect_screen_contains(":q!", "nvim cmdline echo")
-            .await;
+        probe.expect_screen_contains(":q!", "nvim cmdline").await;
         probe.send_key(named_key(PhysicalKey::Enter)).await;
         probe.expect_closed("nvim :q!").await;
-
-        // Forensics: report whether nvim actually engaged KIP. The
-        // reaction assertions above prove the round-trip either way; this
-        // line records whether the CSI-u pivot was exercised.
-        eprintln!(
-            "kip_roundtrip(nvim): kitty push seen = {}, kitty query seen = {}",
-            probe.saw_kitty_push(),
-            probe.saw_kitty_query(),
-        );
     });
 }
 
-// ---------------------------------------------------------------------------
-// vim — classic vim (9.x): no kitty support; under TERM=ghostty it must
-// keep working in legacy/modifyOtherKeys mode.
-// ---------------------------------------------------------------------------
-
-/// Hang guard for vim's startup/input loop under CPU starvation (phux-7y78).
-/// Quiet runs finish in tens of milliseconds; this only fails a hung child.
+/// Hang guard for vim under CPU starvation (phux-7y78), not a latency bound.
 const VIM_HANG_GUARD: Duration = Duration::from_secs(60);
 
-/// vim under `TERM=ghostty`: insert-mode text entry and `:q!` must work.
 #[test]
 fn vim_insert_and_quit_under_term_ghostty() {
-    let Some(_vim) = require_tui("vim_ghostty", "vim") else {
+    if !require_tui("vim_ghostty", "vim") {
         return;
-    };
+    }
     let mut cmd = CommandBuilder::new("vim");
-    cmd.arg("-u");
-    cmd.arg("NONE");
-    cmd.arg("-i");
-    cmd.arg("NONE");
-
+    cmd.args(["-u", "NONE", "-i", "NONE"]);
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        // Wait on the pane actor's grid before sending keys. A lone `i` is
-        // consumed as wait_return "continue" rather than insert, so Enter
-        // dismisses the splash first (phux-7y78). The 60s bound is a hang
-        // guard, not a latency assertion.
+        // A lone `i` on the splash is eaten as wait_return; Enter first.
         probe
             .wait_server_screen_text("VIM - Vi IMproved", VIM_HANG_GUARD)
             .await;
@@ -843,93 +396,26 @@ fn vim_insert_and_quit_under_term_ghostty() {
         probe
             .wait_server_screen_text("kip roundtrip ok", VIM_HANG_GUARD)
             .await;
-
         probe.send_key(named_key(PhysicalKey::Escape)).await;
         probe.type_str(":q!").await;
-        probe
-            .expect_screen_contains(":q!", "vim cmdline echo")
-            .await;
+        probe.expect_screen_contains(":q!", "vim cmdline").await;
         probe.send_key(named_key(PhysicalKey::Enter)).await;
         probe.expect_closed("vim :q!").await;
-
-        eprintln!(
-            "kip_roundtrip(vim): kitty push seen = {}, kitty query seen = {}",
-            probe.saw_kitty_push(),
-            probe.saw_kitty_query(),
-        );
     });
 }
 
-// ---------------------------------------------------------------------------
-// btop — a heavy non-ncurses TUI with its own input parser.
-// ---------------------------------------------------------------------------
-
-/// btop under `TERM=ghostty`: the dashboard must render and `q` must quit.
 #[test]
 fn btop_quits_on_q_under_term_ghostty() {
-    let Some(_btop) = require_tui("btop_ghostty", "btop") else {
+    if !require_tui("btop_ghostty", "btop") {
         return;
-    };
+    }
     let mut cmd = CommandBuilder::new("btop");
-    // btop refuses to start without a UTF-8 locale; the nextest
-    // environment does not guarantee one.
+    // btop refuses to start without a UTF-8 locale.
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("LC_ALL", "en_US.UTF-8");
-
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        // The default theme titles its boxes in lowercase ("cpu", "mem",
-        // "net", "proc").
-        probe
-            .expect_screen_contains("cpu", "btop dashboard render")
-            .await;
-
+        probe.expect_screen_contains("cpu", "btop dashboard").await;
         probe.send_key(printable_key('q')).await;
         probe.expect_closed("btop quit").await;
-
-        eprintln!(
-            "kip_roundtrip(btop): kitty push seen = {}, kitty query seen = {}",
-            probe.saw_kitty_push(),
-            probe.saw_kitty_query(),
-        );
-    });
-}
-
-// ---------------------------------------------------------------------------
-// htop — the canonical phux-7vx reproducer. NOT installed on the machine
-// this harness was built on and not nix-pinned, so this probe is ignored
-// rather than probe-skipped: running it must be a deliberate act
-// (`cargo nextest run --run-ignored all -E 'test(htop_quits)'`).
-//
-// Both outcomes are informative:
-// - PASS: htop (this build of it) round-trips its keys under
-//   TERM=ghostty — evidence toward restoring the ghostty default.
-// - FAIL at `expect_closed`: the phux-7vx gap reproduced end-to-end —
-//   htop pushed kitty flags it cannot parse back, `q` was CSI-u-encoded,
-//   and the quit never fired. Keep TERM=xterm-256color.
-// ---------------------------------------------------------------------------
-
-/// htop under `TERM=ghostty`: renders, then `q` must quit (phux-7vx).
-#[test]
-#[ignore = "htop is host-provided and was absent when phux-0o8 ran; run deliberately on a host with htop"]
-fn htop_quits_on_q_under_term_ghostty() {
-    let Some(_htop) = require_tui("htop_ghostty", "htop") else {
-        return;
-    };
-    let cmd = CommandBuilder::new("htop");
-
-    run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        // htop's header always includes the load average label.
-        probe
-            .expect_screen_contains("Load average", "htop render")
-            .await;
-
-        probe.send_key(printable_key('q')).await;
-        probe.expect_closed("htop quit (phux-7vx shape)").await;
-
-        eprintln!(
-            "kip_roundtrip(htop): kitty push seen = {}, kitty query seen = {}",
-            probe.saw_kitty_push(),
-            probe.saw_kitty_query(),
-        );
     });
 }

@@ -1,25 +1,7 @@
-//! Regression for phux-ycw0: a consumer that advertises NO image protocols
-//! (the phux-web capability profile — its canvas renderer paints text, color,
-//! and the cursor only) must not receive image-protocol escapes on the wire.
-//!
-//! Per SPEC 6.2 and ADR-0034, the server adapts forwarded PTY bytes to each
-//! client's advertised capability set (`phux-server::downsample`): kitty
-//! graphics APC (`ESC _ G ... ST`), sixel DCS (`ESC P q ... ST`), and iTerm2
-//! inline images (`OSC 1337`) are dropped when the matching
-//! `ImageProtocol` bit was not advertised in HELLO. This test drives that
-//! gate end-to-end over the real wire:
-//!
-//! * a seed PTY emits all three image escapes bracketed by text markers;
-//! * a "web-profile" client (no image protocols) must receive the markers
-//!   but none of the image escapes;
-//! * a control client advertising every image protocol must receive all
-//!   three escapes verbatim — proving the fixture really emitted them and
-//!   the gate (not an accident of the pipeline) is what protects the
-//!   web-profile client.
-
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
+//! SPEC 6.2 / ADR-0034: a consumer advertising no image protocols (the
+//! phux-web profile) must receive none of kitty APC, sixel DCS, or iTerm2
+//! OSC 1337 escapes, while a control client advertising all of them receives
+//! each verbatim (proving the fixture emitted them).
 
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ImageProtocolSet};
@@ -45,32 +27,14 @@ const ITERM2_INTRO: &[u8] = b"\x1b]1337;";
 const BEGIN_MARKER: &[u8] = b"IMG_BEGIN";
 const END_MARKER: &[u8] = b"IMG_END";
 
-/// The capability profile phux-web advertises in its HELLO. Mirrors
-/// `clients/phux-web/src/session.rs::client_caps()` — phux-web is a separate
-/// (wasm-only) cargo workspace, so the profile is restated here rather than
-/// imported. Everything default except: no image protocols.
+/// phux-web's HELLO profile (`clients/phux-web/src/session.rs`): no image protocols.
 const fn web_profile_caps() -> ClientCapabilities {
     ClientCapabilities::new().with_image_protocols(ImageProtocolSet::new())
 }
 
-/// A deterministic seed command: block on `release` until both clients have
-/// finished attaching (so the burst arrives as live `RESOURCE_OUTPUT`, not
-/// snapshot replay), then print the three image-protocol escapes bracketed
-/// by text markers, then idle so the pane stays alive through teardown.
-///
-/// The gate used to be `sleep 0.5`, chosen because "attach completes in well
-/// under 100 ms". That is a bet, and under parallel test load it loses: two
-/// full HELLO/ATTACH/bootstrap handshakes can take longer than half a
-/// second, the burst then lands before a client is attached, and its bytes
-/// are folded into that client's opening snapshot instead of arriving as
-/// `RESOURCE_OUTPUT`. `drain_output_until` only accumulates
-/// `RESOURCE_OUTPUT`, so the end marker never appears and the test dies on
-/// `WIRE_RECV_TIMEOUT` — 15 seconds of nothing, reported as a timeout rather
-/// than as anything about image capabilities.
-///
-/// The release file removes the bet: the burst cannot happen until the test
-/// says so, and the test does not say so until both clients have read
-/// `BOOTSTRAP_READY`.
+/// Emit the three image escapes between text markers once `release` exists
+/// (written after both clients reach `BOOTSTRAP_READY`, so the burst arrives
+/// as live `RESOURCE_OUTPUT`, never folded into a snapshot), then idle.
 fn image_burst_command(release: &std::path::Path) -> CommandBuilder {
     let script = format!(
         "until [ -f '{}' ]; do sleep 0.01; done; \
@@ -92,15 +56,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Full opening sequence with an explicit HELLO capability set:
-/// `HELLO` -> `HELLO_OK` -> `ATTACH` -> `ATTACHED` -> `BOOTSTRAP_BEGIN` ->
-/// ... -> `BOOTSTRAP_READY`.
-///
-/// It drains all the way to `BOOTSTRAP_READY`, not just to the opening
-/// `BOOTSTRAP_BEGIN`, because that milestone is what the release file below
-/// is gating on. Stopping at `BOOTSTRAP_BEGIN` would let the burst fire
-/// while the snapshot was still streaming, which is precisely the "is this
-/// live output or replayed snapshot?" ambiguity the test is built to avoid.
+/// HELLO with `caps`, then ATTACH and drain through `BOOTSTRAP_READY`.
 async fn attach_with_caps(
     socket_path: &std::path::Path,
     session: &str,
@@ -136,9 +92,7 @@ async fn attach_with_caps(
     stream
 }
 
-/// Accumulate `RESOURCE_OUTPUT` bytes until `marker` appears. Each recv is
-/// bounded by the harness `WIRE_RECV_TIMEOUT`, so a server that never emits
-/// the marker fails loudly instead of hanging.
+/// Accumulate `RESOURCE_OUTPUT` bytes until `marker` appears.
 async fn drain_output_until(stream: &mut UnixStream, marker: &[u8]) -> Vec<u8> {
     let mut acc = Vec::new();
     while !contains(&acc, marker) {
@@ -162,9 +116,6 @@ fn no_image_escapes_forwarded_to_client_advertising_none() {
             image_burst_command(&release),
         );
 
-        // Both clients attach before the burst is released, so the escapes
-        // reach them as live RESOURCE_OUTPUT rather than as replayed
-        // snapshot bytes.
         let mut web = attach_with_caps(
             &socket_path,
             "default",
@@ -180,15 +131,11 @@ fn no_image_escapes_forwarded_to_client_advertising_none() {
         )
         .await;
 
-        // Both bootstraps are READY; nothing has been emitted yet. Fire.
         std::fs::write(&release, b"go").expect("release the image burst");
 
         let web_bytes = drain_output_until(&mut web, END_MARKER).await;
         let control_bytes = drain_output_until(&mut control, END_MARKER).await;
 
-        // Control first: the fixture really emitted every escape, and a
-        // client that advertised the protocols receives them verbatim. This
-        // is what makes the web-profile assertion below non-vacuous.
         for (name, intro) in [
             ("kitty graphics APC", KITTY_APC_INTRO),
             ("sixel DCS", SIXEL_INTRO),

@@ -1,22 +1,13 @@
-//! `DETACH_RESOURCE` retires any subscription source before acknowledging it.
+//! `DETACH_RESOURCE` retires every subscription source (session attach, spawn,
+//! explicit `ATTACH_RESOURCE`; raw, state-sync, and native) before its ack:
+//! no terminal frame follows the ack, the terminal keeps running, and a
+//! reattach reconstructs output written while detached.
 
-#![allow(
-    clippy::future_not_send,
-    reason = "Screen owns libghostty state; every scenario runs on a LocalSet"
-)]
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests"
-)]
-
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapStreamProfile, ClientCapabilities, EngineCodec,
     EngineFeatureSet, OutputMode,
 };
-use phux_protocol::ids::{GroupId, ResourceId};
+use phux_protocol::ids::ResourceId;
 use phux_protocol::input::{
     InputEvent,
     paste::{PasteEvent, PasteTrust},
@@ -26,9 +17,11 @@ use phux_protocol::wire::frame::{
 };
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown, recv_typed,
-    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
+    recv_typed, recv_until, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
+
+use super::common::connect_with;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::{Duration, timeout};
@@ -109,43 +102,28 @@ async fn attach_session(stream: &mut UnixStream) -> ResourceId {
 }
 
 async fn spawn_pane(stream: &mut UnixStream, request_id: u32) -> ResourceId {
-    send_frame(
-        stream,
-        &FrameKind::SpawnResource {
-            request_id,
-            group: GroupId::new(1),
-            command: Some(vec!["/bin/cat".to_owned()]),
-            cwd: None,
-            env: None,
-            term: None,
-            satellite: None,
-            owner_terminal: None,
-            agent_session: None,
-            initial_size: Some((80, 24)),
-            resource: None,
-        },
-    )
-    .await;
+    let spawn = Spawn {
+        initial_size: Some((80, 24)),
+        ..Spawn::command(&["/bin/cat"])
+    };
+    send_frame(stream, &spawn.frame(request_id)).await;
+    // Wait past RESOURCE_SPAWNED to the new pane's BOOTSTRAP_READY.
     let mut pane = None;
-    timeout(WIRE_RECV_TIMEOUT, async {
-        loop {
-            match recv_typed(stream).await.1 {
-                FrameKind::ResourceSpawned {
-                    result: SpawnResult::Ok(id),
-                    ..
-                } => pane = Some(id),
-                FrameKind::BootstrapReady { terminal_id, .. }
-                    if pane.as_ref() == Some(&terminal_id) =>
-                {
-                    return terminal_id;
-                }
-                FrameKind::ResourceSpawned { result, .. } => panic!("spawn failed: {result:?}"),
-                _ => {}
-            }
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::ResourceSpawned {
+            result: SpawnResult::Ok(id),
+            ..
+        } => {
+            pane = Some(id);
+            None
         }
+        FrameKind::ResourceSpawned { result, .. } => panic!("spawn failed: {result:?}"),
+        FrameKind::BootstrapReady { terminal_id, .. } if pane.as_ref() == Some(&terminal_id) => {
+            Some(terminal_id)
+        }
+        _ => None,
     })
     .await
-    .expect("spawn ready")
 }
 
 async fn explicit_attach(
@@ -280,26 +258,6 @@ async fn detach_and_check(
     }
 }
 
-async fn connect(path: &std::path::Path, caps: ClientCapabilities) -> UnixStream {
-    let mut stream = wait_for_raw_socket(path, SOCKET_CONNECT_DEADLINE).await;
-    send_frame(
-        &mut stream,
-        &FrameKind::Hello {
-            client_name: "detach-output-fence".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: caps,
-        },
-    )
-    .await;
-    assert!(matches!(
-        recv_typed(&mut stream).await.1,
-        FrameKind::HelloOk { .. }
-    ));
-    stream
-}
-
 async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("server.sock");
@@ -308,7 +266,7 @@ async fn scenario(source: Source, rounds: u32, caps: ClientCapabilities) {
         "detach",
         portable_pty::CommandBuilder::new("/bin/cat"),
     );
-    let mut stream = connect(&path, caps).await;
+    let mut stream = connect_with(&path, caps).await;
     let mut control = wait_for_socket(&path, SOCKET_CONNECT_DEADLINE).await;
     let seed = match source {
         Source::Session | Source::Spawn => attach_session(&mut stream).await,
@@ -406,7 +364,7 @@ fn detach_terminal_answers_a_late_history_request_with_cursor_status() {
             "detach",
             portable_pty::CommandBuilder::new("/bin/cat"),
         );
-        let mut stream = connect(&path, native_caps()).await;
+        let mut stream = connect_with(&path, native_caps()).await;
         send_frame(&mut stream, &attach_by_name("detach")).await;
         let history = timeout(WIRE_RECV_TIMEOUT, async {
             loop {

@@ -1,5 +1,0 @@
----
-source: crates/phux-server/tests/key_encode_snapshot.rs
-expression: "dump_encode(&ev, &terminal)"
----
-00000000 | 1b 5b 41                                         |.[A

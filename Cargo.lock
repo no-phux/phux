@@ -2684,7 +2684,6 @@ version = "0.46.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
- "phux-config",
  "phux-protocol",
  "phux-relay",
  "phux-server",

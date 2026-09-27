@@ -1,21 +1,8 @@
-//! Non-retried deterministic release gates for bootstrap reconnect and load.
+//! Every cut through the bootstrap handshake is followed by a clean fresh
+//! attach, and eight simultaneous native owners of a warm 50k-line
+//! full-screen pane (one deliberately stalled) share one generation prefix,
+//! page history independently, and see live output exactly once after READY.
 
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::future_not_send
-)]
-// The helpers below mirror the wire frames they assert on, one parameter per
-// field. Trimming the arity or borrowing the ids would make the call sites read
-// less like the frames they stand for, which is the whole point of the file.
-#![allow(
-    clippy::too_many_arguments,
-    clippy::needless_pass_by_value,
-    reason = "wire-shaped test helpers"
-)]
-// Each gate drives one long scripted scenario end to end. Splitting a scenario
-// across helpers hides the ordering it exists to pin down.
 #![allow(clippy::too_many_lines, reason = "scripted release gates")]
 
 use std::path::Path;
@@ -24,9 +11,8 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, StreamExt};
-use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapCapabilities, BootstrapProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
+    BootstrapCapabilities, ClientCapabilities, EngineCodec, EngineFeatureSet,
 };
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, ViewportInfo};
@@ -39,9 +25,10 @@ use tokio::time::timeout;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, join_after_shutdown, recv_typed, recv_until,
-    recv_until_detached, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
-    wait_for_socket,
+    recv_until_detached, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
+
+use super::common::{connect_with, contains};
 
 #[derive(Clone, Copy, Debug)]
 enum Milestone {
@@ -160,11 +147,7 @@ async fn send_live_bytes(client: &mut EstablishedClient, bytes: &[u8]) {
 
 async fn receive_established_until(client: &mut EstablishedClient, marker: &[u8]) {
     let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
-    while !client
-        .live_bytes
-        .windows(marker.len())
-        .any(|window| window == marker)
-    {
+    while !contains(&client.live_bytes, marker) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let (_, frame) = timeout(remaining, recv_typed(&mut client.stream))
             .await
@@ -251,32 +234,11 @@ struct AttachedClient {
 }
 
 async fn wait_for_native_socket(path: &Path) -> UnixStream {
-    let mut stream = wait_for_raw_socket(path, SOCKET_CONNECT_DEADLINE).await;
-    send_frame(
-        &mut stream,
-        &FrameKind::Hello {
-            client_name: "release-native-history-gate".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new().with_bootstrap(
-                BootstrapCapabilities::new().with_native(
-                    EngineCodec::LibghosttySnapshotV1,
-                    EngineFeatureSet::required_native(),
-                ),
-            ),
-        },
-    )
-    .await;
-    let (_, reply) = recv_typed(&mut stream).await;
-    assert!(matches!(
-        reply,
-        FrameKind::HelloOk {
-            selected_profile: BootstrapProfile::NativeState { .. },
-            ..
-        }
+    let caps = ClientCapabilities::new().with_bootstrap(BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttySnapshotV1,
+        EngineFeatureSet::required_native(),
     ));
-    stream
+    connect_with(path, caps).await
 }
 
 async fn attach_through_begin(
@@ -323,25 +285,21 @@ async fn attach_through_begin(
     }
 }
 
-fn record_live_output(
-    client: &mut AttachedClient,
-    terminal_id: ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    bytes: &Bytes,
-) {
+/// Append a live `RESOURCE_OUTPUT` after checking it names the client's generation.
+fn record_live_output(client: &mut AttachedClient, frame: &FrameKind) {
+    let FrameKind::ResourceOutput {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        bytes,
+        ..
+    } = frame
+    else {
+        unreachable!()
+    };
     assert_eq!(
-        terminal_id, client.terminal_id,
-        "client {}: live terminal identity",
-        client.attach_id
-    );
-    assert_eq!(
-        stream_id, client.stream_id,
-        "client {}: live stream identity",
-        client.attach_id
-    );
-    assert_eq!(
-        bootstrap_id, client.bootstrap_id,
+        (terminal_id, *stream_id, *bootstrap_id),
+        (&client.terminal_id, client.stream_id, client.bootstrap_id),
         "client {}: live generation identity",
         client.attach_id
     );
@@ -416,27 +374,17 @@ async fn finish_attach(
                 assert!(ready, "client {attach_id}: ATTACH_READY preceded READY");
                 attach_ready = true;
             }
-            FrameKind::ResourceOutput {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                bytes,
-                ..
-            } => {
+            frame @ FrameKind::ResourceOutput { .. } => {
                 assert!(
                     ready && attach_ready,
                     "client {attach_id}: live output overtook READY/ATTACH_READY"
                 );
-                record_live_output(&mut client, terminal_id, stream_id, bootstrap_id, &bytes);
+                record_live_output(&mut client, &frame);
             }
             other => panic!("client {attach_id}: unexpected attach frame: {other:?}"),
         }
-        let marker_seen = required_live_marker.is_none_or(|marker| {
-            client
-                .live_bytes
-                .windows(marker.len())
-                .any(|window| window == marker)
-        });
+        let marker_seen =
+            required_live_marker.is_none_or(|marker| contains(&client.live_bytes, marker));
         if ready && attach_ready && marker_seen {
             return client;
         }
@@ -466,84 +414,71 @@ async fn request_page(client: &mut AttachedClient, cursor: Bytes) {
     .await;
 }
 
-fn accept_history_page(
-    client: &mut AttachedClient,
-    terminal_id: ResourceId,
-    stream_id: StreamId,
-    bootstrap_id: BootstrapId,
-    page_seq: u64,
-    cursor: Bytes,
-    next_cursor: Option<Bytes>,
-    payload: Bytes,
-    rows: u32,
-) -> (u32, Option<Bytes>) {
-    assert_eq!(terminal_id, client.terminal_id);
-    assert_eq!(stream_id, client.stream_id);
-    assert_eq!(bootstrap_id, client.bootstrap_id);
+/// Check a `HISTORY_PAGE` answers this client's pending request in lineage.
+fn accept_history_page(client: &mut AttachedClient, frame: FrameKind) -> (u32, Option<Bytes>) {
+    let FrameKind::HistoryPage {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        page_seq,
+        cursor,
+        next_cursor,
+        payload,
+        rows,
+    } = frame
+    else {
+        unreachable!()
+    };
+    let id = client.attach_id;
+    assert_eq!(
+        (terminal_id, stream_id, bootstrap_id),
+        (
+            client.terminal_id.clone(),
+            client.stream_id,
+            client.bootstrap_id
+        )
+    );
     assert_eq!(
         page_seq, client.expected_page_seq,
-        "client {}: page lineage must start at 1 and advance independently",
-        client.attach_id
+        "client {id}: page lineage"
     );
     let requested = client
         .pending_cursor
         .take()
-        .unwrap_or_else(|| panic!("client {}: unsolicited history page", client.attach_id));
+        .unwrap_or_else(|| panic!("client {id}: unsolicited history page"));
     assert_eq!(
         cursor, requested,
-        "client {}: response consumed another owner's cursor",
-        client.attach_id
+        "client {id}: consumed another owner's cursor"
     );
     assert!(
         !payload.is_empty(),
-        "client {}: native history page cannot advance empty",
-        client.attach_id
+        "client {id}: empty native history page"
     );
     client.expected_page_seq += 1;
     (rows, next_cursor)
 }
 
-async fn receive_page(client: &mut AttachedClient) -> (u32, Option<Bytes>) {
+/// Read until a history page (returned) or, with `marker`, until the live
+/// bytes contain it; live output is recorded either way.
+async fn pump(client: &mut AttachedClient, marker: Option<&[u8]>) -> Option<(u32, Option<Bytes>)> {
     let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
     loop {
+        if marker.is_some_and(|m| contains(&client.live_bytes, m)) {
+            return None;
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let (_, frame) = timeout(remaining, recv_typed(&mut client.stream))
             .await
-            .unwrap_or_else(|_| panic!("client {}: history page timeout", client.attach_id));
+            .unwrap_or_else(|_| panic!("client {}: stalled", client.attach_id));
         match frame {
-            FrameKind::HistoryPage {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                page_seq,
-                cursor,
-                next_cursor,
-                payload,
-                rows,
-            } => {
-                return accept_history_page(
-                    client,
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    page_seq,
-                    cursor,
-                    next_cursor,
-                    payload,
-                    rows,
-                );
+            FrameKind::HistoryPage { .. } => {
+                let page = accept_history_page(client, frame);
+                if marker.is_none() {
+                    return Some(page);
+                }
             }
-            FrameKind::ResourceOutput {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                bytes,
-                ..
-            } => record_live_output(client, terminal_id, stream_id, bootstrap_id, &bytes),
-            other => panic!(
-                "client {}: expected history page, got {other:?}",
-                client.attach_id
-            ),
+            FrameKind::ResourceOutput { .. } => record_live_output(client, &frame),
+            other => panic!("client {}: unexpected {other:?}", client.attach_id),
         }
     }
 }
@@ -557,7 +492,7 @@ async fn finish_history(
     let mut total_rows = 0_u32;
     while let Some(requested) = cursor {
         request_page(&mut client, requested).await;
-        let (rows, next) = receive_page(&mut client).await;
+        let (rows, next) = pump(&mut client, None).await.expect("history page");
         total_rows = total_rows
             .checked_add(rows)
             .expect("50k history row count fits u32");
@@ -570,60 +505,6 @@ async fn finish_history(
     );
     let pages = client.expected_page_seq - 1;
     (client, total_rows, pages)
-}
-
-async fn receive_until_live_marker(client: &mut AttachedClient, marker: &[u8]) {
-    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
-    while !client
-        .live_bytes
-        .windows(marker.len())
-        .any(|window| window == marker)
-    {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let (_, frame) = timeout(remaining, recv_typed(&mut client.stream))
-            .await
-            .unwrap_or_else(|_| {
-                panic!(
-                    "client {}: live boundary delayed by stalled owner",
-                    client.attach_id
-                )
-            });
-        match frame {
-            FrameKind::ResourceOutput {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                bytes,
-                ..
-            } => record_live_output(client, terminal_id, stream_id, bootstrap_id, &bytes),
-            FrameKind::HistoryPage {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                page_seq,
-                cursor,
-                next_cursor,
-                payload,
-                rows,
-            } => {
-                let _ = accept_history_page(
-                    client,
-                    terminal_id,
-                    stream_id,
-                    bootstrap_id,
-                    page_seq,
-                    cursor,
-                    next_cursor,
-                    payload,
-                    rows,
-                );
-            }
-            other => panic!(
-                "client {}: expected live boundary, got {other:?}",
-                client.attach_id
-            ),
-        }
-    }
 }
 
 async fn detach_attached(mut client: AttachedClient) {
@@ -800,7 +681,7 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
         let mut active_boundaries = FuturesUnordered::new();
         for mut client in active {
             active_boundaries.push(async move {
-                receive_until_live_marker(&mut client, LIVE_BOUNDARY).await;
+                pump(&mut client, Some(LIVE_BOUNDARY)).await;
                 client
             });
         }
@@ -808,7 +689,7 @@ fn warm_50k_fullscreen_eight_clients_one_stalled_history_cache() {
         while let Some(client) = active_boundaries.next().await {
             drained.push(client);
         }
-        receive_until_live_marker(&mut stalled, LIVE_BOUNDARY).await;
+        pump(&mut stalled, Some(LIVE_BOUNDARY)).await;
         drained.push(stalled);
         drained.sort_by_key(|client| client.attach_id);
 

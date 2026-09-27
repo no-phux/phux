@@ -1,40 +1,7 @@
-//! `E2eBuilder` — the e2e flywheel harness.
-//!
-//! The hand-written tests in this crate all reimplement the same shape:
-//! spin a server on a `LocalSet`, wait for the socket, attach one or more
-//! clients, drain the `ATTACHED + TERMINAL_SNAPSHOT` opening sequence,
-//! then loop `recv_typed` into a [`Screen`] oracle with a manual
-//! `while deadline { match; if cond break }` body for every assertion.
-//! That loop is the boilerplate this module deletes.
-//!
-//! A single client is modelled by [`ClientHandle`]: it owns the wire
-//! [`UnixStream`], a replica-aware [`Screen`] oracle fed by every drained
-//! render frame, and the focused pane's [`ResourceId`] (so callers
-//! send input without re-extracting it from the snapshot each time). The
-//! handle exposes the verbs a repro actually wants:
-//!
-//!   * [`ClientHandle::send_text`] / [`ClientHandle::send_keys`] — push
-//!     input as `INPUT_PASTE` (bulk text) or `INPUT_KEY` (named keys).
-//!   * [`ClientHandle::screenshot`] — drain whatever output is already
-//!     buffered (non-blocking) into the oracle and return it.
-//!   * [`ClientHandle::wait_until`] — drain until a screen predicate holds.
-//!   * [`ClientHandle::converge`] — drain until the screen stops changing
-//!     for an idle window (the "screen settled" signal).
-//!   * [`ClientHandle::converge_until`] — same, but ignore idle gaps until
-//!     a completion predicate holds.
-//!   * [`ClientHandle::converge_until_with_timeout`] — same, with a caller
-//!     deadline (the colored perf gate's ceiling exceeds the default).
-//!   * [`ClientHandle::resize`] — send `VIEWPORT_RESIZE`.
-//!   * [`ClientHandle::detach`] / [`ClientHandle::reattach`] — drop the
-//!     stream / open a fresh one against the same session.
-//!
-//! Everything is built on the existing [`crate`] helpers
-//! (`spawn_server*`, `wait_for_socket`, `recv_typed`, `send_frame`) so a
-//! regression that only shows over the wire still shows here.
-//!
-//! `!Send` note: the inner `Screen` owns a `!Send` libghostty `Terminal`
-//! and the server runs on a `LocalSet`. Drive the builder from inside
-//! [`crate::run_local`].
+//! `E2eBuilder`: spin a server with a PTY seed pane, attach N clients, and
+//! drive them through [`ClientHandle`], which owns the wire stream and a
+//! replica-aware [`Screen`] oracle fed by every drained render frame. Drive
+//! it from inside [`crate::run_local`] (the oracle and server are `!Send`).
 
 #![allow(
     clippy::future_not_send,
@@ -51,7 +18,6 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{BootstrapId, StreamId};
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
@@ -75,9 +41,9 @@ use phux_server::ServerError;
 
 /// Default oracle viewport. Matches [`crate::attach_by_name`] (80x24) so the
 /// `Screen` dimensions line up with the `ATTACH` the harness sends.
-pub const DEFAULT_COLS: u16 = 80;
+const DEFAULT_COLS: u16 = 80;
 /// See [`DEFAULT_COLS`].
-pub const DEFAULT_ROWS: u16 = 24;
+const DEFAULT_ROWS: u16 = 24;
 
 /// How long [`ClientHandle::converge`] keeps draining after the last byte
 /// before declaring the screen settled. A short window: the broadcast
@@ -157,63 +123,27 @@ impl E2eBuilder {
         self
     }
 
-    /// Spin the server, attach the requested clients, run `body`, then
-    /// drive a clean shutdown and assert the socket was unlinked.
-    ///
-    /// MUST be called from inside [`crate::run_local`] (the server
-    /// + oracle are `!Send`).
-    ///
-    /// # Panics
-    /// Panics on any wire fault (a hung server, a malformed opening
-    /// sequence, a teardown timeout) — a repro harness should fail loudly.
+    /// Spin the server, attach the clients, run `body`, then shut down and
+    /// assert the socket was unlinked.
     pub async fn run<F, Fut>(self, body: F)
     where
         F: FnOnce(Vec<ClientHandle>) -> Fut,
         Fut: Future<Output = ()>,
     {
-        let harness = self.spawn().await;
-        let Harness {
-            clients,
-            shutdown_tx,
-            server_handle,
-            socket_path,
-            _tmp,
-        } = harness;
-        body(clients).await;
-        shutdown_tx.send(()).ok();
-        timeout(super::SERVER_JOIN_DEADLINE, server_handle)
-            .await
-            .expect("server did not shut down after the shutdown signal")
-            .expect("server task join")
-            .expect("server run_async returned an error");
-        assert!(
-            !socket_path.exists(),
-            "socket file leaked after shutdown: {} still on disk",
-            socket_path.display(),
-        );
+        let mut harness = self.spawn().await;
+        body(std::mem::take(&mut harness.clients)).await;
+        harness.shutdown().await;
     }
 
-    /// Lower-level entrypoint: spin the server + attach clients and return
-    /// the live [`Harness`] without running a closure or tearing down.
-    /// Use this when a test needs custom teardown timing (e.g. asserting
-    /// the server self-exits) or wants to add clients mid-scenario.
-    ///
-    /// # Panics
-    /// Panics if the socket never becomes connectable or any client's
-    /// opening sequence is malformed.
+    /// Spin the server and attach clients without a closure, for tests that
+    /// manage teardown or add clients mid-scenario.
     pub async fn spawn(self) -> Harness {
         let tmp = TempDir::new().expect("tempdir");
         let socket_path = tmp.path().join("phux.sock");
 
-        // A seed command is required to get a real PTY-backed pane (the
-        // no-PTY `spawn_server` path produces an empty grid). Default to a
-        // plain interactive shell (not a login shell — see phux-87rr's
-        // `login_flag_for_shell` for what that distinction now means in
-        // this codebase) so a bare `E2eBuilder::new()` still yields an
-        // interactive pane.
         let cmd = self
             .seed_cmd
-            .unwrap_or_else(|| CommandBuilder::new(default_shell()));
+            .unwrap_or_else(|| CommandBuilder::new("/bin/sh"));
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), &self.session, cmd);
 
@@ -310,7 +240,6 @@ pub struct ClientHandle {
     pub client_id: u32,
     session: String,
     viewport: ViewportInfo,
-    socket_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -773,7 +702,6 @@ impl ClientHandle {
             client_id,
             session: session.to_owned(),
             viewport,
-            socket_path: socket_path.to_owned(),
         })
     }
 
@@ -794,34 +722,6 @@ impl ClientHandle {
             },
         )
         .await;
-    }
-
-    /// Send a sequence of named keys as individual `INPUT_KEY` frames.
-    /// Each [`Key`] maps to a libghostty-atom `KeyEvent`. Use for control
-    /// keys, arrows, Enter, etc.
-    pub async fn send_keys(&mut self, keys: &[Key]) {
-        for key in keys {
-            send_frame(
-                &mut self.stream,
-                &FrameKind::InputKey {
-                    terminal_id: self.terminal_id.clone(),
-                    event: key.to_event(),
-                },
-            )
-            .await;
-        }
-    }
-
-    /// Convenience: type each char of `s` as a printable `INPUT_KEY`, then
-    /// press Enter. Mirrors a user typing a command and hitting return —
-    /// useful when the bracketed-paste path of [`Self::send_text`] would
-    /// perturb the inner program (e.g. a shell that treats a paste
-    /// differently from typed input).
-    pub async fn type_line(&mut self, s: &str) {
-        for ch in s.chars() {
-            self.send_keys(&[Key::Char(ch)]).await;
-        }
-        self.send_keys(&[Key::Enter]).await;
     }
 
     /// Drain whatever terminal render frames are *already* buffered on the
@@ -969,7 +869,7 @@ impl ClientHandle {
     /// as settle makes the latency gate race the emitter (phux-4s38). The
     /// idle window starts only after the predicate is true; first-byte
     /// timing is unchanged.
-    pub async fn converge_until<P>(&mut self, idle_ms: u64, pred: P) -> Duration
+    async fn converge_until<P>(&mut self, idle_ms: u64, pred: P) -> Duration
     where
         P: FnMut(&mut Screen) -> bool,
     {
@@ -1045,31 +945,10 @@ impl ClientHandle {
         first_byte_at.map_or(Duration::ZERO, |t| t.elapsed())
     }
 
-    /// Send a `VIEWPORT_RESIZE`. Updates the oracle dimensions to match so
-    /// subsequent `screenshot()` reads reflect the new geometry. Note the
-    /// oracle is rebuilt fresh, so prior content is dropped — callers that
-    /// care should `converge` after a resize to repopulate from the
-    /// server's reflowed output.
+    /// Send a `VIEWPORT_RESIZE` with the exact dimensions (degenerate `0`s
+    /// included) and rebuild the oracle at that size, clamped to 1x1. Prior
+    /// content is dropped; `converge` afterwards to repopulate.
     pub async fn resize(&mut self, cols: u16, rows: u16) {
-        self.viewport = ViewportInfo::new(cols, rows);
-        self.oracle.replace_screen(cols, rows);
-        send_frame(
-            &mut self.stream,
-            &FrameKind::ViewportResize {
-                viewport: self.viewport,
-            },
-        )
-        .await;
-    }
-
-    /// Send a `VIEWPORT_RESIZE` with the EXACT requested dimensions over
-    /// the wire (including degenerate `0`/extreme values) WITHOUT rebuilding
-    /// the oracle to those dims — the oracle has no concept of a
-    /// zero-dimension grid, so it is clamped to a 1-cell minimum here. Use
-    /// this in crash-hunt scenarios that need to push pathological viewports
-    /// at the server; use [`Self::resize`] for normal geometry where the
-    /// oracle should track the new size.
-    pub async fn resize_raw(&mut self, cols: u16, rows: u16) {
         self.viewport = ViewportInfo::new(cols, rows);
         self.oracle.replace_screen(cols.max(1), rows.max(1));
         send_frame(
@@ -1081,31 +960,9 @@ impl ClientHandle {
         .await;
     }
 
-    /// Detach by dropping the wire stream (a hard client departure). The
-    /// server reaps the connection on EOF. Consumes the handle's stream;
-    /// call [`Self::reattach`]-style flows via the [`Harness`] instead, or
-    /// use [`Self::send_detach`] for a graceful `DETACH`.
+    /// Detach by dropping the wire stream (a hard client departure).
     pub fn detach(self) {
         drop(self.stream);
-    }
-
-    /// Send a graceful `DETACH` frame (the server replies `DETACHED` and
-    /// closes). Leaves the handle intact so a test can assert on the
-    /// `DETACHED`/EOF afterward.
-    pub async fn send_detach(&mut self) {
-        send_frame(&mut self.stream, &FrameKind::Detach).await;
-    }
-
-    /// Open a fresh connection to the same session and return a new
-    /// handle, leaving `self` untouched. Models a client reconnecting
-    /// (e.g. after a network blip) without losing the original.
-    ///
-    /// # Panics
-    /// Panics if the re-attach handshake is malformed or times out.
-    pub async fn reattach(&self) -> Self {
-        Self::attach(&self.socket_path, &self.session, self.viewport)
-            .await
-            .expect("reattach")
     }
 
     async fn receive_before(&mut self, deadline: tokio::time::Instant) -> ReceiveBefore {
@@ -1113,13 +970,6 @@ impl ClientHandle {
             .receive_before(&mut self.stream, deadline)
             .await
     }
-}
-
-/// Pick a deterministic, banner-free shell for seed panes. `/bin/sh`
-/// avoids the interactive-shell rc noise (p10k, direnv) that would
-/// pollute screenshot assertions.
-fn default_shell() -> String {
-    "/bin/sh".to_owned()
 }
 
 /// Bytes for the heavy-colored burst the perf gate drives.
@@ -1169,236 +1019,6 @@ pub fn colored_burst_command(burst: &Path, gate: &Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.args(["-c", &script]);
     cmd
-}
-
-/// A named key for [`ClientHandle::send_keys`]. Covers the keys a repro
-/// actually drives; falls through to [`Key::Char`] for printables. The
-/// mapping to a [`KeyEvent`] mirrors the `ascii_key`/`enter_key` helpers
-/// the hand-written tests define.
-#[derive(Debug, Clone, Copy)]
-pub enum Key {
-    /// A printable character (its own `text` + unshifted codepoint).
-    Char(char),
-    /// Return / Enter.
-    Enter,
-    /// Tab.
-    Tab,
-    /// Escape.
-    Esc,
-    /// Backspace.
-    Backspace,
-    /// Arrow up/down/left/right.
-    Up,
-    /// See [`Key::Up`].
-    Down,
-    /// See [`Key::Up`].
-    Left,
-    /// See [`Key::Up`].
-    Right,
-    /// Ctrl + an ASCII letter (e.g. `Ctrl('c')` for SIGINT).
-    Ctrl(char),
-}
-
-impl Key {
-    /// Lower a named key into a wire [`KeyEvent`].
-    fn to_event(self) -> KeyEvent {
-        let press =
-            |key: PhysicalKey, mods: ModSet, text: Option<String>, cp: Option<u32>| KeyEvent {
-                action: KeyAction::Press,
-                key,
-                mods,
-                consumed_mods: ModSet::empty(),
-                composing: false,
-                text,
-                unshifted_codepoint: cp,
-            };
-        match self {
-            Self::Char(c) => press(
-                physical_for_char(c),
-                ModSet::empty(),
-                Some(c.to_string()),
-                Some(c as u32),
-            ),
-            Self::Enter => press(PhysicalKey::Enter, ModSet::empty(), None, None),
-            Self::Tab => press(PhysicalKey::Tab, ModSet::empty(), None, None),
-            Self::Esc => press(PhysicalKey::Escape, ModSet::empty(), None, None),
-            Self::Backspace => press(PhysicalKey::Backspace, ModSet::empty(), None, None),
-            Self::Up => press(PhysicalKey::ArrowUp, ModSet::empty(), None, None),
-            Self::Down => press(PhysicalKey::ArrowDown, ModSet::empty(), None, None),
-            Self::Left => press(PhysicalKey::ArrowLeft, ModSet::empty(), None, None),
-            Self::Right => press(PhysicalKey::ArrowRight, ModSet::empty(), None, None),
-            Self::Ctrl(c) => {
-                let lower = c.to_ascii_lowercase();
-                press(
-                    physical_for_char(lower),
-                    ModSet::CTRL,
-                    None,
-                    Some(lower as u32),
-                )
-            }
-        }
-    }
-}
-
-/// Map an ASCII char to its W3C physical key code. Letters and digits are
-/// covered; anything else degrades to [`PhysicalKey::Unidentified`] (the
-/// `text` field still carries the character, so printables still type).
-const fn physical_for_char(c: char) -> PhysicalKey {
-    match c.to_ascii_lowercase() {
-        'a' => PhysicalKey::A,
-        'b' => PhysicalKey::B,
-        'c' => PhysicalKey::C,
-        'd' => PhysicalKey::D,
-        'e' => PhysicalKey::E,
-        'f' => PhysicalKey::F,
-        'g' => PhysicalKey::G,
-        'h' => PhysicalKey::H,
-        'i' => PhysicalKey::I,
-        'j' => PhysicalKey::J,
-        'k' => PhysicalKey::K,
-        'l' => PhysicalKey::L,
-        'm' => PhysicalKey::M,
-        'n' => PhysicalKey::N,
-        'o' => PhysicalKey::O,
-        'p' => PhysicalKey::P,
-        'q' => PhysicalKey::Q,
-        'r' => PhysicalKey::R,
-        's' => PhysicalKey::S,
-        't' => PhysicalKey::T,
-        'u' => PhysicalKey::U,
-        'v' => PhysicalKey::V,
-        'w' => PhysicalKey::W,
-        'x' => PhysicalKey::X,
-        'y' => PhysicalKey::Y,
-        'z' => PhysicalKey::Z,
-        '0' => PhysicalKey::Digit0,
-        '1' => PhysicalKey::Digit1,
-        '2' => PhysicalKey::Digit2,
-        '3' => PhysicalKey::Digit3,
-        '4' => PhysicalKey::Digit4,
-        '5' => PhysicalKey::Digit5,
-        '6' => PhysicalKey::Digit6,
-        '7' => PhysicalKey::Digit7,
-        '8' => PhysicalKey::Digit8,
-        '9' => PhysicalKey::Digit9,
-        ' ' => PhysicalKey::Space,
-        _ => PhysicalKey::Unidentified,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Timed input-sequence replay (item 2).
-// ---------------------------------------------------------------------------
-
-/// One step in a timed input script: wait `delay`, then deliver `input`.
-#[derive(Debug, Clone)]
-pub struct ScriptStep {
-    /// How long to sleep before this step's input is sent.
-    pub delay: Duration,
-    /// The input to deliver.
-    pub input: ScriptInput,
-}
-
-/// The payload of a [`ScriptStep`].
-#[derive(Debug, Clone)]
-pub enum ScriptInput {
-    /// Bulk text via `INPUT_PASTE`.
-    Text(String),
-    /// A sequence of named keys via `INPUT_KEY`.
-    Keys(Vec<Key>),
-    /// A viewport resize.
-    Resize(u16, u16),
-}
-
-/// A timed input script: an ordered list of `(delay, input)` steps. The
-/// replay driver sleeps the delay then delivers each step against a
-/// [`ClientHandle`], so a lag repro reads as a literal timeline.
-#[derive(Debug, Clone, Default)]
-pub struct InputScript {
-    steps: Vec<ScriptStep>,
-}
-
-impl InputScript {
-    /// An empty script.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Append a `delay`-then-text step.
-    #[must_use]
-    pub fn text(mut self, delay: Duration, text: &str) -> Self {
-        self.steps.push(ScriptStep {
-            delay,
-            input: ScriptInput::Text(text.to_owned()),
-        });
-        self
-    }
-
-    /// Append a `delay`-then-keys step.
-    #[must_use]
-    pub fn keys(mut self, delay: Duration, keys: Vec<Key>) -> Self {
-        self.steps.push(ScriptStep {
-            delay,
-            input: ScriptInput::Keys(keys),
-        });
-        self
-    }
-
-    /// Append a `delay`-then-resize step.
-    #[must_use]
-    pub fn resize(mut self, delay: Duration, cols: u16, rows: u16) -> Self {
-        self.steps.push(ScriptStep {
-            delay,
-            input: ScriptInput::Resize(cols, rows),
-        });
-        self
-    }
-
-    /// The number of steps queued.
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.steps.len()
-    }
-
-    /// Whether the script has no steps.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.steps.is_empty()
-    }
-
-    /// Replay the script against `client`, honouring each step's delay.
-    /// Does NOT drain output between steps — call
-    /// [`ClientHandle::converge`] or [`ClientHandle::wait_until`] after to
-    /// observe the result, or interleave manually for tighter timing.
-    pub async fn replay(&self, client: &mut ClientHandle) {
-        for step in &self.steps {
-            if !step.delay.is_zero() {
-                tokio::time::sleep(step.delay).await;
-            }
-            match &step.input {
-                ScriptInput::Text(t) => client.send_text(t).await,
-                ScriptInput::Keys(keys) => client.send_keys(keys).await,
-                ScriptInput::Resize(c, r) => client.resize(*c, *r).await,
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod colored_burst_tests {
-    use super::colored_burst_bytes;
-
-    #[test]
-    fn colored_burst_bytes_follow_the_cell_formula() {
-        let bytes = colored_burst_bytes(3, 2, 2);
-        let text = String::from_utf8(bytes).expect("ascii VT");
-        assert!(text.contains("COLORDONE"));
-        assert_eq!(text.matches("\u{1b}[H").count(), 2);
-        // First cell of gen 1, row 1, col 1: n = 16 + (1+1+1)%216 = 19.
-        assert!(text.contains("\u{1b}[38;5;19mX"));
-        assert_eq!(colored_burst_bytes(3, 2, 2), colored_burst_bytes(3, 2, 2));
-    }
 }
 
 #[cfg(test)]
@@ -1610,7 +1230,6 @@ mod client_oracle_tests {
                 client_id: 1,
                 session: "test".to_owned(),
                 viewport: ViewportInfo::new(20, 2),
-                socket_path: std::path::PathBuf::new(),
             };
 
             let replacement = encode_frame(&begin(&terminal_id, 2, 24, 3));

@@ -1,484 +1,110 @@
-//! Wire-level integration test for the `AgentEvent::Asked` stream
-//! (SPEC §7.5, ADR-0022 'events', `phux-2sl6`).
-//!
-//! `Asked` is the control-plane carrier for a pending human-answerable
-//! question: an in-pane agent that has blocked for input signals it, and a
-//! subscriber on the `EVENT` stream receives the question (id, text,
-//! suggested answers) without re-deriving it from the grid. This test pins
-//! the server half of that contract from the wire's point of view:
-//!
-//! 1. Pre-seed a PTY-backed pane with a shell that waits on a release file
-//!    (so the client provably wins the race to subscribe), then sets its
-//!    terminal title via OSC 2 to a `phux-ask` sentinel and idles so the
-//!    marker stays set.
-//! 2. Attach a client and `SUBSCRIBE_EVENTS { terminal: None }`
-//!    (server-wide).
-//! 3. Assert an `Asked` event arrives carrying the parsed id, question, and
-//!    suggestion list.
-//!
-//! v1 ask-trigger is OSC-driven. libghostty-vt does not surface OSC 9 / OSC
-//! 777 desktop-notification escapes through its Rust API — title (OSC 0/2),
-//! pwd (OSC 7), and bell are the only user-notification signals it exposes —
-//! so an agent signals a pending ask by setting its title to a `phux-ask`
-//! sentinel. Full agent-state detection (manifests / hooks / OSC-9
-//! surfacing) is the follow-up phux-2sl6.4.
-//!
-//! The release file exists because the event stream is a best-effort
-//! accelerator: a marker set before the subscription lands is legitimately
-//! dropped, so the seed defers its observable output until the client has
-//! subscribed. "Subscribed" has to mean *the server processed the subscribe*
-//! — `SUBSCRIBE_EVENTS` is answered with no frame, so the test forces the
-//! ordering with a following command whose reply it waits for.
+//! `AgentEvent::Asked` (SPEC §7.5): a pending human-answerable question
+//! reaches `EVENT` subscribers from either a `phux-ask` title sentinel or a
+//! `REPORT_ASKED` hook, and one question from both sources is told once
+//! (ADR-0036 ladder).
 
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-
-use std::time::Duration;
-
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
-use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, ErrorCode, FrameKind, TYPE_ATTACHED, TYPE_HELLO_OK,
-};
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{AgentEvent, Command, CommandResult, ErrorCode, FrameKind};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
-    recv_command_result, recv_typed, recv_until_deadline, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_raw_socket,
+    WIRE_RECV_TIMEOUT, join_after_shutdown, recv_until, recv_until_deadline, run_local, send_frame,
+    spawn_server_with_seed_cmd,
 };
-async fn negotiate(stream: &mut UnixStream) {
+
+use crate::common::{attach_pane, connect_as, full_caps, gated_seed, subscribe_all};
+
+fn report_asked(terminal: ResourceId, id: &str, question: &str, suggestions: &[&str]) -> Command {
+    Command::ReportAsked {
+        terminal_id: terminal,
+        id: id.to_owned(),
+        question: question.to_owned(),
+        suggestions: suggestions.iter().map(|s| (*s).to_owned()).collect(),
+        elapsed_seconds: None,
+    }
+}
+
+/// Send `command` and return its reply plus every `Asked` that preceded it.
+/// The server queues an `Asked` before answering, so "none before the reply"
+/// is an exact negative.
+async fn asked_before_reply(
+    stream: &mut UnixStream,
+    request_id: u32,
+    command: Command,
+) -> (CommandResult, Vec<AgentEvent>) {
     send_frame(
         stream,
-        &FrameKind::Hello {
-            client_name: "phux-agent-asked-test".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: ClientCapabilities::new()
-                .with_color_support(ColorSupport::TrueColor)
-                .with_layers(LayerSet::all()),
+        &FrameKind::Command {
+            request_id,
+            command,
         },
     )
     .await;
-    let (type_byte, frame) = recv_typed(stream).await;
-    assert_eq!(type_byte, TYPE_HELLO_OK);
-    assert!(matches!(frame, FrameKind::HelloOk { .. }));
-}
-
-/// A shell that defers its observable output so the test client wins the
-/// race to `SUBSCRIBE_EVENTS` before the marker fires. After ~250ms it sets
-/// the terminal title via OSC 2 to a `phux-ask` sentinel carrying an id, a
-/// question, and a `?s=` suggestion list, then sleeps so the title (and thus
-/// the pending ask) stays set while the test collects events.
-///
-/// The OSC 2 payload is `phux-ask[q1]:Deploy to prod??s=Yes|No|Hold` — the
-/// `phux-ask` prefix, the `[q1]` id, the `Deploy to prod?` question, and the
-/// `Yes`/`No`/`Hold` suggestions. (The doubled `??` is literal: one `?`
-/// closes the question text, the second begins the `?s=` suffix.)
-fn seed_with_ask_title(release: &std::path::Path) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.arg("-c");
-    // `printf` is POSIX. `\033]2;...\007` is OSC 2 set-title. The title must
-    // not fire until the client has subscribed, or the event it is waiting
-    // for happens before it is listening.
-    //
-    // This was `sleep 0.25`, which is the same shape as the flakes fixed in
-    // phux-w266: it bets that a subscribe completes inside a fixed window,
-    // and loses that bet under parallel test load. The barrier removes the
-    // bet — but only if the file is written once the server has *processed*
-    // the subscribe, not merely once the client has sent it. See the barrier
-    // comment at the write site.
-    //
-    // The trailing sleep was `2`, which was a second, subtler race: it bounds
-    // how long the ask marker stays set, and the collector waits up to
-    // `WIRE_RECV_TIMEOUT` (15s). Under load the pane could exit first, which
-    // reaps the session, self-exits the server, and fails the test with
-    // "early eof" rather than with anything about asks. The pane only has to
-    // outlive the collection window, so it now comfortably does.
-    cmd.arg(format!(
-        "until [ -f '{}' ]; do sleep 0.01; done; \
-         printf '\\033]2;phux-ask[q1]:Deploy to prod??s=Yes|No|Hold\\007'; \
-         sleep 60",
-        release.display()
-    ));
-    cmd
-}
-
-/// A pane that stays alive until the test's own shutdown signal reaps it.
-///
-/// Tests whose subject is a *command* (`REPORT_ASKED`) still need a live
-/// terminal to name, but they assert nothing about the pane. A seed that
-/// exits on its own schedule turns that scaffolding into a race: when the
-/// last pane dies the session is reaped and the server self-exits, dropping
-/// every client connection, and the next `recv_typed` panics with "early
-/// eof" — a failure that says nothing about the feature under test. The
-/// park is long enough that no bounded wait in this file can outlast it,
-/// and short enough to be reaped by the harness if a test ever leaks one.
-fn park_until_shutdown() -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.arg("-c");
-    cmd.arg("sleep 600");
-    cmd
-}
-
-/// Drain `EVENT` frames until an `Asked` event is seen, or `deadline`
-/// elapses. Non-`EVENT` frames (`ATTACHED`, `TERMINAL_SNAPSHOT`,
-/// `RESOURCE_OUTPUT`, etc.) are skipped — we assert on the event stream.
-async fn collect_until_asked(stream: &mut UnixStream, deadline: Duration) -> Option<AgentEvent> {
-    let end = tokio::time::Instant::now() + deadline;
-    recv_until_deadline(stream, end, |_, frame| match frame {
-        FrameKind::Event { event, .. } if matches!(event, AgentEvent::Asked { .. }) => Some(event),
+    let mut asked = Vec::new();
+    let result = recv_until(stream, |_, frame| match frame {
+        FrameKind::CommandResult {
+            request_id: got,
+            result,
+        } if got == request_id => Some(result),
+        FrameKind::Event {
+            event: event @ AgentEvent::Asked { .. },
+            ..
+        } => {
+            asked.push(event);
+            None
+        }
         _ => None,
     })
-    .await
-}
-
-async fn collect_result_and_asked(
-    stream: &mut UnixStream,
-    request_id: u32,
-    deadline: Duration,
-) -> (Option<CommandResult>, Option<AgentEvent>) {
-    let end = tokio::time::Instant::now() + deadline;
-    let mut result = None;
-    let mut asked = None;
-    while result.is_none() || asked.is_none() {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
-        match frame {
-            FrameKind::CommandResult {
-                request_id: got,
-                result: got_result,
-            } if got == request_id => result = Some(got_result),
-            FrameKind::Event { event, .. } if matches!(event, AgentEvent::Asked { .. }) => {
-                asked = Some(event);
-            }
-            _ => {}
-        }
-    }
+    .await;
     (result, asked)
 }
 
-/// A subscribed client receives an `Asked` agent event when the seed pane
-/// sets a `phux-ask` title sentinel, carrying the parsed id, question, and
-/// suggestions (SPEC §7.5, phux-2sl6).
+/// The title sentinel `phux-ask[q1]:Deploy to prod??s=Yes|No|Hold` parses into
+/// an `Asked`; the hook then reporting the same question emits nothing new.
 #[test]
-fn subscribed_client_receives_asked_event_from_ask_title() {
+fn ask_title_sentinel_emits_asked_and_a_repeating_hook_does_not_re_emit() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-
         let release = tmp.path().join("release");
-        let cmd = seed_with_ask_title(&release);
+        let seed = gated_seed(
+            &release,
+            "printf '\\033]2;phux-ask[q1]:Deploy to prod??s=Yes|No|Hold\\007'; sleep 60",
+        );
         let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
+            spawn_server_with_seed_cmd(socket_path.clone(), "demo", seed);
+        let (mut stream, _) = connect_as(&socket_path, "agent-asked", full_caps()).await;
+        let pane = attach_pane(&mut stream, "demo").await;
+        subscribe_all(&mut stream, 1).await;
+        std::fs::write(&release, b"go").unwrap();
 
-        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        negotiate(&mut stream).await;
-
-        // ---- ATTACH ---- (so the client has an `attached` mailbox the
-        // event fanout can target).
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (type_byte, attached) = recv_typed(&mut stream).await;
-        assert_eq!(
-            type_byte, TYPE_ATTACHED,
-            "first server-to-client frame must be ATTACHED",
-        );
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED to carry a snapshot");
-        };
-
-        // ---- SUBSCRIBE_EVENTS (server-wide) ----
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeEvents {
-                terminal: None,
-                after_seq: None,
-            },
-        )
-        .await;
-
-        // Wait until the server has *processed* the subscribe before letting
-        // the seed emit the title.
-        //
-        // The previous barrier released on `send_frame` returning, which only
-        // proves the bytes left this end. `SUBSCRIBE_EVENTS` carries no
-        // request_id and is answered with no frame, so there is nothing to
-        // wait for directly -- and under parallel load the title could still
-        // fire before `handle_subscribe_events` ran, dropping the event the
-        // test exists to observe. That is the residual half of the phux-w266
-        // race class: not "the pane died too early" but "the event fired
-        // before the observer was registered".
-        //
-        // A command that *does* reply, sent after the subscribe on the same
-        // connection, is the barrier: the per-connection frame loop handles
-        // frames in order, so a `CommandResult` for this request proves the
-        // subscribe ahead of it is already installed. `GetTerminalState` is
-        // read-only, so waiting on it changes nothing else.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 1,
-                command: Command::GetTerminalState {
-                    terminal_id: snapshot.focused_resource,
-                    include_scrollback: false,
-                    max_scrollback_lines: 0,
-                },
-            },
-        )
-        .await;
-        let barrier = timeout(WIRE_RECV_TIMEOUT, recv_command_result(&mut stream, 1))
-            .await
-            .expect("the server must answer GET_TERMINAL_STATE before the collection window");
-        assert!(
-            !matches!(barrier, CommandResult::Error { .. }),
-            "the subscribe barrier must succeed, got {barrier:?}",
-        );
-
-        // Only now let the seed emit the ask title.
-        std::fs::write(&release, b"go").expect("release the ask title");
-
-        // ---- collect until the Asked event arrives ----
-        let asked = collect_until_asked(&mut stream, WIRE_RECV_TIMEOUT).await;
-
-        let Some(AgentEvent::Asked {
-            id,
-            question,
-            suggestions,
-            elapsed_seconds,
-        }) = asked
-        else {
-            panic!("expected an Asked event from the phux-ask title; got {asked:?}");
-        };
-        assert_eq!(id, "q1", "Asked.id must be the `[q1]` segment");
-        assert_eq!(
-            question, "Deploy to prod?",
-            "Asked.question must be the title body before `?s=`",
-        );
-        assert_eq!(
-            suggestions,
-            vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
-            "Asked.suggestions must be the `?s=`-delimited options, in order",
-        );
-        assert_eq!(
-            elapsed_seconds, None,
-            "v1 does not track elapsed-since-ask server-side",
-        );
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
-    });
-}
-
-#[test]
-fn report_asked_command_emits_asked_event() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-
-        // The pane exists only to give REPORT_ASKED a live terminal to name;
-        // nothing here asserts on its death. It must nevertheless outlive
-        // the collection window below, which is bounded by
-        // `WIRE_RECV_TIMEOUT` (15s). This was `sleep 2` — a pane that could
-        // exit mid-window, reaping the session, self-exiting the server, and
-        // failing the test with "early eof" rather than with anything about
-        // asks. `park_until_shutdown` is not a longer bet; it removes the
-        // bet, exactly as the ask-title seed above already does.
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", park_until_shutdown());
-
-        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        negotiate(&mut stream).await;
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (type_byte, attached) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_ATTACHED);
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeEvents {
-                terminal: None,
-                after_seq: None,
-            },
-        )
-        .await;
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 7,
-                command: Command::ReportAsked {
-                    terminal_id: snapshot.focused_resource,
-                    id: "hook-q1".to_owned(),
-                    question: "Approve release?".to_owned(),
-                    suggestions: vec!["Ship".to_owned(), "Hold".to_owned()],
-                    elapsed_seconds: Some(12),
-                },
-            },
-        )
-        .await;
-        let (result, asked) = collect_result_and_asked(&mut stream, 7, WIRE_RECV_TIMEOUT).await;
-        assert_eq!(result, Some(CommandResult::Ok));
-        let Some(AgentEvent::Asked {
-            id,
-            question,
-            suggestions,
-            elapsed_seconds,
-        }) = asked
-        else {
-            panic!("expected an Asked event from REPORT_ASKED; got {asked:?}");
-        };
-        assert_eq!(id, "hook-q1");
-        assert_eq!(question, "Approve release?");
-        assert_eq!(suggestions, vec!["Ship".to_owned(), "Hold".to_owned()]);
-        assert_eq!(elapsed_seconds, Some(12));
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
-    });
-}
-
-/// Collect until `request_id`'s `CommandResult`, reporting whether any
-/// `Asked` event arrived ahead of it.
-///
-/// The ordering this leans on is exact, not a race: the server broadcasts an
-/// `Asked` into the client's outbound queue *before* it answers the command,
-/// and one connection's writer drains that queue in order. So an ask that was
-/// going to be emitted is already on the wire by the time the `CommandResult`
-/// lands, and "no `Asked` before the result" is a sound negative.
-async fn asked_events_before_result(
-    stream: &mut UnixStream,
-    request_id: u32,
-    deadline: Duration,
-) -> (Option<CommandResult>, usize) {
-    let end = tokio::time::Instant::now() + deadline;
-    let mut asked = 0;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return (None, asked);
-        }
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            return (None, asked);
-        };
-        match frame {
-            FrameKind::CommandResult {
-                request_id: got,
-                result,
-            } if got == request_id => return (Some(result), asked),
+        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        let asked = recv_until_deadline(&mut stream, deadline, |_, frame| match frame {
             FrameKind::Event {
-                event: AgentEvent::Asked { .. },
+                event: event @ AgentEvent::Asked { .. },
                 ..
-            } => {
-                asked += 1;
-            }
-            _ => {}
-        }
-    }
-}
-
-/// One question, both tiers of the ADR-0036 ladder, ONE event.
-///
-/// An agent that sets the `phux-ask` title *and* reports the same question
-/// through the hook is describing a single pending ask. Before the sentinel
-/// joined the ladder these were two unrelated producers — the title path
-/// emitted `Asked` straight out of the pane actor while the hook path went
-/// through the arbiter — so the subscriber saw the question twice and the
-/// "hook outranks sentinel" rung existed only in the ADR. This pins the fix
-/// from the wire's point of view.
-#[test]
-fn a_hook_repeating_the_sentinels_question_does_not_re_emit_it() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-
-        let release = tmp.path().join("release");
-        let cmd = seed_with_ask_title(&release);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-
-        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        negotiate(&mut stream).await;
-
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (type_byte, attached) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_ATTACHED);
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED to carry a snapshot");
-        };
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeEvents {
-                terminal: None,
-                after_seq: None,
-            },
-        )
+            } => Some(event),
+            _ => None,
+        })
         .await;
-        // Same subscribe barrier as the sentinel test above: a command that
-        // replies proves the subscribe ahead of it is installed.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 1,
-                command: Command::GetTerminalState {
-                    terminal_id: snapshot.focused_resource.clone(),
-                    include_scrollback: false,
-                    max_scrollback_lines: 0,
-                },
-            },
-        )
-        .await;
-        timeout(WIRE_RECV_TIMEOUT, recv_command_result(&mut stream, 1))
-            .await
-            .expect("the server must answer GET_TERMINAL_STATE before the collection window");
-
-        std::fs::write(&release, b"go").expect("release the ask title");
-
-        // Tier 2 fires first: the pane's title sentinel.
-        let asked = collect_until_asked(&mut stream, WIRE_RECV_TIMEOUT).await;
-        let Some(AgentEvent::Asked { ref id, .. }) = asked else {
-            panic!("expected an Asked event from the phux-ask title; got {asked:?}");
-        };
-        assert_eq!(id, "q1");
-
-        // Now the same agent's hook reports the SAME question. The hook
-        // outranks the sentinel and takes ownership of the ask, but it is not
-        // a new question, so nothing new goes on the wire.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 9,
-                command: Command::ReportAsked {
-                    terminal_id: snapshot.focused_resource,
-                    id: "q1".to_owned(),
-                    question: "Deploy to prod?".to_owned(),
-                    suggestions: vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
-                    elapsed_seconds: None,
-                },
-            },
-        )
-        .await;
-        let (result, duplicates) =
-            asked_events_before_result(&mut stream, 9, WIRE_RECV_TIMEOUT).await;
         assert_eq!(
-            result,
-            Some(CommandResult::Ok),
-            "REPORT_ASKED must still succeed: the ask is accepted, just already told",
+            asked,
+            Some(AgentEvent::Asked {
+                id: "q1".to_owned(),
+                question: "Deploy to prod?".to_owned(),
+                suggestions: vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
+                elapsed_seconds: None,
+            })
         );
-        assert_eq!(
-            duplicates, 0,
-            "one question reported by two sources must reach a subscriber once",
+
+        let hook = report_asked(pane, "q1", "Deploy to prod?", &["Yes", "No", "Hold"]);
+        let (result, duplicates) = asked_before_reply(&mut stream, 9, hook).await;
+        assert_eq!(result, CommandResult::Ok, "the hook still owns the ask");
+        assert!(
+            duplicates.is_empty(),
+            "one question is told once: {duplicates:?}"
         );
 
         drop(stream);
@@ -487,46 +113,49 @@ fn a_hook_repeating_the_sentinels_question_does_not_re_emit_it() {
 }
 
 #[test]
-fn report_asked_rejects_empty_question() {
+fn report_asked_emits_asked_and_rejects_an_empty_question() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-
-        // Same reasoning as `report_asked_command_emits_asked_event`: the
-        // pane is scaffolding, and `recv_command_result` here is not even
-        // deadline-bounded, so a pane that outlives nothing in particular is
-        // the only safe shape.
+        let mut park = CommandBuilder::new("/bin/sh");
+        park.args(["-c", "sleep 600"]);
         let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", park_until_shutdown());
+            spawn_server_with_seed_cmd(socket_path.clone(), "demo", park);
+        let (mut stream, _) = connect_as(&socket_path, "agent-asked", full_caps()).await;
+        let pane = attach_pane(&mut stream, "demo").await;
+        subscribe_all(&mut stream, 1).await;
 
-        let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        negotiate(&mut stream).await;
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (_type_byte, attached) = recv_typed(&mut stream).await;
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
+        let mut hook = report_asked(
+            pane.clone(),
+            "hook-q1",
+            "Approve release?",
+            &["Ship", "Hold"],
+        );
+        if let Command::ReportAsked {
+            elapsed_seconds, ..
+        } = &mut hook
+        {
+            *elapsed_seconds = Some(12);
+        }
+        let (result, asked) = asked_before_reply(&mut stream, 7, hook).await;
+        assert_eq!(result, CommandResult::Ok);
+        assert_eq!(
+            asked,
+            [AgentEvent::Asked {
+                id: "hook-q1".to_owned(),
+                question: "Approve release?".to_owned(),
+                suggestions: vec!["Ship".to_owned(), "Hold".to_owned()],
+                elapsed_seconds: Some(12),
+            }]
+        );
 
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 8,
-                command: Command::ReportAsked {
-                    terminal_id: snapshot.focused_resource,
-                    id: "bad".to_owned(),
-                    question: "   ".to_owned(),
-                    suggestions: Vec::new(),
-                    elapsed_seconds: None,
-                },
-            },
-        )
-        .await;
-        let CommandResult::Error { code, message } = recv_command_result(&mut stream, 8).await
-        else {
-            panic!("empty REPORT_ASKED question must be rejected");
+        let (result, _) =
+            asked_before_reply(&mut stream, 8, report_asked(pane, "bad", "   ", &[])).await;
+        let CommandResult::Error { code, message } = result else {
+            panic!("an empty question must be rejected: {result:?}");
         };
         assert_eq!(code, ErrorCode::InvalidCommand);
-        assert!(message.contains("question"));
+        assert!(message.contains("question"), "{message}");
 
         drop(stream);
         join_after_shutdown(shutdown_tx, server_handle).await;

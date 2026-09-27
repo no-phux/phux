@@ -1,108 +1,52 @@
-//! Wire-level integration test for the server-side agent-state detector
-//! (ADR-0046).
-//!
-//! The detector is the *producer* the `phux.agent/v1` record never had. Before
-//! it, the only writer was a human running `phux agent set`, so `state` was
-//! `unknown` forever and a consumer's sidebar was blind. This test pins the
-//! whole chain from the wire's point of view — the only vantage point that
-//! actually matters:
-//!
-//! 1. Seed a PTY-backed pane running a **fake agent**: a shell script that
-//!    paints a prompt box shaped like a real permission dialog, then idles so
-//!    the screen stays put.
-//! 2. Attach, and `SUBSCRIBE_METADATA` on the pane's `phux.agent/v1` key.
-//! 3. Wait for the pane to have actually painted ([`await_pane_painted`]) —
-//!    a barrier, so the detector's deadline measures the detector and not the
-//!    kernel's willingness to schedule a freshly spawned `/bin/sh`.
-//! 4. Assert a `METADATA_CHANGED` arrives carrying `state: "blocked"`.
-//!
-//! Note what this exercises that a unit test cannot: the actor's detector
-//! timer actually fires; `foreground_pgid` + `process_argv` actually resolve a
-//! real process through a real PTY; the identity comes back as `claude`
-//! because the fake agent is *named* `claude` on disk; the region extractor
-//! runs against a real libghostty grid projection; and the drain performs the
-//! arbitration and the `metadata_set` that fans out to a real L3 subscriber.
-//!
-//! There is deliberately NO new wire surface here: the detector rides the
-//! shipped `SET_METADATA` / `METADATA_CHANGED` path.
+//! The server-side agent-state detector (ADR-0046) end to end: a fake agent
+//! named `claude` on disk paints a real permission dialog into a real PTY, and
+//! a subscriber must see the derived `phux.agent/v1` record. Identity comes
+//! from the PTY's foreground process group, never from the screen.
 
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, RESOURCE_AGENT_KEY, RESOURCE_PANE_OCCUPANT_KEY,
-    ReportedAgentState, Scope, TYPE_ATTACHED,
+    ReportedAgentState, Scope,
 };
 use portable_pty::CommandBuilder;
+use serde_json::Value;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, ServerHandles, attach_by_name, recv_typed, recv_until, run_local,
+    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
-/// The startup grace these tests run under, via the detector's
-/// `PHUX_AGENT_STARTUP_GRACE_MS` seam (production default: 3 s). The grace
-/// exists so a real agent's splash screen cannot flash `blocked`; the fake
-/// agent here paints its dialog instantly, so a short grace changes nothing
-/// about what is being proven and saves >=3 s of pure waiting per test.
+/// Startup grace and identity recheck via the detector's env seams
+/// (production: 3s / 5s). Only their length changes, not what is proven.
 const TEST_STARTUP_GRACE: Duration = Duration::from_millis(200);
-
-/// The detector's unidentified-pane tick floor (`TICK_UNIDENTIFIED`),
-/// restated for the negative test's window arithmetic.
-const TICK_UNIDENTIFIED: Duration = Duration::from_millis(500);
-
-/// How long to wait for a detector verdict. A failure ceiling, not a timing
-/// gate: with the shortened grace a verdict lands within ~1 s, and this only
-/// elapses in full when the detector never publishes at all.
-const DETECT_DEADLINE: Duration = Duration::from_secs(8);
-
-/// The identity recheck interval these tests run under, via the detector's
-/// `PHUX_AGENT_IDENTIFY_RECHECK_MS` seam (production default: 5 s).
-///
-/// A departure is only acted on after `VACANT_CONFIRMATIONS` *confirmed*
-/// vacant observations, so a test that watches a real agent die otherwise
-/// waits out two full production rechecks. Nothing being proven depends on
-/// the interval's length — only on the confirmation COUNT, which the seam
-/// does not touch.
 const TEST_IDENTIFY_RECHECK: Duration = Duration::from_millis(200);
-
-/// How long an end-to-end case waits for a departure to be noticed: the
-/// confirmations, the drain, and the fanout, with generous slack for a
-/// loaded parallel test pool.
+/// The detector's unidentified-pane tick floor, for the absence window.
+const TICK_UNIDENTIFIED: Duration = Duration::from_millis(500);
+/// Failure ceiling for a verdict once the pane has painted.
+const DETECT_DEADLINE: Duration = Duration::from_secs(8);
+/// Failure ceiling for noticing a departure (confirmations + fanout).
 const DEPARTURE_DEADLINE: Duration = Duration::from_secs(12);
-
-/// How long a test waits for the seed pane's process to finish painting
-/// before it starts measuring the DETECTOR (see [`await_pane_painted`]).
-///
-/// Deliberately much larger than [`DETECT_DEADLINE`], and deliberately NOT
-/// part of it. This bounds the one thing no test-side change can influence:
-/// how long the kernel takes to give a freshly `posix_spawn`ed `/bin/sh` its
-/// first slice of CPU. Measured on a developer box under a ~130 load average
-/// (a multi-agent fleet building concurrently), that was **7.8 seconds** —
-/// the pane's very first PTY byte did not arrive until then, while the
-/// server, the actor and the detector all ran normally throughout. See the
-/// [`await_pane_painted`] docs for why this is a separate budget rather than
-/// a bigger `DETECT_DEADLINE`.
+/// Separate budget for the pane's `/bin/sh` getting scheduled at all: 7.8s
+/// was measured under a ~130 load average (phux-m64c). Folding it into
+/// `DETECT_DEADLINE` would make a starved box look like a detector bug.
 const PANE_PAINT_DEADLINE: Duration = Duration::from_secs(60);
 
-/// How often [`await_pane_painted`] re-checks the paint marker. Short enough
-/// that the barrier costs nothing on an idle machine, and it is a poll of the
-/// local filesystem — it touches neither the server nor the pane, so it
-/// cannot perturb what it is waiting for.
-const PAINT_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-/// Shrink the detector's identity recheck for this test process. Same
-/// constraints as [`shorten_startup_grace`].
-fn shorten_identify_recheck() {
-    // SAFETY-adjacent: as `shorten_startup_grace`.
+/// Nextest runs each test in its own process and this runs before the server
+/// thread exists; the overrides are read once per process.
+fn shorten_detector_timers() {
+    // SAFETY-adjacent: `set_var` is unsafe on edition 2024 only because of
+    // concurrent env access, which cannot happen here.
     unsafe {
+        std::env::set_var(
+            "PHUX_AGENT_STARTUP_GRACE_MS",
+            TEST_STARTUP_GRACE.as_millis().to_string(),
+        );
         std::env::set_var(
             "PHUX_AGENT_IDENTIFY_RECHECK_MS",
             TEST_IDENTIFY_RECHECK.as_millis().to_string(),
@@ -110,156 +54,26 @@ fn shorten_identify_recheck() {
     }
 }
 
-/// Shrink the detector's startup grace for this test process. Must run
-/// before the server (and therefore any detector) is spawned; the override
-/// is read once per process.
-fn shorten_startup_grace() {
-    // SAFETY-adjacent: `set_var` is unsafe on edition 2024 because of
-    // concurrent env access; nextest runs each test in its own process and
-    // this runs before the server thread exists.
-    unsafe {
-        std::env::set_var(
-            "PHUX_AGENT_STARTUP_GRACE_MS",
-            TEST_STARTUP_GRACE.as_millis().to_string(),
-        );
-    }
+fn write_executable(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, script).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// Write an executable fake agent named `claude` into `dir`, and return its
-/// path.
-///
-/// The name on disk is the entire point: identification reads the PTY's
-/// foreground process group and resolves the kind from that process's argv,
-/// so a script literally named `claude` is what makes the shipped
-/// `rules/claude.toml` manifest apply. Nothing about the *content* of the
-/// script identifies it — which is the property we want, because a title or
-/// a screen can be forged and a process name is what the kernel says.
-///
-/// The script paints a permission dialog in the shape Claude Code renders
-/// one: a rounded box containing the question and a numbered option list.
-/// Then it sleeps, so the live screen keeps saying `blocked` while the test
-/// collects.
-///
-/// It also creates [`paint_marker`] once the painting is done — the barrier
-/// every caller must wait on before it starts timing the detector. See
-/// [`await_pane_painted`].
-fn write_fake_agent(dir: &std::path::Path) -> std::path::PathBuf {
-    write_fake_agent_ending_with(dir, "sleep 30")
-}
-
-/// The file a fake agent creates once it has written its whole screen to the
-/// PTY. One per pane directory, which is one per test: each case builds its
-/// own [`TempDir`] and seeds exactly one painting agent into it.
-fn paint_marker(dir: &std::path::Path) -> std::path::PathBuf {
-    dir.join("painted")
-}
-
-/// Block until the seed pane's process has painted, or fail with a message
-/// that says so.
-///
-/// WHY THIS EXISTS (phux-m64c). Every case in this file used to start its
-/// [`DETECT_DEADLINE`] the moment it had attached, so that one budget paid for
-/// two unrelated things: the detector converging (what is under test) and the
-/// pane's `/bin/sh` getting scheduled at all (what is not). The second is
-/// unbounded and entirely ambient. Caught in the act under a ~130 load
-/// average, with `RUST_LOG` trace on: the actor started at T+0.00s, identified
-/// `claude` from its argv at T+0.50s, scanned a still-blank grid at T+0.81s
-/// and published the fail-safe `idle` — and then the pane's FIRST PTY byte
-/// arrived at T+7.77s, 0.2s after the 8s deadline had already expired. The
-/// detector was right at every step and never got a second screen to look at,
-/// because a static permission dialog paints once and then nothing changes;
-/// the test failed with "claude was never detected in this pane", which is
-/// not what happened.
-///
-/// So the two budgets are separated. This one is generous and its failure
-/// names the environment; [`DETECT_DEADLINE`] stays tight and measures only
-/// the detector, starting from a point where the screen it must derive from
-/// provably exists. Lengthening `DETECT_DEADLINE` instead would have bought
-/// the same margin while destroying the distinction — a real detector
-/// regression and a starved test box would look identical, and the number
-/// needed to cover starvation is not bounded by anything.
-///
-/// The marker is a file rather than anything on the wire because it must
-/// report on the CHILD, not on the server: the pane's process writes its
-/// screen and then creates the file, so the marker appearing means the bytes
-/// are in the PTY. Everything after that — the reader thread, the actor, the
-/// libghostty projection, the detector — is server work that
-/// `DETECT_DEADLINE` should and does cover.
-async fn await_pane_painted(marker: &std::path::Path) {
-    let end = tokio::time::Instant::now() + PANE_PAINT_DEADLINE;
-    while !marker.exists() {
-        assert!(
-            tokio::time::Instant::now() < end,
-            "the seed pane never painted its screen within {PANE_PAINT_DEADLINE:?}: the fake \
-             agent's process was starved, or never ran. This is the ENVIRONMENT, not the \
-             detector — nothing downstream of the grid has been exercised yet.",
-        );
-        tokio::time::sleep(PAINT_POLL_INTERVAL).await;
-    }
-}
-
-/// As [`write_fake_agent`], but the agent LEAVES the pane — replacing itself
-/// with `successor` — the moment the test creates `depart_when`.
-///
-/// `exec` is the honest shape of the departure this file cares about: the
-/// agent's process is replaced with no `EXIT` trap, no `phux agent clear`, and
-/// no PTY EOF, which is exactly what a `kill -9` or a force-closed agent
-/// leaves behind. A script that simply exited would take the pane with it, and
-/// the pane's reap would then clear the record for reasons that have nothing
-/// to do with what is being tested.
-///
-/// The departure is gated on a file rather than on a timer because the ORDER
-/// matters: the declaration has to be in the store before the process goes
-/// away, or the test is proving something else. A timer makes that ordering a
-/// race against a loaded parallel pool.
-///
-/// The polling `sleep` is a CHILD of the script, so it shares the script's
-/// process group and the pane's foreground pgid still resolves to `claude` —
-/// identification is unaffected, which is precisely why the detector reads the
-/// process group leader rather than whatever happens to be running.
-fn write_fake_agent_departing_on(
-    dir: &std::path::Path,
-    depart_when: &std::path::Path,
-    successor: &str,
-) -> std::path::PathBuf {
-    write_fake_agent_ending_with(
-        dir,
-        &format!(
-            "while [ ! -f '{}' ]; do sleep 0.1; done\nexec {successor}",
-            depart_when.display(),
-        ),
-    )
-}
-
-/// As [`write_fake_agent`], with `tail` as the script's last lines.
-fn write_fake_agent_ending_with(dir: &std::path::Path, tail: &str) -> std::path::PathBuf {
+/// A fake `claude` painting the permission dialog Claude Code 2.1.207
+/// actually draws (see `phux-agent-rules/src/fixtures/claude/`): transcript
+/// text above a U+2500 rule, the dialog alone below it, carrying both the
+/// "Do you want to " stem and a numbered option (the rule requires both).
+/// It creates `painted` once the screen is in the PTY, then runs `tail`.
+fn write_fake_agent(dir: &Path, tail: &str) -> PathBuf {
     let path = dir.join("claude");
-    // `exec` is load-bearing: without it the shell stays as the process group
-    // leader and argv[0] would be `sh`, not `claude`. With it, the script
-    // itself IS the foreground process group.
-    //
-    // The screen reproduces the shape Claude Code 2.1.207 ACTUALLY paints for
-    // a permission dialog — captured in
-    // `phux-agent-rules/src/fixtures/claude/blocked_permission.txt`. That shape is
-    // a horizontal rule (U+2500) with the dialog below it, NOT a box-drawn
-    // frame: the dialog REPLACES the input box, so it is the only thing under
-    // the final rule. An earlier version of this test painted a rounded box
-    // (U+256D/U+2570 corners) that no shipped Claude has ever drawn, and it
-    // passed against a manifest that matched nothing in the real CLI.
-    //
-    // The transcript line above the rule is load-bearing too: it is where a
-    // real agent would print dialog-shaped text, and `after-last-rule` must
-    // structurally exclude it.
-    //
-    // The screen carries both halves the `prompt-permission-dialog` rule
-    // requires: the "Do you want to " question stem AND a numbered option
-    // line. Either alone must NOT be enough — that AND is what keeps a quoted
-    // diff from ever reading as a live prompt.
-    let script = "#!/bin/sh\n\
+    let rule = "\\342\\224\\200".repeat(20);
+    let script = format!(
+        "#!/bin/sh\n\
          printf '\\033[2J\\033[H'\n\
          echo 'some transcript output above the live chrome'\n\
          echo ''\n\
-         printf '\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\342\\224\\200\\n'\n\
+         printf '{rule}\\n'\n\
          echo ' Bash command'\n\
          echo ''\n\
          echo '   touch /tmp/probe.txt'\n\
@@ -269,466 +83,37 @@ fn write_fake_agent_ending_with(dir: &std::path::Path, tail: &str) -> std::path:
          echo '   2. Yes, and always allow access'\n\
          echo '   3. No'\n\
          echo ''\n\
-         echo ' Esc to cancel'\n";
-    // The paint barrier (phux-m64c). `:` with a redirect is a shell builtin,
-    // so it forks nothing: the script stays the process group leader and
-    // identification is untouched. It runs AFTER the last `echo`, so the
-    // marker's existence means the whole screen is already in the PTY — see
-    // `await_pane_painted` for why any test that times the detector has to
-    // wait for it first.
-    let painted = format!(": > '{}'\n", paint_marker(dir).display());
-    let script = format!("{script}{painted}{tail}\n");
-    std::fs::write(&path, script).expect("write fake agent");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod fake agent");
-    }
+         echo ' Esc to cancel'\n\
+         : > '{}'\n\
+         {tail}\n",
+        dir.join("painted").display(),
+    );
+    write_executable(&path, &script);
     path
 }
 
-/// Drain frames until a `METADATA_CHANGED` for `phux.agent/v1` on `terminal`
-/// arrives with a value, or the deadline elapses. Every other frame
-/// (`RESOURCE_OUTPUT`, snapshots, ...) is skipped.
-async fn collect_agent_record(
-    stream: &mut UnixStream,
-    terminal: &ResourceId,
-    deadline: Duration,
-) -> Option<serde_json::Value> {
-    let end = tokio::time::Instant::now() + deadline;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            return None;
-        };
-        if let FrameKind::MetadataChanged {
-            scope, key, value, ..
-        } = frame
-            && key == RESOURCE_AGENT_KEY
-            && scope == Scope::Resource(terminal.clone())
-            && let Some(bytes) = value
-        {
-            return serde_json::from_slice(&bytes).ok();
-        }
-    }
+/// A fake agent that `exec`s `successor` once `depart` exists: a departure
+/// with no trap, no clear, and no PTY EOF, like a `kill -9`. The polling
+/// `sleep` shares the script's process group, so identity is unaffected.
+fn write_departing_agent(dir: &Path, successor: &str) -> PathBuf {
+    let tail = format!(
+        "while [ ! -f '{}' ]; do sleep 0.1; done\nexec {successor}",
+        dir.join("depart").display(),
+    );
+    write_fake_agent(dir, &tail)
 }
 
-/// Drain until the detector publishes its privacy-bounded foreground-process
-/// record for `terminal`.
-async fn collect_pane_occupant(
-    stream: &mut UnixStream,
-    terminal: &ResourceId,
-    deadline: Duration,
-) -> Option<serde_json::Value> {
-    let end = tokio::time::Instant::now() + deadline;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            return None;
-        };
-        if let FrameKind::MetadataChanged {
-            scope, key, value, ..
-        } = frame
-            && key == RESOURCE_PANE_OCCUPANT_KEY
-            && scope == Scope::Resource(terminal.clone())
-            && let Some(bytes) = value
-        {
-            return serde_json::from_slice(&bytes).ok();
-        }
-    }
+fn depart(dir: &Path) {
+    std::fs::write(dir.join("depart"), b"go").unwrap();
 }
 
-/// Drain `METADATA_CHANGED` frames for `terminal` until one carries
-/// `state: <want>`, or `deadline` elapses.
-///
-/// The detector derives its verdict incrementally — e.g. it can identify and
-/// publish a pane as `idle` a tick before it parses the grid and republishes
-/// `blocked` — so sampling only the FIRST published record (as
-/// `collect_agent_record` alone does) races that convergence: under the
-/// shared parallel nextest pool the first record is sometimes still `idle`
-/// when the test asserts `blocked` (phux-manu). This keeps consuming
-/// `METADATA_CHANGED` frames against ONE bounded deadline (never extended,
-/// never slept past) until the wanted state actually shows up, which is the
-/// honest fix — the assertion should wait for the real terminal state, not
-/// for however far the detector happened to get before the first frame.
-async fn await_agent_state(
-    stream: &mut UnixStream,
-    terminal: &ResourceId,
-    want: &str,
-    deadline: Duration,
-) -> Option<serde_json::Value> {
-    let end = tokio::time::Instant::now() + deadline;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        let record = collect_agent_record(stream, terminal, remaining).await?;
-        if record.get("state").and_then(serde_json::Value::as_str) == Some(want) {
-            return Some(record);
-        }
-    }
-}
-
-/// The end-to-end contract: a real agent process, painting a real permission
-/// dialog into a real grid, produces a `phux.agent/v1` record with
-/// `state: "blocked"` on a subscribed client — with no human ever running
-/// `phux agent set`.
-#[test]
-fn detector_publishes_blocked_from_a_live_prompt_box() {
-    shorten_startup_grace();
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let agent = write_fake_agent(tmp.path());
-
-        let cmd = CommandBuilder::new(&agent);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        // ---- ATTACH ---- (gives the client a mailbox the L3 fanout targets,
-        // and tells us the pane's wire id).
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (type_byte, attached) = recv_typed(&mut stream).await;
-        assert_eq!(type_byte, TYPE_ATTACHED, "first frame must be ATTACHED");
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-        let terminal = snapshot.focused_resource.clone();
-
-        // ---- SUBSCRIBE_METADATA on this pane's agent record ----
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        // ---- the pane has painted ---- (barrier, not a wait: `DETECT_DEADLINE`
-        // must not also pay for the child's scheduling latency. See
-        // `await_pane_painted`.)
-        await_pane_painted(&paint_marker(tmp.path())).await;
-
-        // ---- the detector should derive `blocked` and publish it ----
-        // (poll for the converged state, not just the first publish: see
-        // `await_agent_state`.)
-        let record = await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE).await;
-
-        let record = record.expect(
-            "the detector must publish a phux.agent/v1 record for a pane running a known agent \
-             that is showing a live permission dialog",
-        );
-        assert_eq!(
-            record.get("state").and_then(serde_json::Value::as_str),
-            Some("blocked"),
-            "a live prompt box asking the human a question is `blocked`: {record}",
-        );
-        assert_eq!(
-            record.get("kind").and_then(serde_json::Value::as_str),
-            Some("claude"),
-            "identity comes from the foreground process group, not the screen: {record}",
-        );
-
-        // Hook evidence enters the same detector/metadata pipeline without
-        // replacing the record or disabling later screen correction.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 71,
-                command: Command::ReportAgentState {
-                    terminal_id: terminal.clone(),
-                    state: ReportedAgentState::Done,
-                },
-            },
-        )
-        .await;
-        let end = tokio::time::Instant::now() + DETECT_DEADLINE;
-        let mut acked = false;
-        let mut saw_done = false;
-        while !(acked && saw_done) {
-            let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-            assert!(!remaining.is_zero(), "REPORT_AGENT_STATE did not converge");
-            let (_, frame) = timeout(remaining, recv_typed(&mut stream))
-                .await
-                .expect("REPORT_AGENT_STATE deadline");
-            match frame {
-                FrameKind::CommandResult {
-                    request_id: 71,
-                    result: CommandResult::Ok,
-                } => acked = true,
-                FrameKind::MetadataChanged {
-                    scope, key, value, ..
-                } if scope == Scope::Resource(terminal.clone()) && key == RESOURCE_AGENT_KEY => {
-                    saw_done = value
-                        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                        .and_then(|record| record.get("state").cloned())
-                        .and_then(|state| state.as_str().map(str::to_owned))
-                        .as_deref()
-                        == Some("done");
-                }
-                _ => {}
-            }
-        }
-        assert_eq!(
-            record.get("name").and_then(serde_json::Value::as_str),
-            Some("claude"),
-            "name comes from the manifest: {record}",
-        );
-        // The detector never sets `attention`: L3 §3.7 derives it from `state`.
-        assert!(
-            record.get("attention").is_none(),
-            "the detector must not write `attention`: {record}",
-        );
-
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
-    });
-}
-
-/// The fail-safe, end-to-end. A pane running a plain shell — no agent — must
-/// never acquire an agent record. This is the property that keeps the sidebar
-/// honest: an unidentified pane is not an idle agent, it is *not an agent*.
-#[test]
-fn a_plain_shell_pane_never_gets_an_agent_record() {
-    shorten_startup_grace();
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-
-        // A shell that paints something a naive substring matcher would
-        // happily call a permission prompt — and that a process-group-based
-        // identifier correctly ignores, because no agent is running here.
-        let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.arg("-c");
-        cmd.arg("echo 'Do you want to proceed?'; echo '1. Yes'; sleep 20");
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (_type_byte, attached) = recv_typed(&mut stream).await;
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-        let terminal = snapshot.focused_resource.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_PANE_OCCUPANT_KEY.to_owned(),
-            },
-        )
-        .await;
-        let occupant = collect_pane_occupant(&mut stream, &terminal, DETECT_DEADLINE)
-            .await
-            .expect("plain shell should publish a pane-occupant record");
-        assert_eq!(occupant["foreground"], "sh");
-        assert_eq!(occupant["is_pane_shell"], true);
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        // Well past the (shortened) startup grace plus two unidentified-pane
-        // detector ticks: had the shell been (wrongly) identified, the grace
-        // would have expired and a publish landed well inside this window.
-        let absence_window = TEST_STARTUP_GRACE + TICK_UNIDENTIFIED * 2;
-        let record = collect_agent_record(&mut stream, &terminal, absence_window).await;
-        assert!(
-            record.is_none(),
-            "a pane with no agent in its foreground process group must never get a \
-             phux.agent/v1 record, however suggestive its output: {record:?}",
-        );
-
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
-    });
-}
-
-/// ADR-0046 §E promises that `DELETE`ing the record hands it back: "the
-/// detector makes no further writes to that Terminal **until the record is
-/// `DELETE`d**". It did not.
-///
-/// The detector's edge filter is a model of its OWN emissions, so after the
-/// `DELETE` it still held the tuple it last derived. The next tick re-derived
-/// the same tuple, the filter suppressed it, and nothing was written — so the
-/// pane showed NO agent at all until the agent's state next changed. For an
-/// agent sitting `blocked` on a human (this one), that is never: it is waiting
-/// for the answer, so it emits nothing, so the grid never changes, so no
-/// transition ever comes. The pane is invisible in the sidebar indefinitely,
-/// which is the exact opposite of what the delete was supposed to do.
-///
-/// Reachable from the shipped CLI: `phux agent clear`.
-#[test]
-fn deleting_the_record_hands_it_back_to_the_detector() {
-    shorten_startup_grace();
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let agent = write_fake_agent(tmp.path());
-
-        let cmd = CommandBuilder::new(&agent);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (_type_byte, attached) = recv_typed(&mut stream).await;
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-        let terminal = snapshot.focused_resource.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        await_pane_painted(&paint_marker(tmp.path())).await;
-
-        // Poll for the converged `blocked` state rather than sampling the
-        // first publish (see `await_agent_state`): the detector can land on
-        // an intermediate state like `idle` a tick before it derives
-        // `blocked`, and under the shared parallel nextest pool that first
-        // tick sometimes wins the race, flaking this precondition
-        // (phux-manu).
-        let first = await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE).await;
-        assert!(
-            first.is_some(),
-            "precondition: the detector never converged on `blocked`",
-        );
-
-        // `phux agent clear`. The row is gone; the screen is unchanged and the
-        // agent — being blocked on a human — will never emit another byte.
-        send_frame(
-            &mut stream,
-            &FrameKind::DeleteMetadata {
-                request_id: 7,
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        // The detector must resume: the record comes back, WITHOUT the agent
-        // having to change state. (`collect_agent_record` skips the delete's
-        // tombstone, which carries no value, so this is the republish.) Same
-        // convergence caveat as the precondition above: poll for `blocked`
-        // rather than trusting the first post-DELETE publish.
-        let again = await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE).await;
-        let again = again.expect(
-            "after a DELETE the detector must resume ownership and rewrite the record; \
-             an idle or blocked agent never changes state again, so a detector whose edge \
-             filter still models the pre-delete store leaves the pane blank forever",
-        );
-        assert_eq!(
-            again.get("state").and_then(serde_json::Value::as_str),
-            Some("blocked"),
-            "and it republishes the truth it can still see on the screen: {again}",
-        );
-
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
-    });
-}
-
-/// The headless half, end to end: a connection that **never attaches** must
-/// still receive the detector's record.
-///
-/// `phux watch` connects, subscribes, and streams — it deliberately does not
-/// attach, because watching a pane must not disturb the session someone is
-/// working in. Metadata fanout used to resolve each subscriber's mailbox
-/// through the attached-client table alone, so a watcher had no mailbox to
-/// resolve and every `phux.agent/v1` record ADR-0046 derived was computed,
-/// broadcast, and dropped. Every other test in this file attaches first, so
-/// none of them could see it.
-#[test]
-fn an_unattached_subscriber_receives_the_detectors_record() {
-    shorten_startup_grace();
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let agent = write_fake_agent(tmp.path());
-
-        let cmd = CommandBuilder::new(&agent);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-
-        // One attached connection, used only to learn the pane's wire id —
-        // the same thing `phux watch` gets from its client-side `GET_STATE`
-        // resolution before it opens the watch connection.
-        let mut attached = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut attached, &attach_by_name("demo")).await;
-        let (_type_byte, frame) = recv_typed(&mut attached).await;
-        let FrameKind::Attached { snapshot, .. } = frame else {
-            panic!("expected ATTACHED");
-        };
-        let terminal = snapshot.focused_resource.clone();
-
-        // The watcher: HELLO, SUBSCRIBE_METADATA, and nothing else. No
-        // ATTACH, no ATTACH_RESOURCE, no viewport.
-        let mut watcher = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(
-            &mut watcher,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        await_pane_painted(&paint_marker(tmp.path())).await;
-
-        let record = await_agent_state(&mut watcher, &terminal, "blocked", DETECT_DEADLINE).await;
-        let record = record.expect(
-            "a subscriber that never attached must still receive the detector's record; \
-             without it `phux watch` observes nothing an agent does",
-        );
-        assert_eq!(
-            record.get("name").and_then(serde_json::Value::as_str),
-            Some("claude"),
-            "and the whole record, not a stub: {record}",
-        );
-
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
-    });
-}
-
-/// Write an executable fake `codex` into `dir`: it clears the screen, paints
-/// the command-approval prompt the shipped `rules/codex.toml` matches, and
-/// idles.
-///
-/// A SECOND kind is what makes "the pane's occupant changed" expressible end
-/// to end. The screen is painted from the same three strings the manifest's
-/// `prompt-command-approval` rule requires, so the derived state for this
-/// pane is unambiguously codex's — and unambiguously not the one claude's
-/// dialog produced a moment earlier.
-fn write_fake_codex(dir: &std::path::Path) -> std::path::PathBuf {
+/// A fake `codex` painting the command-approval prompt `rules/codex.toml`
+/// matches: a second kind makes an occupant change expressible.
+fn write_fake_codex(dir: &Path) -> PathBuf {
     let path = dir.join("codex");
-    let script = "#!/bin/sh\n\
+    write_executable(
+        &path,
+        "#!/bin/sh\n\
          printf '\\033[2J\\033[H'\n\
          echo 'Would you like to run the following command?'\n\
          echo ''\n\
@@ -738,576 +123,418 @@ fn write_fake_codex(dir: &std::path::Path) -> std::path::PathBuf {
          echo ' 3. No, and tell Codex what to do differently (esc)'\n\
          echo ''\n\
          echo 'Press enter to confirm or esc to cancel'\n\
-         sleep 30\n";
-    std::fs::write(&path, script).expect("write fake codex");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod fake codex");
-    }
+         sleep 30\n",
+    );
     path
 }
 
-/// Drain `phux.agent/v1` records for `terminal` until one satisfies `done` or
-/// `deadline` elapses, returning every record in the order a subscriber saw
-/// them.
-///
-/// The ORDER is the point for the transient-consistency cases: an invariant
-/// about what a consumer may never observe cannot be checked by sampling the
-/// final state.
-async fn collect_agent_records_until(
+struct Pane {
+    _server: ServerHandles,
+    socket_path: PathBuf,
+    stream: UnixStream,
+    terminal: ResourceId,
+}
+
+impl Pane {
+    /// Seed session `demo` with `cmd`, attach, and subscribe to `key`.
+    async fn start(tmp: &TempDir, cmd: CommandBuilder, key: &str) -> Self {
+        let socket_path = tmp.path().join("phux.sock");
+        let server = spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut stream, &attach_by_name("demo")).await;
+        let terminal = recv_until(&mut stream, |_, frame| match frame {
+            FrameKind::Attached { snapshot, .. } => Some(snapshot.focused_resource),
+            _ => None,
+        })
+        .await;
+        let mut pane = Self {
+            _server: server,
+            socket_path,
+            stream,
+            terminal,
+        };
+        pane.subscribe(key).await;
+        pane
+    }
+
+    /// As [`Self::start`] for an agent script, subscribed to the agent key
+    /// and past the paint barrier.
+    async fn agent(tmp: &TempDir, agent: &Path) -> Self {
+        let pane = Self::start(tmp, CommandBuilder::new(agent), RESOURCE_AGENT_KEY).await;
+        let painted = tmp.path().join("painted");
+        let end = tokio::time::Instant::now() + PANE_PAINT_DEADLINE;
+        while !painted.exists() {
+            assert!(
+                tokio::time::Instant::now() < end,
+                "the fake agent never painted: the environment starved it, not the detector",
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        pane
+    }
+
+    async fn subscribe(&mut self, key: &str) {
+        let subscribe = FrameKind::SubscribeMetadata {
+            scope: Scope::Resource(self.terminal.clone()),
+            key: key.to_owned(),
+        };
+        send_frame(&mut self.stream, &subscribe).await;
+    }
+
+    async fn set_agent(&mut self, request_id: u32, value: &[u8]) {
+        let set = FrameKind::SetMetadata {
+            request_id,
+            scope: Scope::Resource(self.terminal.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
+            value: value.to_vec(),
+        };
+        send_frame(&mut self.stream, &set).await;
+    }
+
+    /// The next `METADATA_CHANGED` for `key` on this pane: `Some(None)` is a
+    /// delete tombstone, `None` the deadline.
+    async fn next_change(&mut self, key: &str, end: tokio::time::Instant) -> Option<Option<Value>> {
+        next_change(&mut self.stream, &self.terminal, key, end).await
+    }
+
+    async fn next_record(&mut self, end: tokio::time::Instant) -> Option<Value> {
+        loop {
+            if let Some(record) = self.next_change(RESOURCE_AGENT_KEY, end).await? {
+                return Some(record);
+            }
+        }
+    }
+
+    /// Wait for the converged `state` (the detector may publish `idle` a tick
+    /// before it derives `blocked`, phux-manu).
+    async fn await_state(&mut self, want: &str, within: Duration) -> Option<Value> {
+        let end = tokio::time::Instant::now() + within;
+        loop {
+            let record = self.next_record(end).await?;
+            if record["state"] == want {
+                return Some(record);
+            }
+        }
+    }
+
+    /// Every record until `done` holds or `within` elapses, as
+    /// `(kind, state)` pairs in subscriber order.
+    async fn records_until(
+        &mut self,
+        within: Duration,
+        done: impl Fn(&(String, String)) -> bool,
+    ) -> Vec<(String, String)> {
+        let end = tokio::time::Instant::now() + within;
+        let mut seen = Vec::new();
+        while let Some(record) = self.next_record(end).await {
+            let pair = (field(&record, "kind"), field(&record, "state"));
+            let finished = done(&pair);
+            seen.push(pair);
+            if finished {
+                break;
+            }
+        }
+        seen
+    }
+}
+
+async fn next_change(
     stream: &mut UnixStream,
     terminal: &ResourceId,
-    deadline: Duration,
-    done: impl Fn(&serde_json::Value) -> bool,
-) -> Vec<serde_json::Value> {
-    let end = tokio::time::Instant::now() + deadline;
-    let mut seen = Vec::new();
+    want: &str,
+    end: tokio::time::Instant,
+) -> Option<Option<Value>> {
     loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return seen;
-        }
-        match collect_agent_record(stream, terminal, remaining).await {
-            Some(record) => {
-                let finished = done(&record);
-                seen.push(record);
-                if finished {
-                    return seen;
-                }
-            }
-            None => return seen,
+        let remaining = end.checked_duration_since(tokio::time::Instant::now())?;
+        let (_, frame) = timeout(remaining, recv_typed(stream)).await.ok()?;
+        if let FrameKind::MetadataChanged {
+            scope, key, value, ..
+        } = frame
+            && key == want
+            && scope == Scope::Resource(terminal.clone())
+        {
+            return Some(value.map(|bytes| serde_json::from_slice(&bytes).unwrap()));
         }
     }
 }
 
-/// The `kind` / `state` pair of a record, for the invariant assertions.
-fn kind_and_state(record: &serde_json::Value) -> (&str, &str) {
-    (
-        record
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(""),
-        record
-            .get("state")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(""),
-    )
+fn field(record: &Value, name: &str) -> String {
+    record[name].as_str().unwrap_or("").to_owned()
 }
 
-/// THE WEDGE (phux-w7z2.13), end to end, driven to the actual failure.
-///
-/// A human runs `phux agent set @N --name me --kind claude --state working`.
-/// That is a DECLARATION: `docs/spec/L3.md` §3.7 says it outranks any
-/// derivation, and the detector correctly stands down. Then the agent is
-/// killed — no `EXIT` trap runs, no `phux agent clear` is issued, and the pane
-/// survives, so the two things that clear a declaration (an explicit
-/// `DELETE_METADATA`, and pane reap) both never happen.
-///
-/// The pane then sat at `working` for the life of the session. Every
-/// `phux agent list`, every sidebar, every `agent wait` saw a live agent
-/// working away in a pane that had been empty for hours, and there was no path
-/// back to the truth from inside the system — precisely the failure the ADR
-/// says level-triggering exists to prevent.
-///
-/// The fix is a WITHDRAWAL, not an overwrite and not a delete: on positive,
-/// confirmed evidence that the declared occupant is gone, `state` goes to
-/// `unknown` and the human's `name`, `kind` and `session` stay exactly as they
-/// wrote them. The server asserts nothing it derived, and the record outlives
-/// the process only as an honest "I don't know".
-#[test]
-fn a_declared_state_does_not_survive_the_death_of_the_process_it_describes() {
-    shorten_startup_grace();
-    shorten_identify_recheck();
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        // Paints the dialog, and leaves the pane the moment the test says so —
-        // after which something that is not an agent owns its foreground
-        // process group.
-        let depart = tmp.path().join("depart");
-        let agent = write_fake_agent_departing_on(tmp.path(), &depart, "sleep 300");
-
-        let cmd = CommandBuilder::new(&agent);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (_type_byte, attached) = recv_typed(&mut stream).await;
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-        let terminal = snapshot.focused_resource.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        await_pane_painted(&paint_marker(tmp.path())).await;
-
-        // Precondition: the detector has identified a live agent in this pane.
-        assert!(
-            await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE)
-                .await
-                .is_some(),
-            "precondition: the detector never saw the agent at all",
-        );
-
-        // `phux agent set @N --name me --kind claude --state working`.
-        send_frame(
-            &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 11,
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-                value: br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#
-                    .to_vec(),
-            },
-        )
-        .await;
-        // The declaration is in flight ahead of the departure on the same
-        // ordered connection, so the record IS declared by the time the
-        // process goes away — which is the whole scenario.
-        assert!(
-            await_agent_state(&mut stream, &terminal, "working", DETECT_DEADLINE)
-                .await
-                .is_some(),
-            "precondition: the declaration never landed",
-        );
-
-        std::fs::write(&depart, b"go").expect("signal the departure");
-
-        // The agent dies. Nothing else happens: no trap, no clear, no EOF.
-        let healed = await_agent_state(&mut stream, &terminal, "unknown", DEPARTURE_DEADLINE).await;
-        let healed = healed.expect(
-            "a declared record must not outlive the process it describes: with no EXIT trap \
-             and no `agent clear`, a withdrawal to `unknown` is the ONLY path back to the \
-             truth, and without it the pane reports `working` forever",
-        );
-
-        assert_eq!(
-            healed.get("name").and_then(serde_json::Value::as_str),
-            Some("me"),
-            "the human's name is not the server's to take: {healed}",
-        );
-        assert_eq!(
-            healed.get("kind").and_then(serde_json::Value::as_str),
-            Some("claude"),
-            "nor their kind — L3 §3.7 requires both preserved: {healed}",
-        );
-        assert!(
-            healed.get("attention").is_none(),
-            "but an unknown pane must not keep a red badge for a dead process: {healed}",
-        );
-
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
-    });
+fn deadline(within: Duration) -> tokio::time::Instant {
+    tokio::time::Instant::now() + within
 }
 
-/// The same departure, for a record the DETECTOR wrote alone. The pane keeps
-/// running (only the agent left), so the record must be removed rather than
-/// left describing a process that is gone.
-///
-/// The half that already worked, pinned end to end: the `VACANT_CONFIRMATIONS`
-/// gate is new, and a retraction that never fired would be a regression
-/// nothing else in this file would catch.
+/// A live dialog is `blocked`, identified as `claude` from the process group,
+/// with the manifest's name and no detector-written `attention` (L3 §3.7
+/// derives it). A watcher that never attaches (`phux watch`) receives the
+/// same record: fanout once resolved mailboxes through attached clients only.
+/// Hook evidence (`REPORT_AGENT_STATE`) enters the same pipeline.
 #[test]
-fn a_detector_written_record_is_retracted_when_the_agent_leaves_the_pane() {
-    shorten_startup_grace();
-    shorten_identify_recheck();
+fn detector_publishes_blocked_from_a_live_prompt_box() {
+    shorten_detector_timers();
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let depart = tmp.path().join("depart");
-        let agent = write_fake_agent_departing_on(tmp.path(), &depart, "sleep 300");
-
-        let cmd = CommandBuilder::new(&agent);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (_type_byte, attached) = recv_typed(&mut stream).await;
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
+        let agent = write_fake_agent(tmp.path(), "sleep 30");
+        let mut pane = Pane::agent(&tmp, &agent).await;
+        let mut watcher = wait_for_socket(&pane.socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let subscribe = FrameKind::SubscribeMetadata {
+            scope: Scope::Resource(pane.terminal.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
         };
-        let terminal = snapshot.focused_resource.clone();
+        send_frame(&mut watcher, &subscribe).await;
 
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        await_pane_painted(&paint_marker(tmp.path())).await;
-
-        assert!(
-            await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE)
-                .await
-                .is_some(),
-            "precondition: the detector never converged on `blocked`",
+        let record = pane.await_state("blocked", DETECT_DEADLINE).await;
+        let record = record.expect("a live permission dialog must publish `blocked`");
+        assert_eq!(
+            (field(&record, "kind"), field(&record, "name")),
+            ("claude".into(), "claude".into())
         );
+        assert!(record.get("attention").is_none(), "{record}");
 
-        std::fs::write(&depart, b"go").expect("signal the departure");
-
-        // The agent leaves. The DELETE arrives as a `METADATA_CHANGED` with no
-        // value, which `collect_agent_record` skips — so wait for the frame
-        // itself rather than for a record.
-        let end = tokio::time::Instant::now() + DEPARTURE_DEADLINE;
-        let mut deleted = false;
-        while !deleted {
-            let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-            assert!(!remaining.is_zero(), "the record was never retracted");
-            let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(&mut stream)).await else {
-                panic!("the record was never retracted");
-            };
-            if let FrameKind::MetadataChanged {
-                scope, key, value, ..
-            } = frame
-                && key == RESOURCE_AGENT_KEY
-                && scope == Scope::Resource(terminal.clone())
-            {
-                deleted = value.is_none();
+        let end = deadline(DETECT_DEADLINE);
+        loop {
+            let change = next_change(&mut watcher, &pane.terminal, RESOURCE_AGENT_KEY, end).await;
+            let change = change.expect("an unattached subscriber must receive the record");
+            if change.is_some_and(|record| record["state"] == "blocked") {
+                break;
             }
         }
 
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
+        let report = FrameKind::Command {
+            request_id: 71,
+            command: Command::ReportAgentState {
+                terminal_id: pane.terminal.clone(),
+                state: ReportedAgentState::Done,
+            },
+        };
+        send_frame(&mut pane.stream, &report).await;
+        let end = deadline(DETECT_DEADLINE);
+        let (mut acked, mut saw_done) = (false, false);
+        while !(acked && saw_done) {
+            let remaining = end.checked_duration_since(tokio::time::Instant::now());
+            let remaining = remaining.expect("REPORT_AGENT_STATE did not converge");
+            match timeout(remaining, recv_typed(&mut pane.stream))
+                .await
+                .unwrap()
+                .1
+            {
+                FrameKind::CommandResult {
+                    request_id: 71,
+                    result: CommandResult::Ok,
+                } => acked = true,
+                FrameKind::MetadataChanged { key, value, .. } if key == RESOURCE_AGENT_KEY => {
+                    let record: Option<Value> = value.map(|b| serde_json::from_slice(&b).unwrap());
+                    saw_done = record.is_some_and(|r| r["state"] == "done");
+                }
+                _ => {}
+            }
+        }
     });
 }
 
-/// THE mixed-process record (phux-w7z2.27), end to end. A pane hosting
-/// `claude` is replaced by `codex` in the same pane.
-///
-/// The detector used to reset its own memory on a kind change and emit
-/// NOTHING, and the arbiter's `compose` preserved any `kind` already in the
-/// record. So the record kept `kind: "claude"` and the next write gave it a
-/// state derived from CODEX's screen. Nothing looked stale — the state was
-/// fresh, the name was present, the record was live — and the kind was simply
-/// a lie. That is worse than a stale record, because there is no signal in it
-/// that anything is wrong.
-///
-/// The invariant (I2): a subscriber must NEVER observe one record whose `kind`
-/// and `state` describe two different processes, not even for a single tick.
-/// The correction is therefore one write that lands on `unknown` — the only
-/// value that describes no process and so cannot describe the wrong one.
+/// The fail-safe: a plain shell painting dialog-shaped text gets a
+/// pane-occupant record but never an agent record. An unidentified pane is
+/// not an idle agent; it is not an agent.
+#[test]
+fn a_plain_shell_pane_never_gets_an_agent_record() {
+    shorten_detector_timers();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "echo 'Do you want to proceed?'; echo '1. Yes'; sleep 20",
+        ]);
+        let mut pane = Pane::start(&tmp, cmd, RESOURCE_PANE_OCCUPANT_KEY).await;
+        let occupant = pane
+            .next_change(RESOURCE_PANE_OCCUPANT_KEY, deadline(DETECT_DEADLINE))
+            .await
+            .flatten()
+            .expect("a plain shell publishes a pane-occupant record");
+        assert_eq!(
+            (&occupant["foreground"], &occupant["is_pane_shell"]),
+            (&"sh".into(), &true.into())
+        );
+
+        pane.subscribe(RESOURCE_AGENT_KEY).await;
+        let window = TEST_STARTUP_GRACE + TICK_UNIDENTIFIED * 2;
+        let record = pane.next_record(deadline(window)).await;
+        assert!(
+            record.is_none(),
+            "no agent in the process group, no record: {record:?}"
+        );
+    });
+}
+
+/// ADR-0046 §E: `DELETE`ing the record (`phux agent clear`) hands it back to
+/// the detector. The edge filter used to still hold the pre-delete tuple, so a
+/// `blocked` agent (which never emits again) vanished from the sidebar forever.
+#[test]
+fn deleting_the_record_hands_it_back_to_the_detector() {
+    shorten_detector_timers();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let agent = write_fake_agent(tmp.path(), "sleep 30");
+        let mut pane = Pane::agent(&tmp, &agent).await;
+        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+
+        let delete = FrameKind::DeleteMetadata {
+            request_id: 7,
+            scope: Scope::Resource(pane.terminal.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
+        };
+        send_frame(&mut pane.stream, &delete).await;
+        assert!(
+            pane.await_state("blocked", DETECT_DEADLINE).await.is_some(),
+            "after a DELETE the detector must resume and republish",
+        );
+    });
+}
+
+/// THE WEDGE (phux-w7z2.13): a human declaration (`phux agent set --state
+/// working`) outranks derivation, but once its process dies without a trap
+/// or clear the record must withdraw to `unknown` — keeping the human's name
+/// and kind, dropping `attention` — instead of reporting `working` forever.
+#[test]
+fn a_declared_state_does_not_survive_the_death_of_the_process_it_describes() {
+    shorten_detector_timers();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let agent = write_departing_agent(tmp.path(), "sleep 300");
+        let mut pane = Pane::agent(&tmp, &agent).await;
+        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+
+        let declared = br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#;
+        pane.set_agent(11, declared).await;
+        assert!(pane.await_state("working", DETECT_DEADLINE).await.is_some());
+        depart(tmp.path());
+
+        let healed = pane.await_state("unknown", DEPARTURE_DEADLINE).await;
+        let healed = healed.expect("a declared record must withdraw once its process is gone");
+        assert_eq!(
+            (field(&healed, "name"), field(&healed, "kind")),
+            ("me".into(), "claude".into())
+        );
+        assert!(healed.get("attention").is_none(), "{healed}");
+    });
+}
+
+/// A detector-written record is retracted (deleted) when the agent leaves a
+/// pane that keeps running, after `VACANT_CONFIRMATIONS`.
+#[test]
+fn a_detector_written_record_is_retracted_when_the_agent_leaves_the_pane() {
+    shorten_detector_timers();
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let agent = write_departing_agent(tmp.path(), "sleep 300");
+        let mut pane = Pane::agent(&tmp, &agent).await;
+        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+        depart(tmp.path());
+
+        let end = deadline(DEPARTURE_DEADLINE);
+        loop {
+            let change = pane.next_change(RESOURCE_AGENT_KEY, end).await;
+            if change.expect("the record was never retracted").is_none() {
+                break;
+            }
+        }
+    });
+}
+
+/// I2 (phux-w7z2.27): when `codex` replaces `claude` in a pane, a subscriber
+/// must never see one record pairing claude's kind with codex's state. The
+/// correcting write lands on `unknown`, then the pane converges on codex's
+/// own derived state.
 #[test]
 fn a_kind_change_never_leaves_a_stale_kind_beside_a_live_state() {
-    shorten_startup_grace();
-    shorten_identify_recheck();
+    shorten_detector_timers();
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
         let codex = write_fake_codex(tmp.path());
-        // Claude paints its dialog; when the test says so, codex takes the pane
-        // over. `exec` keeps the pane and its pgid alive, so this is an
-        // occupant change and not a pane teardown.
-        let depart = tmp.path().join("depart");
-        let agent =
-            write_fake_agent_departing_on(tmp.path(), &depart, &codex.display().to_string());
+        let agent = write_departing_agent(tmp.path(), &codex.display().to_string());
+        let mut pane = Pane::agent(&tmp, &agent).await;
+        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+        depart(tmp.path());
 
-        let cmd = CommandBuilder::new(&agent);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (_type_byte, attached) = recv_typed(&mut stream).await;
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-        let terminal = snapshot.focused_resource.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        await_pane_painted(&paint_marker(tmp.path())).await;
-
-        assert!(
-            await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE)
-                .await
-                .is_some(),
-            "precondition: claude was never detected in this pane",
-        );
-
-        std::fs::write(&depart, b"go").expect("signal the handover");
-
-        // Everything the subscriber sees from the moment claude is live, up to
-        // and including the pane converging on codex's own derived state.
-        let records =
-            collect_agent_records_until(&mut stream, &terminal, DEPARTURE_DEADLINE, |record| {
-                kind_and_state(record) == ("codex", "blocked")
-            })
+        let pairs = pane
+            .records_until(DEPARTURE_DEADLINE, |(k, s)| k == "codex" && s == "blocked")
             .await;
-        let pairs: Vec<(String, String)> = records
-            .iter()
-            .map(|r| {
-                let (k, s) = kind_and_state(r);
-                (k.to_owned(), s.to_owned())
-            })
-            .collect();
-
-        let switch = pairs
-            .iter()
-            .position(|(kind, _)| kind == "codex")
-            .unwrap_or_else(|| {
-                panic!(
-                    "the record never learned the pane's occupant had changed; it still says \
-                     claude: {pairs:?}"
-                )
-            });
-
-        assert_eq!(
-            pairs[switch].1, "unknown",
-            "the correcting write must land on `unknown`: a state derived from codex's \
-             screen written in the same breath as the new kind would be fine, but the \
-             record is only allowed ONE source per write and nothing has been derived \
-             for codex yet: {pairs:?}",
-        );
+        let switch = pairs.iter().position(|(kind, _)| kind == "codex");
+        let switch = switch.unwrap_or_else(|| panic!("never learned of codex: {pairs:?}"));
+        assert_eq!(pairs[switch].1, "unknown", "{pairs:?}");
         assert!(
             pairs[switch..].iter().all(|(kind, _)| kind == "codex"),
-            "once the occupant changed, no record may say claude again: {pairs:?}",
+            "{pairs:?}"
         );
         assert!(
-            pairs[switch..]
-                .iter()
-                .any(|(kind, state)| kind == "codex" && state == "blocked"),
-            "and the pane converges on codex's OWN derived state: {pairs:?}",
+            pairs[switch..].iter().any(|(_, state)| state == "blocked"),
+            "{pairs:?}"
         );
-
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
     });
 }
 
-/// THE .45 case, end to end, and the one the .27 fix could not reach.
-///
-/// The Claude hook shim declares `--name claude --kind claude` at
-/// `SessionStart`, so every shim pane carries an EXPLICIT kind — and
-/// `docs/spec/L3.md` §3.7 requires a server to preserve the `kind` of an
-/// identity-only declaration. The .27 correction works by reasserting the kind
-/// the DETECTOR authored, so on a shim pane it cannot run: after a
-/// `claude` -> `codex` handover the record kept `kind: claude` and then took
-/// codex's derived state beside it. Fresh state, present name, and a kind that
-/// was a lie — on the largest population of panes phux instruments.
-///
-/// The server may not overwrite their field. So it stops asserting a state it
-/// cannot attribute honestly (§3.7's withdrawal bullet names this exact
-/// evidence: "the PTY's foreground process group ... resolves to a different
-/// one"), and the pane lands on the WITHDRAWN shape that ADR-0075 point 6's
-/// `%name` write gate refuses.
-///
-/// The assertion is deliberately the invariant and not the mechanism: NO
-/// record, at any point, may pair `kind: claude` with a live state once codex
-/// owns the pane.
+/// phux-w7z2.45: with an explicit (shim-declared) `kind: claude`, which the
+/// server must preserve, a codex handover must withdraw the state rather than
+/// ever pair `kind: claude` with a state derived from codex's screen.
 #[test]
 fn a_declared_kind_never_gains_a_state_derived_from_a_different_occupant() {
-    shorten_startup_grace();
-    shorten_identify_recheck();
+    shorten_detector_timers();
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
         let codex = write_fake_codex(tmp.path());
-        let depart = tmp.path().join("depart");
-        let agent =
-            write_fake_agent_departing_on(tmp.path(), &depart, &codex.display().to_string());
-
-        let cmd = CommandBuilder::new(&agent);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (_type_byte, attached) = recv_typed(&mut stream).await;
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-        let terminal = snapshot.focused_resource.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        await_pane_painted(&paint_marker(tmp.path())).await;
-
-        assert!(
-            await_agent_state(&mut stream, &terminal, "blocked", DETECT_DEADLINE)
-                .await
-                .is_some(),
-            "precondition: claude was never detected in this pane",
-        );
-
-        // The shim's identity write. No `--state`, so the detector keeps
-        // running; `kind` is now an explicit writer's, and the server has to
-        // preserve it.
-        send_frame(
-            &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 11,
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-                value: br#"{"name":"claude","kind":"claude"}"#.to_vec(),
-            },
-        )
-        .await;
-
-        std::fs::write(&depart, b"go").expect("signal the handover");
-
-        // Collect every record the subscriber sees until the pane has settled
-        // on `unknown` under the preserved kind. A run that never settles ends
-        // at the deadline with whatever it saw, which the assertions below read.
-        let records =
-            collect_agent_records_until(&mut stream, &terminal, DEPARTURE_DEADLINE, |record| {
-                kind_and_state(record) == ("claude", "unknown")
-            })
+        let agent = write_departing_agent(tmp.path(), &codex.display().to_string());
+        let mut pane = Pane::agent(&tmp, &agent).await;
+        assert!(pane.await_state("blocked", DETECT_DEADLINE).await.is_some());
+        pane.set_agent(11, br#"{"name":"claude","kind":"claude"}"#)
             .await;
-        let pairs: Vec<(String, String)> = records
-            .iter()
-            .map(|r| {
-                let (k, s) = kind_and_state(r);
-                (k.to_owned(), s.to_owned())
-            })
-            .collect();
+        depart(tmp.path());
 
-        // THE invariant. Codex is what paints the screen from the handover on,
-        // so any live state under `kind: claude` after the withdrawal is a
-        // state derived from codex attributed to claude.
+        let pairs = pane
+            .records_until(DEPARTURE_DEADLINE, |(k, s)| k == "claude" && s == "unknown")
+            .await;
         let withdrawn = pairs
             .iter()
-            .position(|(kind, state)| kind == "claude" && state == "unknown")
-            .unwrap_or_else(|| {
-                panic!(
-                    "the pane never withdrew its state after the occupant changed; the \
-                     record still asserts something about a process that is gone: {pairs:?}"
-                )
-            });
+            .position(|(k, s)| k == "claude" && s == "unknown");
+        let withdrawn = withdrawn.unwrap_or_else(|| panic!("never withdrew: {pairs:?}"));
         assert!(
             pairs[withdrawn..]
                 .iter()
-                .all(|(kind, state)| kind != "claude" || state == "unknown"),
-            "`kind: claude` may only ever pair with `unknown` once codex owns the pane — \
-             a derived state beside it describes a different process: {pairs:?}",
+                .all(|(k, s)| k != "claude" || s == "unknown"),
+            "{pairs:?}",
         );
-
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
     });
 }
 
-/// The documented "useful half" of the feature (ADR-0046 §8): a human supplies
-/// the identity, the detector fills the lifecycle in around it. An
-/// identity-only `SET_METADATA` is deliberately NOT a declaration, so the
-/// detector keeps running — but its edge filter still held the state it had
-/// already derived, so it wrote nothing, and `state` stayed as the human left
-/// it (absent => `unknown`) forever. The half of the feature that is supposed
-/// to work did not.
+/// ADR-0046 §8: an identity-only `SET_METADATA` is not a declaration, so the
+/// detector fills `state` in around the human's fields. It used to write
+/// nothing (edge filter), leaving `state` unset forever.
 #[test]
 fn an_identity_only_set_gets_its_state_filled_in_by_the_detector() {
-    shorten_startup_grace();
+    shorten_detector_timers();
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let agent = write_fake_agent(tmp.path());
+        let agent = write_fake_agent(tmp.path(), "sleep 30");
+        let mut pane = Pane::agent(&tmp, &agent).await;
+        assert!(pane.next_record(deadline(DETECT_DEADLINE)).await.is_some());
+        pane.set_agent(9, br#"{"name":"reviewer","session":"fleet-7"}"#)
+            .await;
 
-        let cmd = CommandBuilder::new(&agent);
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("demo")).await;
-        let (_type_byte, attached) = recv_typed(&mut stream).await;
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-        let terminal = snapshot.focused_resource.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
-        .await;
-
-        await_pane_painted(&paint_marker(tmp.path())).await;
-
-        let first = collect_agent_record(&mut stream, &terminal, DETECT_DEADLINE).await;
-        assert!(first.is_some(), "precondition: the detector published");
-
-        // `phux agent set --name reviewer --session fleet-7` — no `--state`.
-        send_frame(
-            &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 9,
-                scope: Scope::Resource(terminal.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-                value: br#"{"name":"reviewer","session":"fleet-7"}"#.to_vec(),
-            },
-        )
-        .await;
-
-        // The detector must fill `state` in around them, without ever having to
-        // wait for the agent to change state. Wait for the conjunction, not
-        // the first `blocked`: an in-flight detector write can still carry
-        // `name: claude` after we *sent* SET_METADATA but before the server
-        // applied it (phux-uaon). Sampling that record was the flake.
-        let end = tokio::time::Instant::now() + DETECT_DEADLINE;
+        // Wait for the conjunction: a detector write in flight before the SET
+        // applied can still say `name: claude` (phux-uaon).
+        let end = deadline(DETECT_DEADLINE);
         let mut saw_reviewer = false;
         let filled = loop {
-            let left = end.saturating_duration_since(tokio::time::Instant::now());
-            assert!(
-                !left.is_zero(),
-                "the detector never filled `state` in around the human name"
-            );
-            let Some(record) = collect_agent_record(&mut stream, &terminal, left).await else {
-                panic!("the detector never filled `state` in around the human name");
-            };
-            let name = record.get("name").and_then(serde_json::Value::as_str);
-            let state = record.get("state").and_then(serde_json::Value::as_str);
-            if name == Some("reviewer") {
-                saw_reviewer = true;
-                if state == Some("blocked") {
-                    break record;
-                }
-            } else if saw_reviewer && name == Some("claude") {
-                panic!("detector write clobbered the human's name after it landed: {record}");
+            let record = pane.next_record(end).await;
+            let record = record.expect("state never filled in around the human name");
+            match field(&record, "name").as_str() {
+                "reviewer" if record["state"] == "blocked" => break record,
+                "reviewer" => saw_reviewer = true,
+                "claude" if saw_reviewer => panic!("detector clobbered the name: {record}"),
+                _ => {}
             }
         };
-        assert_eq!(
-            filled.get("name").and_then(serde_json::Value::as_str),
-            Some("reviewer"),
-            "and the human's name is preserved field-for-field: {filled}",
-        );
-        assert_eq!(
-            filled.get("session").and_then(serde_json::Value::as_str),
-            Some("fleet-7"),
-            "as is their label: {filled}",
-        );
-
-        let _ = shutdown_tx.send(());
-        let _ = server_handle.await;
+        assert_eq!(field(&filled, "session"), "fleet-7", "{filled}");
     });
 }

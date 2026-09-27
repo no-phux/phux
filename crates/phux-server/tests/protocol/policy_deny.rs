@@ -1,32 +1,19 @@
-//! The HELLO authorization seam and the policy postures (ADR-0072,
-//! `docs/spec/workload-auth.md` §8).
-//!
-//! * A denying engine refuses HELLO with `ERROR { PermissionDenied }` and
-//!   closes the connection — the refusal reaches the wire before the close.
-//! * The default (no engine, no `[policy] mode`) still completes HELLO and
-//!   mints the owner's grant, all six verbs at Global, so a local server is
-//!   not silently tightened.
-//! * The closed modes: `local` beside a remote listener refuses to start;
-//!   `paired` with no registry admits no remote connection, while the owner
-//!   socket keeps its authority.
-
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
+//! The HELLO authorization seam and policy postures (ADR-0072,
+//! `docs/spec/workload-auth.md` §8): a denying engine refuses HELLO with
+//! `PermissionDenied` before the close; the owner socket keeps all six verbs
+//! at Global under both the default and the `paired` engine; `local` mode
+//! beside a remote listener refuses to start. Posture resolution and the
+//! paired engine's remote refusals are unit-tested in `policy::tests`.
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
-use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::policy::PeerIdentity;
 use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope, WHOAMI_KEY};
 use phux_server::ServerError;
 use phux_server::auth::AuthenticatedCredential;
-use phux_server::policy::{
-    GrantFuture, PermissivePolicy, PolicyEngine, PolicyError, PolicyPosture, PostureError,
-    ScopedPolicy,
-};
+use phux_server::policy::{GrantFuture, PolicyEngine, PolicyError, PostureError, ScopedPolicy};
 use phux_server::runtime::{ServerConfig, ServerRuntime};
 use phux_server::workload::ReloadingWorkloadRegistry;
 use tempfile::TempDir;
@@ -74,19 +61,6 @@ fn cfg(socket_path: std::path::PathBuf, engine: Option<Arc<dyn PolicyEngine>>) -
         seed_command: None,
         policy_engine: engine,
         ..ServerConfig::with_default_socket()
-    }
-}
-
-/// A peer on `transport` running as the serving user, as the kernel would
-/// report a same-user Unix-socket client.
-fn peer(transport: TransportType) -> PeerIdentity {
-    PeerIdentity {
-        uid: nix::unistd::geteuid().as_raw(),
-        pid: None,
-        exe_path: None,
-        mcp_host_key: None,
-        transport,
-        source_addr: None,
     }
 }
 
@@ -140,25 +114,6 @@ fn a_denying_engine_refuses_hello_with_permission_denied() {
     });
 }
 
-#[test]
-fn the_default_engine_still_admits_a_local_client() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let cfg = cfg(tmp.path().join("phux.sock"), None);
-        with_server(cfg, |socket_path| async move {
-            let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-            send_frame(&mut stream, &hello()).await;
-            let (_type_byte, frame) = recv_typed(&mut stream).await;
-            assert!(
-                matches!(frame, FrameKind::HelloOk { .. }),
-                "the shipped default must stay permissive; a tightened default \
-                 would lock every existing local client out (got {frame:?})",
-            );
-        })
-        .await;
-    });
-}
-
 /// The owner's whoami record over a real socket.
 async fn owner_whoami(socket_path: std::path::PathBuf) -> serde_json::Value {
     let mut stream = wait_for_raw_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
@@ -190,98 +145,22 @@ fn all_six_at_global() -> serde_json::Value {
     }])
 }
 
+/// The owner socket's effective grant, under no engine and under `paired`.
 #[test]
-fn local_mode_mints_all_verbs_at_global_and_existing_suite_is_unchanged() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let cfg = cfg(tmp.path().join("phux.sock"), None);
-        with_server(cfg, |socket_path| async move {
-            let record = owner_whoami(socket_path).await;
-            assert_eq!(record["auth_route"], "uds");
-            assert_eq!(record["grant"], all_six_at_global());
-        })
-        .await;
-    });
-}
-
-#[test]
-fn whoami_reports_the_effective_grant() {
-    // The owner socket under the `paired` engine keeps kernel-uid authority
-    // (workload-auth §3), and whoami says so; the scoped half of this
-    // contract is pinned in `runtime::scope_matrix`, which can stamp a
-    // workload identity.
+fn the_owner_socket_keeps_all_verbs_at_global() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let registry = ReloadingWorkloadRegistry::load(tmp.path().join("workload-keys")).unwrap();
-        let engine: Arc<dyn PolicyEngine> = Arc::new(ScopedPolicy::paired(Arc::new(registry)));
-        let cfg = cfg(tmp.path().join("phux.sock"), Some(engine));
-        with_server(cfg, |socket_path| async move {
-            let record = owner_whoami(socket_path).await;
-            assert_eq!(record["grant"], all_six_at_global());
-        })
-        .await;
-    });
-}
-
-#[test]
-fn paired_mode_without_registry_denies_everything() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let registry = ReloadingWorkloadRegistry::load(tmp.path().join("workload-keys")).unwrap();
-        let policy = ScopedPolicy::paired(Arc::new(registry));
-        let credential = AuthenticatedCredential {
-            id: format!("sha256:{}", "a".repeat(64)),
-            principal: "workload".to_owned(),
-            scopes: vec!["*@global".to_owned()],
-            issued_at: Utc::now(),
-            expires_at: None,
-            generation: 1,
-            registry_instance: None,
-        };
-        for transport in [
-            TransportType::Quic,
-            TransportType::WebSocket,
-            TransportType::WebTransport,
-        ] {
-            let refused = policy
-                .authorize_hello(&peer(transport), Some(&credential))
-                .await;
-            assert!(refused.is_err(), "{transport:?} was admitted");
-            assert!(
-                policy
-                    .authorize_hello(&peer(transport), None)
-                    .await
-                    .is_err(),
-                "{transport:?} without a credential was admitted"
-            );
+        let paired: Arc<dyn PolicyEngine> = Arc::new(ScopedPolicy::paired(Arc::new(registry)));
+        for (name, engine) in [("default", None), ("paired", Some(paired))] {
+            let cfg = cfg(tmp.path().join(format!("{name}.sock")), engine);
+            with_server(cfg, |socket_path| async move {
+                let record = owner_whoami(socket_path).await;
+                assert_eq!(record["auth_route"], "uds", "{name}");
+                assert_eq!(record["grant"], all_six_at_global(), "{name}");
+            })
+            .await;
         }
-        let owner = policy
-            .authorize_hello(&peer(TransportType::UnixSocket), None)
-            .await
-            .unwrap();
-        assert!(owner.is_owner(), "the owner socket keeps its authority");
-    });
-}
-
-#[test]
-fn mode_unset_with_remote_listener_warns_and_keeps_local_grant() {
-    run_local(async {
-        let posture = PolicyPosture::resolve(None, false, true).unwrap();
-        assert_eq!(
-            posture,
-            PolicyPosture::Transitional {
-                remote_listener: true
-            }
-        );
-        assert!(posture.warns_remote_owner_grant());
-        assert!(!posture.requires_workload_mtls());
-        // The transitional engine keeps today's behaviour for a bearer-
-        // admitted remote consumer: the owner's grant.
-        let grant = PermissivePolicy::INSTANCE
-            .authorize_hello(&peer(TransportType::Quic), None)
-            .await
-            .unwrap();
-        assert!(grant.is_owner());
     });
 }
 

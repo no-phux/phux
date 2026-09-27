@@ -1,21 +1,18 @@
-//! `docs/spec/proto.md` §6.4 — negotiated frame compression, end to end.
-//!
-//! Two attaches against one real server over its real socket: one offering
-//! DEFLATE and one offering nothing. Both must reach the same decoded
-//! bootstrap, and the offering one must put dramatically fewer bytes on the
-//! wire — that byte count is the metric the whole feature exists to move,
-//! since a remote first paint is bandwidth-bound on the native prefix.
+//! Negotiated frame compression (`docs/spec/proto.md` §6.4): an attach that
+//! offers DEFLATE decodes the same bootstrap as one that offers nothing, for
+//! a fraction of the wire bytes.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-// The measured numbers are the point of this gate: `--no-capture` prints them,
-// and a ratio computed in floating point is precise enough to read.
-#![allow(clippy::print_stderr, clippy::cast_precision_loss)]
+#![allow(
+    clippy::print_stderr,
+    clippy::cast_precision_loss,
+    reason = "prints the measured ratio"
+)]
 
 use std::time::Duration;
 
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, Compression, CompressionSet, LayerSet};
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
+use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -24,6 +21,8 @@ use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, recv_framed, run_local, send_frame, spawn_server_with_seed_cmd,
     wait_for_raw_socket,
 };
+
+use super::common::attach;
 
 /// A pane wide and tall enough that libghostty's capture emits a real page.
 const COLS: u16 = 200;
@@ -63,18 +62,8 @@ async fn hello(stream: &mut UnixStream, compression: CompressionSet) -> Compress
 
 /// Attach and read to `BOOTSTRAP_READY`, accounting every byte.
 async fn trace_attach(stream: &mut UnixStream) -> AttachTrace {
-    send_frame(
-        stream,
-        &FrameKind::Attach {
-            attach_id: 1,
-            target: AttachTarget::ByName("bench".to_owned()),
-            viewport: ViewportInfo::new(COLS, ROWS),
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-            role_policy: None,
-        },
-    )
-    .await;
+    let target = AttachTarget::ByName("bench".to_owned());
+    send_frame(stream, &attach(target, COLS, ROWS)).await;
 
     let mut trace = AttachTrace {
         wire_bytes: 0,
@@ -84,8 +73,7 @@ async fn trace_attach(stream: &mut UnixStream) -> AttachTrace {
     for _ in 0..512 {
         let framed = recv_framed(stream).await;
         trace.wire_bytes += framed.len();
-        // The envelope is invisible to `decode`, so the type byte on the wire
-        // is the only place the transform shows up at all.
+        // `decode` hides the envelope; only the wire type byte shows it.
         if framed[4] == phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED {
             trace.saw_envelope = true;
         }
@@ -106,18 +94,13 @@ async fn trace_attach(stream: &mut UnixStream) -> AttachTrace {
 fn compression_shrinks_the_bootstrap_without_changing_it() {
     let dir = TempDir::new().expect("tempdir");
     let socket = dir.path().join("phux.sock");
-    // A pane with enough scrolled output that the capture is a real page
-    // rather than a nearly-empty one.
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.args(["-c", "sleep 0.4; seq 1 400; sleep 60"]);
 
     run_local(async move {
         let (shutdown, handle) = spawn_server_with_seed_cmd(socket.clone(), "bench", cmd);
 
-        // A first attach at the target geometry, discarded: the seed pane is
-        // spawned at the server's default size and it is the attach viewport
-        // that resizes it, so measuring the very first bootstrap would measure
-        // an 80-column pane. Everything after this sees the real 200x50 grid.
+        // A discarded warm-up attach resizes the seed pane to 200x50.
         {
             let mut warmup = wait_for_raw_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
             hello(&mut warmup, CompressionSet::new()).await;
