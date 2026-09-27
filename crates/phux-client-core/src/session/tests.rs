@@ -4032,67 +4032,46 @@ fn malformed_later_agent_batch_record_retires_without_partial_publication() {
 // the frontend status it produces.
 
 #[test]
-fn cwd_changed_event_becomes_a_cwd_status() {
+fn cwd_and_command_events_become_statuses_in_order() {
     let mut kernel = kernel(ReadyMode::ChunkFirst);
     let id = terminal(1);
     let mut effects = EffectBuffer::new();
     kernel
         .update(attach_started(1, std::slice::from_ref(&id)), &mut effects)
         .unwrap();
-    let event = AgentEvent::CwdChanged {
-        cwd: "/srv/app".to_owned(),
-    };
-    kernel
-        .update(event_input(&id, &event), &mut effects)
-        .unwrap();
-    assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Status(KernelStatus::Cwd {
-            terminal_id: id.clone(),
-            cwd: "/srv/app".to_owned(),
-        })]
-    );
-}
-
-#[test]
-fn command_boundaries_become_statuses_in_order() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    kernel
-        .update(attach_started(1, std::slice::from_ref(&id)), &mut effects)
-        .unwrap();
-
-    let started = AgentEvent::CommandStarted;
-    kernel
-        .update(event_input(&id, &started), &mut effects)
-        .unwrap();
-    assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Status(KernelStatus::CommandStarted {
-            terminal_id: id.clone(),
-        })]
-    );
-
-    let finished = AgentEvent::CommandFinished { exit_code: Some(1) };
-    kernel
-        .update(event_input(&id, &finished), &mut effects)
-        .unwrap();
-    assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Status(KernelStatus::CommandFinished {
-            terminal_id: id.clone(),
-            exit_code: Some(1),
-        })]
-    );
-
-    // Every event kind this lane does not surface as status — Bell here —
-    // is a silent no-op, not an error and not an effect.
-    let bell = AgentEvent::Bell;
-    kernel
-        .update(event_input(&id, &bell), &mut effects)
-        .unwrap();
-    assert!(effects.is_empty());
+    let cases = [
+        (
+            AgentEvent::CwdChanged {
+                cwd: "/srv/app".to_owned(),
+            },
+            Some(KernelStatus::Cwd {
+                terminal_id: id.clone(),
+                cwd: "/srv/app".to_owned(),
+            }),
+        ),
+        (
+            AgentEvent::CommandStarted,
+            Some(KernelStatus::CommandStarted {
+                terminal_id: id.clone(),
+            }),
+        ),
+        (
+            AgentEvent::CommandFinished { exit_code: Some(1) },
+            Some(KernelStatus::CommandFinished {
+                terminal_id: id.clone(),
+                exit_code: Some(1),
+            }),
+        ),
+        // Kinds not surfaced as status are silent no-ops.
+        (AgentEvent::Bell, None),
+    ];
+    for (event, status) in cases {
+        kernel
+            .update(event_input(&id, &event), &mut effects)
+            .unwrap();
+        let expected: Vec<_> = status.into_iter().map(KernelEffect::Status).collect();
+        assert_eq!(effects.as_slice(), expected.as_slice());
+    }
 }
 
 #[test]
@@ -4125,58 +4104,25 @@ fn resource_closed_exit_and_signal_become_exited_status() {
     );
 }
 
+/// A retained pane (D3) reports its exit once via `TerminalControl` and
+/// stays open; later lease changes restamp `lifecycle: Exited` and the
+/// eventual `RESOURCE_CLOSED` must not report it again.
 #[test]
-fn terminal_control_exited_event_reports_status_without_closing_the_pane() {
+fn a_retained_exit_reports_status_once_without_closing_the_pane() {
     let mut kernel = kernel(ReadyMode::ChunkFirst);
     let id = terminal(1);
     let mut effects = EffectBuffer::new();
     publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
     effects.clear();
-
-    let event = AgentEvent::TerminalControl {
+    let control = |action, exit_status| AgentEvent::TerminalControl {
         lifecycle: ResourceLifecycle::Exited,
-        exit_status: Some(0),
+        exit_status,
         input_holder: None,
-        action: ControlAction::Exited,
+        action,
         actor: None,
     };
-    kernel
-        .update(event_input(&id, &event), &mut effects)
-        .unwrap();
-    assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Status(KernelStatus::Exited {
-            terminal_id: id.clone(),
-            exit_status: Some(0),
-            signal: None,
-            reason: CloseReason::Exited,
-        })]
-    );
-    assert!(
-        !kernel.closed.contains(&id),
-        "a natural-exit status event must not close the pane (retain-on-exit, D3)"
-    );
-    assert!(
-        kernel.published(&id).is_some(),
-        "the replica must survive a TerminalControl exit event"
-    );
-}
 
-#[test]
-fn terminal_control_lease_change_after_exit_does_not_reemit_status() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
-    effects.clear();
-
-    let exited = AgentEvent::TerminalControl {
-        lifecycle: ResourceLifecycle::Exited,
-        exit_status: Some(7),
-        input_holder: None,
-        action: ControlAction::Exited,
-        actor: None,
-    };
+    let exited = control(ControlAction::Exited, Some(7));
     kernel
         .update(event_input(&id, &exited), &mut effects)
         .unwrap();
@@ -4189,62 +4135,15 @@ fn terminal_control_lease_change_after_exit_does_not_reemit_status() {
             reason: CloseReason::Exited,
         })]
     );
+    assert!(!kernel.closed.contains(&id), "exit must not close the pane");
+    assert!(kernel.published(&id).is_some(), "the replica survives");
 
-    // The server restamps the process's *current* lifecycle (Exited, for a
-    // retained pane) on every later TerminalControl broadcast, including a
-    // lease change that has nothing to do with the exit. `action` (not
-    // `lifecycle`) is the transition marker, so this must not look like a
-    // fresh, less-informative exit that clobbers `exit_status: Some(7)`
-    // with `None`.
-    let unrelated_signal = AgentEvent::TerminalControl {
-        lifecycle: ResourceLifecycle::Exited,
-        exit_status: None,
-        input_holder: None,
-        action: ControlAction::Interrupted,
-        actor: None,
-    };
+    let lease_change = control(ControlAction::Interrupted, None);
     kernel
-        .update(event_input(&id, &unrelated_signal), &mut effects)
+        .update(event_input(&id, &lease_change), &mut effects)
         .unwrap();
-    assert!(
-        effects.is_empty(),
-        "a non-exit TerminalControl action on an already-exited retained pane \
-         must not reemit Exited"
-    );
-}
+    assert!(effects.is_empty(), "a lease change must not reemit Exited");
 
-#[test]
-fn retained_exit_then_resource_closed_reports_status_only_once() {
-    let mut kernel = kernel(ReadyMode::ChunkFirst);
-    let id = terminal(1);
-    let mut effects = EffectBuffer::new();
-    publish_direct(&mut kernel, &id, stream(1), bootstrap(1), 0, &mut effects);
-    effects.clear();
-
-    let exited = AgentEvent::TerminalControl {
-        lifecycle: ResourceLifecycle::Exited,
-        exit_status: Some(7),
-        input_holder: None,
-        action: ControlAction::Exited,
-        actor: None,
-    };
-    kernel
-        .update(event_input(&id, &exited), &mut effects)
-        .unwrap();
-    assert_eq!(
-        effects.as_slice(),
-        &[KernelEffect::Status(KernelStatus::Exited {
-            terminal_id: id.clone(),
-            exit_status: Some(7),
-            signal: None,
-            reason: CloseReason::Exited,
-        })]
-    );
-
-    // Eventual purge: RESOURCE_CLOSED must not report the exit a second
-    // time, even though this call could in principle offer a different
-    // reason/signal — the first report already delivered and cannot be
-    // revised in place.
     kernel
         .update(
             KernelInput::ResourceClosed {
@@ -4261,7 +4160,7 @@ fn retained_exit_then_resource_closed_reports_status_only_once() {
             .as_slice()
             .iter()
             .all(|effect| !matches!(effect, KernelEffect::Status(KernelStatus::Exited { .. }))),
-        "a purge after an already-reported retained exit must not report Exited again"
+        "the purge must not report Exited again"
     );
 }
 
@@ -4273,12 +4172,7 @@ fn event_for_an_untracked_or_already_closed_terminal_is_ignored() {
         cwd: "/tmp".to_owned(),
     };
 
-    // This id was never attached, bootstrapped, or declared: the kernel
-    // has no record of it as a Terminal. Mirrors the close path's own
-    // scope (`terminal_closed`'s `was_tracked_terminal`) so other kernel
-    // embedders without an FFI-level `ensure_participant` equivalent (a
-    // UniFFI mobile bridge, say) never surface a status for an unrelated
-    // pane.
+    // Never attached, bootstrapped, or declared.
     let unknown = terminal(99);
     kernel
         .update(event_input(&unknown, &event), &mut effects)
@@ -4288,8 +4182,7 @@ fn event_for_an_untracked_or_already_closed_terminal_is_ignored() {
         "an event for a terminal this kernel never tracked must be a no-op"
     );
 
-    // A terminal that has since closed must also be ignored, even though
-    // `self.kinds` still answers `resource_kind` for it.
+    // Closed, though `self.kinds` still knows its kind.
     let gone = terminal(1);
     kernel
         .update(attach_started(1, std::slice::from_ref(&gone)), &mut effects)
