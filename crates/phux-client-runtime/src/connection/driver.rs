@@ -428,7 +428,7 @@ fn peel_queued_pings(frames: Vec<Vec<u8>>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let mut pongs = Vec::new();
     for frame in frames {
         match FrameKind::decode(&frame) {
-            Ok((FrameKind::Ping { nonce }, tail)) if tail.is_empty() => {
+            Ok((FrameKind::Ping { nonce }, [])) => {
                 pongs.push(encode(&FrameKind::Pong { nonce }));
             }
             _ => keep.push(frame),
