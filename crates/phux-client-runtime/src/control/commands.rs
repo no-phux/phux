@@ -370,8 +370,6 @@ impl ControlPlane {
         Some(self.queue_refresh_topology())
     }
 
-    /// Send one key on the raw path. `false` when the terminal is fenced
-    /// behind an acknowledged input with unknown delivery.
     /// Subscribe to the server-wide event stream from `after_seq`
     /// (ADR-0123); the cursor is honored only on a server that advertises
     /// `EVENT_JOURNAL`.

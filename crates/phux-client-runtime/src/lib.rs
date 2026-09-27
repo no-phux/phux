@@ -1,38 +1,20 @@
 //! The client runtime: everything between the sans-IO session kernel and a
 //! language binding, implemented once (ADR-0133).
 //!
-//! `phux-client-core` owns terminal and session state and does no I/O.
-//! `phux-dial` establishes one QUIC or WebSocket connection. Between them
-//! sits the orchestration every consumer needs and used to rebuild:
+//! - [`target`]: resolve `[USER@]HOST[:PORT]` against the `[[remote]]`
+//!   registry (ADR-0093 rung 1).
+//! - [`dial`]: dial a resolved entry under the CLI's trust rules.
+//! - [`reconnect`]: backoff ladders and fatal-refusal rules.
+//! - [`tunnel`]: the byte relay for a socket-owning embedder.
+//! - [`control`]: the sans-IO control plane over `SessionKernel`.
+//! - [`engine`]: the owner thread hosting the kernel and every replica.
+//! - `publication` (feature `engine`): the double-buffered grid.
+//! - [`connection`]: the async driver (dial, framing, keepalive, reconnect).
+//! - [`runtime`]: [`runtime::Runtime::connect`] and the thread-safe
+//!   [`runtime::Client`] a binding drives.
 //!
-//! - [`target`] — resolving `[USER@]HOST[:PORT]` against the CLI's
-//!   `[[remote]]` registry, rung 1 of the ADR-0093 ladder.
-//! - [`dial`] — turning a resolved entry into a dial under the CLI's trust
-//!   rules (pin required off loopback, `wss://` and a token for a routable
-//!   WebSocket), the operator-facing wording of every failure, and the
-//!   SPEC §5 frame cutting the WebSocket lane needs.
-//! - [`reconnect`] — the backoff ladder, with one preset per lane
-//!   (interactive, agent verb, local upgrade), and the rule for which
-//!   refusals no retry can satisfy.
-//! - [`tunnel`] — the byte-relay tunnel a socket-owning embedder hands one
-//!   end of a Unix-domain socket pair.
-//! - [`control`] — the sans-IO control plane over `SessionKernel`: decoded
-//!   frames in, encoded frames and owned [`control::Event`]s out. It owns
-//!   the connection lifecycle, the topology, per-terminal commands, input,
-//!   and the event subscription, and it never touches a socket.
-//! - [`engine`] — the owner thread that hosts the kernel and every engine
-//!   replica. Ghostty values never cross threads; commands go in over a
-//!   channel and owned results come back.
-//! - `publication` (feature `engine`) — the double-buffered grid: an
-//!   immutable `GridFrame` per terminal with a generation counter and dirty
-//!   rows, acquired from any thread.
-//! - [`connection`] — the async driver: dial, framing, keepalive, the
-//!   reconnect ladder, and the pump that feeds the control plane.
-//! - [`runtime`] — [`runtime::Runtime::connect`] and the thread-safe
-//!   synchronous [`runtime::Client`] a binding drives.
-//!
-//! Binding crates (`phux-client-ffi`, phux-mobile's bridge) translate these
-//! into their language's idiom and hold no state machine of their own.
+//! Binding crates translate these into their language and hold no state
+//! machine of their own.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
