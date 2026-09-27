@@ -1,27 +1,14 @@
 //! Agent-event subscriptions and the one fan-out path (ADR-0123,
 //! `docs/spec/L1.md` §7.3).
 //!
-//! Both subscribe verbs land in one registry: `SUBSCRIBE_EVENTS` installs an
-//! unfiltered scope, and `SUBSCRIBE_RESOURCE_EVENTS` installs a Terminal
-//! scope with a type filter. A client has one subscription however many
-//! scopes it holds, so an event reaches it once, and the latest subscription
-//! to a scope sets that scope's filter.
-//!
-//! Every event goes through [`ServerState::record_and_fanout`] (or, for an
-//! event a federation hub relays, [`ServerState::record_relayed_event`]):
-//! stamped by the journal under the state lock, then offered to each
-//! subscription with a non-blocking send. Nothing here ever waits on a
-//! mailbox. A subscription never receives a `seq` at or below the highest it
-//! was already given, so its stream is monotone across all its scopes.
-//!
-//! Work a subscription is owed but its mailbox cannot take right now, a
-//! `journal_gap` for events it missed or the rest of a cursor replay, stays
-//! on the subscription and wakes its pump: the connection task that waits
-//! for mailbox room and pulls the next owed frame
-//! ([`ServerState::next_owed_event_frame`]). A replay is pulled from the
-//! ring a frame at a time, so a resuming consumer on a quiet server receives
-//! everything it missed, in order, and an owed gap is delivered as soon as
-//! the consumer reads, without waiting for another event.
+//! `SUBSCRIBE_EVENTS` (unfiltered) and `SUBSCRIBE_RESOURCE_EVENTS` (a
+//! Terminal scope with a type filter) share one registry, so each client
+//! has one subscription and gets an event once; the latest subscribe to a
+//! scope sets its filter. Every event is stamped by the journal under the
+//! state lock and offered with a non-blocking send, and a subscription's
+//! `seq`s are monotone across its scopes. Work its mailbox cannot take yet
+//! (a `journal_gap`, the rest of a cursor replay) stays owed and wakes the
+//! connection's pump ([`ServerState::next_owed_event_frame`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,13 +24,10 @@ use super::client::ClientId;
 use super::journal::{EventRecord, Journal, JournalEntry, NextEntry, now_unix_ms};
 use crate::mailbox::Outbound;
 
-/// Scope of an agent-event subscription.
-///
-/// A client subscribes with [`Self::Server`] (every event the server emits
-/// for a local resource, including server-scoped events with no owning
-/// Terminal) or [`Self::Terminal`] (that Terminal's events, and the
-/// lifecycle edges of its children, ADR-0104 §2). A satellite Terminal on a
-/// federation hub is only ever a [`Self::Terminal`] scope.
+/// Scope of an agent-event subscription: [`Self::Server`] (every local
+/// event) or [`Self::Terminal`] (that Terminal and its children's
+/// lifecycle edges, ADR-0104 §2). A satellite Terminal is only ever a
+/// Terminal scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventScope {
     /// Every event the server emits for a local resource.
@@ -57,9 +41,8 @@ impl EventScope {
         terminal.map_or(Self::Server, Self::Terminal)
     }
 
-    /// Whether an event recorded as `entry` is in this scope. A relayed
-    /// satellite event is not a server-wide one: it reaches only the
-    /// consumers that subscribed to its satellite Terminal.
+    /// Whether `entry` is in this scope (a relayed satellite event is never
+    /// server-wide).
     fn covers(&self, entry: &JournalEntry) -> bool {
         match self {
             Self::Server => !entry.is_relayed(),
@@ -70,11 +53,8 @@ impl EventScope {
     }
 }
 
-/// A `SUBSCRIBE_RESOURCE_EVENTS` type filter. Empty admits every event.
-///
-/// Lifecycle edges, supervisory control, and `source_gap` bypass a
-/// non-empty filter: they are not grid activity, and a loss notice that a
-/// filter could hide would be a silent loss.
+/// A `SUBSCRIBE_RESOURCE_EVENTS` type filter; empty admits all. Lifecycle,
+/// supervisory control, and `source_gap` always pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventFilter(Vec<ResourceEventType>);
 
@@ -128,13 +108,11 @@ const fn filter_type(event: &AgentEvent) -> Option<ResourceEventType> {
 struct PendingReplay {
     /// The last `seq` the replay has handed out (or reported missing).
     cursor: u64,
-    /// A gap owed ahead of the replay's first entry: a void cursor, or a
-    /// cursor below what this subscription already received.
+    /// A gap owed before the replay's first entry.
     leading_gap: Option<(u64, u64)>,
 }
 
-/// What a connection's event pump does next
-/// ([`ServerState::next_owed_event_frame`]).
+/// What a connection's event pump does next.
 #[derive(Debug)]
 pub enum PumpStep {
     /// Send this frame with the mailbox slot the pump holds.
@@ -145,61 +123,48 @@ pub enum PumpStep {
     Gone,
 }
 
-/// The handles a connection's event pump runs on: the wake the
-/// subscription notifies when it is owed work, and the mailbox the pump
-/// waits for room in.
+/// The wake and mailbox a connection's event pump runs on.
 #[derive(Debug)]
 pub struct EventPump {
     /// Notified whenever the subscription is owed a gap or replay frames.
     pub wake: Arc<Notify>,
     /// The connection's outbound mailbox.
     pub tx: mpsc::Sender<Outbound>,
-    /// The subscription this pump serves. A later subscription for the
-    /// same client (after a detach retired this one) has another, so a
-    /// pump that outlived its subscription is told it is gone rather than
-    /// serving the new one.
+    /// The subscription served; a later one for the same client has a new
+    /// epoch, so an outlived pump is told it is gone.
     pub epoch: u64,
 }
 
-/// What a hub consumer's satellite scope held before a subscribe changed
-/// it ([`ServerState::subscribe_satellite_events`]), so a subscribe the
-/// satellite refused restores it exactly
-/// ([`ServerState::restore_satellite_scope`]).
+/// A hub consumer's satellite scope before a subscribe, so a refused
+/// subscribe can restore it ([`ServerState::restore_satellite_scope`]).
 #[derive(Debug)]
 pub struct SatelliteScopeChange {
     terminal: WireResourceId,
     prior: Option<EventFilter>,
 }
 
-/// One client's agent-event subscription: its mailbox, its scopes, and its
-/// delivery state.
-///
-/// The mailbox lives here so fan-out reaches a pure `watch` client that
-/// subscribed without attaching.
+/// One client's event subscription: mailbox (a `watch` client never
+/// attaches), scopes, and delivery state.
 #[derive(Debug)]
 pub struct EventSubscription {
     /// The client's outbound mailbox.
     pub(crate) tx: mpsc::Sender<Outbound>,
     /// Scopes this client watches, each with its type filter.
     pub(crate) scopes: HashMap<EventScope, EventFilter>,
-    /// The client opened a scope with `after_seq`, which proves it decodes
-    /// every value of this protocol draft (L1 §7.1 `EXPIRED`).
+    /// Opened with `after_seq`, proving it decodes this draft (L1 §7.1).
     journal_aware: bool,
     /// Sequences this subscription missed and has not yet been told about.
     gap: Option<(u64, u64)>,
-    /// A cursor replay still owed from the ring. While it is pending, live
-    /// events are not offered directly: the replay reaches them in the ring,
-    /// which keeps the stream monotone.
+    /// A cursor replay still owed; live events wait for it so the stream
+    /// stays monotone.
     replay: Option<PendingReplay>,
-    /// The highest `seq` this subscription has been given or told it
-    /// missed. Nothing at or below it is ever delivered again.
+    /// Highest `seq` given or reported missing; nothing at or below recurs.
     delivered: u64,
     /// Woken when the subscription is owed work its mailbox could not take.
     wake: Arc<Notify>,
     /// A pump has been started for this subscription.
     pump_claimed: bool,
-    /// Tells this subscription apart from an earlier or later one for the
-    /// same client ([`EventPump::epoch`]).
+    /// Distinguishes this subscription from others for the same client.
     epoch: u64,
 }
 
@@ -223,12 +188,8 @@ impl EventSubscription {
         self.wake.notify_one();
     }
 
-    /// Whether any of this subscription's scopes admits `entry`.
-    ///
-    /// `ROLE_CHANGED` (ADR-0127) has no older action it could be reported
-    /// as, the way `EXPIRED` reads as `RELEASED`, so a subscription that
-    /// never proved it decodes this draft is simply not offered it: a
-    /// pre-`0.9.0-draft.15` decoder would fail the whole frame on it.
+    /// Whether any scope admits `entry`. `ROLE_CHANGED` goes only to
+    /// journal-aware subscriptions (older decoders fail on it).
     fn admits(&self, entry: &JournalEntry) -> bool {
         if !self.journal_aware && is_role_changed(&entry.event) {
             return false;
@@ -238,9 +199,7 @@ impl EventSubscription {
             .any(|(scope, filter)| scope.covers(entry) && filter.admits(&entry.event))
     }
 
-    /// The newest `seq` this subscription has been sent or is owed: what it
-    /// delivered, a gap it owes, and a pending replay's leading gap. A
-    /// satellite scope's cursor is owed a gap its ring holds nothing for.
+    /// The newest `seq` sent or owed (a satellite cursor is owed a gap).
     fn reach(&self) -> u64 {
         let last = |gap: Option<(u64, u64)>| gap.map_or(0, |(_, last)| last);
         self.delivered
@@ -248,9 +207,8 @@ impl EventSubscription {
             .max(last(self.replay.and_then(|replay| replay.leading_gap)))
     }
 
-    /// The newest evicted `seq` while this subscription's replay is still
-    /// pending below it, so a `journal_gap` reaching it will be sent; `0`
-    /// otherwise, since a later eviction is never reported to it.
+    /// The newest evicted `seq` while a replay is pending below it (a gap
+    /// will be sent); else `0`.
     fn owed_eviction(&self, journal: &Journal) -> u64 {
         let evicted = journal.evicted_through();
         match self.replay {
@@ -264,8 +222,7 @@ impl EventSubscription {
         entry.frame_with(render_for(&entry.event, self.journal_aware))
     }
 
-    /// The live fan-out step: deliver `entry` if it is in scope and newer
-    /// than anything this subscription was given, telling it about any
+    /// Deliver `entry` if in scope and newer than anything given, reporting
     /// earlier loss first.
     fn offer(&mut self, entry: &JournalEntry) {
         if entry.seq() <= self.delivered {
@@ -273,8 +230,7 @@ impl EventSubscription {
         }
         let admitted = self.admits(entry);
         if self.replay.is_some() {
-            // A retained event is pulled from the ring by the replay; a
-            // relayed one is not retained, so the replay cannot reach it.
+            // The replay reaches retained events; relayed ones it cannot.
             if admitted && entry.is_relayed() {
                 self.owe_gap(entry.seq(), entry.seq());
             }
@@ -291,8 +247,8 @@ impl EventSubscription {
         self.delivered = entry.seq();
     }
 
-    /// Queue what is owed while the mailbox has room, and wake the pump
-    /// for the rest.
+    /// Queue what is owed while the mailbox has room; wake the pump for the
+    /// rest.
     fn fill(&mut self, journal: &Journal) {
         let tx = self.tx.clone();
         while let Ok(permit) = tx.try_reserve() {
@@ -310,8 +266,7 @@ impl EventSubscription {
         self.gap.is_some() || self.replay.is_some()
     }
 
-    /// The next owed frame: replay first (its gaps and entries, in `seq`
-    /// order), then any gap owed for live events.
+    /// The next owed frame: replay first, then a live-event gap.
     fn next_owed(&mut self, journal: &Journal) -> Option<FrameKind> {
         if self.replay.is_some() {
             return self.next_replay_frame(journal);
@@ -319,10 +274,8 @@ impl EventSubscription {
         self.take_gap_frame()
     }
 
-    /// The next replay frame. Nothing at or below what was already
-    /// delivered or reported missing is replayed, and a gap owed meanwhile
-    /// (a relayed event, an interrupted scope) goes out before any later
-    /// `seq`, so the stream stays monotone.
+    /// The next replay frame, skipping anything already given, with any gap
+    /// owed meanwhile sent before later `seq`s.
     fn next_replay_frame(&mut self, journal: &Journal) -> Option<FrameKind> {
         let replay = self.replay?;
         if let Some((first, last)) = replay.leading_gap {
@@ -355,8 +308,7 @@ impl EventSubscription {
         }
     }
 
-    /// Whether the gap owed for live events starts before the replay's
-    /// next frame, and so must be sent first.
+    /// Whether the owed live gap precedes the replay's next frame.
     fn owed_gap_precedes(&self, next: &NextEntry) -> bool {
         let Some((owed_first, _)) = self.gap else {
             return false;
@@ -385,8 +337,7 @@ impl EventSubscription {
         Some(self.report_gap(first, last))
     }
 
-    /// Send the pending `journal_gap`, if any. `false` when one is still
-    /// owed.
+    /// Send the pending gap, if any; `false` while still owed.
     fn flush_gap(&mut self) -> bool {
         let Some((first, last)) = self.gap else {
             return true;
@@ -403,8 +354,7 @@ impl EventSubscription {
         self.tx.try_send(Outbound::Frame(frame)).is_ok()
     }
 
-    /// Owe a `journal_gap` covering `first..=last`, and wake the pump so it
-    /// is delivered as soon as the mailbox has room.
+    /// Owe a `journal_gap` for `first..=last` and wake the pump.
     fn owe_gap(&mut self, first: u64, last: u64) {
         self.gap = Some(match self.gap {
             Some((prior_first, prior_last)) => (prior_first.min(first), prior_last.max(last)),
@@ -413,16 +363,14 @@ impl EventSubscription {
         self.wake.notify_one();
     }
 
-    /// Start a cursor replay after `after_seq` (L1 §7.3), without replaying
-    /// anything this subscription was already given.
+    /// Start a replay after `after_seq`, skipping what was already given.
     fn begin_replay(&mut self, after_seq: u64, head: u64) {
         let start = replay_start(after_seq, head, self.delivered);
         let Some((cursor, leading_gap)) = start else {
             return;
         };
         self.replay = Some(match self.replay {
-            // One replay at a time: an already-pending one keeps its
-            // position, which is past everything this one could name.
+            // An already-pending replay keeps its (later) position.
             Some(pending) => PendingReplay {
                 leading_gap: merge_gap(pending.leading_gap, leading_gap),
                 ..pending
@@ -435,10 +383,8 @@ impl EventSubscription {
     }
 }
 
-/// Where a replay after `after_seq` starts, given the journal's `head` and
-/// what the subscription already received (`delivered`): its cursor and
-/// the gap it leads with. `None` when nothing is owed (the no-replay
-/// sentinel, or a cursor at the head).
+/// Where a replay after `after_seq` starts, given `head` and `delivered`:
+/// its cursor and leading gap, or `None` when nothing is owed.
 fn replay_start(after_seq: u64, head: u64, delivered: u64) -> Option<(u64, Option<(u64, u64)>)> {
     if after_seq == u64::MAX || (after_seq == head && delivered <= head) {
         return None;
@@ -448,8 +394,7 @@ fn replay_start(after_seq: u64, head: u64, delivered: u64) -> Option<(u64, Optio
         return Some((head.max(delivered), Some((1, head))));
     }
     if after_seq < delivered {
-        // Already given everything up to `delivered` through another scope;
-        // what this scope missed below it cannot be told apart.
+        // Already given up to `delivered` via another scope.
         return Some((delivered, Some((after_seq + 1, delivered))));
     }
     Some((after_seq, None))
@@ -475,10 +420,8 @@ const fn is_role_changed(event: &AgentEvent) -> bool {
     )
 }
 
-/// How `event` reads to a subscriber: an `EXPIRED` lease reaches a
-/// subscription that never sent a cursor as `RELEASED` with no actor,
-/// because a decoder from before this draft fails the frame on the new
-/// value (L1 §7.1).
+/// How `event` reads to a subscriber: `EXPIRED` becomes actor-less
+/// `RELEASED` for one that never sent a cursor (L1 §7.1).
 fn render_for(event: &AgentEvent, journal_aware: bool) -> AgentEvent {
     match event {
         AgentEvent::TerminalControl {
@@ -498,8 +441,7 @@ fn render_for(event: &AgentEvent, journal_aware: bool) -> AgentEvent {
     }
 }
 
-/// The per-subscription `journal_gap` notice: never journaled, never
-/// stamped.
+/// The per-subscription `journal_gap` notice (never journaled).
 #[must_use]
 pub fn journal_gap_frame(first_missing: u64, last_missing: u64) -> FrameKind {
     FrameKind::Event {
@@ -513,12 +455,8 @@ pub fn journal_gap_frame(first_missing: u64, last_missing: u64) -> FrameKind {
 }
 
 impl ServerState {
-    /// Stamp `record` in the journal and offer it to every subscription.
-    ///
-    /// The one emission path: every event the server originates goes
-    /// through here, under the state lock, so a snapshot cut in the same
-    /// lock and the event order agree. Returns the assigned `seq`, or
-    /// `None` in the unreachable case of an exhausted sequence.
+    /// Stamp `record` in the journal and offer it to every subscription,
+    /// under the state lock. Returns the `seq` (`None` if exhausted).
     pub fn record_and_fanout(&mut self, record: EventRecord) -> Option<u64> {
         let actor = record.actor.map(|client| self.clients.actor_ref(client));
         let entry = self.journal.record(record, actor, now_unix_ms())?;
@@ -526,18 +464,11 @@ impl ServerState {
         Some(entry.seq())
     }
 
-    /// Stamp and deliver an event a federation hub relays from a satellite
-    /// (L1 §7.3): it takes this server's next `seq`, so a consumer's cursor
-    /// stays hub-scoped, and reaches the subscriptions on its satellite
-    /// Terminal through the same registry, gap tracking included.
-    ///
-    /// The satellite's time and operation cross the hub; its actor does
-    /// not, because it names a connection on the satellite. The actor of a
-    /// relayed event is the hub's link, which has no client id here, so the
-    /// event carries none, unless the hub knows which of its consumers sent
-    /// the keyed operation that caused it ([`Self::record_relayed_event_as`]).
-    /// The event is not retained: a cursor on a satellite scope is answered
-    /// with a gap ([`Self::subscribe_satellite_events`]).
+    /// Stamp and deliver an event a hub relays from a satellite (L1 §7.3),
+    /// with this server's `seq`, to that satellite Terminal's subscribers.
+    /// The satellite's actor does not cross (it names a satellite
+    /// connection) unless [`Self::record_relayed_event_as`] knows the
+    /// consumer. Not retained: satellite cursors are answered with a gap.
     pub fn record_relayed_event(
         &mut self,
         terminal: WireResourceId,
@@ -547,14 +478,9 @@ impl ServerState {
         self.record_relayed_event_as(terminal, event, satellite, None)
     }
 
-    /// [`Self::record_relayed_event`], attributed to `actor`: the hub
-    /// consumer whose keyed operation the satellite's stamp names by its
-    /// `operation_id` (`docs/spec/L1.md` §9.1).
-    ///
-    /// A relayed `RESOURCE_CLOSED` withdraws holds naming that satellite
-    /// Terminal first (ADR-0128), the same as the local reap path
-    /// (`journal_pane_closed`), so `approval_decided{withdrawn}` is
-    /// journaled before the close and nothing follows it (L1 §7).
+    /// [`Self::record_relayed_event`] attributed to `actor` (the consumer
+    /// whose keyed operation caused it, L1 §9.1). A relayed
+    /// `RESOURCE_CLOSED` first withdraws holds on that Terminal (ADR-0128).
     pub fn record_relayed_event_as(
         &mut self,
         terminal: WireResourceId,
@@ -562,8 +488,7 @@ impl ServerState {
         satellite: Option<&EventStamp>,
         actor: Option<super::ClientId>,
     ) -> Option<u64> {
-        // Nothing follows a close (L1 §7): a held action naming this
-        // Terminal is withdrawn, and journaled, first (ADR-0128).
+        // Nothing follows a close (L1 §7): withdraw holds first.
         if matches!(event, AgentEvent::ResourceClosed { .. }) {
             self.withdraw_approvals_naming(&terminal);
         }
@@ -584,14 +509,9 @@ impl ServerState {
         self.journal.head()
     }
 
-    /// The journal head `GET_STATE` reports to `client` (L1 §7.3): on a
-    /// connection that holds event subscriptions, every `seq` their replay
-    /// delivers, gaps included (the newest retained entry they admit, what
-    /// they were sent or are owed, and the newest evicted `seq` only while
-    /// a replay is pending below it), so the consumer's catch-up always
-    /// completes and an event journaled on another scope after the
-    /// subscribe, or the eviction it causes, never holds it open; else the
-    /// global head.
+    /// The journal head `GET_STATE` reports to `client` (L1 §7.3): with
+    /// subscriptions, the newest `seq` their replay will deliver (gaps
+    /// included) so catch-up always completes; otherwise the global head.
     #[must_use]
     pub fn journal_head_for(&self, client: Option<ClientId>) -> u64 {
         match client.and_then(|id| self.clients.event_subscriptions.get(&id)) {
@@ -604,19 +524,13 @@ impl ServerState {
         }
     }
 
-    /// Re-bound the journal (`defaults.event-journal-entries` /
-    /// `defaults.event-journal-bytes`).
+    /// Re-bound the journal (entries and bytes).
     pub fn set_event_journal_bounds(&mut self, entries: usize, bytes: usize) {
         self.journal.set_bounds(entries, bytes);
     }
 
-    /// Install a live `SUBSCRIBE_EVENTS` scope for `client_id` (`None` is
-    /// server-wide). The latest subscription to a scope sets its filter, so
-    /// this clears one a `SUBSCRIBE_RESOURCE_EVENTS` put there;
-    /// re-subscribing an unfiltered scope is a no-op.
-    ///
-    /// `tx` is the client's outbound mailbox, captured so fan-out reaches a
-    /// pure `watch` client that never attached.
+    /// Install a live `SUBSCRIBE_EVENTS` scope (`None` is server-wide),
+    /// clearing any filter on it; `tx` reaches a client that never attached.
     pub fn subscribe_events(
         &mut self,
         client_id: ClientId,
@@ -629,8 +543,7 @@ impl ServerState {
             .insert(EventScope::of(terminal), EventFilter::all());
     }
 
-    /// Install `SUBSCRIBE_RESOURCE_EVENTS`: the Terminal scope for
-    /// `terminal` with `filter`, replacing any filter that scope had.
+    /// Install `SUBSCRIBE_RESOURCE_EVENTS`: `terminal`'s scope with `filter`.
     pub fn subscribe_resource_events(
         &mut self,
         client_id: ClientId,
@@ -644,12 +557,8 @@ impl ServerState {
             .insert(EventScope::Terminal(terminal), filter);
     }
 
-    /// Install a cursor subscription and start its replay in one step (L1
-    /// §7.3): the scope is live in the registry, and every retained event
-    /// after `after_seq` is owed to it in `seq` order before anything
-    /// later. What the mailbox can take is queued now; the connection's
-    /// event pump pulls the rest from the ring as the consumer reads, so
-    /// nothing here waits and a slow reader delays only itself.
+    /// Install a cursor subscription and start its replay (L1 §7.3). What
+    /// the mailbox takes is queued now; the pump pulls the rest.
     pub fn subscribe_events_after(
         &mut self,
         client_id: ClientId,
@@ -666,13 +575,9 @@ impl ServerState {
         sub.fill(&self.journal);
     }
 
-    /// Install a hub consumer's subscription to a satellite Terminal: the
-    /// scope relayed events for it are delivered through (L1 §7.3). A
-    /// cursor on it cannot be replayed, because relayed events are not
-    /// retained, so a cursor that misses anything is owed a gap.
-    ///
-    /// Returns what the scope held before, for
-    /// [`Self::restore_satellite_scope`] when the satellite refuses.
+    /// Install a hub consumer's satellite Terminal scope (L1 §7.3); relayed
+    /// events are not retained, so a missing cursor range is owed a gap.
+    /// Returns the prior scope for [`Self::restore_satellite_scope`].
     pub fn subscribe_satellite_events(
         &mut self,
         client_id: ClientId,
@@ -694,10 +599,8 @@ impl ServerState {
         SatelliteScopeChange { terminal, prior }
     }
 
-    /// Undo a satellite subscribe the satellite refused: put back the
-    /// filter the scope had, or remove the scope if it had none. An
-    /// established scope stays established, and a subscription still owed
-    /// a gap is kept until it is delivered.
+    /// Undo a refused satellite subscribe: restore the prior filter or
+    /// remove the scope; an owed gap is kept.
     pub fn restore_satellite_scope(&mut self, client_id: ClientId, change: SatelliteScopeChange) {
         let SatelliteScopeChange { terminal, prior } = change;
         let Some(prior) = prior else {
@@ -710,13 +613,9 @@ impl ServerState {
         }
     }
 
-    /// End a hub consumer's satellite scope because its link went away:
-    /// the stream it was on is interrupted, so the consumer is owed a gap
-    /// (L1 §7.3) and re-reads level state. The gap names a `seq` taken for
-    /// the purpose, so it never collides with an event anyone received.
-    ///
-    /// The subscription itself stays, even with no scope left, so the gap
-    /// is still owed and delivered when the consumer reads; detach drops it.
+    /// End a satellite scope whose link went away: the consumer is owed a
+    /// gap at a freshly taken `seq`. The subscription stays until detach so
+    /// the gap is delivered.
     pub fn interrupt_satellite_scope(&mut self, client_id: ClientId, terminal: &WireResourceId) {
         let scope = EventScope::Terminal(terminal.clone());
         let Some(sub) = self.clients.event_subscriptions.get_mut(&client_id) else {
@@ -732,10 +631,8 @@ impl ServerState {
         sub.fill(&self.journal);
     }
 
-    /// Claim the event pump for `client_id`'s subscription, once: the
-    /// runtime spawns one task per subscription that pulls owed frames as
-    /// the mailbox frees ([`Self::next_owed_event_frame`]). `None` when
-    /// there is no subscription or its pump already runs.
+    /// Claim `client_id`'s event pump, once; `None` without a subscription
+    /// or if its pump already runs.
     pub fn claim_event_pump(&mut self, client_id: ClientId) -> Option<EventPump> {
         let sub = self.clients.event_subscriptions.get_mut(&client_id)?;
         if sub.pump_claimed {
@@ -753,12 +650,8 @@ impl ServerState {
         Some(pump)
     }
 
-    /// The next frame the pump for `client_id`'s subscription `epoch`
-    /// should send with the mailbox slot it holds: an owed gap or replay
-    /// frame, [`PumpStep::Idle`] when nothing is owed, or
-    /// [`PumpStep::Gone`] once that subscription ended, including when a
-    /// later one for the same client replaced it (that one has its own
-    /// pump).
+    /// The next frame for subscription `epoch`'s pump: an owed frame,
+    /// [`PumpStep::Idle`], or [`PumpStep::Gone`] once replaced or ended.
     pub fn next_owed_event_frame(&mut self, client_id: ClientId, epoch: u64) -> PumpStep {
         let Some(sub) = self.clients.event_subscriptions.get_mut(&client_id) else {
             return PumpStep::Gone;
@@ -770,23 +663,18 @@ impl ServerState {
             .map_or(PumpStep::Idle, PumpStep::Frame)
     }
 
-    /// Drop `client`'s per-terminal agent-event subscription for `wire`
-    /// (`DETACH_RESOURCE`, phux-v45.7). Server-wide subscriptions and
-    /// other terminals' scopes are untouched; an empty scope set drops
-    /// the whole entry so the map stays bounded.
+    /// Drop `client`'s event scope for terminal `wire` (`DETACH_RESOURCE`).
     pub fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireResourceId) {
         self.clients.unsubscribe_terminal_events(client, wire);
     }
 
-    /// Remember the `HELLO.client_name` `client_id` announced, the label
-    /// its [`phux_protocol::wire::frame::ActorRef`] carries.
+    /// Remember `client_id`'s `HELLO.client_name` for its `ActorRef`.
     pub fn set_client_name(&mut self, client_id: ClientId, name: String) {
         self.clients.client_names.insert(client_id, name);
     }
 }
 
-/// Deliver a journaled entry to every subscription (the registry half of
-/// [`ServerState::record_and_fanout`]).
+/// Deliver a journaled entry to every subscription.
 pub(super) fn offer_to_all<'a>(
     subscriptions: impl Iterator<Item = &'a mut EventSubscription>,
     entry: &JournalEntry,
@@ -815,8 +703,7 @@ mod tests {
         events
     }
 
-    /// Everything the pump would send, as if the consumer read as fast as
-    /// it was given frames.
+    /// Everything the pump would send to an eager reader.
     fn pump_all(state: &mut ServerState, client: ClientId) -> Vec<AgentEvent> {
         pump_stamped(state, client)
             .into_iter()
@@ -824,8 +711,7 @@ mod tests {
             .collect()
     }
 
-    /// What the pump of `client`'s current subscription would send, with
-    /// each frame's `seq`.
+    /// The pump's frames with each `seq`.
     fn pump_stamped(state: &mut ServerState, client: ClientId) -> Vec<(Option<u64>, AgentEvent)> {
         let epoch = epoch(state, client);
         let mut events = Vec::new();
@@ -926,8 +812,6 @@ mod tests {
             vec![AgentEvent::Dirty],
             "only the first fit"
         );
-        // The server goes quiet; the reader drained its mailbox, and the pump
-        // hands it the owed gap with no further event journaled.
         assert_eq!(pump_all(&mut state, client), vec![gap(lost_a, lost_b)]);
         let epoch = epoch(&state, client);
         assert!(matches!(
@@ -1110,10 +994,8 @@ mod tests {
         assert_eq!(drain(&mut rx), vec![gap(1, 1)]);
     }
 
-    /// A hub keeps no satellite events, so a satellite scope's cursor is
-    /// owed a gap the ring holds nothing for. The head covers that gap,
-    /// whether already sent or still owed behind a full mailbox, and a hub
-    /// event on another scope after the subscribe does not raise it.
+    /// A satellite cursor's gap is covered by the head, sent or owed; a hub
+    /// event on another scope does not raise it.
     #[test]
     fn the_head_covers_a_satellite_cursors_gap_and_no_later_hub_event() {
         let mut state = ServerState::new();
@@ -1142,11 +1024,8 @@ mod tests {
         }
     }
 
-    /// A closed, unretained pane, a stale cursor, and a full ring: the
-    /// replay reports the eviction and ends, and another terminal's event
-    /// before the cut advances the eviction. The head stays at the gap the
-    /// subscription was sent, not the eviction it will never hear of; a
-    /// replay still pending below the eviction does count it.
+    /// A stale cursor on a closed pane with a full ring reports the eviction;
+    /// the head counts it only while a replay is pending below it.
     #[test]
     fn a_later_eviction_does_not_raise_the_head_past_the_gap_sent() {
         let mut state = ServerState::new();
@@ -1179,11 +1058,8 @@ mod tests {
         );
     }
 
-    /// ADR-0127 against L10's per-connection head: a `ROLE_CHANGED` is
-    /// withheld from a subscription that never sent a cursor, so it must not
-    /// raise that connection's head either, or a catch-up to the head would
-    /// wait for an event it is never sent. A journal-aware subscription is
-    /// sent it, and its head counts it.
+    /// A `ROLE_CHANGED` withheld from a cursor-less subscription does not
+    /// raise its head (ADR-0127).
     #[test]
     fn a_withheld_role_changed_does_not_raise_a_legacy_connections_head() {
         let mut state = ServerState::new();
@@ -1230,8 +1106,8 @@ mod tests {
         assert!(drain(&mut rx).is_empty(), "the scope is gone");
     }
 
-    /// Review probe P1: a void cursor merged into a pending replay reports
-    /// `journal_gap{1, head}`, and nothing at or below that gap follows it.
+    /// A void cursor merged into a pending replay reports `journal_gap{1,
+    /// head}` and nothing at or below it follows.
     #[test]
     fn a_void_cursor_merged_into_a_pending_replay_never_redelivers_below_its_gap() {
         let mut state = ServerState::new();
@@ -1263,8 +1139,7 @@ mod tests {
         );
     }
 
-    /// Review probe P2: a re-subscribe the satellite refused puts the
-    /// established scope back, filter included, rather than removing it.
+    /// A refused re-subscribe restores the established scope and filter.
     #[test]
     fn a_refused_resubscribe_restores_the_established_satellite_scope() {
         let satellite = WireResourceId::satellite("sat", 9);
@@ -1313,9 +1188,7 @@ mod tests {
         assert!(!state.clients.event_subscriptions.contains_key(&client));
     }
 
-    /// Review probe P3: a pump that outlived its subscription (detach, then
-    /// re-subscribe) is told it is gone instead of serving the new one,
-    /// whose own pump takes over.
+    /// A pump that outlived its subscription is told it is gone.
     #[test]
     fn a_pump_that_outlived_its_subscription_is_told_it_is_gone() {
         let mut state = ServerState::new();
@@ -1339,9 +1212,7 @@ mod tests {
         ));
     }
 
-    /// Review probe P4: a gap owed while a replay is pending (here a
-    /// relayed event the replay cannot reach) goes out before any later
-    /// `seq`.
+    /// A gap owed during a pending replay precedes later `seq`s.
     #[test]
     fn a_gap_owed_during_a_replay_arrives_before_later_seqs() {
         let satellite = WireResourceId::satellite("sat", 9);
@@ -1381,10 +1252,7 @@ mod tests {
         }
     }
 
-    /// phux-x8k0: a satellite close arrives through `record_relayed_event`,
-    /// not `journal_pane_closed`. Holds naming that Terminal must still be
-    /// withdrawn first, so `approval_decided{withdrawn}` precedes the
-    /// relayed `RESOURCE_CLOSED` and a later TTL cannot journal `expired`.
+    /// A relayed satellite close withdraws holds first.
     #[test]
     fn a_relayed_satellite_close_withdraws_holds_naming_it_before_the_close() {
         let satellite = WireResourceId::satellite("sat", 3);

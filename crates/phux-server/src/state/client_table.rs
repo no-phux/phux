@@ -1,62 +1,18 @@
-//! The per-client table: every map keyed on a connected client's identity,
-//! plus the monotonic allocator that mints those identities.
+//! The per-client table: every map keyed on a connected client, plus the
+//! [`ClientId`] allocator.
 //!
-//! The client-keyed fields that were flat on [`super::ServerState`] live here because
-//! they share one lifetime — a client's connection. An entry appears when
-//! the client identifies itself (HELLO, ATTACH, `SUBSCRIBE_EVENTS`, a
-//! session-create submission) and every one of them disappears by the time
-//! `ServerState::forget_connection` returns. Keeping them together is what
-//! makes "forget everything about this client" one place to look instead of
-//! five map removals scattered across `state::client`, `state::events`,
-//! `state::policy`, and `state::metadata`, which is where they drifted out
-//! of step before.
+//! Two lifetimes, cleared by different edges:
 //!
-//! # Two lifetimes, not one
+//! * **Attachment-scoped**: [`Self::attached`], the subscription maps, and
+//!   session-create result keys, cleared by `ServerState::detach` (a
+//!   mid-connection `DETACH` or transport close).
+//! * **Connection-scoped**: layers, peer identity, grants, names, viewers,
+//!   cancellation and revocation signals, cleared only by
+//!   `ServerState::forget_connection` (a second HELLO is a protocol error,
+//!   so nothing can restore them).
 //!
-//! The maps split on *which* edge clears them, and conflating the two is
-//! how phux-w7z2.55 happened:
-//!
-//! * **Attachment-scoped** — [`Self::attached`], the subscription maps, and
-//!   the session-create result keys. `ServerState::detach` clears these on
-//!   a mid-connection `DETACH` as well as on transport close.
-//! * **Connection-scoped** — [`Self::layers`], [`Self::peer_identities`], and
-//!   [`Self::connection_cancellations`], established for a live connection
-//!   (a second HELLO is a protocol error). Only
-//!   `ServerState::forget_connection` clears these, and only when the
-//!   transport is going away.
-//!
-//! # Ownership boundary
-//!
-//! This type owns the *client-keyed bookkeeping*, not the policy. Anything
-//! that needs a second cluster stays on `ServerState` and reads these
-//! fields directly (they are `pub(super)`, matching `state::config`):
-//!
-//! * `attach` walks the registry to build the pane list and arms the
-//!   self-exit clock, so only the `attached` insert belongs here.
-//! * `detach` also releases input leases, satellite leases, output pumps,
-//!   pane subscriptions, and L3 metadata subscriptions, and re-enters
-//!   `ServerState::metadata_delete` for each abandoned session-create key.
-//! * `set_client_viewport` bumps `ServerState::viewport_clock` inside the
-//!   same borrow as the `attached` lookup; it relies on disjoint-field
-//!   borrow splitting, so it pokes `clients.attached` rather than going
-//!   through an accessor that would borrow all of `ServerState`.
-//! * `resolve_terminal_geometry` / `resolve_terminal_cell_px` join this
-//!   table to the pane subscriber lists and the window-size policy in one
-//!   expression.
-//! * `build_session_snapshot` scans `attached` for per-session client
-//!   counts and then interns wire ids (`&mut self`).
-//!
-//! Nothing here is `async` and nothing awaits, so the state lock can never
-//! be held across a suspension point through this type.
-//!
-//! The struct and every method are `pub(super)`: the accessors the runtime
-//! calls stay on `ServerState` (see `state::client`, `state::events`,
-//! `state::policy`, `state::metadata`), so the crate's public surface is
-//! unchanged and the five previously-private maps stay exactly as
-//! unreachable from outside `state` as they were as private fields. The
-//! one previously-`pub` field, `attached`, is reachable through the
-//! read-only [`super::ServerState::attached`] accessor — narrower than the
-//! bare field it replaces, since every write still goes through `state`.
+//! This type owns the bookkeeping, not the policy; logic spanning other
+//! tables stays on `ServerState`. Everything is `pub(super)` and sync.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -73,135 +29,55 @@ use super::events::{EventScope, EventSubscription};
 use super::journal::JournalEntry;
 use crate::mailbox::Outbound;
 
-/// Every client-keyed table the server owns, plus the allocator that mints
-/// fresh [`ClientId`]s.
-///
-/// Held as a single field on [`super::ServerState`]. Not thread-safe on
-/// its own; the surrounding `Mutex<ServerState>` provides synchronization.
+/// Every client-keyed table plus the [`ClientId`] allocator; synchronized
+/// by the surrounding `Mutex<ServerState>`.
 #[derive(Debug)]
 pub(super) struct ClientTable {
-    /// Currently attached clients, keyed by server-assigned id.
-    ///
-    /// The one field here with readers outside `state`; they reach it
-    /// through the read-only [`super::ServerState::attached`] accessor.
-    /// Every write is in `state` (`attach`, `detach`, the capability
-    /// setters, `set_client_viewport`).
+    /// Currently attached clients. Read outside `state` only through
+    /// [`super::ServerState::attached`].
     pub(super) attached: HashMap<ClientId, AttachedClient>,
-    /// Next [`ClientId`] to hand out. Monotonic from `1`; ids are never
-    /// reused, and `0` is intentionally skipped so a log line reading
-    /// `client=0` is obviously a placeholder. Saturates rather than wraps,
-    /// because a duplicate id would silently cross-route two clients.
+    /// Next [`ClientId`]: monotonic from 1 (0 reads as a placeholder),
+    /// never reused, saturating rather than wrapping.
     next_id: u64,
-    /// Per-client cache of the negotiated [`LayerSet`] from HELLO (SPEC
-    /// §6.2). The dispatcher consults this before emitting any L3
-    /// frame; non-L3 consumers MUST NOT see `METADATA_CHANGED` (SPEC
-    /// §16.4). Default for a client that never sent HELLO (test
-    /// scaffolding) is [`LayerSet::all`] — the most-permissive default
-    /// keeps test setups simple; production clients always advertise.
-    ///
-    /// Connection-scoped: survives `DETACH` and is cleared only by
-    /// `ServerState::forget_connection`. Because the default is
-    /// permissive, clearing it early is a fail-open tier escalation, not
-    /// a lost restriction.
+    /// Negotiated [`LayerSet`] from HELLO, gating L3 frames (SPEC §16.4).
+    /// Defaults to [`LayerSet::all`] without a HELLO. Connection-scoped.
     pub(super) layers: HashMap<ClientId, LayerSet>,
-    /// Per-client agent-event subscriptions (SPEC §7.5, phux-y2t). Each
-    /// subscribed client maps to its outbound mailbox plus the set of
-    /// scopes it watches: `EventScope::Server` (every event) or one or
-    /// more `EventScope::Terminal(id)` (per-pane). The push half of the
-    /// agent surface; an additive accelerator of the CLI poll-floor
-    /// `wait`. Cleared on detach, matching the L3 metadata subscription
-    /// lifecycle.
-    ///
-    /// The mailbox is stored here (rather than resolved through
-    /// [`Self::attached`]) because a `watch` client subscribes WITHOUT
-    /// attaching — it connects, sends `SUBSCRIBE_EVENTS`, and streams. So
-    /// event fanout must not depend on an `attached` entry that a pure
-    /// watcher never creates.
+    /// Agent-event subscriptions (SPEC §7.5) with their mailboxes, since a
+    /// `watch` client subscribes without attaching.
     pub(super) event_subscriptions: HashMap<ClientId, EventSubscription>,
-    /// Outbound mailbox of every client that holds an L3 metadata
-    /// subscription, for exactly the same reason
-    /// [`Self::event_subscriptions`] carries one: a headless consumer can
-    /// `SUBSCRIBE_METADATA` **without attaching**, so `METADATA_CHANGED`
-    /// fanout must not be resolved solely through [`Self::attached`].
-    ///
-    /// Only the mailbox lives here; the `(client, scope, key)` triples stay
-    /// in [`super::metadata::MetadataStore`], which owns subscription
-    /// matching. An attached subscriber has the same sender in both maps —
-    /// [`Self::broadcast_metadata_changed`] prefers `attached` and falls
-    /// back here, so there is exactly one delivery per client either way.
-    /// Cleared on detach alongside the subscription triples.
+    /// Mailboxes of L3 metadata subscribers (headless consumers subscribe
+    /// without attaching); the triples live in the metadata store. Fanout
+    /// prefers `attached`, so each client gets one delivery.
     pub(super) metadata_mailboxes: HashMap<ClientId, mpsc::Sender<Outbound>>,
-    /// Outbound mailbox of every client holding an `ATTACH_RESOURCE`
-    /// subscription, for exactly the same reason
-    /// [`Self::event_subscriptions`] and [`Self::metadata_mailboxes`] carry
-    /// one: `ATTACH_RESOURCE` is a per-Terminal subscription that does
-    /// **not** require a session-scoped `ATTACH` (L1 §5.1, "a session-scoped
-    /// `ATTACH` is not required"), so such a consumer has no
-    /// [`Self::attached`] entry and cannot be reached through it.
-    ///
-    /// Terminal *content* still reaches it — the per-`(client, terminal)`
-    /// output pump owns its own clone of the mailbox — but the server's
-    /// out-of-band terminal-scoped fanout (`RESOURCE_CLOSED`, L1 §3.1: "the
-    /// server MUST emit it to every client subscribed to the Terminal")
-    /// resolves mailboxes from the subscriber list, and every subscriber
-    /// that only ever sent `ATTACH_RESOURCE` was silently filtered out.
-    /// An agent watching one pane then never learned the pane died; it just
-    /// stopped receiving output, which is indistinguishable from an idle
-    /// pane (phux-w7z2.56).
-    ///
-    /// An attached subscriber has the same sender in both maps.
-    /// [`Self::terminal_fanout_mailbox`] prefers `attached` and falls back
-    /// here, so a client is resolved to exactly one mailbox either way.
-    /// Cleared on detach alongside the subscriptions themselves.
+    /// Mailboxes of `ATTACH_RESOURCE` subscribers, which need no session
+    /// `ATTACH` (L1 §5.1), so terminal-scoped fanout such as
+    /// `RESOURCE_CLOSED` (L1 §3.1) can reach them. Fanout prefers
+    /// `attached`, so each client resolves to one mailbox.
     pub(super) terminal_mailboxes: HashMap<ClientId, mpsc::Sender<Outbound>>,
-    /// Per-client peer identities, keyed by server-assigned client id.
-    ///
-    /// Connection-scoped, and stamped by the accepting transport before the
-    /// client task is spawned — nothing on a live connection can restore it,
-    /// so it survives `DETACH` and is cleared only by
-    /// `ServerState::forget_connection`.
+    /// Transport-stamped peer identities. Connection-scoped.
     pub(super) peer_identities: HashMap<ClientId, crate::auth::ConnectionIdentity>,
-    /// Cancellation root for each live client transport. Relay delivery
-    /// retirement uses this connection-scoped signal because dropping one
-    /// outbound sender cannot close writers held alive by other sender clones.
-    /// Cleared only by `ServerState::forget_connection`.
+    /// Cancellation root per live transport (dropping one sender clone
+    /// cannot close writers held by others). Connection-scoped.
     pub(super) connection_cancellations: HashMap<ClientId, CancellationToken>,
-    /// The authority minted for each connection at HELLO
-    /// (`docs/spec/workload-auth.md` §5, §7), enforced at every dispatch.
-    ///
-    /// Connection-scoped: a second HELLO is a protocol error, so nothing on
-    /// a live connection re-mints it, and only
-    /// `ServerState::forget_connection` clears it. A connection with no
-    /// entry is refused everything by the dispatch guard.
+    /// The authority minted at HELLO (`docs/spec/workload-auth.md` §5, §7),
+    /// enforced at every dispatch; no entry means everything is refused.
     pub(super) grants: HashMap<ClientId, crate::policy::ConnectionGrant>,
-    /// Each live connection's revocation signal. Its writer watches the
-    /// receiving half and, once a goodbye is set, drops everything queued,
-    /// says the goodbye, and closes (`docs/spec/workload-auth.md` §7).
-    /// Connection-scoped: cleared only by `ServerState::forget_connection`.
+    /// Revocation signal per connection: once a goodbye is set, the writer
+    /// drops its queue, says goodbye, and closes (§7).
     pub(super) revocation_signals: HashMap<ClientId, watch::Sender<Option<crate::policy::Goodbye>>>,
-    /// Wakes the revocation watcher when a connection it must watch gets
-    /// its grant.
+    /// Wakes the revocation watcher when a connection gets its grant.
     pub(super) revocation_wake: Arc<Notify>,
-    /// Nonce-bearing session-create result keys owned by each connection.
-    ///
-    /// Results are one-shot and connection-scoped even though their transport
-    /// uses Global L3 metadata. Tracking ownership lets disconnect cleanup
-    /// remove abandoned results, while the per-client cap bounds a connected
-    /// client that submits creates without reading replies.
+    /// One-shot session-create result keys per connection, removed on
+    /// disconnect and capped per client.
     pub(super) session_create_results: HashMap<ClientId, VecDeque<String>>,
-    /// The `HELLO.client_name` each connection announced (ADR-0123): the
-    /// label on the `ActorRef` of every event and metadata change it
-    /// causes. Connection-scoped, like the HELLO layer set, so it survives
-    /// `DETACH` and is cleared only by `ServerState::forget_connection`.
+    /// `HELLO.client_name` per connection, the label on its `ActorRef`
+    /// (ADR-0123). Connection-scoped.
     pub(super) client_names: HashMap<ClientId, String>,
-    /// The Terminals each connection subscribed as a `VIEWER` (ADR-0127),
-    /// by the wire id it named, so a satellite Terminal on a hub is covered
-    /// exactly like a local one. Connection-scoped tombstones: detach and a
-    /// stream's end leave them, only `ServerState::forget_connection` or a
-    /// fresh `PRIMARY` attach clears one, and a reaped Terminal's are pruned.
+    /// Terminals each connection subscribed as `VIEWER` (ADR-0127), by wire
+    /// id. Cleared by `forget_connection`, a `PRIMARY` attach, or reaping.
     pub(super) viewers: HashMap<ClientId, HashSet<WireResourceId>>,
-    /// The epoch the next event subscription is created with, so a pump
-    /// can tell its subscription from a later one for the same client.
+    /// Epoch for the next event subscription, distinguishing a pump's
+    /// subscription from a later one.
     next_subscription_epoch: u64,
 }
 
@@ -244,9 +120,8 @@ impl ClientTable {
             .is_some_and(|terminals| terminals.contains(terminal))
     }
 
-    /// Mark or unmark `client` as a viewer of `terminal`. Returns whether
-    /// the mark changed. An empty set drops the entry, so the map stays
-    /// bounded across attach churn.
+    /// Mark or unmark `client` as a viewer of `terminal`; returns whether it
+    /// changed. Empty sets are dropped.
     pub(super) fn mark_viewer(
         &mut self,
         client: ClientId,
@@ -294,9 +169,6 @@ impl ClientTable {
     // -- identity ------------------------------------------------------
 
     /// Allocate the next monotonic [`ClientId`].
-    ///
-    /// Ids are never reused. `0` is intentionally skipped so log entries
-    /// printing `client=0` are obviously a placeholder, not a real client.
     pub(super) const fn new_client_id(&mut self) -> ClientId {
         let id = ClientId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
@@ -305,15 +177,12 @@ impl ClientTable {
 
     // -- negotiated layers ---------------------------------------------
 
-    /// Record the layer set advertised by `client` in HELLO. Re-set is
-    /// idempotent (the most recent HELLO wins, matching `ColorSupport`).
+    /// Record the HELLO layer set (latest wins).
     pub(super) fn set_layers(&mut self, client: ClientId, layers: LayerSet) {
         self.layers.insert(client, layers);
     }
 
-    /// Look up the layer set advertised by `client`. Defaults to
-    /// [`LayerSet::all`] for clients we never saw a HELLO from — the
-    /// permissive default matches test scaffolding that skips HELLO.
+    /// The HELLO layer set, [`LayerSet::all`] if none was seen.
     #[must_use]
     pub(super) fn layers(&self, client: ClientId) -> LayerSet {
         self.layers
@@ -322,8 +191,7 @@ impl ClientTable {
             .unwrap_or_else(LayerSet::all)
     }
 
-    /// `true` iff `client` has L3 in its negotiated `HELLO.layers`.
-    /// Gates emission of `METADATA_CHANGED` per SPEC §16.4.
+    /// Whether `client` negotiated L3 (gates `METADATA_CHANGED`).
     #[must_use]
     pub(super) fn speaks_l3(&self, client: ClientId) -> bool {
         self.layers(client).contains(Layer::L3)
@@ -331,8 +199,7 @@ impl ClientTable {
 
     // -- attached clients ----------------------------------------------
 
-    /// Update the recorded [`ClientCapabilities`] for an already-attached
-    /// client. Returns `false` if the client is not in [`Self::attached`].
+    /// Update an attached client's capabilities; `false` if not attached.
     pub(super) fn set_capabilities(&mut self, client: ClientId, caps: ClientCapabilities) -> bool {
         self.attached
             .get_mut(&client)
@@ -342,9 +209,7 @@ impl ClientTable {
             .is_some()
     }
 
-    /// Patch only the color tier of an already-attached client's
-    /// capabilities. Returns `false` if the client is not in
-    /// [`Self::attached`].
+    /// Patch an attached client's color tier; `false` if not attached.
     pub(super) fn set_color_support(&mut self, client: ClientId, color: ColorSupport) -> bool {
         self.attached
             .get_mut(&client)
@@ -354,11 +219,8 @@ impl ClientTable {
             .is_some()
     }
 
-    /// Collect the `(client, outbound mailbox)` pairs of every client
-    /// attached to `session`, by its stable id.
-    ///
-    /// Per-terminal `ATTACH_RESOURCE` consumers are not in
-    /// [`Self::attached`] and are deliberately excluded.
+    /// `(client, mailbox)` for every client attached to `session`
+    /// (per-terminal consumers excluded).
     #[must_use]
     pub(super) fn attached_in_session(
         &self,
@@ -373,13 +235,8 @@ impl ClientTable {
 
     // -- per-Terminal subscription mailboxes ---------------------------
 
-    /// Remember `client`'s outbound mailbox for terminal-scoped fanout.
-    ///
-    /// Called from the `ATTACH_RESOURCE` handler, in the same critical
-    /// section that appends `client` to the Terminal's subscriber list, so
-    /// the mailbox is never missing for a client the list already names.
-    /// Re-attaching overwrites with the same sender (a connection's tx is
-    /// stable), so this is idempotent in practice.
+    /// Remember `client`'s mailbox for terminal-scoped fanout, in the same
+    /// critical section that subscribes it.
     pub(super) fn remember_terminal_mailbox(
         &mut self,
         client: ClientId,
@@ -388,14 +245,8 @@ impl ClientTable {
         self.terminal_mailboxes.insert(client, tx);
     }
 
-    /// Resolve `client`'s outbound mailbox for terminal-scoped fanout:
-    /// [`Self::attached`] first, then [`Self::terminal_mailboxes`].
-    ///
-    /// One mailbox per client, whichever way it subscribed — the
-    /// "exactly once" half of the [`Self::terminal_mailboxes`] contract.
-    /// `None` for a client that is neither attached nor per-Terminal
-    /// subscribed, which for a name taken from a live subscriber list means
-    /// the connection is already tearing down.
+    /// `client`'s mailbox for terminal-scoped fanout (`attached` first);
+    /// `None` means the connection is already going away.
     #[must_use]
     pub(super) fn terminal_fanout_mailbox(
         &self,
@@ -409,13 +260,8 @@ impl ClientTable {
 
     // -- agent-event subscriptions -------------------------------------
 
-    /// `client`'s agent-event subscription, created empty on first use.
-    ///
-    /// One entry per client whichever verb installed its scopes, which is
-    /// what makes a client subscribed both ways receive each event once
-    /// (ADR-0123). `tx` is the client's outbound mailbox, captured so event
-    /// fanout reaches a pure `watch` client that never attached; an
-    /// existing entry keeps its sender (a connection's tx is stable).
+    /// `client`'s event subscription, created on first use; one per client
+    /// whichever verb installed its scopes (ADR-0123).
     pub(super) fn event_subscription(
         &mut self,
         client: ClientId,
@@ -428,14 +274,12 @@ impl ClientTable {
         })
     }
 
-    /// Offer one journaled event to every subscription (the fan-out half
-    /// of `ServerState::record_and_fanout`).
+    /// Offer one journaled event to every subscription.
     pub(super) fn offer_event(&mut self, entry: &JournalEntry) {
         super::events::offer_to_all(self.event_subscriptions.values_mut(), entry);
     }
 
-    /// The `ActorRef` naming `client`: its wire id, the credential it
-    /// authenticated with, and the name it announced in `HELLO`.
+    /// The `ActorRef` naming `client`: wire id, credential, and HELLO name.
     #[must_use]
     pub(super) fn actor_ref(&self, client: ClientId) -> ActorRef {
         let wire = phux_protocol::ids::ClientId::new(u32::try_from(client.0).unwrap_or(u32::MAX));
@@ -449,15 +293,12 @@ impl ClientTable {
             .with_client_name(self.client_names.get(&client).cloned())
     }
 
-    /// Drop `client`'s per-terminal agent-event subscription for `wire`
-    /// (`DETACH_RESOURCE`, phux-v45.7). Server-wide subscriptions and
-    /// other terminals' scopes are untouched; an empty scope set drops
-    /// the whole entry so the map stays bounded.
+    /// Drop `client`'s per-terminal event scope for `wire`; an empty
+    /// subscription is dropped.
     pub(super) fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireResourceId) {
         if let Some(sub) = self.event_subscriptions.get_mut(&client) {
             sub.scopes.remove(&EventScope::Terminal(wire.clone()));
-            // A subscription still owed a gap stays until its pump delivers
-            // it; detach drops it with the connection.
+            // A subscription still owed a gap stays until its pump delivers it.
             if sub.scopes.is_empty()
                 && !sub.is_owed_work()
                 && let Some(sub) = self.event_subscriptions.remove(&client)
@@ -509,8 +350,8 @@ impl ClientTable {
             .and_then(|identity| identity.credential.as_ref())
     }
 
-    /// Record the ssh origin a same-uid bridge announced in HELLO. A client
-    /// with no stored identity is left alone: there is nothing to annotate.
+    /// Record the ssh origin a same-uid bridge announced (no-op without an
+    /// identity).
     pub(super) fn set_ssh_origin(
         &mut self,
         client: ClientId,
@@ -557,11 +398,7 @@ impl ClientTable {
 
     // -- L3 metadata fanout --------------------------------------------
 
-    /// Remember `client`'s outbound mailbox for `METADATA_CHANGED` fanout.
-    ///
-    /// Called from the `SUBSCRIBE_METADATA` handler. Re-subscribing
-    /// overwrites with the same sender (a connection's tx is stable), so
-    /// this is idempotent in practice.
+    /// Remember `client`'s mailbox for `METADATA_CHANGED` fanout.
     pub(super) fn remember_metadata_mailbox(
         &mut self,
         client: ClientId,
@@ -570,21 +407,9 @@ impl ClientTable {
         self.metadata_mailboxes.insert(client, tx);
     }
 
-    /// Fan a `MetadataChanged` frame out to every subscriber in
-    /// `subscribers` that is (a) L3-capable and (b) drainable (mailbox not
-    /// closed). Returns the actually-targeted client list.
-    ///
-    /// The mailbox is resolved from [`Self::attached`] when the subscriber
-    /// attached, and otherwise from [`Self::metadata_mailboxes`], so a
-    /// headless consumer that only ever sent `SUBSCRIBE_METADATA` (the
-    /// `phux watch` shape — it never attaches, by design) is still reached.
-    /// Before that fallback existed, every `phux.agent/v1` record the
-    /// ADR-0046 detector published was computed, broadcast, and dropped for
-    /// want of an `attached` entry.
-    ///
-    /// The subscriber list itself comes from the L3 metadata store, which
-    /// stays on [`super::ServerState`]; this half is pure client-keyed
-    /// fanout, which is why it lives here.
+    /// Fan `MetadataChanged` out to every L3-capable, open subscriber,
+    /// resolving mailboxes from `attached` or the metadata mailboxes (so
+    /// headless `phux watch` consumers are reached). Returns the targets.
     pub(super) fn broadcast_metadata_changed(
         &self,
         subscribers: &[ClientId],
@@ -612,11 +437,8 @@ impl ClientTable {
                 value: value.map(<[u8]>::to_vec),
                 actor: actor.cloned(),
             };
-            // `try_send`: the mailbox is bounded (DEFAULT_CLIENT_MAILBOX)
-            // and we hold the state mutex synchronously; awaiting on a
-            // full mailbox would deadlock the per-client read loop. A
-            // dropped notification is acceptable per SPEC §7.4 — the
-            // subscriber can re-`GET_METADATA` on next attach.
+            // `try_send`: we hold the lock; a dropped notification is
+            // acceptable (SPEC §7.4).
             if tx.try_send(Outbound::Frame(frame)).is_ok() {
                 delivered.push(*client_id);
             }

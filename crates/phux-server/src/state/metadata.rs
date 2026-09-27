@@ -8,54 +8,26 @@ use super::ServerState;
 use super::client::ClientId;
 use crate::mailbox::Outbound;
 
-/// Most metadata subscriptions one connection may hold at once (phux-w7z2.59).
-///
-/// `SUBSCRIBE_METADATA` has no reply frame (SPEC L3.md §1.2) and no
-/// `UNSUBSCRIBE_METADATA` verb, so an unbounded remote caller can grow this
-/// set for the life of the connection — on a `phux service install` server
-/// that is now weeks, not a session. The cap is sized well above any
-/// realistic caller, adopting the "generous multiple of shipped usage"
-/// convention `agent_detect::rules` set for its own bounds
-/// (phux-w7z2.14): the reference TUI subscribes a handful of Global/Group
-/// keys (`phux.session.name/v1`, `phux.tui.layout/v1`,
-/// `phux.tui.window_order/v1`, `phux.tui.focus/v1`) plus up to three
-/// per-Terminal keys (`phux.agent/v1`, `phux.tags/v1`, `phux.link/v1`) per
-/// pane it has ever attached to, so even a heavy fleet of ~150 panes stays
-/// under 500 subscriptions. 512 gives headroom over that while keeping the
-/// worst case trivial: each subscription is one `(ClientId, Scope, String)`
-/// tuple, so a maxed-out connection costs on the order of tens of
-/// kilobytes, not a resource an attacker gains anything by exhausting.
+/// Most metadata subscriptions one connection may hold. There is no reply
+/// or unsubscribe verb, so this bounds a long-lived connection; the TUI
+/// stays under 500 even with ~150 panes.
 const MAX_SUBSCRIPTIONS_PER_CLIENT: usize = 512;
 
-/// Per-scope K/V store for L3 metadata (SPEC §7.4 / §11.L3) plus the
-/// matching subscription registry.
-///
-/// Held inside [`super::ServerState`] but lifted into its own type so the
-/// subscribe / set / delete / list operations live in a focused
-/// surface — easier to test, easier to reason about ordering invariants,
-/// and a natural home for the per-key size cap once that lands.
+/// Per-scope L3 metadata store (SPEC §7.4) and its subscription registry.
 #[derive(Debug, Default)]
 pub struct MetadataStore {
-    /// Per-Terminal key → value. Cleared when the Terminal closes (the
-    /// L1 lifecycle that owns the Terminal).
+    /// Per-Terminal key → value, cleared when the Terminal closes.
     terminal: HashMap<WireResourceId, HashMap<String, Vec<u8>>>,
     /// Per-Group key → value.
     group: HashMap<GroupId, HashMap<String, Vec<u8>>>,
     /// Global key → value.
     global: HashMap<String, Vec<u8>>,
-    /// Active subscriptions: a flat set of `(client, scope, key)` tuples.
-    /// Lookup on broadcast is linear in the number of subscriptions; that
-    /// is acceptable while subscriptions are sparse (handful per client).
-    /// A future ticket may switch this to a `HashMap<(scope, key), Vec<ClientId>>`
-    /// if the dispatch path shows up in flame graphs.
+    /// Active `(client, scope, key)` subscriptions, scanned linearly
+    /// (subscriptions are sparse).
     subscriptions: HashSet<(ClientId, Scope, String)>,
 }
 
-/// Outcome of a `SET_METADATA` call.
-///
-/// `Unchanged` means the key already held an identical value, so the
-/// server SHOULD suppress the `METADATA_CHANGED` broadcast (it's a noop
-/// from every subscriber's perspective).
+/// Outcome of a `SET_METADATA`; `Unchanged` suppresses the broadcast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetadataSetOutcome {
     /// Key did not exist or held a different value; value was written.
@@ -64,41 +36,32 @@ pub enum MetadataSetOutcome {
     Unchanged,
 }
 
-/// Outcome of [`super::ServerState::rename_session`], mapping the three terminal
-/// cases of a `RENAME_SESSION` to the wire replies the server issues.
+/// Outcome of [`super::ServerState::rename_session`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenameOutcome {
-    /// The session was renamed (or already bore the requested name); reply
-    /// `COMMAND_RESULT { Ok }`.
+    /// Renamed (or already so named): `COMMAND_RESULT { Ok }`.
     Renamed,
     /// No session matched the current name; reply `SESSION_NOT_FOUND`.
     NotFound,
-    /// Another live session already holds the requested name; reply
-    /// `INVALID_COMMAND` (the code `CREATE_SESSION` uses for a taken name).
+    /// The name is taken: `INVALID_COMMAND`.
     NameTaken,
 }
 
-/// Outcome of [`super::ServerState::set_session_keep_empty`], the write behind
-/// `phux.session.keep_empty/v1` (ADR-0105).
+/// Outcome of [`super::ServerState::set_session_keep_empty`] (ADR-0105).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeepEmptyOutcome {
     /// The session's mark flipped to the requested value; the session stays.
     Changed,
     /// The session already carried the requested mark; nothing changed.
     Unchanged,
-    /// The mark was cleared on a session holding no windows, so the session
-    /// was removed: an empty session that reaps normally is meaningless.
+    /// Cleared on an empty session, which was therefore removed.
     Removed,
     /// No session matched the name.
     NotFound,
 }
 
-/// Conventional keys the server intercepts on write: the payload is a
-/// command, not a value the store retains.
-///
-/// [`super::ServerState::metadata_broadcast`] accepts only these keys so a
-/// caller cannot emit `METADATA_CHANGED` for an ordinary key whose
-/// subsequent `GET_METADATA` would contradict the broadcast (phux-wdar).
+/// Keys the server intercepts on write (the payload is a command, not a
+/// stored value); the only keys `metadata_broadcast` accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerInterceptedKey {
     /// `phux.session.name/v1` — rename payload `current\0new`.
@@ -126,25 +89,18 @@ impl MetadataStore {
             Scope::Resource(tid) => self.terminal.get(tid).and_then(|m| m.get(key)).cloned(),
             Scope::Group(gid) => self.group.get(gid).and_then(|m| m.get(key)).cloned(),
             Scope::Global => self.global.get(key).cloned(),
-            // `Scope` is `#[non_exhaustive]`: a forward-compat variant we
-            // don't know about returns None. The cleanest default for an
-            // unknown scope is "no value present" — the caller's contract
-            // is preserved without trapping on unknown bytes.
+            // Unknown forward-compat scope: no value.
             _ => None,
         }
     }
 
-    /// Set the value at `(scope, key)`. Returns whether the value
-    /// actually changed (so the caller can suppress an unnecessary
-    /// broadcast).
+    /// Set `(scope, key)`; reports whether it changed.
     pub fn set(&mut self, scope: &Scope, key: &str, value: Vec<u8>) -> MetadataSetOutcome {
         let bucket: &mut HashMap<String, Vec<u8>> = match scope {
             Scope::Resource(tid) => self.terminal.entry(tid.clone()).or_default(),
             Scope::Group(gid) => self.group.entry(*gid).or_default(),
             Scope::Global => &mut self.global,
-            // Unknown forward-compat variant: silently drop the write.
-            // SPEC §6 lets newer encoders ship trailing field shapes;
-            // here the surface area is "unknown scope, no bucket".
+            // Unknown forward-compat scope: drop the write.
             _ => return MetadataSetOutcome::Unchanged,
         };
         if let Some(prev) = bucket.get(key)
@@ -156,8 +112,7 @@ impl MetadataStore {
         MetadataSetOutcome::Changed
     }
 
-    /// Delete `(scope, key)`. Returns whether the key existed (so the
-    /// caller can suppress the broadcast on a true noop).
+    /// Delete `(scope, key)`; reports whether it existed.
     pub fn delete(&mut self, scope: &Scope, key: &str) -> bool {
         match scope {
             Scope::Resource(tid) => self
@@ -198,48 +153,23 @@ impl MetadataStore {
         keys
     }
 
-    /// Drop every key scoped to `terminal`, AND every subscription that
-    /// names it. Called when the Terminal closes (the L1 lifecycle that
-    /// owns the per-Terminal scope — see the `terminal` field doc).
-    ///
-    /// A subscription's *connection* dying is handled separately —
-    /// [`Self::drop_client`] runs on detach and clears every subscription
-    /// that connection holds, whatever scope it names. This method covers
-    /// the other half (phux-w7z2.59): the connection stays alive but the
-    /// Terminal it subscribed to does not. Without this, a long-lived
-    /// watcher that has ever subscribed to a pane's `phux.agent/v1` (or any
-    /// other per-Terminal key) accumulates one dead subscription per closed
-    /// pane for as long as the connection is open — on a `phux service
-    /// install` server, unboundedly.
+    /// Drop `terminal`'s keys and every subscription naming it, so a
+    /// long-lived watcher does not accumulate dead subscriptions.
     pub fn forget_terminal(&mut self, terminal: &WireResourceId) {
         self.terminal.remove(terminal);
         self.subscriptions
             .retain(|(_, scope, _)| !matches!(scope, Scope::Resource(tid) if tid == terminal));
     }
 
-    /// Register `(client, scope, key)` as an active subscription, subject
-    /// to `MAX_SUBSCRIPTIONS_PER_CLIENT`. Returns `true` if the
-    /// subscription is now active (either newly inserted or already
-    /// present — re-subscribing the same triple is idempotent and never
-    /// counts against the cap twice), `false` if `client` is already at
-    /// the cap and this would have been a new entry.
-    ///
-    /// The caller (`handle_subscribe_metadata`) is expected to drop a
-    /// refusal silently but for a log line: `SUBSCRIBE_METADATA` has no
-    /// reply frame to carry an error on (SPEC L3.md §1.2), matching the
-    /// existing non-L3-consumer refusal one arm up the same dispatch.
+    /// Register a subscription under `MAX_SUBSCRIPTIONS_PER_CLIENT`. `true`
+    /// if active (re-subscribing is idempotent); `false` if the client is at
+    /// the cap. The caller can only log a refusal (no reply frame).
     pub fn subscribe(&mut self, client: ClientId, scope: Scope, key: String) -> bool {
         let triple = (client, scope, key);
         if self.subscriptions.contains(&triple) {
             return true;
         }
-        // SUBSCRIBE_METADATA is a rare, connection-setup-time event, not a
-        // hot path — this scan (bounded by the cap on any one client, but
-        // linear in the server's *total* subscription count across every
-        // client) is the same trade the module doc already makes for
-        // `subscribers_for`'s dispatch-path scan, and phux is a one-user-
-        // per-server process (ADR-0003) with a correspondingly small
-        // connection count.
+        // A linear scan on a rare setup-time call.
         let held_by_client = self
             .subscriptions
             .iter()
@@ -257,8 +187,7 @@ impl MetadataStore {
         self.subscriptions.retain(|(c, _, _)| *c != client);
     }
 
-    /// Collect every client subscribed to `(scope, key)`. Order is
-    /// unspecified — callers MUST NOT rely on subscriber iteration order.
+    /// Every client subscribed to `(scope, key)`, in no particular order.
     #[must_use]
     pub fn subscribers_for(&self, scope: &Scope, key: &str) -> Vec<ClientId> {
         self.subscriptions
@@ -276,23 +205,14 @@ impl ServerState {
         &self.metadata
     }
 
-    /// Atomic SET + broadcast: store `value` at `(scope, key)`, then
-    /// enqueue a `MetadataChanged` to every L3-capable subscriber
-    /// whose subscription matches `(scope, key)`. Silently skips
-    /// subscribers that have been detached or whose mailbox is full
-    /// (`try_send` semantics — backpressure is a flow-control concern
-    /// SPEC §12 doesn't yet cover for L3).
-    ///
-    /// Returns the set of clients the broadcast was attempted against
-    /// (after L3-capability filtering) so callers can assert fanout
-    /// shape in tests.
+    /// Store `value` and broadcast `MetadataChanged` to L3-capable
+    /// subscribers (`try_send`). Returns the targeted clients.
     pub fn metadata_set(&mut self, scope: &Scope, key: &str, value: Vec<u8>) -> Vec<ClientId> {
         self.metadata_set_by(scope, key, value, None)
     }
 
-    /// As [`Self::metadata_set`], attributing the change to the connection
-    /// whose `SET_METADATA` caused it (`METADATA_CHANGED.actor`, ADR-0123).
-    /// `None` is a server-made change.
+    /// [`Self::metadata_set`] attributed to `writer` (ADR-0123); `None` is
+    /// the server.
     pub fn metadata_set_by(
         &mut self,
         scope: &Scope,
@@ -300,11 +220,7 @@ impl ServerState {
         value: Vec<u8>,
         writer: Option<ClientId>,
     ) -> Vec<ClientId> {
-        // Broadcast first so the borrow of `value` is finished by the time
-        // the K/V store consumes it on `set`. The "set before broadcast"
-        // ordering is preserved by checking the prior value: if the new
-        // bytes equal what's already stored we return early *before*
-        // mutating, so subscribers never observe a fake notification.
+        // Equal bytes return early before any broadcast or write.
         let unchanged = self
             .metadata
             .get(scope, key)
@@ -313,29 +229,22 @@ impl ServerState {
             return Vec::new();
         }
         let delivered = self.broadcast_metadata_change(scope, key, Some(&value), writer);
-        // Commit the write last; `MetadataSetOutcome` is now redundant
-        // here but kept on the lower-level API for direct callers.
         let _ = self.metadata.set(scope, key, value);
         delivered
     }
 
-    /// Atomic DELETE + tombstone broadcast. Idempotent: deleting a
-    /// missing key returns an empty broadcast set.
+    /// Delete and broadcast a tombstone; idempotent.
     pub fn metadata_delete(&mut self, scope: &Scope, key: &str) -> Vec<ClientId> {
         self.metadata_delete_by(scope, key, None)
     }
 
-    /// Drop a Terminal's keys and the subscriptions that name it.
-    ///
-    /// The satellite metadata mirror uses this after tombstoning the
-    /// allowlisted keys, so a closed satellite pane cannot keep a
-    /// watcher subscribed forever (ADR-0136).
+    /// Drop a Terminal's keys and subscriptions (the satellite mirror, after
+    /// tombstoning, ADR-0136).
     pub(crate) fn drop_terminal_metadata(&mut self, terminal: &WireResourceId) {
         self.metadata.forget_terminal(terminal);
     }
 
-    /// As [`Self::metadata_delete`], attributing the tombstone to the
-    /// connection whose `DELETE_METADATA` caused it (ADR-0123).
+    /// [`Self::metadata_delete`] attributed to `writer` (ADR-0123).
     pub fn metadata_delete_by(
         &mut self,
         scope: &Scope,
@@ -349,24 +258,10 @@ impl ServerState {
         self.broadcast_metadata_change(scope, key, None, writer)
     }
 
-    /// Broadcast-only counterpart of [`Self::metadata_set`]: enqueue a
-    /// `MetadataChanged` carrying `value` to every L3-capable subscriber of
-    /// `(scope, key)` WITHOUT touching the store.
-    ///
-    /// Exists for the server-intercepted conventional keys whose written
-    /// value is a *command* the server applies, not state it retains —
-    /// [`ServerInterceptedKey::SessionName`] (`current\0new`) and
-    /// [`ServerInterceptedKey::SessionKeepEmpty`]. Routing such a payload
-    /// through [`Self::metadata_set`] would (a) leak a stale transition blob
-    /// into `GET_METADATA` / `LIST_METADATA`, and (b) let the equal-bytes
-    /// dedup swallow a legitimate repeat of the same rename pair (rename
-    /// `A -> B`, `B` dies, a new `A` appears, rename `A -> B` again).
-    /// `key` is a [`ServerInterceptedKey`] so an ordinary stored key cannot
-    /// be named here. The caller is still responsible for broadcasting only
-    /// when the underlying mutation actually happened.
-    ///
-    /// Returns the set of clients the broadcast was attempted against, as
-    /// [`Self::metadata_set`] does, so callers can assert fanout shape.
+    /// Broadcast `value` for an intercepted key without storing it: the
+    /// payload is a command, and storing it would leak into reads and let
+    /// dedup swallow a legitimate repeat. Callers broadcast only when the
+    /// mutation happened. Returns the targeted clients.
     #[must_use]
     pub fn metadata_broadcast(
         &self,
@@ -377,9 +272,7 @@ impl ServerState {
         self.metadata_broadcast_by(scope, key, value, None)
     }
 
-    /// As [`Self::metadata_broadcast`], attributing the change to the
-    /// connection whose `SET_METADATA` on the intercepted key caused it
-    /// (`METADATA_CHANGED.actor`, ADR-0123). `None` is a server-made change.
+    /// [`Self::metadata_broadcast`] attributed to `writer` (ADR-0123).
     #[must_use]
     pub fn metadata_broadcast_by(
         &self,
@@ -391,13 +284,8 @@ impl ServerState {
         self.broadcast_metadata_change(scope, key.as_str(), Some(value), writer)
     }
 
-    /// The one fanout: resolve the subscribers of `(scope, key)` and enqueue
-    /// `MetadataChanged` to each. `None` is the delete tombstone.
-    ///
-    /// Every caller above goes through here — SET, DELETE, and the
-    /// broadcast-only path — so "who hears about a change" has a single
-    /// definition and the returned set means the same thing for all three.
-    /// `writer` becomes the frame's `actor`.
+    /// The single fanout for set, delete, and broadcast-only: `None` is a
+    /// tombstone; `writer` becomes the frame's `actor`.
     fn broadcast_metadata_change(
         &self,
         scope: &Scope,
@@ -411,14 +299,11 @@ impl ServerState {
             .broadcast_metadata_changed(&subscribers, scope, key, value, actor.as_ref())
     }
 
-    /// Publish ownership of a one-shot session-create result.
-    ///
-    /// The metadata value must already have been written. At most 256 unread
-    /// results are retained per connection; the oldest is evicted first.
+    /// Track a one-shot session-create result key (already written); at
+    /// most 256 unread per connection, oldest evicted.
     pub fn track_session_create_result(&mut self, client_id: ClientId, key: String) {
         const MAX_PENDING_PER_CLIENT: usize = 256;
-        // The block deliberately scopes the map borrow so the following
-        // `self.metadata_delete` can take `&mut self`.
+        // Scope the borrow so `metadata_delete` can take `&mut self`.
         let evicted = {
             let keys = self
                 .clients
@@ -454,9 +339,8 @@ impl ServerState {
         self.disown_session_create_result(key);
     }
 
-    /// Forget every owner of the one-shot result at `key`, keeping the
-    /// value (ADR-0126: a replayed create hands it to the repeating
-    /// connection).
+    /// Forget every owner of the result at `key`, keeping the value (a
+    /// replayed create hands it back, ADR-0126).
     pub fn disown_session_create_result(&mut self, key: &str) {
         for keys in self.clients.session_create_results.values_mut() {
             keys.retain(|candidate| candidate != key);
@@ -466,22 +350,9 @@ impl ServerState {
             .retain(|_, keys| !keys.is_empty());
     }
 
-    /// Register a subscription for `client_id`. The client MUST be
-    /// L3-capable (call sites in the runtime gate on
-    /// [`Self::client_speaks_l3`] before invoking this).
-    ///
-    /// `tx` is the client's outbound mailbox, captured here for the same
-    /// reason [`Self::subscribe_events`] captures one: a headless consumer
-    /// subscribes WITHOUT attaching, so `METADATA_CHANGED` fanout cannot be
-    /// resolved through `attached` alone. Both maps are cleared together on
-    /// detach.
-    ///
-    /// Returns `false` when `client_id` is already at
-    /// [`MetadataStore`]'s per-connection subscription cap and this would
-    /// have added a new entry — see [`MetadataStore::subscribe`]. The
-    /// mailbox is remembered only when the subscription is actually
-    /// accepted, so a client that is refused every subscription from a
-    /// fresh connection never gains an entry in the mailbox map either.
+    /// Subscribe `client_id` (already checked L3-capable), remembering `tx`
+    /// for headless consumers. `false` at the per-connection cap, in which
+    /// case the mailbox is not remembered either.
     pub fn metadata_subscribe(
         &mut self,
         client_id: ClientId,
@@ -505,8 +376,7 @@ mod tests {
         format!("phux.test.key/{n}/v1")
     }
 
-    /// The type boundary `metadata_broadcast` now accepts: only the two
-    /// intercepted conventional keys, mapped to the protocol constants.
+    /// `metadata_broadcast` accepts only the intercepted keys.
     #[test]
     fn intercepted_key_variants_are_the_broadcast_only_session_writes() {
         assert_eq!(
@@ -519,13 +389,8 @@ mod tests {
         );
     }
 
-    /// Every key `handle_set_metadata` intercepts has its own entry in the
-    /// workload-auth catalog (ADR-0125), and the classifier puts a write of
-    /// it on one of that entry's rows; every key `reject_set_metadata`
-    /// refuses is denied. Wiring the classifier into dispatch then cannot
-    /// leave an intercepted write on a row nobody chose for it. A new
-    /// `ServerInterceptedKey` variant fails the match below until it is
-    /// listed here.
+    /// Every intercepted key has a workload-auth catalog entry (ADR-0125)
+    /// its writes classify onto, and refused keys are denied.
     #[test]
     fn every_intercepted_key_has_a_catalog_classification() {
         use phux_protocol::kinds::{self, Carrier, Classification};
@@ -571,10 +436,7 @@ mod tests {
         }
     }
 
-    /// Filling a client to the cap succeeds on every distinct key; the
-    /// `MAX_SUBSCRIPTIONS_PER_CLIENT + 1`th distinct key is refused, and the
-    /// refusal does not mutate the store — the count stays pinned at the
-    /// cap rather than creeping past it.
+    /// The cap refuses the next distinct key without mutating the store.
     #[test]
     fn subscribe_enforces_the_per_client_cap() {
         let mut store = MetadataStore::default();
@@ -606,11 +468,7 @@ mod tests {
             MAX_SUBSCRIPTIONS_PER_CLIENT,
             "a refused subscribe must not grow the client's held count past the cap",
         );
-        // Refuse, not evict (phux-w7z2.59 design choice): the refusal must
-        // not have made room for itself by dropping an earlier subscription.
-        // An eviction policy here would silently break a subscription that
-        // was working fine to admit one that was never established — worse
-        // than just declining the new one.
+        // Refuse, never evict a working subscription.
         assert_eq!(
             store.subscribers_for(&Scope::Global, &key(0)),
             vec![client],
@@ -618,9 +476,7 @@ mod tests {
         );
     }
 
-    /// Re-subscribing an already-held triple is a no-op on the count, so it
-    /// never itself trips the cap — a client cannot be starved of its own
-    /// re-subscribes by having previously reached the limit.
+    /// Re-subscribing a held triple never trips the cap.
     #[test]
     fn resubscribing_an_existing_triple_at_the_cap_stays_accepted() {
         let mut store = MetadataStore::default();
@@ -635,8 +491,7 @@ mod tests {
         );
     }
 
-    /// The cap is per-client: one client hitting its limit must not affect
-    /// another client's ability to subscribe.
+    /// The cap is per client.
     #[test]
     fn the_cap_is_per_client_not_global() {
         let mut store = MetadataStore::default();
@@ -653,11 +508,7 @@ mod tests {
         );
     }
 
-    /// `forget_terminal` clears the Terminal's K/V bucket (existing
-    /// behavior) AND now reaps any subscription naming that Terminal,
-    /// while leaving subscriptions for other scopes/terminals untouched.
-    /// This is the "reap" half of phux-w7z2.59: a subscription's
-    /// connection can outlive the Terminal it named.
+    /// `forget_terminal` removes the Terminal's keys and subscriptions only.
     #[test]
     fn forget_terminal_reaps_only_subscriptions_naming_that_terminal() {
         let mut store = MetadataStore::default();
@@ -689,9 +540,7 @@ mod tests {
         );
     }
 
-    /// Reaping a dead Terminal's subscription frees a cap slot: a
-    /// connection that churns through many short-lived Terminals must not
-    /// have every one of them permanently occupy its subscription budget.
+    /// Reaping a Terminal frees its subscriptions' cap slots.
     #[test]
     fn forget_terminal_frees_a_cap_slot_for_reuse() {
         let mut store = MetadataStore::default();
