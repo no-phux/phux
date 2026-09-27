@@ -1,23 +1,11 @@
 //! Which-key popup.
 //!
-//! A small floating panel that appears when the user presses the prefix
-//! and then hesitates: it lists every prefix-table continuation (key,
-//! action) so the next keystroke can be *discovered* instead of
-//! memorized. The driver pushes it after `which-key-delay-ms` of prefix
-//! inactivity (see `[keybindings]` in the config).
+//! After the prefix and `which-key-delay-ms` of hesitation, a floating legend of every prefix-table continuation from the live
+//! [`KeybindingsCfg`] (numeric window jumps collapse to `0-9`).
 //!
-//! Unlike every other overlay, the popup is **transparent to input**
-//! ([`RenderOverlay::is_input_passthrough`] returns `true`): the
-//! dispatcher never routes keys to it. Any subsequent key dismisses the
-//! popup and then executes exactly as if the popup had never appeared —
-//! the pending prefix chord stays live in the resolver — and Esc
-//! dismisses it while also cancelling the prefix. The popup therefore
-//! can never eat or delay a chord; it is a pure display layer over the
-//! resolver's pending state.
-//!
-//! Rows are built from the live [`KeybindingsCfg`] snapshot, so user
-//! rebinds (and removed defaults) are reflected exactly. Numeric
-//! window-jump bindings collapse into a single `0-9` row.
+//! It is transparent to input ([`RenderOverlay::is_input_passthrough`]): the
+//! next key dismisses it and runs as if it had never appeared (Esc also
+//! cancels the prefix), so it can never eat or delay a chord.
 
 use phux_config::{Action, KeybindingsCfg};
 use phux_protocol::input::key::KeyEvent;
@@ -29,9 +17,6 @@ use super::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
 
 /// Which-key popup: prefix-table continuations as `key  action` rows.
-///
-/// Built from a [`KeybindingsCfg`] snapshot via [`Self::from_config`];
-/// owns its strings and theme so the boxed overlay stays `'static`.
 #[derive(Debug)]
 pub struct WhichKeyOverlay {
     /// Pretty-printed prefix chord as authored in config (e.g. `"C-a"`),
@@ -47,11 +32,7 @@ pub struct WhichKeyOverlay {
 }
 
 impl WhichKeyOverlay {
-    /// Build the popup from a config snapshot, styled with `theme`.
-    ///
-    /// Sources the live [`KeybindingsCfg`], so rebound keys show the user's
-    /// actual bindings. The numeric
-    /// `select-window { index }` keys collapse into one row.
+    /// Build the popup from the live config snapshot, styled with `theme`.
     #[must_use]
     pub fn from_config(cfg: &KeybindingsCfg, theme: &Theme) -> Self {
         let mut rows: Vec<(String, String)> = Vec::new();
@@ -75,15 +56,10 @@ impl WhichKeyOverlay {
     }
 }
 
-/// A binding's label as a person reads it: `split right`, `resize pane
-/// left 5`, `detach`.
-///
-/// Derived by rule rather than looked up, so a new or plugin action is
-/// never unlabelled: the action's name with its dashes spaced out, then
-/// its argument values. The few actions whose raw arguments read
-/// backwards get a phrase instead — `split-pane`'s `direction` names the
-/// divider, not where the new pane goes, and `move-window`'s `delta` is a
-/// signed number where a direction is meant.
+/// A binding's label as a person reads it (`split right`, `resize pane left
+/// 5`): the action name de-dashed plus its argument values, so new and
+/// plugin actions are never unlabelled, with phrases for the few whose raw
+/// arguments read backwards (`split-pane`, `move-window`).
 fn action_label(action: &Action) -> String {
     let (name, args) = match action {
         Action::Bare(name) => return name.replace('-', " "),
@@ -124,9 +100,8 @@ fn is_indexed_select_window(action: &Action) -> bool {
     )
 }
 
-/// Collapse the numeric window-jump keys into a single `0-9` row (or a
-/// lone `0` when only one is bound). `keys` arrive sorted (`BTreeMap`
-/// iteration). `None` when no such keys exist.
+/// Collapse sorted numeric window-jump keys into one `0-9` row (a lone key
+/// when only one is bound).
 fn compact_window_jump_keys(keys: &[String]) -> Option<(String, String)> {
     let first = keys.first()?;
     let last = keys.last()?;
@@ -251,10 +226,8 @@ impl RenderOverlay for WhichKeyOverlay {
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        // Sized to its content rather than to a fraction of the screen:
-        // a which-key panel is a legend, and a legend with a ragged empty
-        // half reads as unfinished. Anchored to the bottom, above the
-        // work the prefix is about to act on, never over its top rows.
+        // Sized to content and anchored to the bottom, above the work the
+        // prefix is about to act on.
         let grid = self.grid(area);
         let chrome = 2 + super::widgets::MODAL_PAD * 2;
         let content_w = if self.rows.is_empty() {
@@ -285,11 +258,8 @@ impl RenderOverlay for WhichKeyOverlay {
     }
 
     fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
-        // Defensive only: the dispatcher intercepts input BEFORE overlay
-        // routing for passthrough overlays (it pops the popup and lets
-        // the key execute normally), so this is unreachable in the real
-        // input path. If some future path routes here anyway, dismissing
-        // preserves the invariant that the popup never consumes input.
+        // Unreachable: the dispatcher pops passthrough overlays before
+        // routing. Dismissing keeps the never-consume invariant anyway.
         OverlayCommand::Dismiss
     }
 
@@ -325,23 +295,13 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         overlay.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        out
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
+            .collect()
     }
 
     #[test]
     fn rows_reflect_rebound_keys_not_a_hardcoded_table() {
-        // A user who rebound detach to `q` (and never bound `d`) must see
-        // `q  detach` — the popup sources the live config snapshot, not a
-        // baked-in default table.
         let overlay = WhichKeyOverlay::from_config(
             &cfg_with("C-a", &[("q", "detach"), ("v", "copy-mode")]),
             &Theme::default(),
@@ -356,35 +316,25 @@ mod tests {
             "unbound default keys must not appear"
         );
         let text = render_to_string(&overlay, 80, 24);
-        assert!(text.contains('q'), "rebound key row:\n{text}");
-        assert!(text.contains("detach"), "action label:\n{text}");
-    }
+        assert!(text.contains('q') && text.contains("detach"), "{text}");
 
-    #[test]
-    fn title_shows_the_configured_prefix() {
-        // Rebinding the prefix itself must show up in the popup title.
+        // A rebound prefix shows in the title.
         let overlay = WhichKeyOverlay::from_config(
             &cfg_with("C-Space", &[("d", "detach")]),
             &Theme::default(),
         );
-        let text = render_to_string(&overlay, 80, 24);
-        assert!(text.contains("C-Space"), "title:\n{text}");
+        assert!(render_to_string(&overlay, 80, 24).contains("C-Space"));
     }
 
     #[test]
     fn parameterized_actions_label_with_args() {
-        let mut args = BTreeMap::new();
-        args.insert(
-            "direction".to_owned(),
-            toml::Value::String("vertical".to_owned()),
-        );
         let mut cfg = cfg_with("C-a", &[]);
         cfg.prefix_table.insert(
             "%".to_owned(),
-            Action::Parameterized(ParamAction {
-                action: "split-pane".to_owned(),
-                args,
-            }),
+            param(
+                "split-pane",
+                &[("direction", toml::Value::String("vertical".to_owned()))],
+            ),
         );
         let overlay = WhichKeyOverlay::from_config(&cfg, &Theme::default());
         assert!(
@@ -400,14 +350,12 @@ mod tests {
     fn numeric_window_jumps_collapse_to_one_row() {
         let mut cfg = cfg_with("C-a", &[("d", "detach")]);
         for i in 0..10u8 {
-            let mut args = BTreeMap::new();
-            args.insert("index".to_owned(), toml::Value::Integer(i.into()));
             cfg.prefix_table.insert(
                 i.to_string(),
-                Action::Parameterized(ParamAction {
-                    action: "select-window".to_owned(),
-                    args,
-                }),
+                param(
+                    "select-window",
+                    &[("index", toml::Value::Integer(i.into()))],
+                ),
             );
         }
         let overlay = WhichKeyOverlay::from_config(&cfg, &Theme::default());

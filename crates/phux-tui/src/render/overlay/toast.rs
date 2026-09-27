@@ -1,14 +1,5 @@
-//! Toast overlay: a small dismissable notice modal.
-//!
-//! Used by the plugin-action runtime to surface a failed action's captured
-//! output without freezing the TUI — the action runs in a spawned task and
-//! the driver pushes this overlay when the failure report lands. Any key
-//! dismisses it (there is nothing to select or edit), so it costs the user
-//! exactly one keystroke.
-//!
-//! Deliberately generic (a title + plain body lines) so other one-shot
-//! notices can reuse it; it renders through the shared [`Modal`] widget so
-//! it composes with the rest of the overlay chrome.
+//! Toast overlay: a dismissable notice (a failed plugin action's output, a
+//! config error). Any key dismisses it.
 
 use phux_protocol::input::key::KeyEvent;
 use ratatui::buffer::Buffer;
@@ -61,10 +52,8 @@ impl ToastOverlay {
 impl RenderOverlay for ToastOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = self.bounds(area).unwrap_or(area);
-        // Styled, not raw: the modal fills its panel with `surface`, so
-        // body copy that inherits the terminal foreground is invisible on
-        // a light terminal — and a config-reload error is exactly the
-        // text a user cannot afford to miss.
+        // Styled, not raw: body text inheriting the terminal foreground is
+        // invisible on the `surface` fill of a light terminal.
         let body: Vec<Line<'_>> = self
             .lines
             .iter()

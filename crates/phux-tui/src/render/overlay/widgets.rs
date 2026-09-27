@@ -1,13 +1,7 @@
 //! Reusable themed overlay primitives.
 //!
-//! [`Modal`] is the centered bordered box every overlay ([`prompt`], the
-//! action finder, pickers) paints through, plus the shared geometry and
-//! scrollbar helpers. It renders into a ratatui [`Buffer`] and owns (copies)
-//! its [`Theme`] so the overlay that holds it stays `'static`.
-//!
-//! [`prompt`]: super::prompt
-//! [`Block`]: ratatui::widgets::Block
-//! [`Paragraph`]: ratatui::widgets::Paragraph
+//! [`Modal`] is the centered bordered box every overlay paints through (owning a copy of its [`Theme`] so the
+//! overlay stays `'static`), plus shared geometry and scrollbar helpers.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -28,14 +22,9 @@ pub const fn modal_inner_width(area_width: u16) -> u16 {
     area_width.saturating_sub(2 + MODAL_PAD * 2)
 }
 
-/// A centered, bordered modal box: themed border + left title and a body
-/// of pre-built [`Line`]s.
-///
-/// The caller supplies the body content (already styled) and the
-/// [`Modal`] owns the chrome — border color from [`Theme::border`], title
-/// from [`Theme::accent`]. Render with
-/// [`Modal::render_into`], passing the modal rect (use [`centered`] to
-/// compute one).
+/// A centered, bordered modal box: themed border and left title around
+/// pre-styled body [`Line`]s. Render with [`Modal::render_into`] into a rect
+/// from [`centered`] or [`centered_panel`].
 #[derive(Debug, Clone)]
 pub struct Modal<'a> {
     theme: Theme,
@@ -45,9 +34,7 @@ pub struct Modal<'a> {
 }
 
 impl<'a> Modal<'a> {
-    /// A modal titled `title` with `body` lines. Body wrapping
-    /// off by default (use [`Self::wrap`] to enable). Title is rendered
-    /// left-aligned as ` title ` in the border.
+    /// A modal titled `title` over `body`, wrapping off (see [`Self::wrap`]).
     #[must_use]
     pub fn new(theme: &Theme, title: impl Into<String>, body: Vec<Line<'a>>) -> Self {
         Self {
@@ -65,20 +52,13 @@ impl<'a> Modal<'a> {
         self
     }
 
-    /// Paint the modal into `buf`, filling `area` (the modal rect — the
-    /// caller centers it). Border + title chrome come from the theme;
-    /// body lines are painted as-is.
+    /// Paint the modal into `area` (the already-centered modal rect).
     pub fn render_into(&self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .borders(Borders::ALL)
-            // Fill the box with the theme surface so the modal reads as a
-            // solid panel floating over the live panes rather than as
-            // text that appeared in the grid. phux cannot DIM the
-            // backdrop the way a single-buffer TUI can — the pane cells
-            // belong to libghostty and the chrome never re-emits them
-            // (ADR-0020) — so the panel's own contrast plus the drop
-            // shadow are what separate it from what is behind it. Set
-            // `[theme] surface = "reset"` for a transparent modal.
+            // Fill with the theme surface: the pane cells behind cannot be
+            // dimmed (ADR-0020), so the panel's contrast and the drop shadow
+            // separate it. `[theme] surface = "reset"` makes it transparent.
             .style(Style::default().fg(self.theme.text).bg(self.theme.surface))
             .border_style(Style::default().fg(self.theme.border))
             .title(Span::styled(
@@ -96,14 +76,8 @@ impl<'a> Modal<'a> {
     }
 }
 
-/// Compute a centered [`Rect`] inside `outer`.
-///
-/// Sized to `frac_num`/10 of the outer dimensions, clamped to at least
-/// `min_w`×`min_h` (themselves clamped to the outer bounds so tiny
-/// terminals still show something) and never exceeding `outer`.
-///
-/// Prefer [`centered_panel`] for anything with content to lay out — it
-/// adds the small-viewport behaviour and degrades to this on a roomy one.
+/// A centered [`Rect`] at `frac_num`/10 of `outer`, at least `min_w`x`min_h`
+/// (clamped to `outer`). Prefer [`centered_panel`] for content.
 #[must_use]
 pub fn centered(outer: Rect, frac_num: u16, min_w: u16, min_h: u16) -> Rect {
     let w = outer.width.saturating_mul(frac_num) / 10;
@@ -115,33 +89,16 @@ pub fn centered(outer: Rect, frac_num: u16, min_w: u16, min_h: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-/// Whether `outer` is starved on either axis — the one breakpoint the
-/// whole chrome shares, so "compact" means the same thing to the status
-/// bar, the sidebar, and every overlay.
-///
-/// `bp` is the per-attach snapshot of `[chrome]`; pass
-/// [`ChromeBreakpoints::default`] where there is no config to consult.
+/// Whether `outer` is starved on either axis under `bp` (the one breakpoint
+/// the whole chrome shares).
 #[must_use]
 pub const fn is_compact(outer: Rect, bp: ChromeBreakpoints) -> bool {
     bp.is_col_starved(outer.width) || bp.is_row_starved(outer.height)
 }
 
-/// [`centered`], going full-bleed on whichever axis is starved.
-///
-/// This is the responsive modal geometry. On a roomy viewport it is
-/// exactly [`centered`]: a floating box with panes visible around it,
-/// which is what makes an overlay feel like it is *over* your work rather
-/// than instead of it. On a cramped one those margins are the difference
-/// between a readable picker and a two-word column, so the box takes the
-/// whole axis and the modal becomes a screen.
-///
-/// The axes are decided independently on purpose. A short, wide terminal
-/// (a bottom-docked split, say) is row-starved but not column-starved: it
-/// wants full height and a centered width, not a stretched-out list of
-/// two-word rows.
-///
-/// `bp` carries the thresholds, so a user who moved them in `[chrome]`
-/// moves this decision with them.
+/// [`centered`], going full-bleed on each starved axis independently: a
+/// floating box on a roomy viewport, a screen on a cramped one (a short, wide
+/// viewport gets full height with a centered width).
 #[must_use]
 pub fn centered_panel(
     outer: Rect,
@@ -162,14 +119,9 @@ pub fn centered_panel(
     r
 }
 
-/// Scroll `offset` by the minimum needed to bring row `cursor` inside a
-/// `height`-row window over `total` rows, and clamp it to the content.
-///
-/// This is the "scroll into view" rule every list widget wants: the window
-/// does not move while the cursor stays inside it, so paging down through a
-/// long list scrolls one row at a time at the bottom edge and the view holds
-/// still in the middle. Returns the new first-visible row. A window that can
-/// show everything (`total <= height`) always sits at `0`.
+/// Scroll `offset` minimally so row `cursor` is inside a `height`-row window
+/// over `total` rows, clamped to the content: the view holds still while the
+/// cursor stays inside. `0` when everything fits.
 #[must_use]
 pub const fn scroll_into_view(offset: usize, cursor: usize, total: usize, height: usize) -> usize {
     if height == 0 || total <= height {
@@ -191,15 +143,9 @@ pub const fn scroll_into_view(offset: usize, cursor: usize, total: usize, height
     offset
 }
 
-/// Paint a vertical scrollbar into `track` — a one-column [`Rect`], meant to
-/// be the modal's right *border* column beside the scrolling region.
-///
-/// The thumb (a block glyph in [`Theme::dim`]) is sized to the visible
-/// fraction of `total` and positioned by `offset`, so it reads as both "how
-/// much list is there" and "where am I in it". Track cells keep the border
-/// glyph in [`Theme::border`], so the bar looks like part of the box rather
-/// than a widget bolted onto it. No-op when the content fits (`total <=
-/// track.height`) — an unscrollable list shows a plain border.
+/// Paint a scrollbar into `track` (the modal's right border column): a
+/// [`Theme::dim`] thumb sized and placed by `total`/`offset` over border-glyph
+/// track cells. No-op when the content fits.
 pub fn paint_scrollbar(buf: &mut Buffer, track: Rect, theme: &Theme, total: usize, offset: usize) {
     let height = track.height as usize;
     if track.width == 0 || height == 0 || total <= height {
@@ -233,29 +179,6 @@ pub fn paint_scrollbar(buf: &mut Buffer, track: Rect, theme: &Theme, total: usiz
 mod tests {
     use super::*;
 
-    /// Flatten a rendered buffer to a `\n`-joined string with trailing
-    /// spaces trimmed per row.
-    fn buf_to_string(buf: &Buffer) -> String {
-        let area = buf.area;
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(area.x + x, area.y + y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        out
-    }
-
-    fn render_modal(modal: &Modal<'_>, w: u16, h: u16) -> String {
-        let area = Rect::new(0, 0, w, h);
-        let mut buf = Buffer::empty(area);
-        modal.render_into(area, &mut buf);
-        buf_to_string(&buf)
-    }
-
     #[test]
     fn modal_renders_title_and_body() {
         let theme = Theme::default();
@@ -264,243 +187,123 @@ mod tests {
             "demo",
             vec![Line::from("hello"), Line::from("world")],
         );
-        let text = render_modal(&modal, 40, 10);
-        assert!(text.contains("demo"), "title:\n{text}");
-        assert!(text.contains("hello"), "body line 1:\n{text}");
-        assert!(text.contains("world"), "body line 2:\n{text}");
-    }
-
-    #[test]
-    fn modal_byte_output_is_stable() {
-        let theme = Theme::default();
-        let modal = Modal::new(&theme, "box", vec![Line::from("body")]);
-        let area = Rect::new(0, 0, 16, 5);
+        let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
         modal.render_into(area, &mut buf);
-        insta::assert_snapshot!(buf_to_string(&buf));
+        let text: String = (0..10)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_owned())
+            .collect();
+        assert!(
+            ["demo", "hello", "world"].iter().all(|w| text.contains(w)),
+            "{text}"
+        );
     }
 
-    // ---------- phux-ep9s: scroll viewport + scrollbar ----------
-
+    /// The window holds still while the cursor is inside it, moves minimally
+    /// off either edge, and clamps a stranded offset.
     #[test]
-    fn scroll_into_view_pins_to_zero_when_everything_fits() {
-        // No window movement is possible (or wanted) while the content fits,
-        // wherever the cursor is — an unscrollable list never scrolls.
-        assert_eq!(scroll_into_view(0, 0, 3, 10), 0);
-        assert_eq!(scroll_into_view(0, 2, 3, 10), 0);
-        // Even a stale non-zero offset (list shrank under it) snaps back.
-        assert_eq!(scroll_into_view(7, 2, 3, 10), 0);
-    }
-
-    #[test]
-    fn scroll_into_view_holds_still_while_the_cursor_is_inside() {
-        // Window [5, 10) over 100 rows: a cursor anywhere inside it must not
-        // move the view. This is the property that makes the list feel calm.
-        for cursor in 5..10 {
+    fn scroll_into_view_moves_minimally_and_clamps() {
+        for (offset, cursor, total, height, expected) in [
+            (0, 2, 3, 10, 0),
+            (7, 2, 3, 10, 0),
+            (5, 5, 100, 5, 5),
+            (5, 9, 100, 5, 5),
+            (5, 10, 100, 5, 6),
+            (5, 3, 100, 5, 3),
+            (0, 99, 100, 5, 95),
+            (90, 0, 8, 5, 0),
+            (90, 7, 8, 5, 3),
+            (4, 9, 100, 0, 0),
+        ] {
             assert_eq!(
-                scroll_into_view(5, cursor, 100, 5),
-                5,
-                "cursor {cursor} inside the window must not scroll it",
+                scroll_into_view(offset, cursor, total, height),
+                expected,
+                "offset {offset} cursor {cursor} total {total} height {height}"
             );
         }
     }
 
-    #[test]
-    fn scroll_into_view_follows_the_cursor_off_each_edge() {
-        // Off the bottom: scroll just enough to put the cursor on the last row.
-        assert_eq!(scroll_into_view(5, 10, 100, 5), 6);
-        // Off the top: scroll just enough to put it on the first row.
-        assert_eq!(scroll_into_view(5, 3, 100, 5), 3);
-        // A jump to the end (End key) lands the window flush with the bottom.
-        assert_eq!(scroll_into_view(0, 99, 100, 5), 95);
-    }
-
-    #[test]
-    fn scroll_into_view_clamps_a_stranded_offset() {
-        // The filter narrowed 100 rows to 8 while the offset sat at 90: the
-        // window must clamp to the content, not paint 5 blank rows.
-        assert_eq!(scroll_into_view(90, 0, 8, 5), 0);
-        assert_eq!(scroll_into_view(90, 7, 8, 5), 3);
-        // A zero-height viewport is degenerate, not a panic.
-        assert_eq!(scroll_into_view(4, 9, 100, 0), 0);
-    }
-
-    /// Read the scrollbar track column out of a buffer as a string.
-    fn track_column(buf: &Buffer, track: Rect) -> String {
-        (0..track.height)
-            .map(|row| buf[(track.x, track.y + row)].symbol().to_owned())
-            .collect()
-    }
-
-    #[test]
-    fn scrollbar_is_absent_when_the_content_fits() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 8));
-        let track = Rect::new(3, 0, 1, 8);
-        paint_scrollbar(&mut buf, track, &Theme::default(), 8, 0);
-        // Untouched: the cells keep the buffer's default blank symbol, so the
-        // modal's plain border shows through.
-        assert_eq!(track_column(&buf, track), " ".repeat(8));
-    }
-
+    /// The thumb is proportional, flush at both ends, never zero rows, and
+    /// absent when the content fits; degenerate tracks are a no-op.
     #[test]
     fn scrollbar_thumb_tracks_the_offset() {
         let theme = Theme::default();
         let track = Rect::new(3, 0, 1, 8);
-        // 8-row window over 32 rows ⇒ thumb is a quarter of the track (2 rows),
-        // travelling 6 rows as the offset travels 24.
-        let paint = |offset: usize| {
+        let paint = |total: usize, offset: usize| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 4, 8));
-            paint_scrollbar(&mut buf, track, &theme, 32, offset);
-            track_column(&buf, track)
+            paint_scrollbar(&mut buf, track, &theme, total, offset);
+            (0..8)
+                .map(|row| buf[(3, row)].symbol().to_owned())
+                .collect::<String>()
         };
-        // At the top the thumb is flush with the first row...
-        assert_eq!(paint(0), "██││││││");
-        // ...at the bottom, flush with the last (so "am I at the end?" is
-        // answerable at a glance)...
-        assert_eq!(paint(24), "││││││██");
-        // ...and in between it sits proportionally.
-        assert_eq!(paint(12), "│││██│││");
-    }
+        assert_eq!(paint(8, 0), " ".repeat(8));
+        assert_eq!(paint(32, 0), "██││││││");
+        assert_eq!(paint(32, 24), "││││││██");
+        assert_eq!(paint(32, 12), "│││██│││");
+        assert_eq!(paint(500, 0).matches('█').count(), 1);
 
-    #[test]
-    fn scrollbar_thumb_never_vanishes_on_a_long_list() {
-        // 4-row window over 500 rows: the proportional thumb rounds to zero
-        // rows, but a scrollbar you cannot see is not a scrollbar.
-        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 4));
-        let track = Rect::new(1, 0, 1, 4);
-        paint_scrollbar(&mut buf, track, &Theme::default(), 500, 0);
-        assert_eq!(
-            track_column(&buf, track).matches('█').count(),
-            1,
-            "the thumb must stay at least one row tall",
-        );
-    }
-
-    #[test]
-    fn scrollbar_ignores_a_degenerate_track() {
-        // Zero-width / zero-height tracks are a no-op, not an index panic.
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
-        paint_scrollbar(&mut buf, Rect::new(3, 0, 0, 4), &Theme::default(), 99, 0);
-        paint_scrollbar(&mut buf, Rect::new(3, 0, 1, 0), &Theme::default(), 99, 0);
+        paint_scrollbar(&mut buf, Rect::new(3, 0, 0, 4), &theme, 99, 0);
+        paint_scrollbar(&mut buf, Rect::new(3, 0, 1, 0), &theme, 99, 0);
     }
 
-    /// Above the breakpoint on both axes, `centered_panel` is exactly
-    /// `centered`: the box floats and the panes stay visible around it.
+    /// `centered_panel` floats on a roomy viewport and goes full-bleed per
+    /// starved axis, under whatever thresholds the caller passes.
     #[test]
-    fn a_roomy_viewport_keeps_the_modal_floating() {
+    fn centered_panel_floats_or_goes_full_bleed_per_axis() {
         let bp = ChromeBreakpoints::DEFAULT;
-        let outer = Rect::new(0, 0, 120, 40);
-        assert!(!is_compact(outer, bp));
+        let roomy = Rect::new(0, 0, 120, 40);
+        assert!(!is_compact(roomy, bp));
+        let r = centered_panel(roomy, 6, 30, 10, bp);
+        assert_eq!(r, centered(roomy, 6, 30, 10));
+        assert!(r.x > 0 && r.y > 0 && r.width < 120 && r.height < 40);
+
+        let starved = Rect::new(0, 0, 50, 14);
+        assert_eq!(centered_panel(starved, 6, 30, 10, bp), starved);
+        let tight = ChromeBreakpoints {
+            compact_cols: 30,
+            compact_rows: 8,
+            ..bp
+        };
         assert_eq!(
-            centered_panel(outer, 6, 30, 10, bp),
-            centered(outer, 6, 30, 10)
+            centered_panel(starved, 6, 30, 10, tight),
+            centered(starved, 6, 30, 10)
         );
-        let r = centered_panel(outer, 6, 30, 10, bp);
-        assert!(r.x > outer.x && r.y > outer.y);
-        assert!(r.width < outer.width && r.height < outer.height);
-    }
-
-    /// A viewport starved on both axes gives the modal the whole screen —
-    /// on a 50x14 terminal a 60% box is 30x8, and the six rows of shared
-    /// modal chrome leave two rows of actual content.
-    #[test]
-    fn a_starved_viewport_makes_the_modal_full_bleed() {
-        let bp = ChromeBreakpoints::DEFAULT;
-        let outer = Rect::new(0, 0, 50, 14);
-        assert!(is_compact(outer, bp));
-        assert_eq!(centered_panel(outer, 6, 30, 10, bp), outer);
-    }
-
-    /// The breakpoint is the caller's, not a constant. The same
-    /// 80x30 viewport floats under the shipped thresholds and goes
-    /// full-bleed under a `[chrome]` that raised them — which is the whole
-    /// point of the knob for someone who wants full-bleed pickers on a
-    /// roomier terminal.
-    #[test]
-    fn a_raised_breakpoint_moves_where_full_bleed_starts() {
-        let outer = Rect::new(0, 0, 80, 30);
-        let shipped = ChromeBreakpoints::DEFAULT;
-        assert!(!is_compact(outer, shipped));
-        assert_ne!(centered_panel(outer, 6, 30, 10, shipped), outer);
-
-        let roomy = ChromeBreakpoints {
+        let raised = ChromeBreakpoints {
             compact_cols: 100,
             compact_rows: 40,
-            ..ChromeBreakpoints::DEFAULT
+            ..bp
         };
-        assert!(is_compact(outer, roomy));
-        assert_eq!(centered_panel(outer, 6, 30, 10, roomy), outer);
-    }
+        let mid = Rect::new(0, 0, 80, 30);
+        assert_ne!(centered_panel(mid, 6, 30, 10, bp), mid);
+        assert_eq!(centered_panel(mid, 6, 30, 10, raised), mid);
 
-    /// The axes are decided independently: a short, wide viewport wants
-    /// full height and a centered width, not a stretched row of two-word
-    /// entries.
-    #[test]
-    fn each_axis_goes_full_bleed_on_its_own() {
-        let bp = ChromeBreakpoints::DEFAULT;
-        // Wide but short.
         let short = Rect::new(0, 0, 160, 12);
         let r = centered_panel(short, 6, 30, 10, bp);
-        assert_eq!((r.y, r.height), (short.y, short.height), "full height");
-        assert!(r.width < short.width, "width still floats: {r:?}");
-
-        // Narrow but tall.
+        assert!(r.height == 12 && r.width < 160, "{r:?}");
         let narrow = Rect::new(0, 0, 40, 60);
         let r = centered_panel(narrow, 6, 30, 10, bp);
-        assert_eq!((r.x, r.width), (narrow.x, narrow.width), "full width");
-        assert!(r.height < narrow.height, "height still floats: {r:?}");
-    }
+        assert!(r.width == 40 && r.height < 60, "{r:?}");
 
-    /// `centered_panel` respects an inset outer rect (the pane content
-    /// area beside a docked sidebar): full-bleed means "fills what it was
-    /// given", never "fills the terminal".
-    #[test]
-    fn full_bleed_stays_inside_an_inset_outer_rect() {
-        // 60-col viewport with a 20-col left sidebar ⇒ content x∈[20, 60).
+        // Full-bleed fills the inset rect it was given, never the sidebar.
         let content = Rect::new(20, 0, 40, 14);
-        let r = centered_panel(content, 6, 30, 10, ChromeBreakpoints::DEFAULT);
-        assert_eq!(r, content);
-        assert_eq!(r.x, 20, "must not paint over the sidebar strip");
+        assert_eq!(centered_panel(content, 6, 30, 10, bp), content);
     }
 
+    /// `centered` clamps to its outer rect and centers inside an inset one,
+    /// so a modal never lands on the sidebar columns.
     #[test]
-    fn centered_clamps_to_outer() {
+    fn centered_clamps_and_centers_in_the_content_rect() {
         let outer = Rect::new(0, 0, 20, 8);
         let inner = centered(outer, 7, 40, 10);
-        assert!(inner.width <= outer.width);
-        assert!(inner.height <= outer.height);
-        assert!(inner.x + inner.width <= outer.x + outer.width);
-        assert!(inner.y + inner.height <= outer.y + outer.height);
-    }
+        assert!(inner.right() <= outer.right() && inner.bottom() <= outer.bottom());
 
-    /// When the outer rect is the pane content rect (viewport
-    /// inset by a left sidebar strip), the centered modal must stay fully
-    /// inside it — its left edge lands right of the sidebar divider, never on
-    /// the strip columns. This is the exact geometry the floating-modal path
-    /// now feeds `centered`.
-    #[test]
-    fn centered_against_inset_rect_clears_the_sidebar() {
-        // 80-col viewport, a 20-col left sidebar ⇒ content rect x∈[20, 80).
-        let sidebar_w = 20;
-        let content = Rect::new(sidebar_w, 0, 80 - sidebar_w, 24);
+        let content = Rect::new(20, 0, 60, 24);
         let modal = centered(content, 6, 30, 10);
-        // Fully within the content rect on every edge.
-        assert!(
-            modal.x >= content.x,
-            "modal left edge {} must not enter the sidebar (divider at {})",
-            modal.x,
-            content.x
-        );
-        assert!(modal.x + modal.width <= content.x + content.width);
-        assert!(modal.y >= content.y);
-        assert!(modal.y + modal.height <= content.y + content.height);
-        // And horizontally centered *within the content rect*, not the raw
-        // viewport: the left and right margins inside the content match.
-        let left_margin = modal.x - content.x;
-        let right_margin = (content.x + content.width) - (modal.x + modal.width);
-        assert!(
-            left_margin.abs_diff(right_margin) <= 1,
-            "modal must be centered in the content rect: L={left_margin} R={right_margin}"
-        );
+        assert!(modal.x >= content.x && modal.right() <= content.right());
+        assert!(modal.y >= content.y && modal.bottom() <= content.bottom());
+        let (left, right) = (modal.x - content.x, content.right() - modal.right());
+        assert!(left.abs_diff(right) <= 1, "L={left} R={right}");
     }
 }

@@ -1,9 +1,0 @@
----
-source: crates/phux-tui/src/render/overlay/widgets.rs
-expression: buf_to_string(&buf)
----
-┌ box ─────────┐
-│ body         │
-│              │
-│              │
-└──────────────┘

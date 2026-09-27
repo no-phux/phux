@@ -1,30 +1,13 @@
 //! The shared copy-mode selection contract (ADR-0045).
 //!
-//! Copy-mode is a *client-local projection* over the focused pane's own
-//! libghostty engine — never a wire tier
-//! ([ADR-0030](../../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md),
-//! [ADR-0045](../../../../../docs/adr/0045-client-side-copy-mode.md)). Two consumers
-//! of that projection — the selection UX (`copy_mode`) and the pane renderer
-//! (`attach::render`) — must agree, byte for byte, on what a selection is and
-//! which cells it covers. This module is the single leaf where that agreement
-//! lives: it is **plain data only** and imports neither the overlay state
-//! machine, the renderer, ratatui, nor libghostty. Both sides depend on this
-//! module; this module depends on neither, so the block-highlight geometry and
-//! the copy path can never disagree about what a block selection covers.
-//!
-//! Everything here was previously scattered across `copy_mode.rs`
-//! (`SelectionMode`), `attach/render.rs` (`SelectionRect`), and `overlay/mod.rs`
-//! (`SelectionGrab`, `CopyRequest`); ADR-0045 relocates it into one owner.
+//! Plain data the selection UX (`copy_mode`) and the pane renderer (`attach::render`) both
+//! import, so the highlight and the copy path can never disagree about which
+//! cells a selection covers. Selection is a client-local projection, never a
+//! wire tier (ADR-0030).
 
 /// How copy-mode interprets the selection rectangle.
 ///
-/// Client-local UI state ([ADR-0030], [ADR-0045]): selection is a consumer-side
-/// projection, so the mode lives with the client rather than on the wire.
-/// `Char` is the default linear selection; `Line` selects whole lines; `Rect`
-/// is Mosh-style rectangular (block/columnar) selection.
-///
-/// [ADR-0030]: ../../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md
-/// [ADR-0045]: ../../../../../docs/adr/0045-client-side-copy-mode.md
+/// `Char` linear (the default), `Line` whole lines, `Rect` block. Client-local UI state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionMode {
     /// Character-wise (linear) selection — the default.
@@ -36,17 +19,11 @@ pub enum SelectionMode {
     Rect,
 }
 
-/// A copy-mode selection in pane-local viewport cells (inclusive).
+/// A copy-mode selection in pane-local viewport cells.
 ///
-/// This is the exact geometry the renderer reverse-videos while painting and
-/// the copy path resolves against the engine, so the two cannot drift. The
-/// `rectangle` flag is the shared discriminant: `false` is a linear (text-flow)
-/// selection — full interior rows, partial first/last rows; `true` is a
-/// columnar (block) selection — the intersection of the row span and the
-/// `[start_col, end_col]` column band on *every* row.
-///
-/// Coordinates are pane-local viewport cells, zero-based, normalized so that
-/// `start <= end`.
+/// Inclusive, zero-based, `start <= end`: what the renderer inverts and the copy path resolves.
+/// `rectangle` false is linear (partial first/last rows), true is a column
+/// band on every row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionRect {
     /// First selected row (inclusive).
@@ -62,9 +39,8 @@ pub struct SelectionRect {
 }
 
 impl SelectionRect {
-    /// Build a `SelectionRect` from a normalized inclusive rectangle and a
-    /// [`SelectionMode`]. `rectangle` is set iff `mode` is
-    /// [`SelectionMode::Rect`]; `Char` and `Line` both produce linear geometry.
+    /// A `SelectionRect` from a normalized rectangle; `rectangle` iff `mode` is
+    /// [`SelectionMode::Rect`].
     #[must_use]
     pub fn from_range(
         start_row: u16,
@@ -82,30 +58,17 @@ impl SelectionRect {
         }
     }
 
-    /// Whether the pane-local cell `(row, col)` falls inside the selection.
-    ///
-    /// Branches on [`Self::rectangle`]:
-    /// - **linear** (`false`): full interior rows; the first row is clipped to
-    ///   `>= start_col` and the last row to `<= end_col`.
-    /// - **columnar** (`true`): every row in the span is clipped to the
-    ///   `[min(start_col, end_col), max(start_col, end_col)]` column band, so an
-    ///   interior-row cell outside that band is excluded even though a linear
-    ///   selection would include it. The band is min/max-normalized because the
-    ///   corners are ordered lexicographically by `(row, col)` upstream, which
-    ///   can leave `start_col > end_col` for a down-and-left block drag.
+    /// Whether the pane-local cell `(row, col)` is selected: linear clips the
+    /// first and last rows; columnar clips every row to the column band.
     #[must_use]
     pub const fn contains(self, row: u16, col: u16) -> bool {
         if row < self.start_row || row > self.end_row {
             return false;
         }
         if self.rectangle {
-            // Columnar: the same column band on every row in the span. The two
-            // corners are normalized lexicographically by (row, col) upstream
-            // (`copy_mode::CellRange::from_points`), so a block whose lower row
-            // carries the smaller column arrives with `start_col > end_col`.
-            // Clamp to the `[min, max]` band on the column axis — matching how
-            // libghostty normalizes block corners per-axis in `Selection::new`,
-            // so the highlight covers exactly the cells the copy path extracts.
+            // Upstream orders corners by (row, col), so a down-and-left block
+            // arrives with `start_col > end_col`; normalize per axis like
+            // libghostty's `Selection::new` does.
             let (lo, hi) = if self.start_col <= self.end_col {
                 (self.start_col, self.end_col)
             } else {
@@ -124,19 +87,11 @@ impl SelectionRect {
     }
 }
 
-/// How the dispatcher should derive the selection from a [`CopyRequest`]
-/// ([ADR-0045]).
+/// How the dispatcher derives the selection from a [`CopyRequest`].
 ///
-/// `Rect` is the two-corner path: the overlay's `start`/`end` rectangle is
-/// turned into a linear-or-block `Selection` directly. The remaining variants
-/// are *engine-derived*: the dispatcher hands the overlay cursor
-/// (`cursor_row`/`cursor_col`) to libghostty's `select_*` helpers, which return
-/// a snapshot selection the dispatcher then formats. Keeping the derivation as a
-/// tag here (not a `libghostty_vt` call) preserves the render-layer boundary —
-/// `render/overlay/` never imports the engine; the bridge in `attach/copy.rs`
-/// does the resolution.
-///
-/// [ADR-0045]: ../../../../../docs/adr/0045-client-side-copy-mode.md
+/// `Rect` uses the two corners; the others are engine-derived at the overlay cursor
+/// (libghostty `select_*`), resolved in `attach/copy.rs` so this layer never
+/// imports the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionGrab {
     /// Two-corner rectangle: `start`/`end` corners, block when
@@ -157,12 +112,8 @@ pub enum SelectionGrab {
     Output,
 }
 
-/// A cell in the terminal's full primary-screen coordinate space.
-///
-/// Unlike viewport coordinates, this stays attached to the same terminal
-/// cell while the user scrolls through history. It is intentionally a plain
-/// value: the engine resolves it only at copy time, so the overlay remains
-/// independent of libghostty handles.
+/// A cell in the full primary-screen coordinate space: stays on the same
+/// terminal cell while the user scrolls history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenSelectionPoint {
     /// Column, zero-based.
@@ -171,19 +122,9 @@ pub struct ScreenSelectionPoint {
     pub row: u32,
 }
 
-/// A client-local copy request ([ADR-0045]).
-///
-/// The overlay's normalized, inclusive viewport selection rectangle, handed to
-/// the bridge to resolve against the focused pane's own libghostty engine.
-/// Coordinates are pane-local viewport cells (`row`/`col`, zero-based,
-/// `start <= end`). `rectangle` selects block (vs linear) extraction.
-///
-/// `grab` tags how the bridge derives the selection. For
-/// [`SelectionGrab::Rect`] (the default) the `start`/`end` corners drive a
-/// two-corner `Selection`; the engine-derived grabs instead resolve at the
-/// overlay cursor (`cursor_row`/`cursor_col`).
-///
-/// [ADR-0045]: ../../../../../docs/adr/0045-client-side-copy-mode.md
+/// A client-local copy request (ADR-0045): the normalized viewport rectangle,
+/// block-vs-linear, and how `grab` derives the selection (corners for
+/// [`SelectionGrab::Rect`], else the overlay cursor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyRequest {
     /// Top row of the selection (inclusive).
@@ -194,9 +135,7 @@ pub struct CopyRequest {
     pub end_row: u16,
     /// Right column of the selection (inclusive).
     pub end_col: u16,
-    /// Stable press point for a mouse drag, when it was resolved by the
-    /// dispatcher. Keyboard copy-mode keeps this `None` and remains purely
-    /// viewport-relative.
+    /// Stable press point of a mouse drag; `None` for keyboard copy-mode.
     pub mouse_anchor_screen: Option<ScreenSelectionPoint>,
     /// Block (rectangular) selection when `true`; linear when `false`. Only
     /// consulted for [`SelectionGrab::Rect`].
@@ -281,11 +220,7 @@ mod tests {
 
     #[test]
     fn contains_block_normalizes_inverted_column_corners() {
-        // Down-and-left block drag: anchor (row 0, col 5) to cursor (row 3,
-        // col 2). `CellRange::from_points` orders corners lexicographically by
-        // (row, col), so (0,5) <= (3,2) leaves start_col=5 > end_col=2. The
-        // band must still be [2, 5] on every row — matching the cells
-        // libghostty extracts — not the empty `col >= 5 && col <= 2`.
+        // A down-and-left block drag still selects the [2, 5] band per row.
         let sel = SelectionRect {
             start_row: 0,
             start_col: 5,

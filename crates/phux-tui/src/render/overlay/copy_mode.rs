@@ -1,13 +1,8 @@
-//! Copy-mode overlay (phux-wave-a-copy-mode).
+//! Copy-mode overlay: keyboard and mouse text selection over the live pane.
 //!
-//! Provides terminal-based text selection with visual feedback. The overlay
-//! captures arrow keys to adjust selection boundaries and Enter to copy the
-//! selected text. Per [ADR-0030](../../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md),
-//! selection is a *client-local projection*: the overlay tracks the selection
-//! rectangle in pane-local viewport cells, and on Enter the dispatcher
-//! resolves it against the focused pane's own libghostty engine
-//! (`format_selection_alloc`) and writes the text to the host clipboard via
-//! OSC 52. Nothing about the selection touches the wire.
+//! Selection is a client-local projection (ADR-0030): the overlay tracks a
+//! pane-local rectangle and on commit the dispatcher resolves it against the
+//! pane's own engine and writes the host clipboard via OSC 52.
 
 use phux_protocol::input::key::{KeyEvent, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
@@ -22,16 +17,13 @@ use super::{
 const WHEEL_SCROLL_LINES: isize = 3;
 
 fn quantize_mouse_cell(value: f64, max: u16) -> u16 {
-    if !value.is_finite() || max == 0 {
+    if !value.is_finite() {
         return 0;
     }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let cell = value.floor().max(0.0) as u16;
-    cell.min(max.saturating_sub(1))
+    super::pointer_cell(value).min(max.saturating_sub(1))
 }
 
-/// Rectangular selection state: (row, col) coordinates for start and end.
-/// Normalized so that start <= end.
+/// A normalized (start <= end) two-corner cell range.
 #[derive(Debug, Clone, Copy)]
 struct CellRange {
     start_row: u16,
@@ -41,7 +33,6 @@ struct CellRange {
 }
 
 impl CellRange {
-    /// Create a range from cursor and endpoint. Normalizes so start <= end.
     fn from_points(cursor_row: u16, cursor_col: u16, end_row: u16, end_col: u16) -> Self {
         if (cursor_row, cursor_col) <= (end_row, end_col) {
             Self {
@@ -74,27 +65,23 @@ pub struct CopyModeOverlay {
     pub anchor_col: u16,
     /// Selection mode (char, line, rect).
     pub mode: SelectionMode,
-    /// Pane dimensions (cols, rows) — used to clamp cursor movement.
+    /// Pane columns, used to clamp cursor movement.
     pub pane_cols: u16,
     /// Number of rows in the pane.
     pub pane_rows: u16,
     /// Whether a left-button drag is actively extending the selection.
     selecting_with_mouse: bool,
-    /// The first clicked cell in full-screen coordinates. This is supplied by
-    /// the dispatcher, which has access to the focused terminal engine.
+    /// The first clicked cell in full-screen coordinates (from the
+    /// dispatcher, which has the engine).
     mouse_anchor_screen: Option<ScreenSelectionPoint>,
-    /// Where the stable mouse anchor currently appears in the viewport.
-    ///
-    /// This deliberately is signed and may be outside the visible pane. While
-    /// wheel-scrolling a drag, the first cell can leave the viewport; clamping
-    /// only when painting keeps the visible end of the highlight at the pane
-    /// edge rather than making the selection appear to travel with the text.
+    /// Where the mouse anchor currently appears in the viewport: signed, so
+    /// a wheel-scrolled drag keeps the anchor off screen and only the painted
+    /// highlight clamps.
     mouse_anchor_viewport_row: Option<i32>,
 }
 
 impl CopyModeOverlay {
-    /// Create a copy-mode overlay with cursor at the given position.
-    /// `pane_cols` and `pane_rows` are used to clamp cursor movement.
+    /// A copy-mode overlay with its cursor (clamped) at the given position.
     #[must_use]
     pub fn new(cursor_row: u16, cursor_col: u16, pane_cols: u16, pane_rows: u16) -> Self {
         // Clamp cursor to valid range
@@ -121,13 +108,8 @@ impl CopyModeOverlay {
         self.mouse_anchor_viewport_row = Some(i32::from(self.anchor_row));
     }
 
-    /// Advance the selection mode `Char -> Line -> Rect -> Char`.
-    ///
-    /// The lockstep write side of the mode state machine, driven by the
-    /// in-overlay `Tab` key: the overlay captures every keystroke while it is
-    /// up, so the cycle key must live here — see
-    /// [`RenderOverlay::handle_key`]. No wire traffic — the mode is a
-    /// consumer-side projection detail (ADR-0030).
+    /// Advance the selection mode `Char -> Line -> Rect -> Char` (the
+    /// in-overlay `Tab` key).
     pub const fn cycle_mode(&mut self) {
         self.mode = match self.mode {
             SelectionMode::Char => SelectionMode::Line,
@@ -151,9 +133,7 @@ impl CopyModeOverlay {
         )
     }
 
-    /// The portion of a mouse selection that is visible in the current
-    /// viewport. The copy request still carries the unmodified full-screen
-    /// press point, so this is presentation-only.
+    /// The visible part of a mouse selection (presentation only).
     fn visible_selection_range(&self) -> CellRange {
         let anchor_row = self
             .mouse_anchor_viewport_row
@@ -182,18 +162,8 @@ impl CopyModeOverlay {
         }
     }
 
-    /// The selection range adjusted for the active [`SelectionMode`].
-    ///
-    /// `Char` and `Rect` use the raw two-corner range as-is (the linear-vs-block
-    /// distinction is carried by the `rectangle` flag downstream). `Line`
-    /// expands the range to whole visible lines — column `0` through the last
-    /// pane column — so a line selection covers the full rows it spans instead
-    /// of collapsing to the same geometry as `Char` (ADR-0045). Both the
-    /// highlight ([`copy_selection`]) and the copy request
-    /// ([`copy_request_with`]) resolve through here, so what the renderer
-    /// inverts and what the bridge extracts stay in lockstep.
-    ///
-    /// [`copy_selection`]: RenderOverlay::copy_selection
+    /// The range adjusted for the mode: `Line` spans whole visible rows. Both
+    /// the highlight and the copy request resolve through here (ADR-0045).
     fn effective_range(&self) -> CellRange {
         self.apply_selection_mode(self.selection_range())
     }
@@ -203,9 +173,8 @@ impl CopyModeOverlay {
         self.apply_selection_mode(self.visible_selection_range())
     }
 
-    /// Keep the painted mouse anchor attached to its terminal cell when the
-    /// viewport moves. A negative viewport delta exposes older history and
-    /// pushes the already-clicked cell down on screen, hence `-delta`.
+    /// Keep the painted mouse anchor on its terminal cell as the viewport
+    /// scrolls (scrolling up moves it down on screen).
     fn scroll_mouse_anchor(&mut self, delta: isize) {
         if !self.selecting_with_mouse {
             return;
@@ -265,18 +234,13 @@ impl CopyModeOverlay {
         isize::try_from(rows).unwrap_or(1)
     }
 
-    /// Build the client-local copy request for the current two-corner
-    /// selection: the normalized inclusive viewport rectangle plus the
-    /// block/linear flag. The dispatcher resolves it against the focused
-    /// pane's own engine.
+    /// The copy request for the current two-corner selection.
     fn copy_request(&self) -> CopyRequest {
         self.copy_request_with(SelectionGrab::Rect)
     }
 
-    /// Build a copy request tagged with `grab`. For the engine-derived grabs
-    /// (`Word`/`Line`/`LineSemantic`/`All`/`Output`) the `start`/`end`
-    /// rectangle is still carried (so the highlight stays coherent) but the
-    /// dispatcher resolves against `cursor_row`/`cursor_col` instead.
+    /// A copy request tagged with `grab`; engine-derived grabs resolve at the
+    /// cursor, the rectangle keeps the highlight coherent.
     fn copy_request_with(&self, grab: SelectionGrab) -> CopyRequest {
         let range = self.effective_range();
         CopyRequest {
@@ -294,36 +258,14 @@ impl CopyModeOverlay {
 }
 
 impl RenderOverlay for CopyModeOverlay {
-    /// Copy-mode is **not** a modal overlay and paints nothing of its own.
-    ///
-    /// Unlike help/palette/prompts (which draw a surface onto a cleared
-    /// screen), copy-mode is a selection highlight over the live pane. The
-    /// driver detects it via [`Self::copy_selection`] and repaints the focused
-    /// pane with the selected cells reverse-videoed — the screen content is
-    /// otherwise untouched. So this `render` is intentionally empty.
+    /// Paints nothing: copy-mode is a highlight over the live pane, which the
+    /// driver repaints via [`Self::copy_selection`].
     fn render(&self, _area: Rect, _buf: &mut Buffer) {}
 
-    /// Adopt the focused pane's new size and pull the selection
-    /// back inside it.
-    ///
-    /// Copy-mode is not a pinned box — it is a selection over the live pane,
-    /// so unlike the context menu it *survives* a resize
-    /// ([`RenderOverlay::survives_resize`] stays `true`): dropping it would
-    /// discard an in-progress selection the user is still building. What it
-    /// cannot do is keep clamping against dimensions the pane no longer has.
-    /// Stale-large strands the cursor outside the grid, and the copy path
-    /// resolves that corner through `terminal.grid_ref(..).ok()?` — so the
-    /// extraction returns `None` and Enter dismisses copy-mode having
-    /// silently copied nothing. Stale-small does the mirror thing: the newly
-    /// revealed columns and rows are unreachable, and a Line-mode copy stops
-    /// at the old right edge.
-    ///
-    /// Both corners are clamped, not just the cursor. Clamping the anchor
-    /// keeps a smaller selection alive across a shrink, which is the
-    /// friendlier of the two options — the alternative (collapsing to a
-    /// cursor-only state) throws away a selection the user may have spent
-    /// several keystrokes building, and a partially-preserved selection is
-    /// still visible and still correct about the cells it names.
+    /// Adopt the pane's new size and clamp both corners into it. Copy-mode
+    /// survives a resize (dropping it would discard the selection), but stale
+    /// dimensions would leave a corner off the grid (copying nothing) or the
+    /// new area unreachable.
     fn on_viewport_resize(&mut self, pane_cols: u16, pane_rows: u16) {
         self.pane_cols = pane_cols;
         self.pane_rows = pane_rows;
@@ -336,10 +278,7 @@ impl RenderOverlay for CopyModeOverlay {
     }
 
     fn copy_selection(&self) -> Option<SelectionRect> {
-        // `effective_range` applies the Line-mode whole-line expansion, and
-        // `from_range` sets the block/linear flag from the mode, so the renderer
-        // highlights exactly what a copy of the current mode would extract
-        // (ADR-0045).
+        // Same mode-adjusted range the copy request uses (ADR-0045).
         let range = self.visible_effective_range();
         Some(SelectionRect::from_range(
             range.start_row,
@@ -360,9 +299,8 @@ impl RenderOverlay for CopyModeOverlay {
         let shift = key.mods.contains(ModSet::SHIFT);
 
         match key.key {
-            // Arrow keys adjust the selection in-place; the driver repaints
-            // the overlay after every key while it is active, so `Stay` is
-            // enough to reflect the moved cursor. No wire traffic (ADR-0030).
+            // Arrows move the cursor (shift extends); at the top or bottom
+            // edge they scroll the viewport instead.
             PhysicalKey::ArrowUp => {
                 if self.cursor_row == 0 {
                     OverlayCommand::ScrollViewport(-1)
@@ -387,12 +325,8 @@ impl RenderOverlay for CopyModeOverlay {
                 self.move_cursor_key(0, 1, shift);
                 OverlayCommand::Stay
             }
-            // Tab cycles the selection geometry `Char -> Line -> Rect -> Char`
-            // (ADR-0045). The overlay captures every keystroke while it is up,
-            // so the mode-cycle must be an in-overlay key rather than a global
-            // keybind resolved past the capture; `Stay` triggers the driver's
-            // per-key overlay repaint, so the new geometry's highlight shows
-            // immediately. Client-local UI state — no wire traffic (ADR-0030).
+            // Tab cycles the selection mode (the overlay captures every key,
+            // so the cycle cannot be a global binding).
             PhysicalKey::Tab => {
                 self.cycle_mode();
                 OverlayCommand::Stay
@@ -403,16 +337,9 @@ impl RenderOverlay for CopyModeOverlay {
             PhysicalKey::PageDown | PhysicalKey::NumpadPageDown => {
                 OverlayCommand::ScrollViewport(self.page_scroll_delta())
             }
-            // Engine-derived one-shot grabs. These copy-and-exit
-            // immediately (tmux-style): the dispatcher resolves the grab at the
-            // overlay cursor against the focused pane's own libghostty engine
-            // (`select_word`/`select_line`/`select_all`/`select_output`) and
-            // emits OSC 52. No wire traffic (ADR-0030).
-            //
-            // `w` = word under cursor.
+            // Engine-derived grabs copy and exit at the cursor: `w` word,
+            // `v` line (`V` semantic line), `A` all, `]` command output.
             PhysicalKey::W => OverlayCommand::Copy(self.copy_request_with(SelectionGrab::Word)),
-            // `v` = whole line; `V` (shift) = line bounded by semantic-prompt
-            // state changes (OSC-133 zones).
             PhysicalKey::V => {
                 let grab = if shift {
                     SelectionGrab::LineSemantic
@@ -421,18 +348,13 @@ impl RenderOverlay for CopyModeOverlay {
                 };
                 OverlayCommand::Copy(self.copy_request_with(grab))
             }
-            // `A` (shift) = select all selectable content.
             PhysicalKey::A if shift => {
                 OverlayCommand::Copy(self.copy_request_with(SelectionGrab::All))
             }
-            // `]` = command-output span under cursor (best-effort; no-op when
-            // the pane lacks OSC-133 zones).
             PhysicalKey::BracketRight => {
                 OverlayCommand::Copy(self.copy_request_with(SelectionGrab::Output))
             }
-            // Enter copies the current two-corner selection client-locally (the
-            // dispatcher resolves it against the focused pane's engine and emits
-            // OSC 52) and exits copy-mode, tmux-style.
+            // Enter copies the two-corner selection and exits, tmux-style.
             PhysicalKey::Enter => OverlayCommand::Copy(self.copy_request()),
             PhysicalKey::Escape => OverlayCommand::Dismiss,
             _ => OverlayCommand::Stay,
@@ -467,9 +389,8 @@ impl RenderOverlay for CopyModeOverlay {
                 self.set_cursor_from_mouse(mouse);
                 self.selecting_with_mouse = false;
                 if self.anchor_row == self.cursor_row && self.anchor_col == self.cursor_col {
-                    // A click without a drag selects nothing — exit copy-mode
-                    // (tmux-style) so a mouse-initiated entry can't trap the
-                    // user with the keyboard captured.
+                    // A click without a drag exits so a mouse-initiated entry
+                    // cannot trap the keyboard.
                     OverlayCommand::Dismiss
                 } else {
                     OverlayCommand::Copy(self.copy_request())
@@ -486,7 +407,6 @@ mod tests {
 
     use super::*;
 
-    /// A press `KeyEvent` for `key` with `mods`.
     fn press(key: PhysicalKey, mods: ModSet) -> KeyEvent {
         KeyEvent {
             action: KeyAction::Press,
@@ -499,7 +419,7 @@ mod tests {
         }
     }
 
-    fn mouse_event(action: MouseAction, button: MouseButton, x: f64, y: f64) -> MouseEvent {
+    fn mouse(action: MouseAction, button: MouseButton, x: f64, y: f64) -> MouseEvent {
         MouseEvent {
             action,
             button,
@@ -509,482 +429,213 @@ mod tests {
         }
     }
 
-    fn mouse_wheel(button: MouseButton) -> MouseEvent {
-        mouse_event(MouseAction::Press, button, 0.0, 0.0)
+    fn wheel(button: MouseButton) -> MouseEvent {
+        mouse(MouseAction::Press, button, 0.0, 0.0)
     }
 
-    /// Drive `key` through a fresh overlay and return the resulting command.
-    fn dispatch(key: PhysicalKey, mods: ModSet) -> OverlayCommand {
-        // Cursor at (2, 5) so engine-derived grabs carry a non-zero cursor.
-        let mut overlay = CopyModeOverlay::new(2, 5, 80, 24);
-        overlay.handle_key(&press(key, mods))
+    fn corners(overlay: &CopyModeOverlay) -> (u16, u16, u16, u16) {
+        let sel = overlay
+            .copy_selection()
+            .expect("copy-mode always has a selection");
+        (sel.start_row, sel.start_col, sel.end_row, sel.end_col)
     }
 
-    fn grab_of(cmd: &OverlayCommand) -> SelectionGrab {
-        match cmd {
-            OverlayCommand::Copy(req) => req.grab,
-            other => panic!("expected Copy, got {other:?}"),
+    #[test]
+    fn keys_map_to_grabs_scrolls_and_exits() {
+        let none = ModSet::empty();
+        for (key, mods, expected) in [
+            (PhysicalKey::W, none, Some(SelectionGrab::Word)),
+            (PhysicalKey::V, none, Some(SelectionGrab::Line)),
+            (
+                PhysicalKey::V,
+                ModSet::SHIFT,
+                Some(SelectionGrab::LineSemantic),
+            ),
+            (PhysicalKey::A, ModSet::SHIFT, Some(SelectionGrab::All)),
+            (PhysicalKey::BracketRight, none, Some(SelectionGrab::Output)),
+            (PhysicalKey::Enter, none, Some(SelectionGrab::Rect)),
+            (PhysicalKey::A, none, None),
+        ] {
+            // Cursor at (2, 5) so engine-derived grabs carry it.
+            let cmd = CopyModeOverlay::new(2, 5, 80, 24).handle_key(&press(key, mods));
+            match (cmd, expected) {
+                (OverlayCommand::Copy(req), Some(grab)) => {
+                    assert_eq!(req.grab, grab, "{key:?} {mods:?}");
+                    assert_eq!((req.cursor_row, req.cursor_col), (2, 5));
+                }
+                (OverlayCommand::Stay, None) => {}
+                (other, _) => panic!("{key:?} {mods:?}: {other:?}"),
+            }
         }
-    }
-
-    #[test]
-    fn key_w_grabs_word() {
-        let cmd = dispatch(PhysicalKey::W, ModSet::empty());
-        assert_eq!(grab_of(&cmd), SelectionGrab::Word);
-        if let OverlayCommand::Copy(req) = cmd {
-            assert_eq!((req.cursor_row, req.cursor_col), (2, 5));
-        }
-    }
-
-    #[test]
-    fn key_v_grabs_line() {
-        let cmd = dispatch(PhysicalKey::V, ModSet::empty());
-        assert_eq!(grab_of(&cmd), SelectionGrab::Line);
-    }
-
-    #[test]
-    fn shift_v_grabs_semantic_line() {
-        let cmd = dispatch(PhysicalKey::V, ModSet::SHIFT);
-        assert_eq!(grab_of(&cmd), SelectionGrab::LineSemantic);
-    }
-
-    #[test]
-    fn shift_a_grabs_all() {
-        let cmd = dispatch(PhysicalKey::A, ModSet::SHIFT);
-        assert_eq!(grab_of(&cmd), SelectionGrab::All);
-    }
-
-    #[test]
-    fn unshifted_a_is_inert() {
-        // `a` without shift is not a grab key — it must be consumed (Stay),
-        // not mistaken for select-all.
-        assert_eq!(
-            dispatch(PhysicalKey::A, ModSet::empty()),
-            OverlayCommand::Stay
-        );
-    }
-
-    #[test]
-    fn key_bracket_right_grabs_output() {
-        let cmd = dispatch(PhysicalKey::BracketRight, ModSet::empty());
-        assert_eq!(grab_of(&cmd), SelectionGrab::Output);
-    }
-
-    #[test]
-    fn enter_grabs_rect() {
-        let cmd = dispatch(PhysicalKey::Enter, ModSet::empty());
-        assert_eq!(grab_of(&cmd), SelectionGrab::Rect);
-    }
-
-    #[test]
-    fn cycle_mode_advances_char_line_rect_char() {
-        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-        assert_eq!(overlay.mode, SelectionMode::Char, "default is Char");
-        overlay.cycle_mode();
-        assert_eq!(overlay.mode, SelectionMode::Line);
-        overlay.cycle_mode();
-        assert_eq!(overlay.mode, SelectionMode::Rect);
-        overlay.cycle_mode();
-        assert_eq!(overlay.mode, SelectionMode::Char, "wraps back to Char");
-    }
-
-    #[test]
-    fn rect_mode_copy_request_is_block() {
         let mut overlay = CopyModeOverlay::new(2, 5, 80, 24);
-        overlay.cycle_mode(); // Char -> Line
-        overlay.cycle_mode(); // Line -> Rect
-        assert_eq!(overlay.mode, SelectionMode::Rect);
-        let req = overlay.copy_request();
-        assert!(
-            req.rectangle,
-            "Rect mode must request block (rectangular) extraction"
+        let key = |overlay: &mut CopyModeOverlay, k| overlay.handle_key(&press(k, none));
+        assert_eq!(
+            key(&mut overlay, PhysicalKey::PageUp),
+            OverlayCommand::ScrollViewport(-23)
         );
         assert_eq!(
-            req.grab,
-            SelectionGrab::Rect,
-            "the two-corner Enter path always tags SelectionGrab::Rect"
+            key(&mut overlay, PhysicalKey::PageDown),
+            OverlayCommand::ScrollViewport(23)
         );
-    }
-
-    #[test]
-    fn char_and_line_mode_copy_request_is_linear() {
-        let mut overlay = CopyModeOverlay::new(2, 5, 80, 24);
-        assert_eq!(overlay.mode, SelectionMode::Char);
-        assert!(
-            !overlay.copy_request().rectangle,
-            "Char mode is linear, not block"
-        );
-        overlay.cycle_mode(); // Char -> Line
-        assert_eq!(overlay.mode, SelectionMode::Line);
-        assert!(
-            !overlay.copy_request().rectangle,
-            "Line mode is linear over the two-corner range, not block"
-        );
-    }
-
-    #[test]
-    fn tab_key_cycles_selection_mode() {
-        // The overlay captures every keystroke while up, so the mode-cycle is
-        // an in-overlay key (ADR-0045). Tab advances Char -> Line -> Rect ->
-        // Char and stays in copy-mode (the driver repaints on `Stay`).
-        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-        assert_eq!(overlay.mode, SelectionMode::Char);
         assert_eq!(
-            overlay.handle_key(&press(PhysicalKey::Tab, ModSet::empty())),
-            OverlayCommand::Stay
+            key(&mut overlay, PhysicalKey::Escape),
+            OverlayCommand::Dismiss
         );
-        assert_eq!(overlay.mode, SelectionMode::Line);
-        overlay.handle_key(&press(PhysicalKey::Tab, ModSet::empty()));
-        assert_eq!(overlay.mode, SelectionMode::Rect);
-        overlay.handle_key(&press(PhysicalKey::Tab, ModSet::empty()));
-        assert_eq!(overlay.mode, SelectionMode::Char, "wraps back to Char");
+        // Arrows at the edges scroll the viewport instead of moving.
+        let mut top = CopyModeOverlay::new(0, 5, 80, 24);
+        assert_eq!(
+            key(&mut top, PhysicalKey::ArrowUp),
+            OverlayCommand::ScrollViewport(-1)
+        );
+        let mut bottom = CopyModeOverlay::new(23, 5, 80, 24);
+        assert_eq!(
+            key(&mut bottom, PhysicalKey::ArrowDown),
+            OverlayCommand::ScrollViewport(1)
+        );
+        assert_eq!(bottom.cursor_row, 23);
     }
 
+    /// Tab cycles Char -> Line -> Rect -> Char; Rect requests block
+    /// extraction, Char and Line linear, and Line spans whole rows on both
+    /// the highlight and the copy request (ADR-0045).
     #[test]
-    fn line_mode_expands_selection_to_whole_lines() {
-        // Anchor (1,3), cursor dragged to (2,5) on an 80-col pane. Char mode
-        // keeps the two-corner range; Line mode expands the columns to the full
-        // line width (0 .. cols-1) on both the highlight and the copy request,
-        // so a line selection covers whole rows instead of collapsing to Char.
+    fn tab_cycles_modes_and_each_mode_shapes_the_selection() {
         let mut overlay = CopyModeOverlay::new(1, 3, 80, 24);
-        overlay.move_cursor(1, 2); // cursor -> (2, 5)
+        overlay.move_cursor(1, 2);
+        assert_eq!(corners(&overlay), (1, 3, 2, 5));
+        assert!(!overlay.copy_request().rectangle, "Char is linear");
 
-        // Char mode: the raw two-corner range.
-        let sel = overlay.copy_selection().expect("selection");
-        assert_eq!(
-            (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
-            (1, 3, 2, 5)
-        );
-        assert!(!sel.rectangle, "Char mode is linear");
-
-        overlay.cycle_mode(); // Char -> Line
+        let tab = press(PhysicalKey::Tab, ModSet::empty());
+        assert_eq!(overlay.handle_key(&tab), OverlayCommand::Stay);
         assert_eq!(overlay.mode, SelectionMode::Line);
-        let sel = overlay.copy_selection().expect("selection");
-        assert_eq!(
-            (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
-            (1, 0, 2, 79),
-            "Line mode spans whole visible lines (col 0 .. cols-1)"
-        );
-        assert!(!sel.rectangle, "Line mode is linear, not block");
-        // The copy request carries the same expanded corners.
+        assert_eq!(corners(&overlay), (1, 0, 2, 79));
         let req = overlay.copy_request();
         assert_eq!(
             (req.start_row, req.start_col, req.end_row, req.end_col),
             (1, 0, 2, 79)
         );
-        assert!(!req.rectangle);
+        assert!(!req.rectangle, "Line is linear");
+
+        overlay.handle_key(&tab);
+        assert_eq!(overlay.mode, SelectionMode::Rect);
+        let req = overlay.copy_request();
+        assert!(req.rectangle && req.grab == SelectionGrab::Rect);
+        overlay.handle_key(&tab);
+        assert_eq!(overlay.mode, SelectionMode::Char, "wraps");
     }
 
     #[test]
-    fn page_up_scrolls_one_visible_page() {
+    fn arrows_move_the_cursor_and_shift_extends() {
+        let overlay = CopyModeOverlay::new(100, 100, 80, 24);
         assert_eq!(
-            dispatch(PhysicalKey::PageUp, ModSet::empty()),
-            OverlayCommand::ScrollViewport(-23)
+            (overlay.cursor_row, overlay.cursor_col),
+            (23, 79),
+            "clamped"
+        );
+        assert_eq!(
+            corners(&CopyModeOverlay::new(5, 10, 80, 24)),
+            (5, 10, 5, 10)
+        );
+
+        let mut overlay = CopyModeOverlay::new(2, 3, 80, 24);
+        overlay.handle_key(&press(PhysicalKey::ArrowRight, ModSet::empty()));
+        assert_eq!(corners(&overlay), (2, 4, 2, 4), "plain arrows move");
+        overlay.handle_key(&press(PhysicalKey::ArrowRight, ModSet::SHIFT));
+        assert_eq!(corners(&overlay), (2, 4, 2, 5), "shift extends");
+        // A backwards range normalizes.
+        let range = CellRange::from_points(5, 10, 2, 3);
+        assert_eq!(
+            (
+                range.start_row,
+                range.start_col,
+                range.end_row,
+                range.end_col
+            ),
+            (2, 3, 5, 10)
         );
     }
 
     #[test]
-    fn page_down_scrolls_one_visible_page() {
+    fn mouse_drags_select_and_copy_while_a_click_exits() {
+        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
         assert_eq!(
-            dispatch(PhysicalKey::PageDown, ModSet::empty()),
-            OverlayCommand::ScrollViewport(23)
-        );
-    }
-
-    #[test]
-    fn arrow_up_at_top_scrolls_one_line() {
-        let mut overlay = CopyModeOverlay::new(0, 5, 80, 24);
-        assert_eq!(
-            overlay.handle_key(&press(PhysicalKey::ArrowUp, ModSet::empty())),
-            OverlayCommand::ScrollViewport(-1)
-        );
-        assert_eq!(overlay.cursor_row, 0);
-    }
-
-    #[test]
-    fn arrow_down_at_bottom_scrolls_one_line() {
-        let mut overlay = CopyModeOverlay::new(23, 5, 80, 24);
-        assert_eq!(
-            overlay.handle_key(&press(PhysicalKey::ArrowDown, ModSet::empty())),
-            OverlayCommand::ScrollViewport(1)
-        );
-        assert_eq!(overlay.cursor_row, 23);
-    }
-
-    #[test]
-    fn mouse_wheel_scrolls_viewport() {
-        let mut overlay = CopyModeOverlay::new(2, 5, 80, 24);
-        assert_eq!(
-            overlay.handle_mouse(&mouse_wheel(MouseButton::Four)),
+            overlay.handle_mouse(&wheel(MouseButton::Four)),
             OverlayCommand::ScrollViewport(-WHEEL_SCROLL_LINES)
         );
         assert_eq!(
-            overlay.handle_mouse(&mouse_wheel(MouseButton::Five)),
+            overlay.handle_mouse(&wheel(MouseButton::Five)),
             OverlayCommand::ScrollViewport(WHEEL_SCROLL_LINES)
+        );
+
+        let anchor = ScreenSelectionPoint { col: 4, row: 123 };
+        overlay.set_mouse_anchor_screen(anchor);
+        overlay.handle_mouse(&mouse(MouseAction::Press, MouseButton::Left, 4.0, 2.0));
+        overlay.handle_mouse(&mouse(MouseAction::Motion, MouseButton::Left, 8.0, 3.0));
+        assert_eq!(corners(&overlay), (2, 4, 3, 8));
+        let OverlayCommand::Copy(req) =
+            overlay.handle_mouse(&mouse(MouseAction::Release, MouseButton::Left, 8.0, 3.0))
+        else {
+            panic!("a dragged release copies");
+        };
+        assert_eq!(req.grab, SelectionGrab::Rect);
+        assert_eq!(
+            req.mouse_anchor_screen,
+            Some(anchor),
+            "the stable press point"
+        );
+
+        // A click without a drag must exit rather than trap the keyboard.
+        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
+        overlay.handle_mouse(&mouse(MouseAction::Press, MouseButton::Left, 4.0, 2.0));
+        assert_eq!(
+            overlay.handle_mouse(&mouse(MouseAction::Release, MouseButton::Left, 4.0, 2.0)),
+            OverlayCommand::Dismiss
         );
     }
 
+    /// While a drag wheel-scrolls, the highlight stays on the clicked cell
+    /// (it moves down as older rows appear); the copy still resolves the
+    /// full-screen press point.
     #[test]
     fn mouse_drag_highlight_stays_with_the_clicked_cell_while_scrolling() {
         let mut overlay = CopyModeOverlay::new(6, 5, 80, 24);
         overlay.set_mouse_anchor_screen(ScreenSelectionPoint { col: 5, row: 106 });
-        overlay.handle_mouse(&mouse_event(
-            MouseAction::Press,
-            MouseButton::Left,
-            5.0,
-            6.0,
-        ));
-
-        // Scrolling up reveals older rows: the clicked terminal cell moves
-        // three viewport rows downward while the mouse remains at row 6.
+        overlay.handle_mouse(&mouse(MouseAction::Press, MouseButton::Left, 5.0, 6.0));
+        overlay.handle_mouse(&wheel(MouseButton::Four));
+        let (start_row, _, end_row, _) = corners(&overlay);
+        assert_eq!((start_row, end_row), (6, 9));
         assert_eq!(
-            overlay.handle_mouse(&mouse_wheel(MouseButton::Four)),
-            OverlayCommand::ScrollViewport(-WHEEL_SCROLL_LINES)
-        );
-        let selection = overlay.copy_selection().expect("selection");
-        assert_eq!((selection.start_row, selection.end_row), (6, 9));
-
-        // The full-screen press point, rather than this display-only range,
-        // remains the value the eventual copy bridge resolves.
-        assert_eq!(overlay.copy_request().mouse_anchor_screen.unwrap().row, 106);
-    }
-
-    #[test]
-    fn mouse_copy_request_carries_the_stable_press_point() {
-        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-        let anchor = ScreenSelectionPoint { col: 7, row: 123 };
-        overlay.set_mouse_anchor_screen(anchor);
-        overlay.handle_mouse(&mouse_event(
-            MouseAction::Press,
-            MouseButton::Left,
-            7.0,
-            4.0,
-        ));
-        overlay.handle_mouse(&mouse_event(
-            MouseAction::Motion,
-            MouseButton::Left,
-            9.0,
-            11.0,
-        ));
-        let OverlayCommand::Copy(request) = overlay.handle_mouse(&mouse_event(
-            MouseAction::Release,
-            MouseButton::Left,
-            9.0,
-            11.0,
-        )) else {
-            panic!("a dragged release must copy");
-        };
-        assert_eq!(request.mouse_anchor_screen, Some(anchor));
-    }
-
-    #[test]
-    fn click_without_drag_dismisses() {
-        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-        overlay.handle_mouse(&mouse_event(
-            MouseAction::Press,
-            MouseButton::Left,
-            4.0,
-            2.0,
-        ));
-        assert_eq!(
-            overlay.handle_mouse(&mouse_event(
-                MouseAction::Release,
-                MouseButton::Left,
-                4.0,
-                2.0
-            )),
-            OverlayCommand::Dismiss,
-            "an empty selection must exit copy-mode, not trap the user"
+            overlay.copy_request().mouse_anchor_screen.map(|p| p.row),
+            Some(106)
         );
     }
 
+    /// Clamps, Line mode's right edge, and the page span all follow a resize:
+    /// a stale-large corner makes the copy resolve to nothing, a stale-small
+    /// one leaves new cells unreachable. An in-bounds selection survives.
     #[test]
-    fn cell_range_normalization() {
-        let range = CellRange::from_points(5, 10, 2, 3);
-        assert_eq!(range.start_row, 2);
-        assert_eq!(range.start_col, 3);
-        assert_eq!(range.end_row, 5);
-        assert_eq!(range.end_col, 10);
-    }
-
-    #[test]
-    fn cursor_clamped_to_pane() {
-        let overlay = CopyModeOverlay::new(100, 100, 80, 24);
-        assert_eq!(overlay.cursor_row, 23);
-        assert_eq!(overlay.cursor_col, 79);
-    }
-
-    #[test]
-    fn copy_selection_tracks_normalized_range() {
-        let mut overlay = CopyModeOverlay::new(2, 3, 80, 24); // anchor = (2, 3)
-        overlay.move_cursor(1, 2); // cursor -> (3, 5)
-        let sel = overlay
-            .copy_selection()
-            .expect("copy-mode always has a selection");
-        assert_eq!(
-            (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
-            (2, 3, 3, 5)
-        );
-    }
-
-    #[test]
-    fn arrow_keys_move_cursor_without_extending_unless_shift_is_held() {
-        let mut overlay = CopyModeOverlay::new(2, 3, 80, 24);
-        assert_eq!(
-            overlay.handle_key(&press(PhysicalKey::ArrowRight, ModSet::empty())),
-            OverlayCommand::Stay
-        );
-        let sel = overlay.copy_selection().expect("selection");
-        assert_eq!(
-            (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
-            (2, 4, 2, 4),
-            "plain arrows move the cursor instead of selecting from the original anchor"
-        );
-
-        assert_eq!(
-            overlay.handle_key(&press(PhysicalKey::ArrowRight, ModSet::SHIFT)),
-            OverlayCommand::Stay
-        );
-        let sel = overlay.copy_selection().expect("selection");
-        assert_eq!(
-            (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
-            (2, 4, 2, 5),
-            "shift-arrows extend the selection"
-        );
-    }
-
-    #[test]
-    fn mouse_drag_updates_selection_and_copies_on_release() {
-        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-        assert_eq!(
-            overlay.handle_mouse(&mouse_event(
-                MouseAction::Press,
-                MouseButton::Left,
-                4.0,
-                2.0
-            )),
-            OverlayCommand::Stay
-        );
-        assert_eq!(
-            overlay.handle_mouse(&mouse_event(
-                MouseAction::Motion,
-                MouseButton::Left,
-                8.0,
-                3.0
-            )),
-            OverlayCommand::Stay
-        );
-        let sel = overlay
-            .copy_selection()
-            .expect("copy-mode always has a selection");
-        assert_eq!(
-            (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
-            (2, 4, 3, 8)
-        );
-        let cmd = overlay.handle_mouse(&mouse_event(
-            MouseAction::Release,
-            MouseButton::Left,
-            8.0,
-            3.0,
-        ));
-        assert_eq!(grab_of(&cmd), SelectionGrab::Rect);
-    }
-
-    // ---------- phux-d26y: pane dims must track a resize ----------
-
-    /// Shrink: the clamp must follow the pane down, or the overlay keeps
-    /// permitting a cursor past the new edge. The copy path resolves that
-    /// point with `terminal.grid_ref(...).ok()?`, so an out-of-range corner
-    /// makes `extract_selection_text` return `None` — Enter dismisses
-    /// copy-mode having silently copied nothing.
-    #[test]
-    fn a_shrink_reclamps_the_cursor_and_the_anchor() {
+    fn a_resize_reclamps_and_rederives_pane_geometry() {
         let mut overlay = CopyModeOverlay::new(20, 70, 80, 24);
-        // Drag out a selection that fills the old pane.
-        overlay.move_cursor(3, 9); // cursor -> (23, 79), the old bottom-right
-        assert_eq!((overlay.cursor_row, overlay.cursor_col), (23, 79));
-
+        overlay.move_cursor(3, 9);
         overlay.on_viewport_resize(60, 18);
+        assert_eq!((overlay.cursor_row, overlay.cursor_col), (17, 59));
+        assert_eq!((overlay.anchor_row, overlay.anchor_col), (17, 59));
 
-        assert_eq!(
-            (overlay.cursor_row, overlay.cursor_col),
-            (17, 59),
-            "the cursor must be pulled inside the new pane",
-        );
-        assert_eq!(
-            (overlay.anchor_row, overlay.anchor_col),
-            (17, 59),
-            "the anchor is clamped too — a corner left outside the pane is the \
-             one that makes the copy resolve to nothing",
-        );
-        // And the request it would commit now names only real cells.
-        let req = overlay.copy_request();
-        assert!(
-            req.end_row < 18 && req.end_col < 60 && req.start_row < 18 && req.start_col < 60,
-            "every corner of the committed request is inside the pane: {req:?}",
-        );
-    }
-
-    /// Grow: the clamp must follow the pane up, or the cursor stops at the
-    /// old edge and the newly revealed region is unreachable.
-    #[test]
-    fn a_grow_lets_the_cursor_reach_the_new_edges() {
         let mut overlay = CopyModeOverlay::new(0, 0, 60, 20);
         overlay.on_viewport_resize(100, 30);
-        // Walk hard into the bottom-right; `move_cursor` saturates at the clamp.
         overlay.move_cursor(i16::MAX, i16::MAX);
-        assert_eq!(
-            (overlay.cursor_row, overlay.cursor_col),
-            (29, 99),
-            "the cursor must reach the corner of the grown pane",
-        );
-    }
+        assert_eq!((overlay.cursor_row, overlay.cursor_col), (29, 99));
 
-    /// Line mode takes its right edge from `pane_cols`, so a stale value
-    /// silently truncates a whole-line copy at the old width.
-    #[test]
-    fn line_mode_spans_the_new_width_after_a_grow() {
         let mut overlay = CopyModeOverlay::new(1, 0, 60, 20);
-        overlay.cycle_mode(); // Char -> Line
-        assert_eq!(overlay.mode, SelectionMode::Line);
-        assert_eq!(
-            overlay.copy_request().end_col,
-            59,
-            "precondition: the line ends at the old right edge",
-        );
-
+        overlay.cycle_mode();
+        assert_eq!(overlay.copy_request().end_col, 59);
         overlay.on_viewport_resize(100, 30);
+        assert_eq!(overlay.copy_request().end_col, 99);
+        assert_eq!(overlay.page_scroll_delta(), 29);
 
-        assert_eq!(
-            overlay.copy_request().end_col,
-            99,
-            "a whole-line copy must reach the new right edge, not the old one",
-        );
-    }
-
-    /// A resize that does not move the cursor leaves the selection alone —
-    /// growing must not disturb an in-progress selection.
-    #[test]
-    fn a_grow_preserves_an_in_bounds_selection() {
         let mut overlay = CopyModeOverlay::new(2, 3, 60, 20);
-        overlay.move_cursor(1, 2); // cursor -> (3, 5), anchor stays (2, 3)
+        overlay.move_cursor(1, 2);
         overlay.on_viewport_resize(100, 30);
-        let sel = overlay
-            .copy_selection()
-            .expect("copy-mode always has a selection");
-        assert_eq!(
-            (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
-            (2, 3, 3, 5),
-            "an in-bounds selection survives the resize untouched",
-        );
-    }
-
-    /// Page scrolling reads `pane_rows`; it must follow the resize too.
-    #[test]
-    fn the_page_span_follows_the_resize() {
-        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
-        assert_eq!(overlay.page_scroll_delta(), 23);
-        overlay.on_viewport_resize(80, 40);
-        assert_eq!(overlay.page_scroll_delta(), 39);
+        assert_eq!(corners(&overlay), (2, 3, 3, 5));
     }
 }
