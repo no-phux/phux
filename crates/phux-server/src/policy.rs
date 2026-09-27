@@ -1,40 +1,16 @@
-//! The server's authorization: one grant minted per connection at HELLO, and
-//! the dispatch guard that enforces it (`docs/spec/workload-auth.md` §5-§8,
-//! ADR-0116, ADR-0125).
+//! The server's authorization (`docs/spec/workload-auth.md` §5-§8, ADR-0116,
+//! ADR-0125): one grant per connection, minted at HELLO, enforced at every
+//! dispatch.
 //!
-//! # The grant
-//!
-//! [`PolicyEngine::authorize_hello`] runs once per connection, with the
-//! identity the accepting transport authenticated, and returns the
-//! [`ConnectionGrant`] the connection keeps for its lifetime. There are two
-//! shapes of authority:
-//!
-//! - [`Authority::Owner`]: all six verbs at Global, minted for every
-//!   connection in the `local` and transitional postures and for the owner's
-//!   Unix socket in `paired`. The dispatch guard admits every frame for it,
-//!   so the existing handlers (and their domain checks, such as `SHUTDOWN`'s
-//!   owner-socket rule) behave exactly as they did before this module
-//!   enforced anything.
-//! - [`Authority::Scoped`]: a workload's registry ceiling as a conjunctive
-//!   [`EffectiveScopeSet`], minted only in `paired` and only from the live
-//!   workload registry, never from a bearer token's recorded scopes.
-//!
-//! # The guard
+//! [`Authority::Owner`] (all verbs at Global) is minted in the `local` and
+//! transitional postures and for the owner socket in `paired`, so handlers
+//! behave as before. [`Authority::Scoped`] is a workload's registry ceiling,
+//! minted only in `paired` from the live registry, never from bearer scopes.
 //!
 //! [`authorize_frame`], [`authorize_command`], and [`authorize_stream_bind`]
-//! are the three entry points the client loop calls (after frame decode, at
-//! the top of command dispatch above the input-lane and satellite-relay
-//! branches, and at QUIC `STREAM_BIND`). All three share
-//! [`enforce`], which reads the closed classification of
-//! [`phux_protocol::kinds`] and resolves the subject against the same state
-//! snapshot. There is no second table.
-//!
-//! # Engines
-//!
-//! [`PermissivePolicy`] mints [`Authority::Owner`] for everyone: the
-//! transitional posture (no `[policy] mode`). [`ScopedPolicy`] implements
-//! the two closed modes. `ServerConfig::policy_engine` still overrides the
-//! choice for tests and embedders (ADR-0072).
+//! share [`enforce`] over [`phux_protocol::kinds`]'s classification.
+//! [`PermissivePolicy`] is the transitional engine, [`ScopedPolicy`] the two
+//! closed modes; `ServerConfig::policy_engine` can override (ADR-0072).
 
 mod enforce;
 mod hold;
@@ -62,9 +38,8 @@ pub use enforce::{
 };
 pub use hold::Admission;
 
-/// The Terminals a batch command names: `KILL_RESOURCES` and
-/// `CLOSE_TAB_RESOURCES`, or nothing. The guard's all-or-nothing subject, a
-/// held action's subjects, and its withdrawal all read this one list.
+/// The Terminals a batch command (`KILL_RESOURCES`, `CLOSE_TAB_RESOURCES`)
+/// names; the guard, holds, and withdrawal all read this list.
 #[must_use]
 pub(crate) fn batch_terminals(
     command: &phux_protocol::wire::frame::Command,
@@ -76,9 +51,7 @@ pub(crate) fn batch_terminals(
     }
 }
 
-/// Every Terminal a held command names: a batch's ids, or the one it
-/// names. The record's subjects, the viewer check, and the withdrawal of a
-/// reaped Terminal's holds all read this (ADR-0128).
+/// Every Terminal a held command names (ADR-0128).
 pub(crate) fn held_terminals(
     command: &phux_protocol::wire::frame::Command,
 ) -> impl Iterator<Item = &phux_protocol::ids::ResourceId> {
@@ -90,9 +63,8 @@ pub(crate) fn held_terminals(
 /// The tracing target every authorization decision logs under.
 pub const POLICY_TARGET: &str = "phux_server::policy";
 
-/// At most one uncorrelated `PERMISSION_DENIED` per this interval per
-/// connection (`workload-auth.md` §7). Denied frames past the limit are
-/// still dropped; only the error is suppressed.
+/// At most one uncorrelated `PERMISSION_DENIED` per connection per interval
+/// (§7); denied frames are still dropped.
 pub const DENIAL_ERROR_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Why a live connection's authority was withdrawn (`workload-auth.md` §7).
@@ -187,9 +159,8 @@ impl Authority {
     }
 }
 
-/// The authority minted for one connection at HELLO, retained for its
-/// lifetime (`workload-auth.md` §7): the credential it came from, the
-/// registry state that minted it, and its expiry.
+/// The authority minted for one connection at HELLO: its credential,
+/// registry state, and expiry.
 #[derive(Debug, Clone)]
 pub struct ConnectionGrant {
     /// What the connection may do.
@@ -272,9 +243,8 @@ impl ConnectionGrant {
         true
     }
 
-    /// The owner-shaped placeholder for a connection revoked before its
-    /// HELLO minted anything: it admits nothing, and a grant minted later
-    /// never replaces it.
+    /// The placeholder for a connection revoked before its HELLO minted
+    /// anything: admits nothing and is never replaced.
     #[must_use]
     pub(crate) const fn revoked_placeholder(revocation: Revocation) -> Self {
         let mut grant = Self::owner();
@@ -295,9 +265,8 @@ impl ConnectionGrant {
         }
     }
 
-    /// Adopt a newer registry state that still contains every minted
-    /// clause: the clauses stay as minted; the stamp and the expiry follow
-    /// the registry.
+    /// Adopt a newer registry state that keeps every minted clause (stamp and
+    /// expiry follow the registry).
     pub(crate) fn refresh(&mut self, stamp: RegistryStamp) {
         self.registry_instance = stamp.instance;
         self.registry_generation = stamp.generation;
@@ -309,15 +278,8 @@ impl ConnectionGrant {
 pub type GrantFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ConnectionGrant, PolicyError>> + Send + 'a>>;
 
-/// The server's HELLO authorization decision.
-///
-/// Consulted once per connection, after the transport authenticated the
-/// peer and before any other frame is processed. An `Err` refuses the
-/// handshake; an `Ok` grant is retained and enforced at every dispatch.
-///
-/// `&self` so the implementation can be shared across tasks (it is held as
-/// `Arc<dyn PolicyEngine>`), and the method returns a boxed future so the
-/// trait stays object-safe.
+/// The HELLO authorization decision, consulted once per connection after
+/// transport authentication. Object-safe (`Arc<dyn PolicyEngine>`).
 pub trait PolicyEngine: Send + Sync + std::fmt::Debug {
     /// Mint the grant for a connection from its transport identity and the
     /// credential the transport verified, if any.
@@ -327,18 +289,15 @@ pub trait PolicyEngine: Send + Sync + std::fmt::Debug {
         credential: Option<&'a AuthenticatedCredential>,
     ) -> GrantFuture<'a>;
 
-    /// The live workload registry this engine mints scoped grants from, so
-    /// the revocation watcher can re-judge them (`workload-auth.md` §7).
-    /// `None` for an engine that reads no registry: only expiry then ends
-    /// its grants.
+    /// The registry scoped grants come from, for the revocation watcher;
+    /// `None` when none is read.
     fn workload_registry(&self) -> Option<Arc<ReloadingWorkloadRegistry>> {
         None
     }
 }
 
-/// The transitional engine: every admitted connection holds the owner's
-/// grant, exactly as before scope enforcement existed. It runs when no
-/// `[policy] mode` is configured.
+/// The transitional engine: every connection gets the owner's grant (no
+/// `[policy] mode`).
 #[derive(Debug, Clone, Copy)]
 pub struct PermissivePolicy;
 
@@ -357,12 +316,9 @@ impl PolicyEngine for PermissivePolicy {
     }
 }
 
-/// The engine for the two closed modes (`workload-auth.md` §8).
-///
-/// Both give the owner's Unix socket the owner's grant. `local` refuses
-/// every other transport. `paired` admits a TLS connection only with a
-/// credential the live workload registry holds as active, and mints that
-/// credential's ceiling; everything else is refused.
+/// The closed-mode engine (§8): the owner socket gets the owner's grant;
+/// `local` refuses everything else; `paired` admits TLS connections with an
+/// active registry credential and mints its ceiling.
 #[derive(Debug, Clone)]
 pub struct ScopedPolicy {
     registry: Option<Arc<ReloadingWorkloadRegistry>>,
@@ -424,10 +380,8 @@ fn is_owner_socket(peer: &PeerIdentity) -> bool {
         && peer.uid == nix::unistd::geteuid().as_raw()
 }
 
-/// Mint a scoped grant from the registry snapshot current right now. The
-/// ceiling is read from the registry record, never from the credential the
-/// transport cached, so a bearer credential's recorded scopes can never
-/// become authority and a record revoked since admission mints nothing.
+/// Mint a scoped grant from the current registry record (never from the
+/// transport's cached credential), so a revoked record mints nothing.
 fn scoped_grant(
     registry: &ReloadingWorkloadRegistry,
     credential: &AuthenticatedCredential,
@@ -479,16 +433,13 @@ impl PolicyError {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Posture: which engine a server runs, decided at startup.
-// -----------------------------------------------------------------------------
+// --- Posture: which engine a server runs ---
 
 /// The authorization posture a server starts in (`workload-auth.md` §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyPosture {
-    /// No `[policy] mode`: every admitted connection holds the owner's grant.
-    /// A remote listener is kept (and warned about) until workload mTLS
-    /// covers every remote transport (PHA-406 decision H1).
+    /// No `[policy] mode`: owner grants for everyone. Remote listeners are
+    /// kept (with a warning) until mTLS covers every transport.
     Transitional {
         /// Whether a remote listener or connector is configured, so the
         /// server warns once at startup.

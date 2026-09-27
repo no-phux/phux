@@ -1,51 +1,22 @@
-//! Per-client VT byte-stream rewriter (SPEC §6.2, [ADR-0013]).
+//! Per-client VT byte-stream rewriter (SPEC §6.2, ADR-0013).
 //!
-//! Under ADR-0013 the server forwards raw PTY bytes to each subscribed
-//! client as `RESOURCE_OUTPUT` frames. Per SPEC §6.2 those bytes MUST be
-//! adapted to the client's advertised capability set before forwarding:
-//!
-//! - Truecolor SGR (`CSI 38;2;R;G;B m` / `CSI 48;2;R;G;B m`) is quantised
-//!   to the client's [`ColorSupport`] tier. ITU-style colon-separated
-//!   form (`CSI 38:2::R:G:B m` per ECMA-48 §8.3.117) is recognised
-//!   equivalently.
-//! - Image-protocol escapes (sixel `DCS ... q ... ST`, kitty graphics
-//!   `APC G ... ST`, iTerm2 `OSC 1337 ; ... ST`) are dropped when the
-//!   client did not advertise the matching [`ImageProtocol`] bit.
-//! - Kitty keyboard-protocol replies (`APC` without a leading `G`) are
-//!   stripped when the client did not negotiate `kbd_protocols`. The
-//!   server's canonical Terminal still processes them locally; this is
-//!   wire-side filtering only.
-//! - OSC 8 hyperlinks (`OSC 8 ; params ; URI ST`) are stripped when the
-//!   client did not advertise `hyperlinks`. The intervening text between
-//!   open and close hyperlinks is preserved — only the OSC bracketing
-//!   bytes go.
-//!
-//! Every other escape (CSI for non-SGR finals, other OSCs, DCS, SOS/PM,
-//! two-byte escapes) is passed through verbatim — phux is a multiplexer,
-//! not a sanitiser, and unknown sequences must reach the client
-//! byte-for-byte.
-//!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
+//! Raw PTY bytes are adapted to each client's capabilities: truecolor SGR
+//! (semicolon or ITU colon form) is quantised to its [`ColorSupport`]; sixel,
+//! kitty graphics, and iTerm2 images are dropped without the matching
+//! [`ImageProtocol`]; kitty keyboard replies without `kbd_protocols` and
+//! OSC 8 hyperlink framing without `hyperlinks` are stripped. Everything
+//! else passes through byte for byte.
 
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, ImageProtocol, KeyboardProtocol};
 
-/// Rewrite an outbound VT byte stream to fit the client's color tier.
-///
-/// Thin wrapper over [`rewrite_bytes_with_caps`] preserved for existing
-/// call sites that only care about color downsampling. Image, keyboard
-/// and hyperlink escapes pass through unchanged.
+/// Rewrite for the client's color tier only (other escapes pass through).
 #[must_use]
 pub fn rewrite_bytes(input: &[u8], support: ColorSupport) -> Vec<u8> {
     rewrite_bytes_with_caps(input, ClientCapabilities::new().with_color_support(support))
 }
 
-/// `true` when the client's caps need no VT rewriting — the bytes can be
-/// forwarded verbatim.
-///
-/// A truecolor client with every image, keyboard and hyperlink capability
-/// permissive triggers no quantisation or escape dropping, so callers can
-/// skip [`rewrite_bytes_with_caps`] entirely and forward the source buffer
-/// (e.g. the refcounted broadcast [`bytes::Bytes`]) without a copy.
+/// Whether the caps need no rewriting, so the source bytes can be forwarded
+/// as-is.
 #[must_use]
 pub fn caps_pass_through(caps: ClientCapabilities) -> bool {
     matches!(caps.color_support, ColorSupport::TrueColor)
@@ -54,12 +25,7 @@ pub fn caps_pass_through(caps: ClientCapabilities) -> bool {
         && caps.hyperlinks
 }
 
-/// Rewrite an outbound VT byte stream to fit the full client capability
-/// set per SPEC §6.2.
-///
-/// The hot loop reuses a single output `Vec`; dropped sequences cost
-/// nothing beyond the scan. Truecolor-only clients with everything
-/// permissive get the fast path (single allocation + copy).
+/// Rewrite an outbound VT stream for the full capability set (SPEC §6.2).
 #[must_use]
 pub fn rewrite_bytes_with_caps(input: &[u8], caps: ClientCapabilities) -> Vec<u8> {
     // Fast path: nothing to rewrite or drop. Hot path on capable clients.
@@ -118,15 +84,9 @@ const ESC: u8 = 0x1B;
 /// ASCII bell / OSC string terminator.
 const BEL: u8 = 0x07;
 
-/// Handle a CSI sequence starting at `input[start] == ESC` with
-/// `input[start + 1] == '['`. Returns the new position past the sequence.
-///
-/// Only `CSI ... m` (SGR) is structurally inspected; every other CSI
-/// final byte passes through verbatim. The parameter byte set per
-/// ECMA-48 is `0x30..=0x3F`; intermediates are `0x20..=0x2F`; the final
-/// byte is `0x40..=0x7E`. We treat any byte outside the param/intermediate
-/// range as the final byte, which matches what real terminals do on
-/// truncated/malformed input.
+/// Handle a CSI at `input[start]`; returns the position past it. Only SGR
+/// (`m`) is inspected. Any byte outside the parameter and intermediate
+/// ranges ends the sequence, as real terminals treat malformed input.
 fn handle_csi(input: &[u8], start: usize, support: ColorSupport, out: &mut Vec<u8>) -> usize {
     let csi_body_start = start + 2; // past ESC [
     let mut j = csi_body_start;
@@ -152,10 +112,8 @@ fn handle_csi(input: &[u8], start: usize, support: ColorSupport, out: &mut Vec<u
     j + 1
 }
 
-/// Locate the string terminator (`BEL` or `ESC \\`) for the
-/// OSC/DCS/APC/SOS/PM sequence starting at `input[start]`. Returns the
-/// position one past the terminator. If no terminator is found the
-/// sequence runs to EOF.
+/// Position past the `BEL` or `ESC \` terminator of the string sequence at
+/// `start` (EOF if none).
 const fn scan_string_terminated(input: &[u8], start: usize) -> usize {
     let mut j = start + 2;
     while j < input.len() {
@@ -190,16 +148,11 @@ fn handle_osc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
         p += 1;
     }
     let code = &input[body_start..p];
-    // OSC 8 hyperlinks. Strip framing only; the text between open and
-    // close OSC 8 lives outside this sequence and is preserved by the
-    // outer loop.
+    // OSC 8: strip only the framing; the linked text is outside it.
     if !caps.hyperlinks && code == b"8" {
         return end;
     }
-    // OSC 1337 iTerm2 inline image. The protocol overloads OSC 1337
-    // for non-image messages (e.g. shell integration) but per SPEC §6.2
-    // the gating is on the OSC code, not the payload subkey — that
-    // matches what tmux ships.
+    // OSC 1337 is gated on the code, not its subkey, as tmux does.
     if !caps.image_protocols.contains(ImageProtocol::Iterm2) && code == b"1337" {
         return end;
     }
@@ -207,9 +160,7 @@ fn handle_osc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
     end
 }
 
-/// Handle `ESC P` (DCS). The sixel introducer is `DCS Pi ; Pa ; Ph q ...
-/// ST` — the final `q` of the introducer is what marks it as sixel.
-/// Other DCS strings (DECRQSS, tmux passthrough, etc.) pass through.
+/// Handle DCS: drop sixel (introducer final `q`), pass the rest.
 fn handle_dcs(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Vec<u8>) -> usize {
     let end = scan_string_terminated(input, start);
     if !caps.image_protocols.contains(ImageProtocol::Sixel) && is_sixel_dcs(&input[start + 2..end])
@@ -220,12 +171,8 @@ fn handle_dcs(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
     end
 }
 
-/// True when a DCS body (bytes past `ESC P`) is a sixel introducer.
-///
-/// Sixel uses `DCS Pa ; Pb ; Pc q ...` — parameter bytes only, no
-/// intermediates, final `q`. DECRQSS also has `q` as final but with
-/// `$` as an intermediate (`DCS $ q ... ST`); excluding intermediates
-/// keeps DECRQSS, tmux passthrough, and other DCS payloads intact.
+/// Whether a DCS body is a sixel introducer: parameters only, then `q`
+/// (DECRQSS's `$ q` has an intermediate).
 fn is_sixel_dcs(body: &[u8]) -> bool {
     let mut i = 0;
     while i < body.len() && (0x30..=0x3F).contains(&body[i]) {
@@ -234,9 +181,8 @@ fn is_sixel_dcs(body: &[u8]) -> bool {
     body.get(i).is_some_and(|b| *b == b'q')
 }
 
-/// Handle `ESC _` (APC). Kitty splits APC on the first payload byte:
-/// `G` = graphics, otherwise it's a kitty keyboard protocol reply
-/// (digits-and-semicolons-and-other-codes). Gate each independently.
+/// Handle APC: `G` is kitty graphics, anything else a kitty keyboard reply;
+/// each gated separately.
 fn handle_apc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Vec<u8>) -> usize {
     let end = scan_string_terminated(input, start);
     let payload_start = start + 2;
@@ -253,14 +199,8 @@ fn handle_apc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
     end
 }
 
-/// Rewrite the parameter bytes of an SGR sequence (everything between
-/// `CSI` and the terminating `m`), emitting `CSI <rewritten> m` into `out`.
-///
-/// Handles both the classic `;`-separated form (`CSI 38;2;R;G;B m`) and
-/// the ITU/ECMA-48 §8.3.117 colon form (`CSI 38:2::R:G:B m`). The ITU
-/// form reserves the field after the colour-space tag (`2`) for the
-/// colour-space identifier; it is conventionally left empty and we
-/// tolerate any value there.
+/// Rewrite SGR parameters into `CSI <rewritten> m`, handling both the
+/// semicolon form and the ITU colon form (any colour-space id tolerated).
 fn rewrite_sgr(params: &[u8], support: ColorSupport, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[");
 
@@ -281,10 +221,8 @@ fn rewrite_sgr(params: &[u8], support: ColorSupport, out: &mut Vec<u8>) {
             continue;
         }
 
-        // Classic semicolon form: inspect the following four groups without
-        // collecting every parameter into a heap Vec. Besides avoiding a
-        // per-SGR allocation, this gives aggregate bootstrap adaptation the
-        // exact peak bound of source bytes plus one output allocation.
+        // Semicolon form: inspect the next four groups without collecting
+        // (no per-SGR allocation).
         if !raw.contains(&b':')
             && let Some(selector) = parse_single_param(raw)
             && matches!(selector, 38 | 48)
@@ -295,9 +233,7 @@ fn rewrite_sgr(params: &[u8], support: ColorSupport, out: &mut Vec<u8>) {
             continue;
         }
 
-        // Anything else passes through verbatim. The group's original bytes
-        // (including any `:` sub-separators, e.g. `4:3` curly underline)
-        // survive intact.
+        // Other groups (including colon sub-parameters) pass verbatim.
         if !first {
             out.push(b';');
         }
@@ -346,9 +282,7 @@ fn classic_truecolor(
 /// per ECMA-48 default. Non-decimal → `None`.
 fn parse_single_param(raw: &[u8]) -> Option<u32> {
     if raw.is_empty() {
-        // ECMA-48: empty parameter defaults to 0. We surface that as 0
-        // for matching purposes; emit-side path still respects the
-        // original byte form so passthrough cases preserve emptiness.
+        // An empty parameter means 0 for matching; output keeps the bytes.
         return Some(0);
     }
     let mut n: u32 = 0;
@@ -361,17 +295,8 @@ fn parse_single_param(raw: &[u8]) -> Option<u32> {
     Some(n)
 }
 
-/// Try to parse a single SGR group as an ITU colon-form truecolor spec
-/// for `selector` (38 for fg, 48 for bg). Accepts:
-///
-/// - 5 fields: `selector:2:R:G:B` (some implementations skip the
-///   colourspace slot).
-/// - 6 fields: `selector:2:<colourspace>:R:G:B`. The colourspace field
-///   is conventionally empty per ECMA-48 §8.3.117 but any value is
-///   tolerated.
-///
-/// Returns `None` if the group lacks `:` (classic form lives at a
-/// higher level), or if the selector / type-tag don't match.
+/// Parse an ITU colon-form truecolor group for `selector` (38/48):
+/// `selector:2:R:G:B` or `selector:2:<space>:R:G:B`. `None` otherwise.
 fn parse_itu_truecolor(raw: &[u8], selector: u32) -> Option<[u8; 3]> {
     if !raw.contains(&b':') {
         return None;
@@ -394,9 +319,7 @@ fn parse_itu_truecolor(raw: &[u8], selector: u32) -> Option<[u8; 3]> {
     Some([clamp_u8(r), clamp_u8(g), clamp_u8(b)])
 }
 
-/// Emit either `38;5;N` / `48;5;N` (Indexed256) or `3N` / `9N` /
-/// `4N` / `10N` (Indexed16) into `out`, prefixing with `;` if `*first`
-/// is false. Updates `*first` to false after emission.
+/// Emit indexed-256 or indexed-16 color params, `;`-prefixed unless first.
 fn emit_color_params(
     rgb: [u8; 3],
     foreground: bool,
@@ -433,9 +356,7 @@ fn emit_color_params(
         ColorSupport::Indexed16 => {
             emit_indexed16(rgb, foreground, out);
         }
-        // `ColorSupport` is `#[non_exhaustive]`. Treat any future tier as
-        // Indexed16 (most-restrictive) so we never accidentally forward
-        // truecolor to a tier we don't yet model.
+        // Unknown future tiers get the most restrictive treatment.
         _ => emit_indexed16(rgb, foreground, out),
     }
 }
@@ -479,11 +400,7 @@ const fn clamp_u8(n: u32) -> u8 {
     if n > 255 { 255 } else { n as u8 }
 }
 
-// -----------------------------------------------------------------------------
-// Palette tables (preserved from the pre-ADR-0013 `phux_protocol::diff::cell`
-// module, now relocated here because byte-stream rewriting is the only
-// remaining consumer).
-// -----------------------------------------------------------------------------
+// --- Palette tables ---
 
 /// xterm 16-color system palette in RGB. Indices 0..=7 are the base ANSI
 /// colors; 8..=15 are the bright variants.

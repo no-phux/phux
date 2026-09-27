@@ -1,23 +1,13 @@
 //! mTLS workload authority material and registry (ADR-0116).
 //!
-//! TLS proves possession of a client private key; this module owns the local
-//! authority that decides which public keys are admitted and what their scope
-//! ceiling is.  The certificate authority is deliberately separate from the
-//! server leaf certificate: clients pin the CA fingerprint, while leaf
-//! certificates may be renewed without changing workload identity.
-//!
-//! Persistence follows `workload-auth.md` §2: every file is owner-owned,
-//! no-follow-opened, and replaced under an owner-controlled lock through a
-//! synced temporary file and an atomic rename (the private `store` module).
-//! The registry carries a generation that every write advances; a running
-//! server observes each new generation without a restart
-//! ([`ReloadingWorkloadRegistry`]).
-//!
-//! Enrollment (`phux workload add-key`) accepts public material only — a
-//! client certificate issued by this authority, or a certificate signing
-//! request it signs — never a private key ([`ClientMaterial`]). No type here
-//! holds private key bytes past the call that uses them, and no diagnostic
-//! names the CA private-key path.
+//! TLS proves key possession; this module decides which public keys are
+//! admitted and with what scope ceiling. The CA is separate from the server
+//! leaf, so leaves renew without changing workload identity. Files are
+//! owner-only, no-follow, and replaced atomically under a lock
+//! (`workload-auth.md` §2); each write advances a generation a running
+//! server observes ([`ReloadingWorkloadRegistry`]). Enrollment accepts only
+//! public material ([`ClientMaterial`]), and no diagnostic names the CA key
+//! path.
 
 mod material;
 mod reload;
@@ -231,10 +221,8 @@ impl WorkloadCredential {
 #[serde(deny_unknown_fields)]
 struct RegistryFile {
     version: u32,
-    /// Random id minted by the first write of this file and kept by every
-    /// later one. With `generation` it names one registry state: a deleted
-    /// and recreated file restarts its generation under a new instance.
-    /// Absent in files that predate it until their next write.
+    /// Random id minted by the file's first write and kept thereafter; with
+    /// `generation` it names one registry state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     instance: Option<String>,
     /// Advanced by every committed write; absent in files that predate it.
@@ -354,11 +342,8 @@ impl WorkloadRegistry {
         self.generation
     }
 
-    /// The registry file's random instance id, minted by its first write and
-    /// kept by every later one; `None` for an empty snapshot or a file not
-    /// yet rewritten. Key anything derived from a snapshot on
-    /// `(instance_id, generation)`, never on the generation alone: a deleted
-    /// and recreated registry restarts its generation under a new instance.
+    /// The file's instance id (`None` if empty or not yet rewritten). Key
+    /// derived state on `(instance_id, generation)`.
     #[must_use]
     pub fn instance_id(&self) -> Option<&str> {
         self.instance.as_deref()
@@ -394,9 +379,7 @@ impl WorkloadRegistry {
         })
     }
 
-    /// Find an active credential from a TLS leaf certificate's DER bytes.
-    /// rustls has already verified the chain; this method only extracts the
-    /// stable `SubjectPublicKeyInfo` used as the registry identity.
+    /// Find an active credential by a verified TLS leaf's public key.
     #[must_use]
     pub fn lookup_certificate(&self, certificate: &[u8]) -> Option<&WorkloadCredential> {
         let public_key = subject_public_key_info(certificate).ok()?;
@@ -817,9 +800,8 @@ impl PreparedEnrollment {
         credential_id(&self.public_key)
     }
 
-    /// For a signed CSR, the issued certificate followed by the CA
-    /// certificate, in PEM. Public material; `None` for a supplied
-    /// certificate.
+    /// For a signed CSR, the issued certificate then the CA certificate
+    /// (PEM); `None` for a supplied certificate.
     #[must_use]
     pub fn issued_chain_pem(&self) -> Option<&str> {
         self.issued_chain_pem.as_deref()
@@ -840,17 +822,16 @@ impl PreparedEnrollment {
     }
 }
 
-/// Verify or sign `material` against the workload authority at `paths`.
+/// Verify or sign `material` against the authority (the registry is not
+/// touched).
 ///
-/// The registry is not touched. A certificate must chain to the CA; a CSR's
-/// self-signature must verify, and the CA then issues a client certificate
-/// valid until `expires_at` for the requester's public key.
+/// A certificate must chain to the CA; a CSR's self-signature must verify,
+/// and the CA issues a client certificate valid until `expires_at`.
 ///
 /// # Errors
 ///
-/// [`WorkloadError::InvalidExpiry`], [`WorkloadError::AuthorityMissing`],
-/// [`WorkloadError::NotIssuedByAuthority`], a [`MaterialError`], or a failure
-/// reading the CA.
+/// Invalid expiry, missing authority, a foreign certificate, bad material,
+/// or a CA read failure.
 pub fn prepare_enrollment(
     paths: &WorkloadPaths,
     material: &ClientMaterial,
