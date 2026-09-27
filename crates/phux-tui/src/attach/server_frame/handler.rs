@@ -567,7 +567,7 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
         .record("terminal_id", tracing::field::debug(terminal_id));
     ctx.frame_span.record("seq", seq);
     ctx.frame_span.record("bytes", bytes.len());
-    crate::attach::render_prof::note_frames(1);
+    phux_client::perf::FRAMES.add(1);
     let walk = published_replica(ctx.engine_kernel, terminal_id).ok_or_else(|| {
         AttachError::Protocol(format!(
             "RESOURCE_OUTPUT targeted unpublished {terminal_id:?}"
@@ -598,7 +598,7 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
         });
     }
     if !paint_permitted(ctx.overlay_active, ctx.defer_paint, sync_output_active) {
-        crate::attach::render_prof::note_skipped(1);
+        phux_client::perf::SKIPPED.add(1);
         return Ok(FrameOutcome {
             ack,
             authoritative_damage: vec![terminal_id.clone()],

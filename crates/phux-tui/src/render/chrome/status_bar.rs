@@ -859,7 +859,7 @@ impl StatusBarPainter {
             return Ok(false);
         }
         let ctx = self.ctx_with_window_list(ctx);
-        crate::attach::render_prof::note_bar_composes(1);
+        phux_client::perf::BAR_COMPOSES.add(1);
         let mut new_row = self.bar.render(&ctx.as_widget(), cols);
         mark_window_drop(&mut new_row, self.drop_at);
         if !self.needs_repaint(x, cols, rows, &new_row) {

@@ -829,7 +829,12 @@ mod tests {
         }
         for d in &layout.dividers {
             let cell = buf.cell((d.x, d.y)).unwrap();
-            assert!(cell.diff_option != CellDiffOption::Skip, "({}, {})", d.x, d.y);
+            assert!(
+                cell.diff_option != CellDiffOption::Skip,
+                "({}, {})",
+                d.x,
+                d.y
+            );
             assert_eq!(cell.symbol().chars().next(), Some(d.ch));
         }
     }

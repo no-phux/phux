@@ -90,7 +90,7 @@ impl<'a, W: Write> FrameBlock<'a, W> {
             let _ = sync.end(&mut self.body);
         }
         let shipped = if self.painted {
-            super::render_prof::note_paints(1);
+            phux_client::perf::PAINTS.add(1);
             self.inner
                 .write_all(&self.body)
                 .and_then(|()| self.inner.flush())
@@ -177,7 +177,7 @@ impl LayoutCache {
         let misses = &mut self.misses;
         self.tiling.get_or_insert_with(|| {
             *misses = misses.saturating_add(1);
-            super::render_prof::note_layouts(1);
+            phux_client::perf::LAYOUTS.add(1);
             crate::multi_pane::compute_layout_in(layout, content, viewport_dims)
         })
     }
@@ -204,7 +204,7 @@ pub(super) fn with_tiling<R>(
         if let Ok(mut cache) = cache.try_borrow_mut() {
             return read(cache.get(layout, content, viewport_dims));
         }
-        super::render_prof::note_layouts(1);
+        phux_client::perf::LAYOUTS.add(1);
         read(&crate::multi_pane::compute_layout_in(
             layout,
             content,

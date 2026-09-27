@@ -435,23 +435,6 @@ fn undelivered_notices(
         .map(|report| Notice::warn(report.notice_line()))
 }
 
-/// Send a replay batch in request order. The frame whose write fails remains
-/// uncertain; frames not yet handed to the transport return to their previous
-/// definite state.
-async fn send_replay_batch(
-    conn: &mut Connection,
-    journal: &std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>,
-    frames: &[FrameKind],
-) -> Result<(), AttachError> {
-    for (index, frame) in frames.iter().enumerate() {
-        if let Err(error) = conn.send(frame).await {
-            journal.borrow_mut().rollback_unsent(&frames[index + 1..]);
-            return Err(error);
-        }
-    }
-    Ok(())
-}
-
 /// Every local the attach loop carries across `select!` iterations.
 #[allow(
     clippy::struct_excessive_bools,
@@ -1577,7 +1560,8 @@ impl SessionLoop {
         let (more, replay_frames) = journal.borrow_mut().next_frames(&mut self.next_request_id);
         reports.extend(more);
         self.show_notices(undelivered_notices(reports));
-        send_replay_batch(conn, journal.as_ref(), &replay_frames).await
+        crate::attach::input_dispatch::send_replay_frames(conn, journal.as_ref(), &replay_frames)
+            .await
     }
 
     /// ADR-0053: the reply to one of the journal's `APPLY_INPUT` attempts;
@@ -1602,7 +1586,8 @@ impl SessionLoop {
         if self.show_notices(undelivered_notices(reports)) {
             repaint.raise_chrome();
         }
-        send_replay_batch(conn, journal.as_ref(), &next_frames).await
+        crate::attach::input_dispatch::send_replay_frames(conn, journal.as_ref(), &next_frames)
+            .await
     }
 
     /// Seed the post-reconnect (or return-onboarding) notice now that the bar

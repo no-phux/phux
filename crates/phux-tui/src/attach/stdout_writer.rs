@@ -110,10 +110,8 @@ impl Write for StdoutSink {
         if self.pending.is_empty() {
             return Ok(());
         }
-        crate::attach::render_prof::note_flushes(1);
-        crate::attach::render_prof::note_bytes(
-            u64::try_from(self.pending.len()).unwrap_or(u64::MAX),
-        );
+        phux_client::perf::FLUSHES.add(1);
+        phux_client::perf::BYTES_OUT.add(u64::try_from(self.pending.len()).unwrap_or(u64::MAX));
         {
             let mut q = self
                 .shared

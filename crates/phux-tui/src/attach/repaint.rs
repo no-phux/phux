@@ -135,12 +135,12 @@ impl PaintPacer {
             return true;
         }
         if is_reply {
-            super::render_prof::note_paced_replies(1);
+            phux_client::perf::PACER_REPLIES.add(1);
             self.next_allowed = Some(now + frame_interval());
             return true;
         }
         if self.next_allowed.is_some_and(|at| now < at) {
-            super::render_prof::note_paced_waits(1);
+            phux_client::perf::PACER_WAITS.add(1);
             return false;
         }
         self.next_allowed = Some(now + frame_interval());

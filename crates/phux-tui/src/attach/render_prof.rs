@@ -1,5 +1,5 @@
-//! Paint counters over the always-on [`phux_client::perf`] statics, plus the
-//! once-a-second `render_prof` log line `PHUX_RENDER_PROF=1` turns on.
+//! The once-a-second `render_prof` log line (`PHUX_RENDER_PROF=1`) over the
+//! always-on [`phux_client::perf`] counters.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -23,24 +23,6 @@ pub(crate) fn enabled() -> bool {
     INITIALIZED.store(true, Relaxed);
     on
 }
-
-macro_rules! counter {
-    ($name:ident, $cell:path) => {
-        pub(crate) fn $name(n: u64) {
-            $cell.add(n);
-        }
-    };
-}
-
-counter!(note_frames, perf::FRAMES);
-counter!(note_paints, perf::PAINTS);
-counter!(note_skipped, perf::SKIPPED);
-counter!(note_bar_composes, perf::BAR_COMPOSES);
-counter!(note_layouts, perf::LAYOUTS);
-counter!(note_flushes, perf::FLUSHES);
-counter!(note_bytes, perf::BYTES_OUT);
-counter!(note_paced_replies, perf::PACER_REPLIES);
-counter!(note_paced_waits, perf::PACER_WAITS);
 
 const WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 

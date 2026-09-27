@@ -564,7 +564,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     clippy::future_not_send,
     reason = "the attach loop and its RefCell replay journal are current-thread state"
 )]
-pub(super) async fn send_replay_frames(
+/// Send a replay batch in request order; on a failed write, the frames not
+/// yet handed to the transport roll back to their previous definite state.
+pub(in crate::attach) async fn send_replay_frames(
     conn: &mut Connection,
     journal: &std::cell::RefCell<InputReplayJournal>,
     frames: &[FrameKind],

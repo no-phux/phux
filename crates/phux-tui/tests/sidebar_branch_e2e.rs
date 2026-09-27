@@ -10,10 +10,10 @@
 
 use phux_client::snapshot::RenderedFrame;
 use phux_protocol::wire::frame::AttachTarget;
-use phux_tui::attach::run_headless_rendered;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, run_local, spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
+use phux_tui::attach::run_headless_rendered;
 use tempfile::TempDir;
 
 /// The fixture branch: distinctive (in no path or command line) and short
