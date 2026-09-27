@@ -231,8 +231,8 @@ impl PredictionState {
     }
 
     /// Feed one reconcile pass into the tentative-display heuristic
-    /// (ADR-0090): [`BACKOFF_THRESHOLD`] consecutive passes with any
-    /// contradiction turn the state tentative; [`REARM_THRESHOLD`]
+    /// (ADR-0090): three consecutive passes with any
+    /// contradiction turn the state tentative; two
     /// consecutive clean passes (confirms, no contradiction) lift it.
     /// Pending-only passes move neither streak.
     pub fn note_reconcile(&mut self, stats: ReconcileStats) {
