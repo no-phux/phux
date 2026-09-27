@@ -25,10 +25,9 @@
 //! user opts in with `PHUX_AGENT_EMIT_RAW=1`, and it does that by re-reading
 //! its own copy of stdin, never through this helper.
 //!
-//! Hidden like `phux play --pty-writer`: machine plumbing for the wrapper, not
-//! a promise that phux ships a JSON tool. Never fails: an empty, oversized, or
-//! malformed payload prints the all-absent line and exits 0, because a hook
-//! that breaks Claude to report a parse error has its priorities inverted.
+//! Hidden machine plumbing. Never fails: an empty, oversized, or malformed
+//! payload prints the all-absent line and exits 0, so a hook never breaks
+//! Claude.
 
 use std::io::{Read as _, Write as _};
 use std::process::ExitCode;
@@ -37,10 +36,8 @@ use std::process::ExitCode;
 /// (36 chars); MCP tool names are `mcp__<server>__<tool>` and fit comfortably.
 const MAX_FIELD_CHARS: usize = 128;
 
-/// Largest payload read before giving up and printing the absent line. A
-/// `PostToolUse` payload carries the whole `tool_response`, which can run to
-/// megabytes; the fields this helper wants are all near the top, but
-/// `serde_json` needs the whole document, so the ceiling is generous.
+/// Largest payload read before giving up and printing the absent line
+/// (generous: a `PostToolUse` payload carries the whole `tool_response`).
 const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Placeholder for an absent field.

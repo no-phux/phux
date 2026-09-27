@@ -2,10 +2,8 @@
 //! the CLI over the `AgentSession` resource (ADR-0103,
 //! `docs/consumers/agents.md` §2 and §4.19).
 //!
-//! Every verb here is a thin surface over [`phux_client::agent_session`]:
-//! resolve the target, gate on the server's `RESOURCE_KINDS` bit before any
-//! resource is touched, run the library call, render. The one piece of
-//! policy that lives here is *which resource a selector names*:
+//! Thin surfaces over [`phux_client::agent_session`], gated on the server's
+//! `RESOURCE_KINDS` bit. The policy here is which resource a selector names:
 //!
 //! - `open` takes the **parent pane**: a Terminal-kind resource, by `@N`, by
 //!   `%name` (the named Terminal), or by any pane form. An `AgentSession` id
@@ -591,8 +589,6 @@ fn report_session_error(
     )
 }
 
-/// Every server-side failure maps onto a distinct code; a transport failure
-/// keeps the shared no-server family.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,15 +614,8 @@ mod tests {
         ));
     }
 
-    /// `docs/consumers/agents.md` §2 promises a producer that a `--type`
-    /// outside the closed v1 set comes back as the `record_invalid` refusal
-    /// document — exit 2, nothing written, a `code` it can branch on. A clap
-    /// `value_parser` on `--type` answered first, with a usage error on
-    /// stderr and no document at all, so the one refusal of this verb a
-    /// harness is most likely to hit was the one shape it could not read.
-    ///
-    /// Two halves, and both are the fix: argv must ACCEPT the unknown word,
-    /// and the record validator must then refuse it.
+    /// A `--type` outside the closed set must reach the verb (not die at
+    /// argv) so it is refused as the machine-readable `record_invalid`.
     #[test]
     fn an_unknown_record_type_is_a_record_invalid_refusal_not_a_usage_error() {
         let cli = crate::parse_cli([
@@ -656,6 +645,8 @@ mod tests {
         );
     }
 
+    /// Every server-side failure maps onto its exit; a transport failure keeps
+    /// the shared no-server family.
     #[test]
     fn every_library_error_lands_on_its_registered_code_and_exit() {
         let socket = Path::new("/tmp/unused.sock");

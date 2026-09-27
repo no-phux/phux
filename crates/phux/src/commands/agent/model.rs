@@ -66,9 +66,7 @@ pub(super) enum AgentState {
 }
 
 impl AgentState {
-    /// The wire spelling, shared with `phux.agent/v1`'s `state` vocabulary —
-    /// which is what makes a projected state and a record state directly
-    /// comparable rather than two parallel word lists.
+    /// The wire spelling, shared with `phux.agent/v1`'s `state` vocabulary.
     pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
@@ -96,16 +94,8 @@ pub(super) enum Attention {
 }
 
 /// One piece of evidence behind a reported state, as `sources[]` in
-/// `agent list --json`.
-///
-/// `rule` / `region` are additive keys (phux-w7z2.31): they carry the
-/// ADR-0046 detection-manifest rule that a record-backed state came from, so
-/// a consumer can tell "blocked, because the `permission-dialog` rule matched
-/// the `after-last-rule` region" from "blocked, because an integration
-/// declared it". They are absent on every source that is not a manifest rule,
-/// which is why they are `Option` rather than empty strings —
-/// `schema_version` does not move for an added key, but it would for a key
-/// that changed meaning.
+/// `agent list --json`. `rule` / `region` are present only on sources that are
+/// a detection-manifest rule.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(super) struct AgentSource {
     pub(super) kind: &'static str,

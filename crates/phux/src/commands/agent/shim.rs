@@ -13,57 +13,24 @@ const BLOCK_BEGIN: &str = "# >>> phux agent shims >>>";
 const BLOCK_END: &str = "# <<< phux agent shims <<<";
 const MANIFEST: &str = "claude-install.json";
 
-/// Behavioral version of the generated wrapper, stamped into the script
-/// itself so an installed copy can be recognized as stale.
+/// Behavioral version of the generated wrapper, stamped into the script so
+/// an installed copy (which a binary upgrade does not rewrite) can be
+/// recognized as stale by `install-claude` and `phux doctor`.
 ///
-/// The wrapper lives on disk in a phux-owned directory and keeps running
-/// whatever text it was written with, so upgrading the phux binary does NOT
-/// upgrade an installed shim. Without a stamp, `install-claude` cannot tell
-/// "already current" from "silently running last release's behavior", and the
-/// two are not cosmetically different:
-///
-/// * **1** — declared a real `state` (`working`/`blocked`/`done`/`idle`) plus
-///   an `attention` on every Claude lifecycle hook. Per `docs/spec/L3.md`
-///   §3.7 an explicit `state` outranks the server's derivation, so every pane
-///   running this shim stood the detector down permanently (phux-w7z2.26) and
-///   armed the wedge in phux-w7z2.13.
-/// * **2** — declares identity only (`--name`/`--kind`, no `--state`, no
-///   `--attention`), but still on every hook. `phux agent set` with no
-///   `--state` writes the literal `"unknown"`, which is explicitly NOT a
-///   declaration, so the detector kept deriving. It also replaces the record
-///   WHOLESALE, so each hook clobbered the derived `state` back to `unknown`
-///   and published a `working -> unknown` edge at the end of every turn —
-///   which `agent wait` reads as the agent departing (phux-w7z2.37). This
-///   schema traded a permanent declaration for a per-turn clobber.
-/// * **3** — writes identity exactly ONCE, at session start. `blocked` still
-///   fires per hook but reaches only `phux ask` (ADR-0035/0036), which writes
-///   nothing to the record. Hooks that would now write nothing are not wired
-///   at all.
-/// * **4** — per-turn hooks feed `working`/`blocked`/`done` to the detector
-///   through `phux agent report-state` (ADR-0085): evidence, not a
-///   declaration, so the detector keeps correcting.
-/// * **5** — reads each hook's stdin payload and, when the server serves
-///   `AgentSession` resources (`resource_kinds` in `phux status --json`),
-///   opens a session child under the pane at `SessionStart` and appends
-///   `session_start`/`prompt`/`tool_start`/`tool_end`/`ask`/`notification`/
-///   `stop`/`session_end` records with `phux agent emit`; `PreToolUse` and
-///   `PostToolUse` are newly wired. Against an older server every arm runs
-///   the schema-4 calls unchanged.
-///
-/// `pub(crate)` because `phux doctor` compares it against what is actually on
-/// disk (phux-w7z2.46): upgrading the binary does not rewrite an installed
-/// shim, so the mismatch is real, silent, and behavioral.
+/// 1 declared a `state` on every hook (standing the detector down); 2 wrote
+/// identity on every hook (clobbering derived state each turn); 3 writes
+/// identity once at session start; 4 feeds per-turn edges through
+/// `report-state`; 5 reads the hook payload and, when the server serves
+/// `AgentSession` resources, feeds a session stream with `agent emit`.
 pub(crate) const SHIM_SCHEMA: u32 = 5;
 
 /// Prefix of the wrapper's schema stamp line. A `#` comment, so it is inert
 /// to `/bin/sh` and greppable without executing anything.
 const SCHEMA_MARKER: &str = "# phux-shim-schema: ";
 
-/// The Claude Code hooks the installer registers: `(event, matcher, arm)`.
-/// Each becomes `<shim> --phux-hook <arm>` in the generated settings file,
-/// and every arm must be handled by the wrapper's `stream_state`
-/// (`render_wrapper` pins that). `PreToolUse`/`PostToolUse` are stream-only
-/// producers: the legacy path has nothing to report for them.
+/// The Claude Code hooks the installer registers: `(event, matcher, arm)`,
+/// each becoming `<shim> --phux-hook <arm>`. Every arm must be handled by the
+/// wrapper's `stream_state`.
 const HOOKS: &[(&str, &str, &str)] = &[
     ("SessionStart", "", "start"),
     ("UserPromptSubmit", "", "working"),
@@ -161,18 +128,11 @@ struct InstallReport {
 }
 
 /// Where the wrapper installed as `claude` lives for this user.
-///
-/// One resolver, so install, uninstall, and `phux doctor`'s staleness check
-/// can never look at different files.
 fn shim_dir_for(home: &Path) -> PathBuf {
     data_home(home).join("phux").join("shims")
 }
 
-/// The installed wrapper's path, or `None` when the environment cannot say
-/// where it would be (no `HOME`).
-///
-/// Exposed for `phux doctor` (phux-w7z2.46), which reports the schema of the
-/// shim on disk against [`SHIM_SCHEMA`].
+/// The installed wrapper's path (for `phux doctor`), or `None` without `HOME`.
 pub(crate) fn installed_shim_path() -> Option<PathBuf> {
     Some(shim_dir_for(&home_dir().ok()?).join("claude"))
 }
@@ -186,12 +146,8 @@ fn install_claude(shell: &str, explicit_real: Option<&Path>) -> Result<InstallRe
     install_claude_into(&shim_dir, &rc, shell, explicit_real, &phux)
 }
 
-/// The whole of `install_claude` with every ambient path handed in.
-///
-/// `install_claude` resolves `shim_dir` / `rc` / `phux` from the environment;
-/// this takes them, so the round-trip can be tested in a tempdir without
-/// mutating the process environment (`env::set_var` is unsafe under edition
-/// 2024 and this crate forbids `unsafe`).
+/// `install_claude` with every ambient path handed in, so tests can run it
+/// in a tempdir without mutating the process environment.
 fn install_claude_into(
     shim_dir: &Path,
     rc: &Path,
@@ -228,10 +184,8 @@ fn install_claude_into(
     let wrapper = render_wrapper(&real, phux, &shim, &settings)?;
     atomic_write(&shim, wrapper.as_bytes(), 0o755)?;
 
-    // `schema_version` versions the MANIFEST's own shape (bumped because
-    // `shim_schema` joins it); `shim_schema` versions the wrapper's behavior.
-    // Both readers below (`resolve_real_claude`, `uninstall_claude_from`) pull
-    // single keys and ignore the rest, so a v1 manifest still uninstalls.
+    // `schema_version` versions the manifest's shape, `shim_schema` the
+    // wrapper's behavior. Readers pull single keys, so v1 still uninstalls.
     let manifest_value = serde_json::json!({
         "schema_version": 2,
         "shim_schema": SHIM_SCHEMA,
@@ -254,11 +208,8 @@ fn uninstall_claude() -> Result<Option<PathBuf>, String> {
     uninstall_claude_from(&shim_dir)
 }
 
-/// `uninstall_claude` with the shim directory handed in — see
-/// [`install_claude_into`] for why the seam exists.
-///
-/// Removes exactly the three files [`install_claude_into`] writes plus the
-/// marked rc block, and nothing else in the directory.
+/// `uninstall_claude` with the shim directory handed in. Removes exactly the
+/// three files [`install_claude_into`] writes plus the marked rc block.
 fn uninstall_claude_from(shim_dir: &Path) -> Result<Option<PathBuf>, String> {
     let manifest = shim_dir.join(MANIFEST);
     let Some(value) = read_manifest(&manifest)? else {
@@ -393,41 +344,18 @@ fn read_manifest(path: &Path) -> Result<Option<serde_json::Value>, String> {
 /// Render the `/bin/sh` wrapper installed as `claude`.
 ///
 /// Every `--phux-hook` arm reads Claude's stdin payload through
-/// `phux agent hook-payload`, then runs three things in order:
+/// `phux agent hook-payload`, then: `start` writes identity once (never a
+/// `--state`, which would outrank the server's derivation, L3.md §3.7);
+/// the lifecycle arms feed a session stream with `agent emit` when
+/// `phux status --json` lists `resource_kinds` (probed once per process),
+/// else `report-state` (ADR-0085); `blocked` always calls `phux ask` and
+/// `clear` always deletes the record. A session is opened at most once per
+/// process and never for a `compact`-sourced `SessionStart`.
 ///
-/// 1. **Identity, on every server.** `start` writes the pane's record once
-///    (`--name`/`--kind`, never `--state`). An explicit `state` outranks the
-///    server's derivation for the life of the record (`docs/spec/L3.md`
-///    §3.7), which is why no arm anywhere declares one (phux-w7z2.26,
-///    phux-w7z2.13).
-/// 2. **One of two lifecycle paths**, chosen by a `phux status --json` probe
-///    that runs at most once per wrapper process:
-///    * the server serves `AgentSession` resources (`resource_kinds` among its
-///      `features`): `start` opens a session child under the pane
-///      (`--provider claude`, `--native-id` = Claude's `session_id`) and the
-///      arms append records to its stream with `phux agent emit`. The
-///      server derives lifecycle state from those records and the detector
-///      keeps owning idle and departure. `clear` appends `session_end` —
-///      terminal: nothing is emitted after it from the same process — and
-///      closes the session;
-///    * anything older: the per-turn arms feed the detector with
-///      `report-state` (ADR-0085), exactly as schema 4 did.
-/// 3. **Attention and cleanup, on every server.** `blocked` calls `phux ask`
-///    (ADR-0035/0036: the attention ladder, which neither the record nor the
-///    stream replaces) and `clear` deletes the record.
-///
-/// A session is opened at most once per wrapper process, and never for a
-/// `compact`-sourced `SessionStart`, which Claude fires without a preceding
-/// `SessionEnd` and would otherwise open a second child. The launch path and
-/// the exit trap have no payload, so they never open; the trap does close.
-///
-/// Payload privacy is structural, not a filter: the only payload bytes that
-/// can reach a command line are the tokens `hook-payload` prints (session
-/// id, event name, tool name, notification type, prompt *length*, end
-/// reason, start source), and it never prints prompt text, `tool_input`,
-/// `tool_response`, or the transcript path. `PHUX_AGENT_EMIT_RAW=1` opts the
-/// whole payload into a `provider_raw` record, fed from the wrapper's own
-/// stdin copy.
+/// Payload privacy is structural: only the tokens `hook-payload` prints
+/// (never prompt text, `tool_input`, `tool_response`, or the transcript)
+/// reach a command line. `PHUX_AGENT_EMIT_RAW=1` opts the whole payload into
+/// a `provider_raw` record, fed on stdin.
 #[allow(
     clippy::too_many_lines,
     reason = "one shell script, rendered as one literal so it reads as the script it is"
@@ -694,12 +622,8 @@ exec "$real" "$@"
     ))
 }
 
-/// The schema of the shim already on disk, or `None` when none is installed.
-///
-/// A wrapper written before stamping existed carries no marker line; it is
-/// reported as schema **1**, which is exactly what it is — the declaring
-/// version. Any file we cannot read is treated as absent: install overwrites
-/// it either way, and the only thing riding on this is the message.
+/// The schema of the shim already on disk, or `None` when none is readable.
+/// An unstamped wrapper predates stamping and is schema 1.
 pub(crate) fn installed_shim_schema(shim: &Path) -> Option<u32> {
     let text = std::fs::read_to_string(shim).ok()?;
     Some(
@@ -820,8 +744,8 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BLOCK_BEGIN, BLOCK_END, HOOKS, SCHEMA_MARKER, SHIM_SCHEMA, install_claude_into,
-        install_rc_block, installed_shim_schema, render_wrapper, sh_quote_path, shell_activation,
+        BLOCK_BEGIN, BLOCK_END, HOOKS, SHIM_SCHEMA, install_claude_into, install_rc_block,
+        installed_shim_schema, render_wrapper, sh_quote_path, shell_activation,
         uninstall_claude_from, without_managed_block,
     };
     use std::os::unix::fs::PermissionsExt as _;
@@ -967,80 +891,23 @@ mod tests {
         );
     }
 
-    /// phux-w7z2.26. The wrapper announces WHO occupies the pane and never
-    /// WHAT it is doing.
-    ///
-    /// This test used to assert the opposite (`--state blocked` on the
-    /// blocked hook, and a declared state on each of the other three). That
-    /// assertion WAS the bug: `docs/spec/L3.md` §3.7 makes an explicit
-    /// `state` outrank the server's derivation for the lifetime of the
-    /// record, so a shim declaring one on every hook stood the detector down
-    /// on every pane running it — permanently, since nothing but
-    /// `DELETE_METADATA` or pane reap withdraws a declaration. phux shipped
-    /// its deepest detection manifest (`rules/claude.toml`) and its own
-    /// integration disarmed it.
-    ///
-    /// `phux agent set` with no `--state` writes the literal `"unknown"`,
-    /// which `AgentRecordArbiter::note_explicit_set` deliberately does not
-    /// count as a declaration, so the detector keeps deriving `state` around
-    /// the name and kind below.
-    #[test]
-    fn wrapper_routes_outer_interactive_claude_and_declares_inner_identity_only() {
-        let wrapper = rendered();
-        assert!(wrapper.contains("\"$phux\" new -c \"$cwd\" -- \"$shim\" --phux-inner"));
-        assert!(wrapper.contains("agent set \"$target\" --name claude --kind claude"));
-        assert!(
-            !wrapper.contains("--state"),
-            "a declared state stands the detector down (w7z2.26):\n{wrapper}"
-        );
-        assert!(
-            !wrapper.contains("--attention"),
-            "attention derives from state (L3.md 3.7); declaring one pins a badge:\n{wrapper}"
-        );
-        // The `ask` ladder (ADR-0035/0036) is a separate path from the
-        // record and must survive: it is the only thing the blocked hook
-        // still contributes that the screen cannot see for itself.
-        assert!(wrapper.contains("run_phux ask \"$target\" \"Claude needs attention\""));
-        assert!(wrapper.contains("\"$real\" --settings \"$settings\" \"$@\""));
-        assert!(wrapper.contains("run_phux agent clear \"$target\""));
-    }
-
-    /// Every hook the installer registers has an arm in the wrapper's
-    /// stream path, and every arm the legacy path handles is one the
-    /// installer registers. Guards against "fixing" a hook by unwiring it,
-    /// which would also take the `clear` on `SessionEnd` and the `ask` on
-    /// `blocked` with it — and against a registered arm that the wrapper
-    /// silently ignores.
+    /// Every hook the installer registers has an arm in the wrapper's stream
+    /// path, and the legacy path keeps its arms; identity, ask, and clear sit
+    /// outside both lifecycle paths.
     #[test]
     fn every_registered_hook_arm_is_handled_and_vice_versa() {
         let wrapper = rendered();
         let stream = section(&wrapper, "stream_state() {", "legacy_state() {");
-        // `legacy_state` plus `set_state`: the fallback arms and the
-        // every-server identity / ask / clear around them.
-        let legacy = section(&wrapper, "legacy_state() {", "= \"--phux-hook\" ]; then");
+        let fallback_only = section(&wrapper, "legacy_state() {", "set_state() {");
         for (event, _, arm) in HOOKS {
             assert!(
                 stream.contains(&format!("{arm})")),
                 "{event} is registered as `--phux-hook {arm}` but stream_state has no `{arm})` arm",
             );
         }
-        for arm in ["clear", "start", "working", "blocked", "done"] {
-            assert!(
-                legacy.contains(&format!("{arm})")) || legacy.contains(&format!("{arm}|")),
-                "the non-stream path must keep handling `{arm}`"
-            );
-            assert!(
-                HOOKS.iter().any(|(_, _, registered)| registered == &arm),
-                "arm `{arm}` is not registered by the installer"
-            );
+        for body in [stream, fallback_only] {
+            assert!(!body.contains("agent set") && !body.contains("agent clear"));
         }
-        assert!(legacy.contains("run_phux agent set \"$target\""));
-        assert!(legacy.contains("run_phux ask \"$target\""));
-        assert!(legacy.contains("run_phux agent clear \"$target\""));
-        // Identity, ask, and clear sit OUTSIDE both lifecycle paths.
-        assert!(!stream.contains("agent set") && !stream.contains("agent clear"));
-        let fallback_only = section(&wrapper, "legacy_state() {", "set_state() {");
-        assert!(!fallback_only.contains("agent set") && !fallback_only.contains("agent clear"));
         assert!(!fallback_only.contains("run_phux ask"));
     }
 
@@ -1054,43 +921,6 @@ mod tests {
             .find(to)
             .unwrap_or_else(|| panic!("no `{to}` after `{from}`"));
         &wrapper[start..start + end]
-    }
-
-    /// w7z2.37: the record is written exactly ONCE, at `start`.
-    ///
-    /// `SET_METADATA` replaces the record wholesale, so an identity write
-    /// carries `state: "unknown"`. Repeating it per hook published a
-    /// `working -> unknown` edge at the end of every turn, which `agent wait`
-    /// reads as the agent departing and exits `1` on — breaking the flagship
-    /// orchestration loop on exactly the panes phux instruments most deeply.
-    /// The first `w7z2.26` fix made the shim identity-only but left the write
-    /// on every hook, so it traded a permanent declaration for a per-turn
-    /// clobber. CI was green with that bug in place.
-    ///
-    /// This asserts the shape structurally: only the `start` arm may reach
-    /// `agent set`; per-turn arms reach `report-state`, never metadata writes.
-    #[test]
-    fn only_the_start_arm_writes_the_record() {
-        let wrapper = rendered();
-
-        let writes: Vec<&str> = wrapper
-            .lines()
-            .filter(|line| line.contains("agent set \"$target\""))
-            .collect();
-        assert_eq!(
-            writes.len(),
-            1,
-            "the record must be written exactly once, from the `start` arm; found:\n{writes:#?}"
-        );
-        assert!(
-            writes[0].trim_start().starts_with("start)"),
-            "the sole record write must be the `start` arm, not a per-turn hook: {}",
-            writes[0]
-        );
-
-        assert!(wrapper.contains("working|done) run_phux agent report-state \"$target\" \"$1\""));
-        assert!(wrapper.contains("run_phux agent report-state \"$target\" blocked"));
-        assert!(wrapper.contains("run_phux ask \"$target\""));
     }
 
     /// Against a server that serves `AgentSession` resources, each arm's
@@ -1423,26 +1253,6 @@ mod tests {
         );
     }
 
-    /// The capability probe runs at most once per wrapper process: the
-    /// `start` arm makes two `phux` calls behind one `status --json`.
-    #[test]
-    fn the_capability_probe_runs_once_per_process() {
-        let h = Harness::new();
-        let log = h.hook(
-            "start",
-            "{}",
-            STREAMING,
-            "sess-1 SessionStart - - 0 - startup",
-            false,
-        );
-        assert_eq!(
-            log.iter().filter(|line| *line == "status --json").count(),
-            1,
-            "{log:?}"
-        );
-        assert_eq!(log.len(), 5, "{log:?}");
-    }
-
     /// The launch path's exit trap runs `clear` at most once, however the
     /// wrapper leaves: INT/TERM/HUP re-enter through EXIT, and the stream's
     /// `session_end` is terminal.
@@ -1458,41 +1268,6 @@ mod tests {
         assert!(wrapper.contains("trap 'exit 130' INT"));
         assert!(wrapper.contains("trap 'exit 143' TERM"));
         assert!(wrapper.contains("trap 'exit 129' HUP"));
-    }
-
-    /// The generated hook settings register every `HOOKS` row with its
-    /// matcher, as `<shim> --phux-hook <arm>`, and the file is private.
-    #[test]
-    fn hook_settings_register_every_arm_and_stay_private() {
-        let dir = tempfile::tempdir().expect("scratch dir");
-        let shim_dir = dir.path().join("shims");
-        let rc = dir.path().join("rc");
-        let phux = dir.path().join("phux");
-        let real = dir.path().join("real-claude");
-        std::fs::write(&real, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
-        install_claude_into(&shim_dir, &rc, "zsh", Some(&real), &phux).unwrap();
-
-        let settings = shim_dir.join("claude-hooks.json");
-        let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "hook settings must stay private");
-        let json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
-        let hooks = json["hooks"].as_object().expect("hooks object");
-        assert_eq!(hooks.len(), HOOKS.len());
-        let shim = sh_quote_path(&shim_dir.join("claude"));
-        for (event, matcher, arm) in HOOKS {
-            let entry = &hooks[*event][0];
-            assert_eq!(entry["matcher"], *matcher, "{event}");
-            assert_eq!(
-                entry["hooks"][0]["command"],
-                format!("{shim} --phux-hook {arm}"),
-                "{event}"
-            );
-        }
-        for event in ["PreToolUse", "PostToolUse"] {
-            assert!(hooks.contains_key(event), "{event} must be registered");
-        }
     }
 
     /// The wrapper parses under `sh -n` (and, where a `shellcheck` is on
@@ -1526,46 +1301,9 @@ mod tests {
         }
     }
 
-    /// The wrapper carries its own behavioral version, so an install can tell
-    /// "already current" from "still running the declaring shim".
-    #[test]
-    fn the_wrapper_is_schema_stamped_and_an_unstamped_one_reads_as_schema_one() {
-        let dir = tempfile::tempdir().expect("scratch dir");
-        let shim = dir.path().join("claude");
-        assert_eq!(installed_shim_schema(&shim), None, "nothing installed yet");
-
-        // A pre-stamping wrapper: no marker line anywhere.
-        std::fs::write(
-            &shim,
-            "#!/bin/sh\nset -u\nrun_phux agent set \"$target\" --name claude --state working\n",
-        )
-        .unwrap();
-        assert_eq!(
-            installed_shim_schema(&shim),
-            Some(1),
-            "an unstamped shim IS the declaring version",
-        );
-
-        let rendered = render_wrapper(
-            Path::new("/real/claude"),
-            Path::new("/bin/phux"),
-            &shim,
-            Path::new("/data/claude-hooks.json"),
-        )
-        .unwrap();
-        assert!(rendered.contains(&format!("{SCHEMA_MARKER}{SHIM_SCHEMA}\n")));
-        std::fs::write(&shim, &rendered).unwrap();
-        assert_eq!(installed_shim_schema(&shim), Some(SHIM_SCHEMA));
-    }
-
-    /// Install over a stale (schema-1) install, then uninstall, and account
-    /// for every byte on both sides.
-    ///
-    /// The migration contract: `install-claude` REPLACES a stale shim rather
-    /// than leaving a silent behavior split between installed and
-    /// freshly-installed users, reports which schema it replaced, and
-    /// `uninstall-claude` still removes exactly the three files the installer
-    /// writes plus the marked rc block — no more, no less.
+    /// Install over a stale, unstamped (schema-1) install, then uninstall: the
+    /// stale shim is replaced and reported, the hook settings are private, and
+    /// uninstall removes exactly its own three files plus the rc block.
     #[test]
     fn install_over_a_stale_shim_upgrades_it_and_uninstall_removes_exactly_its_own_files() {
         let dir = tempfile::tempdir().expect("scratch dir");
@@ -1575,6 +1313,7 @@ mod tests {
         let real = dir.path().join("real-claude");
         std::fs::write(&real, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(installed_shim_schema(&shim_dir.join("claude")), None);
 
         // A stale install: the schema-1 wrapper, its hook settings, a v1
         // manifest (no `shim_schema` key), and the rc block.
@@ -1624,6 +1363,25 @@ mod tests {
                 .unwrap();
         assert_eq!(manifest["shim_schema"], serde_json::json!(SHIM_SCHEMA));
 
+        // The hook settings register every `HOOKS` row and stay private.
+        let settings = shim_dir.join("claude-hooks.json");
+        let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "hook settings must stay private");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+        let hooks = json["hooks"].as_object().expect("hooks object");
+        assert_eq!(hooks.len(), HOOKS.len());
+        let shim = sh_quote_path(&shim_dir.join("claude"));
+        for (event, matcher, arm) in HOOKS {
+            let entry = &hooks[*event][0];
+            assert_eq!(entry["matcher"], *matcher, "{event}");
+            assert_eq!(
+                entry["hooks"][0]["command"],
+                format!("{shim} --phux-hook {arm}"),
+                "{event}"
+            );
+        }
+
         // Re-installing is idempotent and leaves exactly one managed block.
         let again = install_claude_into(&shim_dir, &rc, "zsh", Some(&real), &phux).unwrap();
         assert_eq!(again.replaced, Some(SHIM_SCHEMA), "already current");
@@ -1655,14 +1413,9 @@ mod tests {
         assert!(uninstall_claude_from(&shim_dir).unwrap().is_none());
     }
 
-    /// Behavioral proof for phux-t2g: a rendered wrapper, run for real
-    /// (fake `phux` and fake `claude` standing in), must not relaunch
-    /// Claude after the phux session already started and later died.
-    ///
-    /// The outer dispatch-to-`phux new` block only runs when the wrapper
-    /// is invoked interactively (`[ -t 0 ] && [ -t 1 ]` — see
-    /// `render_wrapper`), so this drives the wrapper on a real pty rather
-    /// than asserting on the rendered text alone.
+    /// A rendered wrapper, run for real on a pty (the launch path needs a
+    /// tty), must not relaunch Claude after the phux session started and
+    /// later died.
     #[test]
     #[allow(clippy::too_many_lines, reason = "one linear pty-driven scenario")]
     #[allow(
@@ -1708,21 +1461,8 @@ mod tests {
             let mut command = CommandBuilder::new(wrapper);
             command.env("SHELL", "/bin/sh");
             command.env("TERM", "xterm-256color");
-            // The wrapper branches on the phux environment it is launched
-            // under, and `CommandBuilder` inherits ours. Running this suite
-            // from inside a phux pane exports `PHUX_TERMINAL_ID`, which sends
-            // the OUTER wrapper straight down the in-session branch: it execs
-            // the real Claude, exits with its status, and never reaches the
-            // `phux new` launch, the sentinel, or the diagnostics this test
-            // reads. The status and the invocation count still looked right,
-            // so the failure surfaced as an empty pty capture — a fixture
-            // that had quietly stopped exercising its own scenario.
-            //
-            // `PHUX_AGENT_PHUX_BIN` is the same hazard one step further out:
-            // it overrides the fake `phux` these scenarios are built on.
-            //
-            // Cleared here rather than in the harness so every scenario below
-            // gets the environment it names, and only that.
+            // Running inside a phux pane would send the outer wrapper down the
+            // in-session branch, and PHUX_AGENT_PHUX_BIN would override the fake.
             for key in ["PHUX_TERMINAL_ID", "PHUX_AGENT_PHUX_BIN"] {
                 command.env_remove(key);
             }
@@ -1751,26 +1491,9 @@ mod tests {
             });
             drop(pair.master);
 
-            // phux-w7z2.47: no wall-clock anywhere in this helper. Both waits
-            // below are real synchronization points, so the test measures the
-            // wrapper's behavior and never the load on the machine running it.
-            //
-            // `wait` is `waitpid`, so it returns exactly when the wrapper
-            // exits — the polling loop with a 10s deadline it replaces was
-            // failing at ~10.2s under concurrent compilation while passing in
-            // ~0.7s in isolation. Joining the drain thread is the other half:
-            // it ends when the pty master reads EOF, which happens once the
-            // last slave-side descriptor closes — i.e. once the wrapper and
-            // every process it spawned are gone. That is the guarantee the
-            // 50ms "let the reader catch up" sleep was only approximating,
-            // and it is what makes the output assertions below sound.
-            //
-            // The deliberate consequence: a wrapper that genuinely wedges
-            // hangs here instead of failing at a deadline. That is the right
-            // trade. A deadline short enough to catch a wedge is short enough
-            // to fire on a loaded box, which is the bug being fixed; bounding
-            // a hang is nextest's `slow-timeout` / the CI job timeout, not an
-            // assertion inside the test.
+            // No deadlines: `wait` returns when the wrapper exits and the drain
+            // ends at pty EOF, once every spawned process is gone. A wedge
+            // hangs here and is bounded by nextest's slow-timeout.
             let status = child.wait().expect("wait for the wrapper to exit");
             drain.join().expect("pty reader thread");
             let text = String::from_utf8_lossy(&output.lock().expect("output lock")).into_owned();
@@ -1783,11 +1506,8 @@ mod tests {
         let wrapper = dir.path().join("claude");
         let settings = dir.path().join("claude-hooks.json");
         let log = dir.path().join("real-claude.log");
-        // Every `phux` dispatch the wrapper makes. Claude's own invocation
-        // count cannot distinguish "launched through a phux session" from
-        // "exec'd directly", because both run it exactly once — which is how
-        // an environment that skipped the launch path entirely still satisfied
-        // scenario A. This log is the difference.
+        // Every `phux` dispatch: distinguishes launched-through-phux from
+        // exec'd-directly, which Claude's invocation count cannot.
         let phux_log = dir.path().join("fake-phux.log");
 
         // Stands in for the real `claude`: records that it ran, then exits
@@ -1815,11 +1535,6 @@ mod tests {
         write_script(&wrapper, &rendered);
 
         // Scenario A: the session runs and Claude exits cleanly.
-        //
-        // The `phux new` assertion is what keeps the rest of this scenario
-        // honest. Its other checks are a zero status, one Claude invocation,
-        // and two absent diagnostics — every one of which a wrapper that
-        // skipped phux entirely and exec'd Claude directly also satisfies.
         std::fs::write(&log, b"").unwrap();
         std::fs::write(&phux_log, b"").unwrap();
         let (status, output) = run_on_pty(&wrapper, &[("FAKE_CLAUDE_EXIT", "0")]);
@@ -1838,12 +1553,8 @@ mod tests {
         assert!(!output.contains("abnormally"), "{output}");
         assert!(!output.contains("launch failed"), "{output}");
 
-        // Scenario B (the phux-t2g bug): the session starts, then Claude
-        // (or the server under it) dies mid-run. The old wrapper treated
-        // ANY nonzero `phux new` exit as a launch failure and silently
-        // re-exec'd a fresh, unhooked Claude with the original argv. The
-        // fix must propagate the real exit status and must NOT invoke
-        // Claude a second time.
+        // Scenario B: the session starts, then dies mid-run. The real exit
+        // status must propagate and Claude must NOT be invoked again.
         std::fs::write(&log, b"").unwrap();
         std::fs::write(&phux_log, b"").unwrap();
         let (status, output) = run_on_pty(&wrapper, &[("FAKE_CLAUDE_EXIT", "17")]);
@@ -1864,9 +1575,8 @@ mod tests {
             "Claude must not be relaunched after the session already started; output:\n{output}"
         );
 
-        // Scenario C: `phux new` fails before the session ever starts (no
-        // marker stamped) — falling back to a direct, real Claude exactly
-        // once is still correct here.
+        // Scenario C: `phux new` fails before the session starts; falling
+        // back to a direct Claude exactly once is correct.
         std::fs::write(&log, b"").unwrap();
         std::fs::write(&phux_log, b"").unwrap();
         let (status, output) = run_on_pty(

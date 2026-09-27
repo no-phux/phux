@@ -1,52 +1,16 @@
 //! `phux agent send-keys` — send keys to a pane **only if it is still hosting
 //! the agent you think it is**.
 //!
-//! This verb differs from top-level `phux send-keys` in exactly one way, and
-//! the difference is the whole reason it exists: `phux send-keys` addresses a
-//! *pane* and deliberately checks no identity — a pane is a pane, and typing
-//! into it is the user's business. `phux agent send-keys` addresses an
-//! *agent*, so it re-reads the pane's `phux.agent/v1` record immediately
-//! before writing and refuses if the occupant is not the agent the caller
-//! named. An orchestrator that resolved `@7` to "the reviewer" a minute ago,
-//! and whose reviewer has since exited leaving a bare shell, must not have its
-//! prompt land in that shell.
+//! Unlike `phux send-keys` (which addresses a pane and checks no identity),
+//! this re-reads the pane's `phux.agent/v1` record immediately before writing
+//! and refuses if the occupant is not the named agent. Contracts:
 //!
-//! Three contracts, all hard:
-//!
-//! 1. **All keys are validated before any byte is written.** Translation
-//!    happens up front, on the whole argument vector; a typo in the third key
-//!    cannot leave the first two delivered. There is no partial send.
-//! 2. **The identity check and the write ride one connection.** The server
-//!    handles a connection's frames in order, so nothing this client sends
-//!    interleaves between the `GET_METADATA` answer and the `APPLY_INPUT`.
-//!    See [`STALENESS`] for what that bound does *not* cover.
-//! 3. **The whole batch is one acknowledged operation** (phux-w7z2.36,
-//!    ADR-0053). Since the receipt landed, all-or-nothing covers *delivery*
-//!    as well as validation, and a caller that loses the answer can ask again
-//!    under the same operation id instead of guessing.
-//!
-//! # What changed when this verb moved off `ROUTE_INPUT`
-//!
-//! It shipped fire-and-forget, one `ROUTE_INPUT` per event, because `agent
-//! prompt` did not exist yet and nothing else called `APPLY_INPUT`. That
-//! version had a real hole, documented in its own help text: a transport
-//! failure part-way through the sequence left the caller unable to tell
-//! whether the keys landed, and its remedy deliberately did **not** say
-//! "retry", because once a `ROUTE_INPUT` is acked those bytes are in the tty
-//! input queue and no client can take them back.
-//!
-//! One `APPLY_INPUT` under an operation id closes both halves of that. The
-//! server encodes the whole batch against one mode snapshot into one byte
-//! vector and writes it as a single PTY job, so there is no interior seam to
-//! fail at; and a same-id resubmission is answered from the server's dedupe
-//! cache rather than written twice.
-//!
-//! The error contract is **inherited from ADR-0076 rather than re-derived**,
-//! including the two readings that matter: `OK` is a *kernel-queue* receipt
-//! (bytes accepted by `write(2)` on the PTY master and flushed — strictly
-//! more than `ROUTE_INPUT` states, strictly less than consumption), and
-//! `INPUT_DELIVERY_UNKNOWN` is **terminal**, exit 1, never retried under any
-//! id.
+//! 1. All keys are validated before any byte is written; no partial send.
+//! 2. The identity check and the write ride one connection (see
+//!    [`STALENESS`] for what that bound does not cover).
+//! 3. The whole batch is one acknowledged `APPLY_INPUT` operation (ADR-0053),
+//!    with ADR-0076's error contract: `OK` is a kernel-queue receipt and
+//!    `INPUT_DELIVERY_UNKNOWN` is terminal, exit 1, never retried.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -64,30 +28,11 @@ use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_
 
 use super::prompt::refusal_code;
 
-/// The staleness bound this verb accepts, stated once so a reader does not
-/// have to infer it from the code.
-///
-/// **Re-verified against the `APPLY_INPUT` frame ordering (phux-w7z2.36).**
-/// The identity read (`GET_METADATA`, correlation id 1) and the write
-/// (`APPLY_INPUT`, correlation id 2) are consecutive frames on one
-/// connection, and `phux-server` handles a connection's frames in arrival
-/// order, so **no frame from this client** can interleave between them. The
-/// move made that bound *tighter*, not looser: the batch used to be N
-/// `ROUTE_INPUT` frames with N-1 interior windows a concurrent writer could
-/// slip into, and it is now one frame with none.
-///
-/// What still can change inside the window between the read and the write:
-///
-/// - another client's `SET_METADATA` / `DELETE_METADATA` on the same key;
-/// - the server-side detector's next tick (300 ms, ADR-0046) republishing a
-///   derived record;
-/// - the pane's own foreground process exec'ing something else, which no
-///   metadata read observes at all until the detector catches up.
-///
-/// So the bound is "one server frame-handling turn on this connection", not
-/// atomicity. It closes the minute-wide window between resolving a selector
-/// and typing into it, which is the window that actually bites; it does not
-/// close a race against a concurrent writer, and this verb does not claim to.
+/// The staleness bound this verb accepts. The identity read and the write
+/// are consecutive frames on one connection, so no frame from this client
+/// interleaves; another client's metadata write, a detector tick, or the
+/// pane's own exec still can. It closes the resolve-then-type window, not a
+/// race against a concurrent writer.
 const STALENESS: &str = "one server frame-handling turn on this connection";
 
 /// Why one key argument was refused.
@@ -102,16 +47,8 @@ pub(super) struct KeySpecError {
 }
 
 /// Validate every key argument, refusing the whole batch on the first
-/// problem.
-///
-/// `phux_client::send_keys::spec_to_bytes` is total by design — anything it
-/// does not recognize as a named key is typed as literal text — which is
-/// right for `phux send-keys`, where literal text is most of the traffic. It
-/// is wrong for an agent surface: `C-cc` is not a plausible thing to type at
-/// an agent, it is a typo for `C-c`, and typing it literally is a silent
-/// wrong action inside someone's turn. So this rejects the argument shapes
-/// that *look* like a named key and are not one, and accepts everything else
-/// as literal text.
+/// problem: shapes that look like a named key but are not (`C-cc`) would
+/// otherwise be typed literally inside someone's turn.
 pub(super) fn validate_key_specs(keys: &[String]) -> Result<(), KeySpecError> {
     for (index, spec) in keys.iter().enumerate() {
         let refuse = |reason: &'static str| KeySpecError {
@@ -168,8 +105,7 @@ pub(super) fn run_agent_send_keys(
             crate::exit_codes::EXIT_USAGE,
         );
     }
-    // Contract 1: the whole batch is validated before a connection is even
-    // opened, so a bad argument cannot leave a prefix delivered.
+    // Contract 1: validate the whole batch before opening a connection.
     if let Err(err) = validate_key_specs(keys) {
         return json_err::emit(
             json,
@@ -186,15 +122,9 @@ pub(super) fn run_agent_send_keys(
             crate::exit_codes::EXIT_USAGE,
         );
     }
-    // Translate up front too: the event vector is built once, from the whole
-    // argument list, so the literal-run-before-Enter grouping is decided
-    // before anything is on the wire.
     let events = phux_client::send_keys::events_for(keys);
-    // A literal run *not* followed by Enter is one event per character, so
-    // this verb — unlike `agent prompt`, which is always two events — can
-    // genuinely reach the 256-event protocol cap. Refuse locally, naming the
-    // count: splitting one logical batch across two operations would give up
-    // exactly the all-or-nothing property the verb exists for.
+    // A literal run not followed by Enter is one event per character, so the
+    // event cap is reachable; refuse rather than split the batch.
     if let Err(refusal) = validate_batch(&events) {
         return json_err::emit(
             json,
@@ -244,20 +174,14 @@ pub(super) fn run_agent_send_keys(
         let verify = |record: &AgentRecord| {
             identity_mismatch(record, expect_agent.as_deref(), expect_kind.as_deref())
         };
-        // Contracts 2 and 3: subscribe, identity read (id 1), and the whole
-        // batch as ONE acknowledged operation (id 2), on one connection.
-        // `deliver_acknowledged` owns that ordering and the ADR-0076 error
-        // contract, so this verb and `agent prompt` cannot drift apart on
-        // what an OK means or on when a retry is honest.
+        // Contracts 2 and 3, shared with `agent prompt`.
         let outcome = deliver_acknowledged(
             &socket_path,
             &pane,
             operation_id,
             events,
             &verify,
-            // No completion gate: `send-keys` delivers keystrokes, which may
-            // be a `C-c` or an arrow. Waiting for a lifecycle transition is
-            // `agent prompt --wait`'s question, not this one's.
+            // No completion gate: that is `agent prompt --wait`'s question.
             None,
         )
         .await;
@@ -269,12 +193,7 @@ pub(super) fn run_agent_send_keys(
     })
 }
 
-/// Report a delivered batch: silence without `--json` (the prose `send-keys`
-/// says nothing on success either), one document with it.
-///
-/// The document gained `operation_id` and `delivery` when the verb moved onto
-/// `APPLY_INPUT`: a caller that wants to correlate this invocation with a
-/// server log line, or to record what its own success code attested, now can.
+/// Report a delivered batch: silence without `--json`, one document with it.
 fn report_delivered(json: bool, label: &str, outcome: &PromptOutcome, keys: usize) -> ExitCode {
     if !json {
         return ExitCode::SUCCESS;
@@ -306,14 +225,7 @@ fn report_delivered(json: bool, label: &str, outcome: &PromptOutcome, keys: usiz
     }
 }
 
-/// Map a delivery failure onto its published reading.
-///
-/// The readings are ADR-0076's, inherited rather than re-derived — see the
-/// module docs. The one that changed shape when this verb moved off
-/// `ROUTE_INPUT` is the old "some keys may already have been delivered;
-/// re-read the pane before retrying": with an operation id, most failures are
-/// now *provably* nothing-written and honestly retryable, and the residue
-/// that is not is named exactly.
+/// Map a delivery failure onto its published (ADR-0076) reading.
 #[allow(
     clippy::too_many_lines,
     reason = "the exit-code and remedy table is the contract; splitting it \
@@ -482,11 +394,7 @@ fn report_failure(
 }
 
 /// Describe how `record` fails the caller's expectation, or `None` if it
-/// meets it.
-///
-/// With neither `--expect-agent` nor `--expect-kind`, the requirement is
-/// simply that the pane host *an* identified agent — which the caller has
-/// already established by getting a record back.
+/// meets it (with no expectation, any identified agent does).
 pub(super) fn identity_mismatch(
     record: &AgentRecord,
     expect_agent: Option<&str>,
@@ -527,68 +435,27 @@ mod tests {
         }
     }
 
-    /// Ordinary specs — named keys, chords, and literal text — all pass.
+    /// Named keys, chords, and literal text pass; near-miss chord shapes
+    /// refuse the whole batch, naming the argument's position.
     #[test]
-    fn valid_specs_pass_validation() {
+    fn key_specs_pass_or_refuse_the_whole_batch() {
         assert_eq!(
             validate_key_specs(&keys(&["Enter", "C-c", "M-x", "yes please", "Up"])),
             Ok(())
         );
-    }
-
-    /// The all-or-nothing contract: a typo in the third key refuses the whole
-    /// batch, and the error names *which* argument so the caller can fix it
-    /// without guessing.
-    #[test]
-    fn a_bad_spec_refuses_the_whole_batch_and_names_its_position() {
         let err = validate_key_specs(&keys(&["approve", "Enter", "C-cc"]))
             .expect_err("`C-cc` must not be accepted as literal text");
-        assert_eq!(err.index, 2);
-        assert_eq!(err.spec, "C-cc");
-        assert!(err.reason.contains("one character"), "{}", err.reason);
-    }
-
-    /// The shapes that would otherwise be silently typed as literal text
-    /// inside someone's turn.
-    #[test]
-    fn near_miss_chord_shapes_are_refused() {
-        for spec in ["C-", "M-", "c-esc", "C-\u{e9}"] {
+        assert_eq!((err.index, err.spec.as_str()), (2, "C-cc"));
+        for spec in ["C-", "M-", "c-esc", "C-\u{e9}", ""] {
             assert!(
                 validate_key_specs(&keys(&[spec])).is_err(),
                 "'{spec}' must be refused rather than typed literally"
             );
         }
-        assert!(validate_key_specs(&keys(&[""])).is_err());
     }
 
-    /// With no expectation flags, any identified agent is acceptable — the
-    /// check is "this pane still hosts an agent", which is already more than
-    /// `phux send-keys` asserts.
-    #[test]
-    fn no_expectation_accepts_any_identified_agent() {
-        assert_eq!(
-            identity_mismatch(&record("reviewer", Some("claude")), None, None),
-            None
-        );
-    }
-
-    /// The check that stops a prompt landing in a bare shell that inherited
-    /// the pane: the name must still match.
-    #[test]
-    fn a_different_occupant_is_a_mismatch() {
-        let mismatch = identity_mismatch(&record("builder", Some("codex")), Some("reviewer"), None)
-            .expect("a different name must be refused");
-        assert!(mismatch.contains("builder"), "{mismatch}");
-        assert!(mismatch.contains("reviewer"), "{mismatch}");
-    }
-
-    /// The event cap this verb can actually reach. A literal run *not*
-    /// followed by `Enter` types one event per character, so a long enough
-    /// argument crosses the 256-event protocol cap — and when it does the
-    /// batch is refused whole, naming the count. It is never split across two
-    /// operations: a half-typed key sequence is the failure the all-or-nothing
-    /// contract exists to prevent, and splitting would also give up the
-    /// single-operation receipt.
+    /// A literal run not followed by `Enter` types one event per character, so
+    /// a long argument crosses the event cap and is refused whole.
     #[test]
     fn a_batch_past_the_event_cap_is_refused_whole_and_never_split() {
         let long = "x".repeat(phux_protocol::wire::frame::MAX_APPLY_INPUT_EVENTS + 1);
@@ -611,18 +478,26 @@ mod tests {
             other => panic!("an over-cap batch must be refused: {other:?}"),
         }
 
-        // The submission-safe shape stays comfortably inside the cap: a
-        // literal run immediately before `Enter` collapses to one paste plus
-        // one key, which is the same two-event batch `agent prompt` sends.
+        // A literal run before `Enter` collapses to one paste plus one key.
         let submitted = phux_client::send_keys::events_for(&keys(&["yes please", "Enter"]));
         assert_eq!(submitted.len(), 2);
         assert_eq!(validate_batch(&submitted), Ok(()));
     }
 
-    /// Names are compared trimmed and case-insensitively; kinds too. A shell
-    /// quoting artifact must not read as a different agent.
+    /// Names and kinds compare trimmed and case-insensitively; a different
+    /// occupant is a mismatch naming both.
     #[test]
     fn names_and_kinds_compare_trimmed_and_case_insensitively() {
+        assert_eq!(
+            identity_mismatch(&record("reviewer", Some("claude")), None, None),
+            None
+        );
+        let mismatch = identity_mismatch(&record("builder", Some("codex")), Some("reviewer"), None)
+            .expect("a different name must be refused");
+        assert!(
+            mismatch.contains("builder") && mismatch.contains("reviewer"),
+            "{mismatch}"
+        );
         assert_eq!(
             identity_mismatch(
                 &record("Reviewer", Some("Claude")),

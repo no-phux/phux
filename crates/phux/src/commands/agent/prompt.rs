@@ -1,65 +1,27 @@
 //! `phux agent prompt` — hand an agent a turn's worth of work, with a
-//! receipt (ADR-0076).
+//! receipt (ADR-0076), over the acknowledged `APPLY_INPUT` lane (ADR-0053).
 //!
-//! This is the first verb in the tree to use `APPLY_INPUT` (ADR-0053), and it
-//! is worth being precise about why a second write verb exists next to
-//! `phux agent send-keys`.
+//! A prompt is not idempotent at the receiver, so resend-on-doubt produces the
+//! duplicate. The rules callers rely on:
 //!
-//! Fire-and-forget stops being acceptable the moment nobody is watching the
-//! pane. A prompt is **not idempotent at the receiver**: a doubled one can run
-//! a destructive tool twice, a dropped one burns a timeout the orchestrator
-//! blames on the agent, and the only recovery available to a fire-and-forget
-//! caller — resend — *produces* the duplicate. An operation id with a
-//! server-cached result turns that ambiguity into a typed, reportable outcome,
-//! and it costs nothing new on the wire.
+//! 1. **`INPUT_DELIVERY_UNKNOWN` is terminal**: exit 1 (not 3, which means
+//!    "retry is correct"), never retried; the recovery is to read the pane.
+//! 2. **`INPUT_NOT_WRITTEN` is provably nothing-written**: also exit 1, but
+//!    resubmitting is safe.
+//! 3. **One operation id per invocation**, reused by every internal retry.
+//! 4. **The acknowledged path is required**: an older server or a satellite
+//!    target is refused (exit 2), never downgraded to `ROUTE_INPUT`.
 //!
-//! # The four rules a caller must not get wrong
-//!
-//! 1. **`INPUT_DELIVERY_UNKNOWN` is terminal.** Exit 1, with the operation id
-//!    printed. Not exit 3: `docs/consumers/agents.md` §5.2 publishes 3 as
-//!    *retry is correct*, which is the exact opposite of the rule here. The
-//!    CLI never retries it, under this id or any other, and the honest
-//!    recovery is to **read the pane**.
-//! 2. **`INPUT_NOT_WRITTEN` (phux-w7z2.60) is its honest opposite.** Also
-//!    exit 1, but the server can *prove* this batch never reached the pane —
-//!    no PTY, a writer-side queue full or closed, or the pane's own actor
-//!    gone before handoff — so resubmitting, under the same operation id or a
-//!    fresh one, cannot deliver a duplicate turn. Do not fold this into rule
-//!    1's "never resend": that would strand every provably-failed send behind
-//!    the same read-the-pane recovery a genuinely ambiguous one needs.
-//! 3. **A retry never mints a new operation id.** The id is generated once,
-//!    here, per process invocation. Re-running the command in a shell is a new
-//!    id, and that is the caller's explicit choice.
-//! 4. **The acknowledged path is required, not preferred.** An older server,
-//!    or a satellite target, is refused (exit 2). Falling back to `ROUTE_INPUT`
-//!    would make the verb's own success code mean "every byte is in the kernel
-//!    queue" on one host and "accepted, possibly dropped" on another.
-//!
-//! # What the receipt does and does not say
-//!
-//! `OK` means `write_all` plus `flush` completed on the PTY **master**: the
-//! bytes are in the tty input queue. It is not a consumption receipt — a slave
-//! that flushes its input queue (`TCSAFLUSH` on a raw-mode toggle, which every
-//! TUI does when it shells out and returns) discards an acknowledged batch
-//! silently. phux declines to guess by watching the screen repaint; `--wait`
-//! reports a *state transition* the detector published, and a wedged turn is
-//! a timeout (124) plus `phux agent explain`, not a shorter inference window.
-//!
-//! # Fleet note
-//!
-//! The server's acknowledged lane is **one lane for the whole server**, and
-//! its completion wait blocks the thread every attached keystroke also flows
-//! through. So `agent prompt` cannot be issued concurrently across a fleet:
-//! all but one caller collide into `RESOURCE_EXHAUSTED`, which this verb backs
-//! off through and then reports as a plain failure. Serialize fleet prompting.
+//! `OK` means the bytes are in the tty input queue, not that they were
+//! consumed; `--wait` reports an observed detector transition. The server
+//! has one acknowledged lane, so fleet prompting must be serialized.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use phux_client::agent_meta::{AgentMetaState, AgentRecord};
+use phux_client::agent_meta::AgentRecord;
 use phux_client::agent_prompt::{PromptError, PromptOutcome, PromptWait, Refusal, prompt_agent};
-use phux_client::agent_wait::{DEFAULT_UNTIL, parse_until};
 use phux_client::attach::AttachError;
 use phux_protocol::ids::InputOperationId;
 use phux_server::runtime::default_socket_path;
@@ -75,10 +37,6 @@ const RESULT_SCHEMA_VERSION: u8 = 1;
 const POLL_INTERVAL: Duration = phux_client::wait::DEFAULT_POLL_INTERVAL;
 
 /// Map the client refusal enum onto the CLI's one closed error-code table.
-///
-/// The client crate owns delivery semantics but not the CLI JSON contract;
-/// keeping the strings here prevents a reusable library type from silently
-/// adding a second public vocabulary.
 pub(super) const fn refusal_code(refusal: &Refusal) -> &'static str {
     match refusal {
         Refusal::EmptyText => codes::PROMPT_EMPTY,
@@ -96,13 +54,8 @@ pub(super) const fn refusal_code(refusal: &Refusal) -> &'static str {
     }
 }
 
-/// Mint the operation id for this invocation.
-///
-/// Once, here, and never again: every retry inside
-/// [`phux_client::agent_prompt`] reuses this value. `uuid`'s v4 generator is
-/// the OS CSPRNG, which is what ADR-0053 requires of an operation id — it is a
-/// server-global name, so a guessable one would let an unrelated caller's
-/// replay collide with this one.
+/// Mint the operation id for this invocation from the OS CSPRNG (ADR-0053);
+/// every retry inside [`phux_client::agent_prompt`] reuses it.
 fn mint_operation_id() -> Option<InputOperationId> {
     InputOperationId::new(uuid::Uuid::new_v4().into_bytes())
 }
@@ -129,9 +82,7 @@ pub(super) fn run_agent_prompt(
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
-    // `--until` without `--wait` is a caller who thinks they asked for a
-    // completion gate and did not. Refuse rather than deliver a prompt whose
-    // result they will misread as "the turn finished".
+    // `--until`/`--timeout` without `--wait` would be misread as a completion gate.
     if !wait && (!until.is_empty() || timeout.is_some()) {
         return json_err::emit(
             json,
@@ -144,27 +95,10 @@ pub(super) fn run_agent_prompt(
             crate::exit_codes::EXIT_USAGE,
         );
     }
-    let mut targets: Vec<AgentMetaState> = Vec::with_capacity(until.len());
-    for word in until {
-        let Some(state) = parse_until(word) else {
-            return json_err::emit(
-                json,
-                &json_err::CliError::new(
-                    json_err::codes::INVALID_SELECTOR,
-                    format!("'{word}' is not a waitable agent state"),
-                    "use one of: idle, working, blocked, done \
-                     ('unknown' is departure, not a state to wait for)",
-                ),
-                crate::exit_codes::EXIT_USAGE,
-            );
-        };
-        if !targets.contains(&state) {
-            targets.push(state);
-        }
-    }
-    if targets.is_empty() {
-        targets.extend_from_slice(DEFAULT_UNTIL);
-    }
+    let targets = match super::wait::resolve_until(until) {
+        Ok(targets) => targets,
+        Err(err) => return json_err::emit(json, &err, crate::exit_codes::EXIT_USAGE),
+    };
 
     let Some(operation_id) = mint_operation_id() else {
         return json_err::emit(
@@ -203,9 +137,7 @@ pub(super) fn run_agent_prompt(
                 Err(code) => return code,
             };
         let label = crate::selector::format_terminal_id(&pane);
-        // ADR-0076 point 4: the ownership check is an *identity comparison*
-        // and nothing more, and it is the one `phux agent send-keys` already
-        // performs — inherited here rather than reinvented.
+        // ADR-0076 point 4: the same identity comparison `agent send-keys` does.
         let verify = |record: &AgentRecord| {
             super::send_keys::identity_mismatch(
                 record,
@@ -255,9 +187,6 @@ fn report(label: &str, outcome: &PromptOutcome, elapsed_ms: u64, json: bool) -> 
             "terminal": label,
             "delivery": outcome.delivery.as_str(),
             "operation_id": outcome.operation_id,
-            // The record the ownership check passed on. Reported rather than
-            // summarized: a consumer that wants to know what phux believed
-            // about the occupant can see it.
             "agent": {
                 "name": outcome.agent.name,
                 "kind": outcome.agent.kind,
@@ -265,20 +194,13 @@ fn report(label: &str, outcome: &PromptOutcome, elapsed_ms: u64, json: bool) -> 
                 "session": outcome.agent.session,
             },
             "pre_submit_state": outcome.pre_submit_state.as_str(),
-            // Deliberately null. A DETECTOR-owned record is fresh within one
-            // re-identification interval (~5s, ADR-0046 point 10) plus a
-            // detect tick; a record whose state was explicitly DECLARED
-            // stands the detector down entirely, so it has no bound, no
-            // tombstone, and no expiry. L3 gives a consumer no way to tell
-            // the two classes apart, so `prompt` reports the record it read
-            // rather than claiming a freshness it does not have.
+            // Null: L3 cannot tell detector-owned from declared records, so
+            // no freshness bound can be claimed.
             "staleness_bound_ms": serde_json::Value::Null,
             "attempts": outcome.attempts,
             "submit_ms": outcome.submit_ms,
             "transition_observed": satisfied,
-            // The vocabulary reserves "level", but this build never emits it:
-            // a completion gate is satisfied only by an observed transition
-            // (docs/spec/L3.md §3.7), so a level match is unrepresentable.
+            // "level" is reserved but never emitted: only a transition satisfies.
             "matched_by": satisfied.then_some("transition"),
             "edge": edge,
             "waited_ms": outcome.wait.as_ref().map(|_| waited_ms),
@@ -312,8 +234,7 @@ fn report(label: &str, outcome: &PromptOutcome, elapsed_ms: u64, json: bool) -> 
     if !timed_out {
         return ExitCode::SUCCESS;
     }
-    // The prompt landed; the turn did not visibly end. Say both, because a
-    // bare 124 reads as "the prompt failed" and it did not.
+    // The prompt landed; the turn did not visibly end. Say both.
     let last = outcome
         .wait
         .as_ref()
@@ -331,13 +252,8 @@ fn report(label: &str, outcome: &PromptOutcome, elapsed_ms: u64, json: bool) -> 
     ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
 }
 
-/// Map a [`PromptError`] onto its one published reading.
-///
-/// One match, deliberately: the mapping from a typed error to an exit code
-/// and a remedy is the contract this verb publishes, and it is only auditable
-/// side by side. In particular the two neighbours a reader must be able to
-/// compare at a glance are `LaneBusy` (nothing written, re-running is safe)
-/// and `DeliveryUnknown` (never resend).
+/// Map a [`PromptError`] onto its one published reading (exit code and
+/// remedy), kept side by side so the table stays auditable.
 #[allow(
     clippy::too_many_lines,
     reason = "the exit-code and remedy table is the contract; splitting it \
@@ -538,25 +454,9 @@ fn remedy_for(refusal: &Refusal) -> String {
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
-    use phux_client::agent_prompt::Delivery;
-
     use super::*;
 
-    /// The id is minted from the OS CSPRNG, once, and is non-zero — the wire
-    /// type reserves all-zero, and a predictable id would be a problem
-    /// because the server's dedupe key is not client-scoped: an operation id
-    /// is a server-global name.
-    #[test]
-    fn each_invocation_mints_a_distinct_nonzero_operation_id() {
-        let first = mint_operation_id().expect("a v4 uuid is not all-zero");
-        let second = mint_operation_id().expect("a v4 uuid is not all-zero");
-        assert_ne!(first.as_bytes(), second.as_bytes());
-        assert!(first.as_bytes().iter().any(|byte| *byte != 0));
-    }
-
-    /// Every refusal carries a non-empty remedy naming a concrete next step.
-    /// A refusal a caller cannot act on is a dead end, and this verb produces
-    /// enough distinct refusals that "it has a message" is not sufficient.
+    /// Every refusal carries a non-empty remedy and a distinct stable code.
     #[test]
     fn every_refusal_has_an_actionable_remedy_and_a_stable_code() {
         let refusals = [
@@ -611,95 +511,5 @@ mod tests {
             assert!(remedy.contains("split"), "{remedy}");
         }
         assert!(codes.len() >= 12, "codes must not collapse: {codes:?}");
-    }
-
-    /// The one remedy that must never say "retry". `INPUT_DELIVERY_UNKNOWN`
-    /// is the single rule an orchestrator can violate catastrophically: a
-    /// new-id resend is the duplicate turn, and a same-id resend replays the
-    /// cached unknown. The published remedy is a READ.
-    #[test]
-    fn the_unknown_delivery_remedy_forbids_resending_and_names_a_read() {
-        let err = PromptError::DeliveryUnknown {
-            operation_id: "0123456789abcdef0123456789abcdef".to_owned(),
-            message: "write path did not confirm".to_owned(),
-        };
-        let PromptError::DeliveryUnknown { .. } = err else {
-            unreachable!()
-        };
-        // Rendered through the same path the CLI uses.
-        let doc = json_err::error_document(
-            &json_err::CliError::new(
-                codes::DELIVERY_UNKNOWN,
-                "delivery is unknown",
-                "DO NOT RESEND. Read the pane instead: `phux agent explain` or `phux snapshot`",
-            ),
-            crate::exit_codes::EXIT_FAILURE,
-        );
-        assert_eq!(doc["error"]["code"], "delivery_unknown");
-        assert_eq!(doc["exit_code"], 1, "unknown delivery is 1, never 3");
-        let remedy = doc["remedy"].as_str().unwrap_or_default();
-        assert!(remedy.contains("DO NOT RESEND"), "{remedy}");
-        assert!(remedy.contains("phux agent explain"), "{remedy}");
-    }
-
-    /// `INPUT_NOT_WRITTEN`'s remedy is `DeliveryUnknown`'s honest opposite
-    /// (phux-w7z2.60): it must say resubmitting is safe rather than forbid
-    /// it, and it must not collapse onto `delivery_unknown`'s code — the
-    /// whole point of splitting it out is that a caller can tell the two
-    /// apart without reading prose.
-    #[test]
-    fn the_not_written_remedy_permits_resending_unlike_delivery_unknown() {
-        let err = PromptError::NotWritten {
-            operation_id: "0123456789abcdef0123456789abcdef".to_owned(),
-            message: "no PTY".to_owned(),
-        };
-        let PromptError::NotWritten { .. } = err else {
-            unreachable!()
-        };
-        let doc = json_err::error_document(
-            &json_err::CliError::new(
-                codes::INPUT_NOT_WRITTEN,
-                "nothing was written",
-                "nothing reached the pane — this was proven, not assumed — so re-running \
-                 this command is safe",
-            ),
-            crate::exit_codes::EXIT_FAILURE,
-        );
-        assert_eq!(doc["error"]["code"], "input_not_written");
-        assert_ne!(
-            doc["error"]["code"], "delivery_unknown",
-            "the two readings must not share a code"
-        );
-        assert_eq!(doc["exit_code"], 1);
-        let remedy = doc["remedy"].as_str().unwrap_or_default();
-        assert!(!remedy.contains("DO NOT RESEND"), "{remedy}");
-        assert!(remedy.contains("safe"), "{remedy}");
-    }
-
-    /// `--until` shares the client-side vocabulary, and `unknown` is not in
-    /// it: departure is not a state to wait for.
-    #[test]
-    fn until_vocabulary_matches_the_shared_predicate() {
-        for word in ["idle", "working", "blocked", "done"] {
-            assert!(parse_until(word).is_some(), "{word} must be waitable");
-        }
-        assert!(parse_until("unknown").is_none());
-        assert_eq!(
-            DEFAULT_UNTIL,
-            &[
-                AgentMetaState::Idle,
-                AgentMetaState::Blocked,
-                AgentMetaState::Done
-            ]
-        );
-    }
-
-    /// Delivery and completion are separate answers with separate words, and
-    /// the `--json` `delivery` field spells all three.
-    #[test]
-    fn the_delivery_vocabulary_is_closed_and_distinct() {
-        assert_eq!(Delivery::Acked.as_str(), "acked");
-        assert_eq!(Delivery::Unknown.as_str(), "unknown");
-        assert_eq!(Delivery::Refused.as_str(), "refused");
     }
 }

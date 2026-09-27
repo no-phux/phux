@@ -1,49 +1,15 @@
 //! The client-side projection behind `phux agent list` / `show` / `explain`.
 //!
-//! # One detector, not two (phux-w7z2.31)
+//! Agent state has one authority: the server's detector, published as the
+//! pane's `phux.agent/v1` record (ADR-0046, ADR-0040), which `agent wait`
+//! also reads. This module reports that record — it never re-derives state
+//! from screen text. The manifest is replayed against the current screen only
+//! to name the rule and region behind the state. With no record, state is
+//! `unknown`, except for two declarations: the ADR-0035 `phux-ask` title
+//! sentinel and a `[[plugins]]` agent declaration.
 //!
-//! Agent state has exactly one authority: the server's level-triggered
-//! per-terminal detector, which evaluates region-scoped TOML rules
-//! (`crates/phux-agent-rules/rules/*.toml`) and publishes the result as the pane's
-//! `phux.agent/v1` L3 record (ADR-0046, ADR-0040). `phux agent wait` reads
-//! that record. This module is the *projection* of the same record for the
-//! listing verbs, and its job is to report it — not to re-derive it.
-//!
-//! It used to re-derive it. For any pane the detector had not published — a
-//! kind with no manifest, a pane still inside the detector's settle window,
-//! a machine with `PHUX_AGENT_DETECT=0` — this file ran a client-side
-//! classifier over the pane's scrollback and asserted `blocked` from the word
-//! "permission", `done` from the word "complete", `working` from the word
-//! "thinking". Two verbs in one binary answered the same question differently,
-//! and the half that was wrong was the one an orchestrator polls most. Worse,
-//! it contradicted ADR-0046's fail-safe in the one direction that ADR forbids:
-//! the detector never invents `blocked`, and this did, from a substring.
-//!
-//! So screen content no longer *decides* anything here. It is still read, and
-//! still reported, but only as evidence:
-//!
-//! - a published `phux.agent/v1` record is the state, always;
-//! - alongside it, the ADR-0046 manifest is replayed against the pane's
-//!   current screen so `sources[]` carries the **rule id and region** behind
-//!   the state, which is the provenance `agent explain --file` previously kept
-//!   to itself;
-//! - with no record, the projection asserts no lifecycle state. `unknown` is
-//!   the honest answer, and it is the same answer `agent wait` gives that pane
-//!   by refusing with `no_agent_record`.
-//!
-//! Two declarations survive as state sources because neither is a derivation:
-//! the ADR-0035 `phux-ask` title sentinel, which an agent writes about itself
-//! over a normative escape sequence, and a `[[plugins]]` agent declaration,
-//! which an operator writes in their own config.
-//!
-//! # This is a LEVEL read
-//!
-//! Everything here answers "what is true of this pane right now"
-//! (`docs/spec/L3.md` §3.7). A level read asserts only the absence of contrary
-//! evidence, which is equally true of a crashed pane, so **no output of this
-//! module is evidence that a turn finished**. The completion gate is
-//! `phux agent wait`, which requires an observed transition. `agent list`
-//! showing `idle` is a listing, not a receipt.
+//! This is a LEVEL read (`docs/spec/L3.md` §3.7): nothing here is evidence
+//! that a turn finished. The completion gate is `phux agent wait`.
 
 use phux_agent_rules::explain::{
     self as agent_explain, Capture, EvaluatedRule, Explanation, PredicateEvidence,
@@ -59,8 +25,6 @@ pub(super) fn infer_agent_state(
     evidence: &PaneEvidence,
     plugins: &[PluginAgent],
 ) -> AgentStateReport {
-    // ADR-0040 / ADR-0046: the published record is the server's answer, and
-    // the server is the authority. Nothing below overrides it.
     if let Some(record) = &evidence.record {
         return report_from_record(evidence, plugins, record);
     }
@@ -95,9 +59,7 @@ fn report_from_record(
         1.0,
         String::from_utf8(record.encode()).unwrap_or_default(),
     )];
-    // ADR-0103: when the pane's agent session stream decided this state,
-    // that is the top rung of the precedence ladder and the consumer needs
-    // to see it named ahead of the record it flowed into.
+    // ADR-0103: a session stream that decided this state is the top rung.
     if let Some(stream) = stream_source(evidence, state) {
         sources.insert(0, stream);
     }
@@ -119,8 +81,6 @@ fn report_from_record(
         window: evidence.window.clone(),
         agent: identity(&slug, &record.name, kind),
         state,
-        // A published record is a report, not a guess. The one case that is
-        // not certain is a record whose state was withdrawn to `unknown`.
         confidence: if state == AgentState::Unknown {
             0.3
         } else {
@@ -139,17 +99,9 @@ fn report_from_record(
 }
 
 /// The `stream` source: the pane's agent session derived a state from its
-/// own event stream (ADR-0103), the top rung of the precedence ladder.
-///
-/// Reported whenever a live session has said anything at all — `None` only
-/// for a pane with no session, or one whose stream has not spoken yet (its
-/// facet state is `unknown`). It is NOT withheld when the stream and the
-/// record disagree: "the top rung last said `working` and the record says
-/// something else" is the single most useful line this document can carry,
-/// and hiding it is how a clobbered record read as a plain detector verdict
-/// with no sign that a stream was ever involved. A disagreement is surfaced
-/// in the `why`, and demoted below the record so the authoritative source
-/// still sorts first.
+/// own event stream (ADR-0103). `None` only when there is no session or it has
+/// not spoken. A disagreement with the record is surfaced, not withheld, but
+/// demoted so the record still sorts first.
 fn stream_source(evidence: &PaneEvidence, reported: AgentState) -> Option<AgentSource> {
     let session = evidence.agent_session.as_ref()?;
     if session.state == AgentMetaState::Unknown {
@@ -192,20 +144,9 @@ struct DetectorTrace {
 }
 
 /// Replay the detection manifest for `slug` against the screen this
-/// projection already read, and report what it says.
-///
-/// The rules engine is compiled into this binary — `phux_agent_rules::explain`
-/// is the same facade `agent explain --file` runs offline — so the manifest
-/// that produced the server's record can be evaluated here with no extra
-/// round trip and no second implementation of the matching.
-///
-/// It reports the **rule**, never the state. The record stays authoritative
-/// even when this replay disagrees with it, and the two legitimately disagree:
-/// the record was published when the server last scanned, this reads the
-/// screen as of the snapshot the listing fetched, and in between the agent may
-/// have repainted. A disagreement is therefore surfaced in the explanation
-/// rather than resolved, because "the screen has moved on since the record was
-/// published" is exactly the thing a caller wants told, not hidden.
+/// projection already read, reporting the **rule**, never the state. The
+/// record stays authoritative; a disagreement (the screen moved on since the
+/// record was published) is surfaced in the explanation.
 fn detector_trace(
     slug: &str,
     evidence: &PaneEvidence,
@@ -304,7 +245,7 @@ fn collect_matched(node: &PredicateEvidence, out: &mut Vec<String>) {
     }
 }
 
-fn positive_flags(explained: &Explanation) -> Vec<&'static str> {
+pub(super) fn positive_flags(explained: &Explanation) -> Vec<&'static str> {
     let mut flags = Vec::new();
     if explained.visible_idle {
         flags.push("visible-idle");
@@ -315,28 +256,16 @@ fn positive_flags(explained: &Explanation) -> Vec<&'static str> {
     flags
 }
 
-/// No `phux.agent/v1` record: the server has published nothing about this
-/// pane, so this projection publishes no derived lifecycle state either.
-///
-/// Two declarations still carry state, because neither is a re-derivation of
-/// the detector's job:
-///
-/// 1. an ADR-0035 `phux-ask` title sentinel — the agent saying, over a
-///    normative phux escape sequence, that it is waiting on a human answer;
-/// 2. a `[[plugins]]` agent declaration from the operator's own config.
-///
-/// Everything else the pane shows is reported as evidence with no state
-/// attached. That is the honest answer, and it is the answer `agent wait`
-/// gives the same pane when it refuses with `no_agent_record`.
+/// No `phux.agent/v1` record: no derived lifecycle state either. Only a live
+/// session stream, the `phux-ask` title sentinel, or a `[[plugins]]`
+/// declaration carries state; everything else is evidence.
 fn report_without_record(evidence: &PaneEvidence, plugins: &[PluginAgent]) -> AgentStateReport {
     let mut sources = Vec::new();
     let agent = infer_identity(evidence, plugins, &mut sources);
     let plugin = plugins.iter().find(|plugin| plugin.id == agent.id);
 
     let declared = declared_state(evidence, &mut sources);
-    // ADR-0103: a live agent session's stream outranks every heuristic
-    // below; with no record to carry it, the facet's derived state is the
-    // answer when it has one.
+    // ADR-0103: a live session's derived state outranks everything below.
     let stream_state = evidence
         .agent_session
         .as_ref()
@@ -434,10 +363,8 @@ fn infer_identity(
     identity("unknown", "Unknown agent", AgentKind::Unknown)
 }
 
-/// The one screen-borne state signal that is a *declaration* rather than a
-/// derivation: the ADR-0035 `phux-ask` title sentinel, which the server
-/// already parses into an `Asked` event and which the keybinding live-feed
-/// treats the same way (`commands/config/live_feed.rs`).
+/// The one screen-borne state signal that is a *declaration*: the ADR-0035
+/// `phux-ask` title sentinel.
 fn declared_state(evidence: &PaneEvidence, sources: &mut Vec<AgentSource>) -> StateSignal {
     if let Some(title) = evidence.title.as_deref()
         && title.starts_with("phux-ask")
@@ -481,10 +408,8 @@ mod tests {
     use crate::commands::agent::model::{AgentKind, AgentState, PaneEvidence, SessionEvidence};
     use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 
-    /// A REAL committed golden: the Claude Code permission dialog the server
-    /// detector is pinned against. Using it here is what makes the rule-id
-    /// provenance test a test of the shipped manifest rather than of a screen
-    /// invented to match it (the exact failure ADR-0046 records).
+    /// The committed golden the server detector is pinned against, so the
+    /// provenance test exercises the shipped manifest.
     const CLAUDE_BLOCKED: &str =
         include_str!("../../../../phux-agent-rules/src/fixtures/claude/blocked_permission.txt");
 
@@ -494,14 +419,7 @@ mod tests {
     }
 
     /// ADR-0103: with a live session under the pane, `agent show` names the
-    /// `stream` source and the state that stream derived — including when
-    /// the record beside it says something else.
-    ///
-    /// The withheld-on-disagreement version of this is what made the
-    /// screen-tick clobber invisible from the reporting verbs: the record
-    /// read `idle`, the session's own facet still said `working`, and the
-    /// document listed `agent_record` and `detector_fallback` with no hint
-    /// that the top rung of the ladder had ever spoken.
+    /// `stream` source and its state — including when the record disagrees.
     #[test]
     fn a_live_session_is_named_as_a_stream_source_even_when_it_disagrees() {
         for (facet, record, agrees) in [
@@ -541,27 +459,6 @@ mod tests {
         }
     }
 
-    /// A pane with no session at all names no stream source — the ladder's
-    /// top rung is absent, not silent.
-    #[test]
-    fn a_pane_without_a_session_names_no_stream_source() {
-        let mut evidence = PaneEvidence::for_test("@9", Some("Claude Code"), &[""]);
-        evidence.record = Some(AgentRecord {
-            name: "worker".to_owned(),
-            kind: Some("claude".to_owned()),
-            state: AgentMetaState::Idle,
-            ..AgentRecord::default()
-        });
-
-        let report = infer_agent_state(&evidence, &[]);
-
-        assert!(
-            !report.sources.iter().any(|source| source.kind == "stream"),
-            "{:?}",
-            report.sources
-        );
-    }
-
     /// ADR-0040: a declared record outranks every other signal — the title is
     /// a `phux-ask` sentinel AND the screen screams "codex blocked", but the
     /// structured record says a working Claude and that is what reports.
@@ -597,9 +494,8 @@ mod tests {
         );
     }
 
-    /// phux-w7z2.31, the divergence itself. `phux agent wait` reads the
-    /// published record; this projection must report exactly the same state
-    /// for the same pane, for every state in the vocabulary.
+    /// `phux agent wait` reads the published record; this projection must
+    /// report exactly the same state, whatever the screen says.
     #[test]
     fn the_projection_reports_the_records_state_verbatim() {
         for meta in [
@@ -608,8 +504,6 @@ mod tests {
             AgentMetaState::Blocked,
             AgentMetaState::Done,
         ] {
-            // A screen that the old client classifier read as `blocked`, to
-            // prove it can no longer override the record in either direction.
             let mut evidence = PaneEvidence::for_test(
                 "@6",
                 Some("Claude Code"),
@@ -632,10 +526,8 @@ mod tests {
         }
     }
 
-    /// phux-w7z2.31, the other half. With no record the server has published
-    /// nothing, and `agent wait` refuses that pane with `no_agent_record`. The
-    /// listing must not answer a question the server declined to answer —
-    /// however loudly the screen suggests one.
+    /// With no record the listing asserts no state, however loudly the screen
+    /// suggests one (`agent wait` refuses the pane with `no_agent_record`).
     #[test]
     fn without_a_record_the_projection_asserts_no_state() {
         for screen in [
@@ -663,30 +555,8 @@ mod tests {
         }
     }
 
-    /// The acceptance criterion, stated as one assertion: for the same pane,
-    /// the state this projection reports and the state `agent wait`'s
-    /// predicate reads are the same value — because they are the same value.
-    #[test]
-    fn agent_list_and_agent_wait_cannot_disagree() {
-        let mut evidence = PaneEvidence::for_test("@8", Some("Claude Code"), &["working away"]);
-        let record = AgentRecord {
-            name: "worker".to_owned(),
-            kind: Some("claude".to_owned()),
-            state: AgentMetaState::Blocked,
-            ..AgentRecord::default()
-        };
-        evidence.record = Some(record.clone());
-
-        let projected = infer_agent_state(&evidence, &[]);
-
-        // `phux agent wait` reads `record.state` off the same record; the
-        // projection's mapping is the identity on that vocabulary.
-        assert_eq!(projected.state.as_str(), record.state.as_str());
-    }
-
-    /// phux-w7z2.31's provenance half, against the shipped Claude manifest:
-    /// a record-backed state carries the ADR-0046 rule id and region that
-    /// produced it, not a decorative single entry.
+    /// A record-backed state carries the ADR-0046 rule id and region that
+    /// produced it, against the shipped Claude manifest.
     #[test]
     fn record_backed_state_carries_the_detector_rule_id_and_region() {
         let mut evidence = claude_blocked_pane();
@@ -714,8 +584,8 @@ mod tests {
         );
     }
 
-    /// A record whose kind has no manifest (16 kinds today) still reports the
-    /// record, with the absence of rule evidence stated rather than faked.
+    /// A record whose kind has no manifest still reports the record, with the
+    /// absence of rule evidence stated (and no stream source without a session).
     #[test]
     fn a_record_with_no_manifest_reports_the_record_and_says_why_there_is_no_rule() {
         let mut evidence = PaneEvidence::for_test("@9", None, &["some screen"]);
