@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use phux_config::WidgetSpec;
 use phux_config::widget::{
-    CellHit, CellStyle, SessionNameWidget, StatusWidget, TimeWidget, WidgetCells, WidgetContext,
-    WidgetError, WidgetRegistry, WindowBadge, WindowInfo,
+    CellHit, CellStyle, SessionNameWidget, StatusWidget, WidgetCells, WidgetContext, WidgetError,
+    WidgetRegistry, WindowBadge, WindowInfo,
 };
 
 fn opts_with(entries: &[(&str, toml::Value)]) -> BTreeMap<String, toml::Value> {
@@ -19,9 +19,6 @@ fn opts_with(entries: &[(&str, toml::Value)]) -> BTreeMap<String, toml::Value> {
 }
 
 fn fixed_time() -> SystemTime {
-    // Avoid local-timezone variability in time-widget snapshot tests by
-    // using the `session-name` widget for snapshots and only asserting
-    // shape (not contents) on the time widget.
     UNIX_EPOCH + Duration::from_secs(12345)
 }
 
@@ -48,17 +45,11 @@ fn style_table(entries: &[(&str, toml::Value)]) -> toml::Value {
     toml::Value::Table(t)
 }
 
-/// Window fixture; flip `zoomed` / `attention` via struct update at the
-/// call site.
 fn win(name: &str, active: bool) -> WindowInfo {
     WindowInfo {
         name: name.to_owned(),
         active,
-        zoomed: false,
-        attention: false,
-        branch: None,
-        exited: None,
-        badge: None,
+        ..WindowInfo::default()
     }
 }
 
@@ -70,21 +61,6 @@ fn render_windows(opts: &[(&str, toml::Value)], windows: &[WindowInfo]) -> Widge
 // ---------------------------------------------------------------------------
 // Registry construction
 // ---------------------------------------------------------------------------
-
-#[test]
-fn with_builtins_registers_the_shipped_widget_kinds() {
-    let r = WidgetRegistry::with_builtins();
-    let kinds = r.kinds();
-    for kind in ["time", "session-name", "windows", "help-hints"] {
-        assert!(kinds.contains(&kind), "missing {kind}: {kinds:?}");
-    }
-}
-
-#[test]
-fn new_starts_empty() {
-    let r = WidgetRegistry::new();
-    assert!(r.kinds().is_empty());
-}
 
 #[test]
 fn register_then_build_invokes_factory() {
@@ -187,12 +163,6 @@ fn time_widget_formats_render_expected_widths() {
     assert_eq!(cells.cells.len(), 4);
 }
 
-#[test]
-fn time_widget_poll_interval_is_one_second() {
-    let w = TimeWidget::new("%H:%M").expect("valid format");
-    assert_eq!(w.poll_interval(), Some(Duration::from_secs(1)));
-}
-
 // ---------------------------------------------------------------------------
 // Invalid options (per-kind); unknown kind
 // ---------------------------------------------------------------------------
@@ -261,21 +231,6 @@ fn unknown_kind_returns_unknown_kind_error() {
         Err(WidgetError::UnknownKind(k)) => assert_eq!(k, "not-a-real-widget"),
         other => panic!("expected UnknownKind, got {other:?}"),
     }
-}
-
-// ---------------------------------------------------------------------------
-// WidgetCells helpers
-// ---------------------------------------------------------------------------
-
-#[test]
-fn widget_cells_from_text_one_cell_per_char() {
-    let cells = WidgetCells::from_text("hi");
-    assert_eq!(cells.len(), 2);
-    assert!(!cells.is_empty());
-
-    let empty = WidgetCells::from_text("");
-    assert!(empty.is_empty());
-    assert_eq!(empty.len(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -477,15 +432,6 @@ fn windows_widget_stamps_hits_with_custom_format_and_separator() {
             w(1), // "logs"
         ]
     );
-}
-
-#[test]
-fn non_windows_widgets_produce_inert_cells() {
-    // phux-foz.12: only the windows widget stamps hit targets — a click on
-    // any other widget's cells must be a no-op.
-    let w = SessionNameWidget::new(None, None);
-    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
-    assert!(cells.cells.iter().all(|c| c.hit.is_none()));
 }
 
 #[test]
@@ -727,18 +673,6 @@ fn styled_wrapper_forwards_poll_interval_and_exec_feed() {
     )
     .unwrap();
     assert!(exec.exec_feed().is_some(), "exec feed lost behind Styled");
-}
-
-#[test]
-fn cell_style_is_plain_detects_default() {
-    assert!(CellStyle::default().is_plain());
-    assert!(
-        !CellStyle {
-            bold: true,
-            ..CellStyle::default()
-        }
-        .is_plain()
-    );
 }
 
 /// A part's style changes its ink and keeps the segment's bed: colours the

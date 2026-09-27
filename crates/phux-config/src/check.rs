@@ -17,7 +17,6 @@ use std::path::Path;
 use serde_path_to_error::Segment;
 
 use crate::keybind::{KeybindError, Resolver, parse_chord, parse_chord_sequence};
-use crate::schema::{Widget, WidgetSpec};
 use crate::widget::{WidgetError, WidgetRegistry};
 use crate::{
     Action, Config, ConfigError, ConfigProvenance, DefaultsCfg, HookEntry, KeybindingsCfg,
@@ -424,14 +423,7 @@ fn status_widget_findings(
     ] {
         let table_path = format!("status.{slot}");
         for (index, entry) in widgets.iter().enumerate() {
-            let spec = match entry {
-                Widget::Bare(kind) => WidgetSpec {
-                    kind: kind.clone(),
-                    opts: BTreeMap::new(),
-                },
-                Widget::Spec(spec) => spec.clone(),
-            };
-            let Err(error) = registry.build(&spec) else {
+            let Err(error) = registry.build(&entry.to_spec()) else {
                 continue;
             };
             let (fault, message) = match error {
@@ -611,6 +603,7 @@ mod tests {
     /// Each fault class: located at its full path, classified, and carrying
     /// the fix-oriented text (suggestion, maximum, valid keys).
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one case table")]
     fn each_mistake_is_located_classified_and_explained() {
         let floor = phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES.to_string();
         let cases: &[(&str, &str, Fault, &[&str])] = &[

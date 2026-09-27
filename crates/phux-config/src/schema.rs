@@ -489,6 +489,20 @@ pub enum Widget {
     Spec(WidgetSpec),
 }
 
+impl Widget {
+    /// The long form of this entry (a bare kind has no options).
+    #[must_use]
+    pub(crate) fn to_spec(&self) -> WidgetSpec {
+        match self {
+            Self::Bare(kind) => WidgetSpec {
+                kind: kind.clone(),
+                opts: BTreeMap::new(),
+            },
+            Self::Spec(spec) => spec.clone(),
+        }
+    }
+}
+
 /// Long-form widget spec; options are validated per kind by the registry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WidgetSpec {

@@ -1,19 +1,9 @@
-//! `exec` widget — render the output of a user-supplied program
-//! (phux-r82.6, `docs/consumers/tui.md` §8.3).
+//! `exec` widget — the first output line of a user-supplied program
+//! (`docs/consumers/tui.md` §8.3).
 //!
-//! The widget itself never runs anything: it renders a **cached** cell
-//! strip behind an [`ExecFeed`] handle. The host (the TUI client) walks
-//! the composed bar for feeds ([`crate::widget::StatusBar::exec_feeds`]),
-//! runs each feed's command on its interval as a bounded child process
-//! (`kill_on_drop`, like plugin actions), and pushes captured stdout
-//! through [`ExecFeed::apply_output`]. Render therefore never blocks the
-//! paint loop — the bar shows the last completed run (empty until the
-//! first one lands).
-//!
-//! `parse-ansi` (default `true`) interprets SGR escape sequences in the
-//! output into per-cell [`CellStyle`]s; with it off (and for every
-//! non-SGR escape either way) escapes are stripped. Only the first output
-//! line renders — the bar is one row.
+//! The widget never runs anything: the host runs each [`ExecFeed`]'s command
+//! on its interval and pushes stdout through [`ExecFeed::apply_output`], so
+//! render only reads a cached strip and never blocks the paint loop.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -24,11 +14,8 @@ use crate::widget::{
     WidgetOptSpec, reject_unknown_opts,
 };
 
-/// Widget kind, used in error messages.
 const KIND: &str = "exec";
 
-/// Doc spec — the factory validates against this same const, so the
-/// documented option surface is the enforced one (phux-i0e8.11.3).
 pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
     kind: KIND,
     summary: "The first output line of a user-supplied command, run by the \
@@ -60,33 +47,23 @@ pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
         },
     ],
 };
-/// Default run interval (documented in [`SPEC`]).
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
-/// Interval floor. The bar's repaint tick is 1s, so a faster cadence
-/// would only burn child processes without ever being visible.
+/// The bar repaints once a second, so a faster cadence is never visible.
 const MIN_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Shared handle between an [`ExecWidget`] (reader) and the host's
-/// interval runner (writer).
-///
-/// Cheap to clone (`Arc` inside); the widget and every clone see the same
-/// cached cells.
+/// Shared handle between an [`ExecWidget`] (reader) and the host's interval
+/// runner (writer); clones share one cache.
 #[derive(Debug, Clone)]
 pub struct ExecFeed {
-    /// Command argv; `argv[0]` is the program. A TOML string command is
-    /// pre-resolved to `["/bin/sh", "-c", cmd]` at build time.
+    /// Command argv; a TOML string command resolves to `/bin/sh -c`.
     argv: Vec<String>,
-    /// Run cadence (floored to 1s).
     interval: Duration,
-    /// Whether [`Self::apply_output`] interprets SGR escapes into cell
-    /// styles (`true`) or strips them (`false`).
+    /// Interpret SGR escapes into cell styles, or strip them.
     parse_ansi: bool,
-    /// The cached strip [`ExecWidget::render`] returns.
     cells: Arc<Mutex<WidgetCells>>,
 }
 
 impl ExecFeed {
-    /// Build a feed with an empty cache.
     fn new(argv: Vec<String>, interval: Duration, parse_ansi: bool) -> Self {
         Self {
             argv,
@@ -109,8 +86,7 @@ impl ExecFeed {
     }
 
     /// Fold one completed run's stdout into the cached strip: first line
-    /// only, SGR-parsed or escape-stripped per `parse-ansi`. Called by the
-    /// host's runner task; the paint loop only ever reads.
+    /// only, SGR-parsed or escape-stripped per `parse-ansi`.
     pub fn apply_output(&self, stdout: &str) {
         let line = stdout.lines().next().unwrap_or("");
         let cells = if self.parse_ansi {
@@ -123,7 +99,6 @@ impl ExecFeed {
         }
     }
 
-    /// Snapshot the cached strip (the widget's render).
     fn snapshot(&self) -> WidgetCells {
         self.cells
             .lock()
@@ -161,22 +136,6 @@ impl StatusWidget for ExecWidget {
     }
 }
 
-/// Factory: builds an [`ExecWidget`] from a TOML `opts` map.
-///
-/// Accepted keys (per [`SPEC`], rendered into `docs/reference/widgets.md`):
-/// - `command` (required) — a string (run via `/bin/sh -c`, so `~` and
-///   `$VAR` expand) or a non-empty array of strings (argv, run directly).
-/// - `interval` (optional, default `"5s"`) — a duration string
-///   (`"500ms"`, `"30s"`, `"2m"`, `"1h"`) or an integer second count.
-///   Floored to 1s.
-/// - `parse-ansi` (bool, optional, default `true`; `parse_ansi` also
-///   accepted) — interpret SGR escapes into cell styles.
-///
-/// # Errors
-///
-/// Returns [`WidgetError::InvalidOption`] on an unknown option, when
-/// `command` is missing, empty, or wrong-typed, or when `interval` /
-/// `parse-ansi` do not parse.
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
@@ -239,14 +198,11 @@ pub(in crate::widget) fn factory(
 }
 
 fn invalid(message: String) -> WidgetError {
-    WidgetError::InvalidOption {
-        kind: KIND.to_owned(),
-        message,
-    }
+    crate::widget::invalid(KIND, message)
 }
 
-/// Parse a duration string: a positive integer followed by `ms`, `s`,
-/// `m`, or `h`. A bare integer reads as seconds.
+/// Parse a positive integer followed by `ms`, `s`, `m`, or `h` (bare means
+/// seconds).
 fn parse_duration(s: &str) -> Result<Duration, WidgetError> {
     let s = s.trim();
     let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
@@ -271,10 +227,8 @@ fn parse_duration(s: &str) -> Result<Duration, WidgetError> {
 // ANSI / SGR line parsing
 // ---------------------------------------------------------------------------
 
-/// Interpret one line of program output into styled cells: SGR (`CSI …
-/// m`) sequences update the running [`CellStyle`]; every other escape
-/// sequence and control byte is stripped.
-#[must_use]
+/// Interpret one output line into styled cells: SGR sequences update the
+/// running [`CellStyle`]; every other escape and control byte is stripped.
 fn parse_ansi_line(line: &str) -> WidgetCells {
     let mut cells = Vec::new();
     let mut style = CellStyle::default();
@@ -284,8 +238,7 @@ fn parse_ansi_line(line: &str) -> WidgetCells {
             match chars.peek() {
                 Some('[') => {
                     chars.next();
-                    // CSI: collect parameter/intermediate bytes up to the
-                    // final byte (0x40..=0x7e). Apply only `m` (SGR).
+                    // CSI: parameters up to the final byte; apply only SGR.
                     let mut params = String::new();
                     let mut is_sgr = false;
                     for n in chars.by_ref() {
@@ -313,9 +266,7 @@ fn parse_ansi_line(line: &str) -> WidgetCells {
                     }
                 }
                 _ => {
-                    // Two-char escape (ESC x): drop the introducer + one.
-                    // Charset designations (ESC ( X and friends) carry one
-                    // more byte.
+                    // Two-char escape; charset designations carry one more.
                     if let Some(n) = chars.next()
                         && matches!(n, '(' | ')' | '*' | '+')
                     {
@@ -343,8 +294,8 @@ fn strip_escapes(line: &str) -> String {
         .collect()
 }
 
-/// Fold one SGR parameter list (the bytes between `CSI` and `m`) into a
-/// running [`CellStyle`]. Unknown parameters are ignored.
+/// Fold one SGR parameter list into a running [`CellStyle`], ignoring
+/// unknown parameters.
 fn apply_sgr(style: &mut CellStyle, params: &str) {
     let mut iter = params.split(';').map(|p| {
         if p.is_empty() {
@@ -390,10 +341,8 @@ fn apply_sgr(style: &mut CellStyle, params: &str) {
     }
 }
 
-/// Consume an extended-color payload after a `38` / `48` parameter:
-/// `5;n` (256-color index, rendered as a decimal index string) or
-/// `2;r;g;b` (truecolor, rendered as `#rrggbb`). Returns `None` on a
-/// malformed payload, which aborts the whole SGR sequence.
+/// Consume an extended-color payload after `38` / `48`: `5;n` (256-color
+/// index) or `2;r;g;b` (`#rrggbb`). `None` aborts the whole sequence.
 fn extended_color<I>(iter: &mut I) -> Option<String>
 where
     I: Iterator<Item = Result<u16, std::num::ParseIntError>>,
@@ -441,25 +390,14 @@ mod tests {
     }
 
     #[test]
-    fn string_command_resolves_to_sh_dash_c() {
-        let w = build(&[("command", toml::Value::String("echo hi".to_owned()))]).unwrap();
+    fn string_command_runs_via_sh_and_array_is_argv() {
+        let w = build(&[("command", "echo hi".into())]).unwrap();
         let feed = w.exec_feed().expect("exec widget exposes a feed");
         assert_eq!(feed.argv(), ["/bin/sh", "-c", "echo hi"]);
         assert_eq!(feed.interval(), Duration::from_secs(5), "doc default 5s");
-    }
 
-    #[test]
-    fn array_command_is_argv_verbatim() {
-        let w = build(&[(
-            "command",
-            toml::Value::Array(vec![
-                toml::Value::String("battery".to_owned()),
-                toml::Value::String("--percent".to_owned()),
-            ]),
-        )])
-        .unwrap();
-        let feed = w.exec_feed().unwrap();
-        assert_eq!(feed.argv(), ["battery", "--percent"]);
+        let w = build(&[("command", vec!["battery", "--percent"].into())]).unwrap();
+        assert_eq!(w.exec_feed().unwrap().argv(), ["battery", "--percent"]);
     }
 
     #[test]
@@ -529,22 +467,12 @@ mod tests {
         assert!(a.bold);
         assert_eq!(a.fg.as_deref(), Some("1"));
         assert!(cells.cells[1].style.is_none(), "B reset to plain");
-    }
 
-    #[test]
-    fn parse_ansi_extended_colors() {
         let cells = parse_ansi_line("\u{1b}[38;5;208mX\u{1b}[48;2;16;32;48mY");
-        assert_eq!(
-            cells.cells[0].style.as_ref().unwrap().fg.as_deref(),
-            Some("208")
-        );
         let y = cells.cells[1].style.as_ref().unwrap();
         assert_eq!(y.bg.as_deref(), Some("#102030"));
         assert_eq!(y.fg.as_deref(), Some("208"), "fg persists across cells");
-    }
 
-    #[test]
-    fn parse_ansi_bright_and_reset_params() {
         let cells = parse_ansi_line("\u{1b}[97;100mZ\u{1b}[39;49mQ");
         let z = cells.cells[0].style.as_ref().unwrap();
         assert_eq!(z.fg.as_deref(), Some("15"), "97 = bright white = idx 15");
