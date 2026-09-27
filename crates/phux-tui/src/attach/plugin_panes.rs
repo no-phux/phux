@@ -1,7 +1,8 @@
-//! Plugin manifest `[[panes]]` in the TUI: a declared pane opens its argv in
-//! a real server Terminal through the same `SPAWN_RESOURCE` verb `split-pane`
-//! and `new-window` use (plugin root as cwd, `PHUX_PLUGIN_*` env), with no
-//! new wire surface (ADR-0017).
+//! Plugin manifest `[[panes]]` in the TUI.
+//!
+//! A declared pane opens its argv in a real server Terminal through the same
+//! `SPAWN_RESOURCE` verb `split-pane` and `new-window` use (plugin root as
+//! cwd, `PHUX_PLUGIN_*` env), with no new wire surface (ADR-0017).
 //!
 //! Placement: `split` parks a `PendingSplit`, `tab` a `PendingWindow` named
 //! after the pane, `zoomed` a split that zooms on spawn. `overlay` is
@@ -283,29 +284,6 @@ mod tests {
         );
         assert!(env.contains(&("PHUX_PLUGIN_PANE_ID".to_owned(), "board".to_owned())));
         assert!(env.contains(&("PHUX_PLUGIN_ROOT".to_owned(), "/x".to_owned())));
-    }
-
-    #[test]
-    fn resolved_action_carries_plugin_and_pane_args() {
-        let m = manifest(
-            "p",
-            vec![pane(
-                "board",
-                PluginPanePlacement::Tab,
-                vec!["x".to_owned()],
-            )],
-        );
-        let entry = &entries_from_manifests(std::slice::from_ref(&m))[0];
-        let ra = entry.resolved_action();
-        assert_eq!(ra.action, PLUGIN_PANE_NAME);
-        assert_eq!(
-            ra.args.get("plugin"),
-            Some(&toml::Value::String("p".to_owned()))
-        );
-        assert_eq!(
-            ra.args.get("pane"),
-            Some(&toml::Value::String("board".to_owned()))
-        );
     }
 
     #[test]

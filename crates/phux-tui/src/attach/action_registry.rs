@@ -441,10 +441,11 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
     },
 ];
 
-/// The palette rows: [`REGISTRY`] grouped under [`Category`] headers with
-/// indented rows annotated by their bound chord (`"unbound"` without one or
-/// without a config), then enabled plugins' actions and hostable panes under
-/// a trailing **Plugin** header, committing `plugin-action` / `plugin-pane`.
+/// The palette rows.
+///
+/// [`REGISTRY`] grouped under [`Category`] headers, each row annotated by its
+/// bound chord (`"unbound"` without one or without a config), then enabled
+/// plugins' actions and panes under a trailing **Plugin** header.
 #[must_use]
 pub fn palette_items(
     keybindings: Option<&KeybindingsCfg>,

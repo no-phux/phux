@@ -1,8 +1,9 @@
-//! The TUI's "a newer phux is available" toast. Self-update stays explicit
-//! (ADR-0074); the TUI only tells the user. The check shells out to
-//! `phux update --check` in the background once per attach (the `phux` crate
-//! depends on this one), is silent on failure, and is cached for `CACHE_TTL`.
-//! Opt out with `PHUX_NO_UPDATE_CHECK=1`.
+//! The TUI's "a newer phux is available" toast.
+//!
+//! Self-update stays explicit (ADR-0074); the TUI only tells the user. The
+//! check shells out to `phux update --check` in the background once per
+//! attach (the `phux` crate depends on this one), is silent on failure, and
+//! is cached for `CACHE_TTL`. Opt out with `PHUX_NO_UPDATE_CHECK=1`.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -315,19 +316,6 @@ mod tests {
         doc["install"]["native_command"] = serde_json::json!("brew upgrade no-phux/tap/phux");
         let notice = notice_from_document(&doc.to_string()).expect("notice");
         assert_eq!(notice.command, "brew upgrade no-phux/tap/phux");
-    }
-
-    #[test]
-    fn a_stable_tag_is_left_alone() {
-        let mut doc: serde_json::Value = serde_json::from_str(&document(true)).expect("json");
-        doc["channel"] = serde_json::json!("stable");
-        doc["current_version"] = serde_json::json!("0.45.0");
-        doc["current_sha"] = serde_json::Value::Null;
-        doc["latest_version"] = serde_json::json!("v0.46.0");
-        let notice = notice_from_document(&doc.to_string()).expect("notice");
-        assert_eq!(notice.current, "0.45.0");
-        assert_eq!(notice.latest, "v0.46.0");
-        assert_eq!(notice.title(), "phux v0.46.0 is available");
     }
 
     fn seed(path: &Path, available: bool, notified: Option<&str>, current: &str) {

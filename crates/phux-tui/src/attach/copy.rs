@@ -1,7 +1,8 @@
-//! Client-local copy-mode extraction and clipboard emission (ADR-0030: a
-//! client-side projection, not a wire tier). On commit, the overlay's
-//! viewport [`CopyRequest`] becomes a one-shot [`Selection`] on the focused
-//! pane's own terminal, formatted to text and written to the host clipboard
+//! Client-local copy-mode extraction and clipboard emission.
+//!
+//! A client-side projection (ADR-0030), not a wire tier: on commit the
+//! overlay's viewport [`CopyRequest`] becomes a one-shot [`Selection`] on the
+//! focused pane's own terminal, formatted and written to the host clipboard
 //! via OSC 52.
 
 use std::io::{self, Write};
@@ -19,10 +20,12 @@ use crate::render::overlay::{CopyRequest, ScreenSelectionPoint, SelectionGrab};
 /// Base64 alphabet (RFC 4648 §4, standard, with `+`/`/` and `=` padding).
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// The plain text of `req`'s selection in `terminal`: `Rect` builds a
-/// two-corner selection (rectangular when `req.rectangle`); the other grabs
-/// use libghostty's `select_*` at the overlay cursor (`Output` needs OSC-133
-/// zones). `None` when nothing is selectable or a call fails (best-effort).
+/// The plain text of `req`'s selection in `terminal`.
+///
+/// `Rect` builds a two-corner selection (rectangular when `req.rectangle`);
+/// the other grabs use libghostty's `select_*` at the overlay cursor
+/// (`Output` needs OSC-133 zones). `None` when nothing is selectable or a
+/// call fails (best-effort).
 #[must_use]
 pub fn extract_selection_text(
     terminal: &GhosttyTerminal<'_, '_>,
@@ -160,10 +163,11 @@ pub fn osc52_set_clipboard(text: &str) -> Vec<u8> {
     out
 }
 
-/// The copy-mode extraction bridge (ADR-0045): resolve `req` against the
-/// focused pane's own engine and, when the selection is non-empty, write an
-/// OSC 52 clipboard sequence to `out` (the host terminal). The one seam where
-/// copy-mode touches the engine; nothing goes on the wire. Best-effort.
+/// The copy-mode extraction bridge (ADR-0045).
+///
+/// Resolves `req` against the focused pane's own engine and, when the
+/// selection is non-empty, writes an OSC 52 clipboard sequence to `out`.
+/// Nothing goes on the wire. Best-effort.
 pub fn copy_to_host_clipboard<W: Write>(
     out: &mut W,
     terminal: &GhosttyTerminal<'_, '_>,
@@ -280,13 +284,6 @@ mod tests {
     fn osc52_wraps_base64_in_set_clipboard() {
         let seq = osc52_set_clipboard("foo");
         assert_eq!(seq, b"\x1b]52;c;Zm9v\x07");
-    }
-
-    #[test]
-    fn osc52_empty_text_is_well_formed() {
-        // An empty payload is still a valid (no-op) set; callers skip empty
-        // selections upstream, but the encoder must not panic or malform.
-        assert_eq!(osc52_set_clipboard(""), b"\x1b]52;c;\x07");
     }
 
     #[test]

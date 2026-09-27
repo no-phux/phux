@@ -67,9 +67,10 @@ pub use attach_role::set_attach_role;
 
 pub use crate::multi_pane;
 
-/// The output sink the attach driver composites into: a pure byte sink
-/// (stdout, a `Vec<u8>` capture, any `Write`) threaded through the whole
-/// render path. Chrome is rasterized to VT bytes before it reaches here.
+/// The output sink the attach driver composites into.
+///
+/// A pure byte sink (stdout, a `Vec<u8>` capture, any `Write`) threaded
+/// through the whole render path; chrome is rasterized to VT bytes first.
 pub trait RenderSink: std::io::Write {}
 impl<T: std::io::Write + ?Sized> RenderSink for T {}
 

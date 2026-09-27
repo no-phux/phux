@@ -305,9 +305,11 @@ fn merged_keybindings(cfg: &Config, plugin_actions: &[PluginActionEntry]) -> Key
 }
 
 /// Compose the status-bar painter from a config plus enabled plugins'
-/// manifests: the one composition point shared by the tolerant and strict
-/// builds (they once drifted, resetting `position` on reload). Plugin
-/// widgets merge after the user's own. `Ok(None)` ⇒ an empty bar.
+/// manifests.
+///
+/// The one composition point shared by the tolerant and strict builds (they
+/// once drifted, resetting `position` on reload). Plugin widgets merge after
+/// the user's own. `Ok(None)` ⇒ an empty bar.
 ///
 /// # Errors
 ///

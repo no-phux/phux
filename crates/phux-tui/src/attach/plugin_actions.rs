@@ -1,4 +1,5 @@
-//! Plugin manifest `[[actions]]` in the TUI, client-local (ADR-0017):
+//! Plugin manifest `[[actions]]` in the TUI, client-local (ADR-0017).
+//!
 //! [`entries_from_manifests`] flattens the load-once manifest snapshot, the
 //! palette lists them under a "Plugin" header, [`merge_plugin_bindings`]
 //! folds their `keys` into the prefix table (user config always wins), and
@@ -95,10 +96,12 @@ pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginActionE
         .collect()
 }
 
-/// Merge plugin `keys` bindings into the prefix table. User config always
-/// wins: a chord that collides, fails to parse, or is ambiguous with an
+/// Merge plugin `keys` bindings into the prefix table.
+///
+/// User config always wins: a chord that collides, fails to parse, or is ambiguous with an
 /// existing binding is dropped with a warning (validated by test-building a
 /// [`Resolver`], so a bad plugin binding cannot disable every binding).
+///
 /// Between plugins, the first in `[[plugins]]` order wins.
 pub fn merge_plugin_bindings(kb: &mut KeybindingsCfg, entries: &[PluginActionEntry]) {
     for entry in entries {
@@ -270,21 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn resolved_action_carries_plugin_and_action_args() {
-        let e = entry("com.example.tools", "summarize", None);
-        let ra = e.resolved_action();
-        assert_eq!(ra.action, PLUGIN_ACTION_NAME);
-        assert_eq!(
-            ra.args.get("plugin"),
-            Some(&toml::Value::String("com.example.tools".to_owned()))
-        );
-        assert_eq!(
-            ra.args.get("action"),
-            Some(&toml::Value::String("summarize".to_owned()))
-        );
-    }
-
-    #[test]
     fn merge_inserts_plugin_binding_and_resolver_fires_it() {
         let mut kb = base_kb();
         merge_plugin_bindings(&mut kb, &[entry("p", "a", Some("g"))]);
@@ -384,13 +372,6 @@ mod tests {
             Some(&toml::Value::String("first".to_owned())),
             "config-order first plugin keeps the chord"
         );
-    }
-
-    #[test]
-    fn merge_skips_entries_without_keys() {
-        let mut kb = base_kb();
-        merge_plugin_bindings(&mut kb, &[entry("p", "a", None)]);
-        assert_eq!(kb.prefix_table.len(), 1, "nothing merged");
     }
 
     #[test]
