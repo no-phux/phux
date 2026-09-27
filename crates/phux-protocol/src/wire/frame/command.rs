@@ -1,5 +1,5 @@
 //! Control-plane command, result, and agent-event types — SPEC §5
-//! (phux-k61 / ADR-0021) and SPEC §7.5 (phux-y2t / ADR-0022).
+//! (ADR-0021) and SPEC §7.5 (ADR-0022).
 
 use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, ResourceId, ResourceKind};
 use crate::input::InputEvent;
@@ -7,13 +7,8 @@ use crate::wire::info::SessionSnapshot;
 
 use super::ErrorCode;
 
-// -----------------------------------------------------------------------------
-// Control-plane command types — SPEC §5 (phux-k61 / ADR-0021).
-// -----------------------------------------------------------------------------
-
-/// Semantic event type discriminant for filtering in `SubscribeResourceEvents`.
-/// Enables clients to subscribe only to event classes they care about
-/// (e.g., command lifecycle without grid chatter).
+wire_enum! { to_u8 / from_u8;
+/// Event class filter for [`Command::SubscribeResourceEvents`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceEventType {
     /// Shell state transition (awaiting input → running → idle).
@@ -31,36 +26,9 @@ pub enum ResourceEventType {
     /// Working directory changed.
     CwdChanged = 6,
 }
-
-impl ResourceEventType {
-    /// Convert to wire byte representation.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Convert from wire byte representation.
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::ShellStateChanged),
-            1 => Some(Self::CommandStarted),
-            2 => Some(Self::CommandEnded),
-            3 => Some(Self::OutputReceived),
-            4 => Some(Self::PromptReady),
-            5 => Some(Self::GridChanged),
-            6 => Some(Self::CwdChanged),
-            _ => None,
-        }
-    }
 }
 
-/// Scope argument for [`Command::GetState`] (SPEC §5.1).
-///
-/// `#[non_exhaustive]`: v0.1 exposes only `Server` (the whole-server
-/// snapshot, which is what `phux ls` and client-side selector resolution
-/// need). Narrower scopes (a single Group, a single Terminal) are
-/// additive minor changes when L2 lands — see [ADR-0021](../../../../../docs/adr/0021-control-plane-commands.md).
+/// Scope argument for [`Command::GetState`] (SPEC §5.1, ADR-0021).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StateScope {
@@ -68,46 +36,22 @@ pub enum StateScope {
     Server,
 }
 
+wire_enum! { to_u8 / from_u8;
 /// Acquisition mode for [`Command::AcquireInput`] (ADR-0033).
-///
-/// `Cooperative` grants the input lease only if the Terminal is currently
-/// `Open` (unheld) — a polite request that fails with
-/// [`ErrorCode::InputLeaseHeld`] if someone else has the wheel.
-/// `Seize` preempts the current holder unconditionally — the supervisory
-/// "take the wheel now."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InputMode {
-    /// Grant only if the lease is free; otherwise refuse.
+    /// Grant only if the lease is free; otherwise
+    /// [`ErrorCode::InputLeaseHeld`].
     Cooperative = 0,
     /// Preempt the current holder.
     Seize = 1,
 }
-
-impl InputMode {
-    /// Wire byte for this mode.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode from the wire byte; `None` for unknown values.
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Cooperative),
-            1 => Some(Self::Seize),
-            _ => None,
-        }
-    }
 }
 
-/// A POSIX signal to deliver to a Terminal's process group via
-/// [`Command::SignalTerminal`] (ADR-0033).
-///
-/// Distinct from `KILL_RESOURCE` (which removes the pane): these signal the
-/// *process* and leave the pane addressable for the post-mortem.
-/// `Freeze`/`Resume` is the reversible brake — SIGSTOP halts the agent
-/// mid-step, SIGCONT lets it run again.
+wire_enum! { to_u8 / from_u8;
+/// A POSIX signal for a Terminal's process group via
+/// [`Command::SignalTerminal`] (ADR-0033). Unlike `KILL_RESOURCE`, the pane
+/// stays addressable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TerminalSignal {
     /// SIGINT — the Ctrl-C equivalent; lets the process clean up.
@@ -121,28 +65,9 @@ pub enum TerminalSignal {
     /// SIGKILL — force termination.
     Kill = 4,
 }
-
-impl TerminalSignal {
-    /// Wire byte for this signal.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode from the wire byte; `None` for unknown values.
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Interrupt),
-            1 => Some(Self::Freeze),
-            2 => Some(Self::Resume),
-            3 => Some(Self::Terminate),
-            4 => Some(Self::Kill),
-            _ => None,
-        }
-    }
 }
 
+wire_enum! { to_u8 / from_u8;
 /// Lifecycle evidence supplied by an integration hook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReportedAgentState {
@@ -153,32 +78,12 @@ pub enum ReportedAgentState {
     /// A turn completed.
     Done = 2,
 }
-
-impl ReportedAgentState {
-    /// Wire byte for this state.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode from the wire byte; `None` for unknown values.
-    #[must_use]
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Working),
-            1 => Some(Self::Blocked),
-            2 => Some(Self::Done),
-            _ => None,
-        }
-    }
 }
 
+wire_enum! { to_u8 / from_u8;
 /// Process lifecycle state of a Terminal, carried by
-/// [`AgentEvent::TerminalControl`] (ADR-0033).
-///
-/// `Exited`'s process exit status rides alongside in the event body as an
-/// `Option<i32>` (the same shape `RESOURCE_CLOSED.exit_status` uses), so this
-/// enum stays a flat discriminant.
+/// [`AgentEvent::TerminalControl`] (ADR-0033). An exit status rides
+/// alongside in the event body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ResourceLifecycle {
     /// The process group is running normally.
@@ -189,26 +94,9 @@ pub enum ResourceLifecycle {
     /// The process exited; the accompanying `exit_status` carries the code.
     Exited = 2,
 }
-
-impl ResourceLifecycle {
-    /// Wire byte for this lifecycle state.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode from the wire byte; `None` for unknown values.
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Running),
-            1 => Some(Self::Frozen),
-            2 => Some(Self::Exited),
-            _ => None,
-        }
-    }
 }
 
+wire_enum! { to_u8 / from_u8;
 /// The supervisory action that produced an [`AgentEvent::TerminalControl`]
 /// broadcast (ADR-0033).
 ///
@@ -248,34 +136,9 @@ pub enum ControlAction {
     /// `Unknown { tag: 0x08 }`.
     RoleChanged = 10,
 }
-
-impl ControlAction {
-    /// Wire byte for this action.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode from the wire byte; `None` for unknown values.
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Acquired),
-            1 => Some(Self::Seized),
-            2 => Some(Self::Released),
-            3 => Some(Self::Interrupted),
-            4 => Some(Self::Frozen),
-            5 => Some(Self::Resumed),
-            6 => Some(Self::Terminated),
-            7 => Some(Self::Killed),
-            8 => Some(Self::Exited),
-            9 => Some(Self::Expired),
-            10 => Some(Self::RoleChanged),
-            _ => None,
-        }
-    }
 }
 
+wire_enum! { to_u8 / from_u8;
 /// How a held action's approval ended (ADR-0128), carried by
 /// [`AgentEvent::ApprovalDecided`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -296,26 +159,9 @@ pub enum ApprovalOutcome {
     /// requester is gone.
     Withdrawn = 3,
 }
+}
 
 impl ApprovalOutcome {
-    /// Wire byte for this outcome.
-    #[must_use]
-    pub const fn to_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode from the wire byte; `None` for unknown values.
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Approved),
-            1 => Some(Self::Denied),
-            2 => Some(Self::Expired),
-            3 => Some(Self::Withdrawn),
-            _ => None,
-        }
-    }
-
     /// The stable lowercase name consumers print.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -328,135 +174,68 @@ impl ApprovalOutcome {
     }
 }
 
-/// A typed control-plane command carried by [`FrameKind::Command`](super::FrameKind::Command) (SPEC §5.1).
+/// A typed control-plane command carried by
+/// [`FrameKind::Command`](super::FrameKind::Command) (SPEC §5.1).
 ///
-/// `#[non_exhaustive]`: the spec catalog has seven L1 commands; v0.1 wires
-/// the ones the CLI needs — `KILL_RESOURCE`, `GET_STATE`, the
-/// side-effect-free `GET_SCREEN` (ADR-0021 §3, ADR-0022 §5), the appended
-/// `ROUTE_INPUT` write counterpart, and `KILL_RESOURCES`, the atomic
-/// multi-terminal teardown the v0.3.0 "Option B" re-tier left in place of
-/// the dissolved L2 lifecycle verbs (ADR-0019 / ADR-0027). Unknown wire
-/// tags surface as [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue) rather than coercing
-/// to a placeholder.
-///
-/// Only `PartialEq` (not `Eq`): `RouteInput` carries a [`MouseEvent`](crate::input::mouse::MouseEvent) whose
-/// coordinates are not `Eq`.
+/// Unknown tags decode as [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Command {
-    /// Subscribe the calling client to one Terminal's content stream
-    /// (SPEC §5.1 `ATTACH_RESOURCE`, phux-v45.7): the server registers the
-    /// caller as an output subscriber, primes it with a fresh profile-selected
-    /// bootstrap generation, and streams generation-bound `RESOURCE_OUTPUT`
-    /// from then on — the per-Terminal interactive attach without a
-    /// session-scoped `ATTACH` handshake.
-    /// Re-attaching replaces the generation without duplicating the stream.
-    /// It does NOT resize the Terminal (no viewport rides the command);
-    /// callers that want their geometry applied follow with
-    /// `RESIZE_TERMINAL`.
-    /// Reply: `COMMAND_RESULT { Ok }` (the snapshot MAY precede it, per
-    /// SPEC §5 command/stream interleaving), or
-    /// `Error { TerminalNotFound }`. This is the verb a federation hub
-    /// relays for two-hop attach (ADR-0007 §4, L1 §9.1).
+    /// Subscribe to one Terminal's content stream (SPEC §5.1): a fresh
+    /// bootstrap generation, then `RESOURCE_OUTPUT`. Does not resize.
+    /// Re-attaching replaces the generation. The verb a federation hub relays
+    /// for two-hop attach (ADR-0007 §4).
     AttachResource {
         /// The Terminal whose content stream to subscribe to.
         terminal_id: ResourceId,
-        /// The declared attach intent (ADR-0127, SPEC §8.1), one trailing
-        /// byte. `None` writes no byte and means `{ PRIMARY, NEVER }`, so an
-        /// attach without it is byte-identical to one from before roles.
-        /// Send `Some` only to a server advertising `ATTACH_ROLES`: an older
-        /// one ignores the byte and grants an ordinary attach.
+        /// Attach intent (ADR-0127, SPEC §8.1), one trailing byte; `None`
+        /// writes nothing and means `{ PRIMARY, NEVER }`. Send `Some` only to
+        /// a server advertising `ATTACH_ROLES`.
         role_policy: Option<super::RolePolicy>,
     },
-    /// Drop the caller's per-Terminal subscriptions on `terminal_id`
-    /// (SPEC §5.1 `DETACH_RESOURCE`, phux-v45.7): the output stream wired
-    /// by [`Command::AttachResource`] and any per-Terminal event-stream
-    /// subscription. The Terminal itself is unaffected. Idempotent — a
-    /// no-op (still `Ok`) when the caller holds no subscription or the
-    /// Terminal is already gone, so detach can never race a natural close
-    /// into an error.
+    /// Drop the caller's output and event subscriptions on `terminal_id`
+    /// (SPEC §5.1). Idempotent, so it never races a natural close into an
+    /// error.
     DetachResource {
         /// The Terminal whose subscriptions to drop.
         terminal_id: ResourceId,
     },
-    /// Terminate the underlying PTY of `terminal_id`. Asynchronously emits
-    /// `RESOURCE_CLOSED`. Backs `phux kill` (one command per resolved
-    /// Terminal — see ADR-0021).
+    /// Terminate `terminal_id`; `RESOURCE_CLOSED` follows asynchronously.
     KillResource {
         /// The Terminal to terminate.
         terminal_id: ResourceId,
-        /// Idempotency key of this kill (`docs/spec/L1.md` §5.1.1), a
-        /// trailing `bytes16` read only when bytes remain, so an unkeyed
-        /// body keeps its earlier bytes. A repeat with the same key and
-        /// target answers the first result and kills nothing. Send it only
-        /// to a server that advertises
-        /// [`ServerFeature::KeyedSignal`](crate::caps::ServerFeature::KeyedSignal):
-        /// an older one ignores the trailing bytes and kills again.
+        /// Idempotency key (`docs/spec/L1.md` §5.1.1), a trailing `bytes16`
+        /// read only when bytes remain; a repeat answers the first result.
+        /// Send only to a server advertising
+        /// [`ServerFeature::KeyedSignal`](crate::caps::ServerFeature::KeyedSignal).
         operation_id: Option<crate::ids::IdempotencyKey>,
     },
-    /// Request a snapshot of server state in `scope`. The reply rides on
-    /// `COMMAND_RESULT { Ok_With(State(..)) }`. Backs `phux ls` and the
-    /// CLI's client-side selector resolution.
+    /// Snapshot server state in `scope`; answered `OkWith(State)`.
     GetState {
         /// What to snapshot.
         scope: StateScope,
     },
-    /// Read `terminal_id`'s current screen as structured data, with no
-    /// side effects — the server walks its own `Terminal` grid, so unlike
-    /// `ATTACH` this neither resizes the pane nor disturbs the live
-    /// session (ADR-0022 §5, `phux-oki`). The reply rides on
-    /// `COMMAND_RESULT { Ok_With(Json(..)) }` carrying a serialized
-    /// `phux_core::ScreenState`. Backs `phux snapshot` and the poll floor
-    /// under `phux wait`/`run`.
+    /// Read the current screen as a JSON `phux_core::ScreenState` with no
+    /// side effects (ADR-0022 §5); answered `OkWith(Json)`.
     GetScreen {
         /// The Terminal whose screen to project.
         terminal_id: ResourceId,
-        /// Requested scrollback history (`phux-o1v`):
-        /// - `None` — viewport only (the original v0.2.0-draft.6 shape).
-        /// - `Some(0)` — all retained history rows (bare `--scrollback`).
-        /// - `Some(n)` — the most-recent `n` history rows.
-        ///
-        /// Encoded as a trailing presence-byte + `u32` so a decoder reading
-        /// the original `GET_SCREEN` body (which ended after `terminal_id`)
-        /// would see the `0` presence byte: the field is wire-additive.
+        /// Scrollback: `None` viewport only, `Some(0)` all retained rows,
+        /// `Some(n)` the latest `n`. Trailing presence byte + `u32`.
         request_scrollback: Option<u32>,
-        /// When `true`, the reply's `ScreenState` carries the additive
-        /// `cells[]` field: per-cell OSC-133 semantic marks + styles
-        /// (`phux-8yl`). Encoded as a trailing `bool` byte *after*
-        /// `request_scrollback`; a decoder reading a pre-`phux-8yl` body
-        /// (which ended after `request_scrollback`) finds no byte and
-        /// defaults it to `false`, so the field is wire-additive.
+        /// Include per-cell semantic marks and styles (`cells[]`). Trailing
+        /// `bool`; absent decodes as `false`.
         cells: bool,
-        /// Which rendering, if any, the reply's additive `ScreenState.
-        /// rendered` field should carry (D9, fallback rung three: below
-        /// typed commands and semantic streams, above synthetic input —
-        /// `docs/consumers/agents.md`). Two parts, see
-        /// [`GET_SCREEN_FORMAT_SELECTOR_MASK`] /
-        /// [`GET_SCREEN_FORMAT_UNWRAP`]: the low 7 bits select the
-        /// rendering (`0` today's default, no rendering, `rendered`
-        /// absent; `1` libghostty-vt's own Formatter as HTML; `2` as VT
-        /// escape sequences — the server never reimplements extraction,
-        /// per CONTRIBUTING; any other selector is refused with
-        /// `INVALID_COMMAND`), and the high bit requests the Formatter's
-        /// own soft-wrapped-line join (ignored when the selector is `0`).
-        /// A pre-D9 peer's decoder stops reading this body after `cells`
-        /// and never sees this byte at all, so it silently answers as if
-        /// `format: 0` were asked — the client detects that from the
-        /// reply's absent `rendered` field
-        /// (`phux_client::snapshot::get_screen_scrollback_format`), since
-        /// no feature bit gates a byte an old peer cannot know exists.
-        /// Encoded as a trailing `u8` byte *after* `cells`; a decoder
-        /// reading a pre-D9 body (which ended after `cells`) finds no
-        /// byte and defaults it to `0`, so the field is wire-additive.
+        /// Rendering for `ScreenState.rendered`: low 7 bits select
+        /// ([`GET_SCREEN_FORMAT_SELECTOR_MASK`]; `0` none, `1` HTML, `2` VT,
+        /// others `INVALID_COMMAND`), high bit
+        /// ([`GET_SCREEN_FORMAT_UNWRAP`]) joins soft-wrapped rows. Trailing
+        /// `u8`; absent decodes as `0`. An older peer ignores it, which the
+        /// client detects from an absent `rendered`.
         format: u8,
     },
-    /// Deliver an already-built input `event` to `terminal_id` without an
-    /// attach, subscription, or resize. The write counterpart to the
-    /// side-effect-free `GetScreen` read: the server feeds the event
-    /// straight into the pane's input pipeline, so unlike `ATTACH` this
-    /// never disturbs the live session's dimensions (ADR-0022, `phux-3j3`).
-    /// The reply rides `COMMAND_RESULT { Ok }` (or an `Error` if the
-    /// Terminal is unknown). Backs `phux send-keys`/`run`.
+    /// Deliver an input `event` to `terminal_id` without attaching or
+    /// resizing (ADR-0022).
     RouteInput {
         /// The Terminal to deliver the input to.
         terminal_id: ResourceId,
@@ -473,47 +252,24 @@ pub enum Command {
         /// Ordered structured input events.
         events: Vec<InputEvent>,
     },
-    /// Atomically terminate every Terminal in `ids` under the server's
-    /// single state lock — the one irreducible multi-terminal op left
-    /// behind when the L2 collection tier was dissolved in the v0.3.0
-    /// "Option B" re-tier (ADR-0019 / ADR-0027). Grouping (which Terminals
-    /// belong to a "session") is now client logic over L3 metadata, so the
-    /// caller resolves the group to a concrete id list and the server need
-    /// only tear them down together.
-    ///
-    /// Atomicity is local and all-or-nothing in the sense that every
-    /// removal happens inside *one* lock acquisition: no other command can
-    /// observe a half-killed group on this server. Cross-host atomicity is
-    /// out of scope (it would be under any tiering). Killing an already-dead
-    /// or unknown id is a no-op (not an error) — the op is idempotent so a
-    /// caller racing a natural pane exit still succeeds. The reply rides
-    /// `COMMAND_RESULT { Ok }`; the per-pane `RESOURCE_CLOSED` frames follow
-    /// asynchronously as the panes reap. Backs `phux kill SESSION`.
+    /// Terminate every Terminal in `ids` in one acquisition of the server's
+    /// state lock, so no command observes a half-killed group
+    /// (ADR-0019 / ADR-0027). Unknown ids are skipped.
     KillResources {
-        /// The Terminals to terminate. Unknown / already-dead ids are
-        /// skipped silently; the op succeeds as long as it is structurally
-        /// valid.
+        /// The Terminals to terminate.
         ids: Vec<ResourceId>,
         /// Idempotency key of the whole batch, trailing like
         /// [`Command::KillResource::operation_id`].
         operation_id: Option<crate::ids::IdempotencyKey>,
     },
-    /// Force-detach clients from *outside* the attach UI — backs `phux detach`.
-    /// `session = Some(name)` detaches every client attached to that session;
-    /// `session = None` detaches every attached client on the server. Each
-    /// target client receives a `DETACHED` frame and its attachment is torn
-    /// down, so its TUI exits cleanly. Distinct from `FrameKind::Detach`, which
-    /// only detaches the sending connection. Reply: `COMMAND_RESULT { OkWith(
-    /// Json(count)) }` where `count` is the number of clients detached.
+    /// Force-detach every client attached to `session`, or every attached
+    /// client when `None`; answered `OkWith(Json(count))`.
     DetachClients {
         /// Target session by name, or `None` to detach every attached client.
         session: Option<String>,
     },
-    /// Request a comprehensive snapshot of a terminal's full state: grid,
-    /// scrollback, shell metadata, cursor, and sequence number (L2 Collection-aware
-    /// agent interface). The reply rides `COMMAND_RESULT { Ok_With(Json(..)) }`
-    /// carrying a JSON object built server-side. Backs
-    /// agent polling and state inspection (ADR-0015 L2, `phux-y2t`).
+    /// Snapshot a Terminal's full state (grid, scrollback, shell metadata,
+    /// cursor, sequence) as JSON; answered `OkWith(Json)`.
     GetTerminalState {
         /// The Terminal whose state to snapshot.
         terminal_id: ResourceId,
@@ -524,14 +280,8 @@ pub enum Command {
         /// `include_scrollback` is `false`.
         max_scrollback_lines: u16,
     },
-    /// Subscribe to semantic terminal events for a specific pane without
-    /// attaching or resizing. The server pushes typed events (`CommandStarted`,
-    /// `CommandEnded`, `GridChanged`, `CwdChanged`, `PromptReady`, `OutputReceived`)
-    /// as the pane's state changes. Scoped to the Terminal: only events for
-    /// that pane flow to the subscriber. Idempotent: re-subscribing updates
-    /// the `event_types` filter (empty = all types). Unsubscription is implicit
-    /// on detach. Reply: `COMMAND_RESULT { Ok }`; events flow asynchronously as
-    /// `Event` frames (SPEC §7.1). Backs agent-protocol `SubscribeResourceEvents`.
+    /// Subscribe to one pane's semantic events without attaching.
+    /// Re-subscribing replaces the filter; teardown is implicit on detach.
     SubscribeResourceEvents {
         /// The Terminal (pane) whose events the client subscribes to.
         terminal_id: ResourceId,
@@ -539,47 +289,15 @@ pub enum Command {
         /// Empty vector = all event types.
         event_types: Vec<ResourceEventType>,
     },
-    /// Ask the server to graceful-upgrade itself in place (ADR-0032): snapshot
-    /// every pane, re-exec the on-disk binary, and re-adopt the live PTYs so
-    /// sessions survive a binary update. A bare trigger — the handoff state
-    /// blob is built and passed entirely server-side (it never crosses the
-    /// wire). Clients see a brief disconnect and reconnect. Reply:
-    /// `COMMAND_RESULT { Ok }` (best-effort, before the re-exec). Backs
-    /// `phux upgrade`.
+    /// Graceful in-place re-exec that keeps live PTYs (ADR-0032).
     Upgrade,
-    /// Ask the server to stop itself (phux-pimp). A bare trigger, like
-    /// [`Self::Upgrade`], and the same shape for the same reason: the work
-    /// is entirely server-side and nothing about it belongs on the wire.
-    ///
-    /// The server acks and then cancels its root token, which is the *same*
-    /// signal idle-exit (ADR-0063), the last-pane self-exit, and SIGINT/SIGTERM
-    /// already deliver — so every pane gets its SIGHUP-then-grace-then-reap and
-    /// the socket is unlinked on the way out. That path also yields exit
-    /// status 0, which is what keeps a supervised server *stopped*: launchd's
-    /// `KeepAlive{SuccessfulExit: false}` restarts a server killed by a signal
-    /// but not one that exited cleanly. A signal-based stop therefore could
-    /// not have satisfied ADR-0080's "a deliberately stopped server stays
-    /// stopped" on macOS; this can.
-    ///
-    /// **Local only.** Stopping a server on behalf of a remote peer is a
-    /// policy decision phux has not made, so this is refused on any transport
-    /// but the UDS. Gated by [`ServerFeature::Shutdown`](crate::caps::ServerFeature::Shutdown):
-    /// a client MUST NOT send it unless the bit is advertised, because an
-    /// older server drops the unknown tag silently and "nothing happened" is
-    /// indistinguishable from "the server ignored me".
-    ///
-    /// Reply: `COMMAND_RESULT { Ok }`, sent before the teardown begins, then
-    /// the connection closes. Backs `phux kill --server`.
+    /// Stop the server with a clean exit, so a supervisor keeps it stopped
+    /// (ADR-0080). **Local only**: refused off the Unix socket. A client MUST
+    /// see [`ServerFeature::Shutdown`](crate::caps::ServerFeature::Shutdown)
+    /// first, since an older server drops the tag silently.
     Shutdown,
-    /// Assert an exclusive input lease over `terminal_id` (ADR-0033, "take
-    /// the wheel"). While a lease is held, only the holder's `INPUT_*`
-    /// frames reach the PTY; others are dropped (still acked, preserving the
-    /// fire-and-forget input invariant). `mode` chooses cooperative-or-fail
-    /// vs. preempt; `ttl_ms` is an advisory lifetime (v1 servers hold the
-    /// lease until the holder detaches or its connection drops — see
-    /// ADR-0033). Reply: `COMMAND_RESULT { Ok }` on grant, or
-    /// `Error { InputLeaseHeld, .. }` when a cooperative acquire loses to an
-    /// existing holder.
+    /// Take an exclusive input lease on `terminal_id` (ADR-0033): only the
+    /// holder's input reaches the PTY; others are acked and dropped.
     AcquireInput {
         /// The Terminal whose input authority to seize.
         terminal_id: ResourceId,
@@ -588,18 +306,13 @@ pub enum Command {
         /// Advisory lease lifetime in milliseconds (0 = server default).
         ttl_ms: u32,
     },
-    /// Release the input lease over `terminal_id`, returning it to `Open`
-    /// (ADR-0033). A no-op if the caller does not hold the lease. Reply:
-    /// `COMMAND_RESULT { Ok }`.
+    /// Release the caller's input lease on `terminal_id`; a no-op when not
+    /// held (ADR-0033).
     ReleaseInput {
         /// The Terminal whose lease to release.
         terminal_id: ResourceId,
     },
     /// Deliver `signal` to the process group inside `terminal_id` (ADR-0033).
-    /// Orthogonal to `KILL_RESOURCE`: this signals the process and leaves the
-    /// pane addressable (read its final screen / exit status). `Freeze`
-    /// (SIGSTOP) / `Resume` (SIGCONT) is the reversible brake. Reply:
-    /// `COMMAND_RESULT { Ok }`, or `Error { TerminalNotFound, .. }`.
     SignalTerminal {
         /// The Terminal whose process group to signal.
         terminal_id: ResourceId,
@@ -610,11 +323,9 @@ pub enum Command {
         /// first result and delivers nothing.
         operation_id: Option<crate::ids::IdempotencyKey>,
     },
-    /// Write one acknowledged chunk of a file into the target host's
-    /// server-owned upload sandbox (ADR-0059). `terminal_id` selects the host
-    /// and proves the destination is useful to an existing pane; the server
-    /// chooses the path. Retries with the same upload id, offset, and bytes are
-    /// idempotent. The final chunk carries the expected SHA-256 digest.
+    /// Write one acknowledged chunk into the host's server-owned upload
+    /// sandbox (ADR-0059); the server chooses the path. Retries are
+    /// idempotent, and the final chunk carries the SHA-256 digest.
     PutFile {
         /// Non-zero client-generated identifier stable across chunk retries.
         upload_id: FileUploadId,
@@ -631,11 +342,8 @@ pub enum Command {
         /// Expected whole-file SHA-256 digest; required on the final chunk.
         sha256: Option<[u8; 32]>,
     },
-    /// Report that an agent in `terminal_id` is blocked on a human-answerable
-    /// question. This is the explicit hook source selected by ADR-0036. The
-    /// server validates the payload, then emits [`AgentEvent::Asked`] to the
-    /// existing event stream. It does not write to the PTY, attach, resize, or
-    /// mutate terminal grid state.
+    /// Report that an agent in `terminal_id` is blocked on a question
+    /// (ADR-0036); the server emits [`AgentEvent::Asked`].
     ReportAsked {
         /// The Terminal/pane that owns the blocked agent.
         terminal_id: ResourceId,
@@ -656,56 +364,36 @@ pub enum Command {
         /// Immediate lifecycle evidence.
         state: ReportedAgentState,
     },
-    /// Read the server's in-process performance telemetry: every latency
-    /// histogram, throughput counter, and gauge the server keeps, plus its
-    /// `getrusage` figures, as one `COMMAND_RESULT { OkWith(Json(report)) }`.
-    /// The JSON is a `phux_perf::PerfReport` (`schema_version` inside);
-    /// metric names are diagnostic and not part of the wire contract.
-    /// Gated on the `GET_PERF` server feature bit.
+    /// Read in-process performance telemetry as a JSON
+    /// `phux_perf::PerfReport`; metric names are not a wire contract.
     GetPerf {
         /// Zero every metric after snapshotting it, so the next report
         /// covers only what happened since.
         reset: bool,
     },
-    /// Turn a completed `PUT_FILE` upload into text with the server's
-    /// configured transcriber and paste that text into a Terminal as one
-    /// acknowledged batch. Replies `OkWith(Json { text, pasted, duration_ms })`
-    /// so the client can show what was heard; the paste inserts without
-    /// submitting. Gated on the `TRANSCRIBE` server feature bit.
+    /// Transcribe a completed upload and paste the text (without submitting)
+    /// into a Terminal; answered `OkWith(Json { text, pasted, duration_ms })`.
     Transcribe {
         /// The finished upload (its final `PUT_FILE` chunk was acknowledged).
         upload_id: FileUploadId,
         /// The Terminal to paste the transcript into.
         terminal_id: ResourceId,
     },
-    /// Append `bytes` to the output stream of a producer-fed resource
-    /// (`docs/spec/L1.md` §5.1, tag `0x1a`). The producer verb: an
-    /// `AgentSession` has no PTY, so its output is whatever its producer
-    /// appends, and the server stamps, retains, and fans it out exactly as
-    /// it would PTY bytes. `bytes` MUST be one or more complete records
-    /// under the resource's codec (`AgentEventsJsonlV1`: newline-delimited
-    /// JSON objects) and at most [`MAX_APPEND_BYTES`](super::MAX_APPEND_BYTES).
-    ///
-    /// Reply: `COMMAND_RESULT { Ok }`, or `Error` with
-    /// [`ErrorCode::WrongResourceKind`] (the resource is a Terminal, which
-    /// is fed by its PTY), [`ErrorCode::NotProducer`] (the caller did not
-    /// open the resource), [`ErrorCode::RecordInvalid`] (a record failed
-    /// codec validation; nothing was appended), or [`ErrorCode::Overflow`]
-    /// (the retained ring or rate budget is exhausted; retry after backoff).
-    /// Gated on `ServerFeature::ResourceKinds`.
+    /// Append complete codec records to a producer-fed resource's output
+    /// (`docs/spec/L1.md` §5.1), at most
+    /// [`MAX_APPEND_BYTES`](super::MAX_APPEND_BYTES). Refused with
+    /// [`ErrorCode::WrongResourceKind`], [`ErrorCode::NotProducer`],
+    /// [`ErrorCode::RecordInvalid`] (nothing appended), or
+    /// [`ErrorCode::Overflow`] (retry after backoff).
     AppendResourceOutput {
         /// The producer-fed resource to append to.
         terminal_id: ResourceId,
         /// One or more complete records under the resource's codec.
         bytes: Vec<u8>,
     },
-    /// Kill one resource only if every precondition holds
-    /// (`docs/spec/L1.md` §5.2.1, ADR-0109). The server checks the
-    /// precondition and kills in one acquisition of its state, so nothing
-    /// can attach between the check and the kill. When a condition fails
-    /// it answers `ERROR(PRECONDITION_FAILED)` and kills nothing. A hub
-    /// relays the precondition unchanged to the satellite that owns a
-    /// `SATELLITE`-tagged id. Gated on
+    /// Kill one resource only if every precondition holds, checked and
+    /// applied atomically (`docs/spec/L1.md` §5.2.1, ADR-0109); otherwise
+    /// `PRECONDITION_FAILED`. Gated on
     /// [`ServerFeature::ConditionalKill`](crate::caps::ServerFeature::ConditionalKill).
     KillResourceIf {
         /// The resource to terminate.
@@ -717,22 +405,11 @@ pub enum Command {
         operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Open a listener for one remote attach (`docs/spec/L1.md` §5.6,
-    /// ADR-0120). The server binds `transport` on the wildcard address, on a
-    /// port from `port_range` or any free one, and admits only a bearer token
-    /// it mints for this listener alone. It closes the listener once
-    /// `linger_secs` pass with no connection open through it, before the
-    /// first connection or after the last, and never carries it across a
-    /// graceful upgrade.
-    ///
-    /// **Local only**, like [`Self::Shutdown`]: refused with
-    /// `PERMISSION_DENIED` on any transport but the Unix socket, so only the
-    /// server's own user can open a door into it.
-    ///
-    /// Reply: `COMMAND_RESULT { OkWith(Json) }` carrying the bound port, the
-    /// certificate fingerprint to pin, the token, and the effective linger.
-    /// Gated on
+    /// ADR-0120) that admits only a token minted for it and closes after
+    /// `linger_secs` idle. **Local only**: refused off the Unix socket.
+    /// Answered `OkWith(Json)` with port, cert fingerprint, token, and
+    /// linger. Gated on
     /// [`ServerFeature::OpenListener`](crate::caps::ServerFeature::OpenListener).
-    /// Backs `phux bootstrap`, which `phux attach --ssh` runs over ssh.
     OpenListener {
         /// The transport to listen on.
         transport: ListenerTransport,
@@ -743,27 +420,18 @@ pub enum Command {
         /// `0` asks for the server default.
         linger_secs: u32,
     },
-    /// Atomically terminate every Terminal in `ids` under the server's
-    /// single state lock, like [`Self::KillResources`], without releasing
-    /// keep-empty on a fully covered session (`docs/spec/L1.md` §5.2.2).
-    /// Explicit Close Tab uses this so a keep-empty named session stays
-    /// listed and empty; `phux kill SESSION` / End Session keep
-    /// [`Self::KillResources`]. Gated on
+    /// [`Self::KillResources`] that does not release keep-empty on a fully
+    /// covered session (`docs/spec/L1.md` §5.2.2). Gated on
     /// [`ServerFeature::CloseTabResources`](crate::caps::ServerFeature::CloseTabResources).
     CloseTabResources {
-        /// The Terminals to terminate. Unknown / already-dead ids are
-        /// skipped silently; the op succeeds as long as it is structurally
-        /// valid.
+        /// The Terminals to terminate.
         ids: Vec<ResourceId>,
     },
 }
 
 impl Command {
-    /// The idempotency key a keyed supervisory command carries:
-    /// `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, or
-    /// `SIGNAL_TERMINAL` with its trailing `operation_id`
-    /// (`docs/spec/L1.md` §5.1.1). `None` for every other command, and for
-    /// an unkeyed one.
+    /// The trailing `operation_id` of a keyed supervisory command
+    /// (`docs/spec/L1.md` §5.1.1), or `None`.
     #[must_use]
     pub const fn idempotency_key(&self) -> Option<&crate::ids::IdempotencyKey> {
         match self {
@@ -781,12 +449,8 @@ impl Command {
 /// refused with `INVALID_COMMAND`.
 pub const GET_SCREEN_FORMAT_SELECTOR_MASK: u8 = 0x7F;
 
-/// [`Command::GetScreen::format`]'s high bit.
-///
-/// Also join soft-wrapped capture rows via the engine Formatter's own
-/// unwrap (`phux snapshot --format html|vt --unwrap`, D9). Combine with
-/// the selector bits (`format | GET_SCREEN_FORMAT_UNWRAP`); ignored when
-/// the selector is `0` (no rendering requested).
+/// [`Command::GetScreen::format`]'s high bit: join soft-wrapped rows.
+/// Ignored when the selector is `0`.
 pub const GET_SCREEN_FORMAT_UNWRAP: u8 = 0x80;
 
 /// The transport a [`Command::OpenListener`] asks for (`u8` on the wire).
@@ -909,8 +573,6 @@ pub struct FileUploadAck {
 }
 
 /// A successful command's payload (SPEC §5, `CommandValue`).
-///
-/// `#[non_exhaustive]` for forward-compatible additions.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum CommandValue {
@@ -929,10 +591,8 @@ pub enum CommandValue {
     FileUpload(FileUploadAck),
 }
 
-/// The outcome of a [`Command`], carried by [`FrameKind::CommandResult`](super::FrameKind::CommandResult)
-/// (SPEC §5).
-///
-/// `#[non_exhaustive]` for forward-compatible additions.
+/// The outcome of a [`Command`], carried by
+/// [`FrameKind::CommandResult`](super::FrameKind::CommandResult) (SPEC §5).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum CommandResult {
@@ -950,62 +610,31 @@ pub enum CommandResult {
     },
 }
 
-/// A server-pushed agent event carried by [`FrameKind::Event`](super::FrameKind::Event) (SPEC §7.5 /
-/// §10.3, phux-y2t).
+/// A server-pushed agent event carried by
+/// [`FrameKind::Event`](super::FrameKind::Event) (SPEC §7.5 / §10.3).
 ///
-/// The push half of the agent surface: an extensible taxonomy of terminal
-/// lifecycle / activity events the server emits to clients that opted in via
-/// [`FrameKind::SubscribeEvents`](super::FrameKind::SubscribeEvents). This is an *additive accelerator* of the
-/// CLI-side poll-floor `wait` (which already shipped over `GET_SCREEN`) —
-/// conditions stay matched client-side, events just cut polling latency.
-///
-/// # Forward compatibility
-///
-/// `#[non_exhaustive]`, and the wire encoding is TLV: each event is a `tag:
-/// u8` followed by a length-prefixed `body: bytes`. A decoder that does not
-/// recognise `tag` reads the declared body length and yields
-/// [`AgentEvent::Unknown`] rather than failing the whole frame parse — so a
-/// v0.2.x server may add event kinds and an older client skips them
-/// cleanly. [`AgentEvent::Unknown`] is *only ever produced by the decoder*;
-/// encoders never emit it (encoding it is a no-op-shaped contradiction and
-/// is rejected at the match arm).
-///
-/// Only `PartialEq` / `Eq`: every variant body is a primitive or a `String`.
+/// Each event is `tag: u8` + a length-prefixed body, so a decoder skips an
+/// unknown tag to [`AgentEvent::Unknown`] instead of failing the frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AgentEvent {
-    /// A shell command began executing in the scoped Terminal. Sourced
-    /// from OSC-133 `B`/`C` prompt marks (the shell-integration
-    /// command-start boundary). Carries no payload — the command text is
-    /// not extracted server-side.
+    /// A shell command began (OSC-133 `B`/`C`).
     CommandStarted,
-    /// A shell command finished in the scoped Terminal. Sourced from the
-    /// OSC-133 `D` prompt mark. `exit_code` is `Some(n)` when the shell's
-    /// integration reported one (`OSC 133 ; D ; n ST`) and `None`
-    /// otherwise — see the wire-spec note on the exit-code gap.
+    /// A shell command finished (OSC-133 `D`).
     CommandFinished {
-        /// Process exit code reported by the shell's OSC-133 `D` mark, or
-        /// `None` when the shell did not include one.
+        /// Exit code from the `D` mark, when the shell reported one.
         exit_code: Option<i32>,
     },
-    /// The scoped Terminal's title changed (OSC 0 / OSC 2). Carries the
-    /// new title as libghostty tracks it.
+    /// The Terminal's title changed (OSC 0 / OSC 2).
     TitleChanged {
         /// The new terminal title.
         title: String,
     },
-    /// The scoped Terminal received a BEL (`0x07`). The control-plane
-    /// counterpart to the `BELL` frame (`0xB0`), delivered on the event
-    /// stream so a subscriber need not also attach.
+    /// The Terminal received a BEL, delivered without an attach.
     Bell,
-    /// A new resource was spawned. The carried `terminal_id` is on the
-    /// [`FrameKind::Event`](super::FrameKind::Event) envelope's `terminal_id`
-    /// field; the body is field-tagged TLV carrying what a subscriber cannot
-    /// learn from the envelope alone: the resource's kind and, for a child,
-    /// its parent. Both are additive — the encoder writes `kind` only for a
-    /// non-Terminal kind and `parent` only when bound, so a Terminal's
-    /// `pane_spawned` body stays empty, and a decoder reads an absent field
-    /// as `Terminal` / `None`.
+    /// A resource was spawned; the envelope carries its id. The TLV body
+    /// writes `kind` only for a non-Terminal and `parent` only when bound, so
+    /// a Terminal's body is empty.
     ResourceSpawned {
         /// What backs the new resource; `Terminal` when absent on the wire.
         kind: ResourceKind,
@@ -1013,29 +642,17 @@ pub enum AgentEvent {
         /// §1.2); `None` for a root.
         parent: Option<ResourceId>,
     },
-    /// A Terminal (pane) closed. Mirrors the L1 `RESOURCE_CLOSED` frame
-    /// (`0xA1`); the closed Terminal is the envelope's `terminal_id` and
-    /// `exit_status` carries the process exit code (or `None` for signal /
-    /// unknown), matching `RESOURCE_CLOSED.exit_status`.
+    /// A resource closed; mirrors `RESOURCE_CLOSED`.
     ResourceClosed {
         /// Process exit code (`_exit(n)`), or `None` for signals / unknown.
         exit_status: Option<i32>,
     },
-    /// The scoped Terminal's grid mutated since the last `Idle` (output
-    /// arrived). Sourced from the per-pane tick's dirty flag; coalesced —
-    /// the server emits at most one `Dirty` per active burst, then one
-    /// [`AgentEvent::Idle`] when the burst settles.
+    /// The grid mutated since the last `Idle`; at most one per burst.
     Dirty,
-    /// The scoped Terminal went quiet: no grid mutation across an idle
-    /// window after a `Dirty`. The "output has settled" signal a `wait`
-    /// consumer keys on.
+    /// Output settled after a `Dirty`.
     Idle,
-    /// A supervisory state change on the scoped Terminal (ADR-0033): the
-    /// input lease changed hands, or the process lifecycle moved
-    /// (`Running` → `Frozen` → `Exited`). Broadcast to every subscriber so
-    /// consumers can render "who has the wheel" and "frozen" without polling,
-    /// and so the change is recorded with intent (`action`) and identity
-    /// (`actor`) — the seed of the audit trail.
+    /// The input lease changed hands or the process lifecycle moved
+    /// (ADR-0033), with the acting client.
     TerminalControl {
         /// Current process lifecycle of the Terminal.
         lifecycle: ResourceLifecycle,
@@ -1047,92 +664,55 @@ pub enum AgentEvent {
         input_holder: Option<ClientId>,
         /// What just happened (acquired / seized / released / signalled / …).
         action: ControlAction,
-        /// The client that performed `action`, or `None` for server-driven
-        /// transitions (e.g. a natural process exit, or a lease expiring on
-        /// the holder's disconnect).
+        /// The client that performed `action`, or `None` when server-driven.
         actor: Option<ClientId>,
     },
-    /// An agent in the scoped Terminal is waiting on a human answer (phux-2sl6).
-    ///
-    /// The control-plane carrier for a pending question: an agent that has
-    /// blocked for input emits this so a projection consumer can render the
-    /// waiting prompt (id, text, suggested answers, how long it has waited)
-    /// without re-deriving it from the grid. It mirrors the consumer-side
-    /// question model one-for-one. The body is field-tagged TLV, so
-    /// `suggestions` and the optional `elapsed_seconds` are additive and an
-    /// older decoder skips the whole event as [`AgentEvent::Unknown`].
+    /// An agent in the Terminal is waiting on a human answer. Field-tagged
+    /// TLV body.
     Asked {
         /// Stable id the answer correlates against.
         id: String,
         /// The question text presented to the human.
         question: String,
-        /// Suggested answers, in presentation order — the *actual options*,
-        /// not yes/no. Empty when the agent offered none.
+        /// Suggested answers, in presentation order; may be empty.
         suggestions: Vec<String>,
         /// Seconds the agent has been waiting, or `None` when not reported.
         elapsed_seconds: Option<u64>,
     },
-    /// The scoped Terminal's working directory changed (phux-foz.4).
-    ///
-    /// Sourced from the kernel cwd of the PTY child process (the same
-    /// query the spawn-inheritance path uses — `/proc/<pid>/cwd` on Linux,
-    /// `proc_pidinfo` on macOS), polled at OSC-133 prompt boundaries and
-    /// on output-idle, and coalesced: emitted only when the directory
-    /// actually differs from the last observation. Best-effort like every
-    /// event — a consumer seeds from the `ATTACHED` snapshot's
-    /// `ResourceInfo::cwd` (the spawn cwd) and refines from this stream.
+    /// The PTY child's working directory changed (best-effort, coalesced).
     CwdChanged {
         /// The Terminal's new working directory (absolute, lossy UTF-8).
         cwd: String,
     },
     /// The subscription missed journaled events `first_missing..=last_missing`
-    /// (ADR-0123): the journal no longer held them when the subscription
-    /// asked to replay them, or the connection could not take them when
-    /// they happened. The consumer re-reads level state (`GET_STATE`). Sent
-    /// to one subscription, never journaled, and so carries no stamp.
+    /// (ADR-0123); re-read level state. Never journaled or stamped.
     JournalGap {
         /// First missing journal sequence, inclusive.
         first_missing: u64,
         /// Last missing journal sequence, inclusive.
         last_missing: u64,
     },
-    /// The scoped resource produced `dropped` events that the server lost
-    /// before journaling them (ADR-0123), so no cursor can recover them.
-    /// Journaled like any other event; the consumer re-reads that
-    /// resource's state.
+    /// The resource lost `dropped` events before journaling (ADR-0123).
     SourceGap {
         /// How many events were lost at the source.
         dropped: u64,
     },
-    /// A `SIGNAL` action was held for approval rather than run (ADR-0128).
-    ///
-    /// The details (requester, method, subjects, expiry) are the server-owned
-    /// `phux.approval/v1/<id>` record; the event carries only the id.
-    /// Journaled with the requester as `actor`. Positional body: `id` as 16
-    /// raw bytes. A decoder that predates tag `0x0d` reads it as
-    /// [`AgentEvent::Unknown`].
+    /// A `SIGNAL` action was held for approval (ADR-0128); details live in
+    /// the `phux.approval/v1/<id>` record. Body: 16 id bytes.
     ApprovalRequested {
         /// The held action's approval id.
         id: crate::ids::ApprovalId,
     },
-    /// A held action's approval ended (ADR-0128). Journaled with the
-    /// approver as `actor` for an approval or a denial, and with no actor
-    /// for an expiry or a withdrawal. Positional body: `id` as 16 raw bytes,
-    /// then `outcome: u8`. An outcome byte this build does not know makes
-    /// the whole event [`AgentEvent::Unknown`].
+    /// A held action's approval ended (ADR-0128). Body: 16 id bytes then
+    /// `outcome: u8`; an unknown outcome makes the event `Unknown`.
     ApprovalDecided {
         /// The held action's approval id.
         id: crate::ids::ApprovalId,
         /// How the approval ended.
         outcome: ApprovalOutcome,
     },
-    /// An event whose `tag` this protocol version does not recognise.
-    ///
-    /// Produced **only by the decoder** when it reads an `EVENT` frame
-    /// whose event tag is outside the known set; the length-prefixed body
-    /// is preserved verbatim so a curious consumer can inspect it, but the
-    /// common path simply ignores unknown events. Never constructed by an
-    /// encoder.
+    /// An event tag this build does not know, body kept verbatim. Produced
+    /// only by the decoder.
     Unknown {
         /// The unrecognised event tag.
         tag: u8,

@@ -76,6 +76,39 @@ macro_rules! wire_tags {
     };
 }
 
+/// Declare a fieldless `#[repr(u8)]` wire enum with its `$to` / `$from` byte
+/// conversions; `$from` is `None` for a byte this build does not define.
+macro_rules! wire_enum {
+    ($to:ident / $from:ident;
+     $(#[$meta:meta])*
+     pub enum $name:ident {
+         $( $(#[$vmeta:meta])* $variant:ident = $tag:literal, )*
+     }) => {
+        $(#[$meta])*
+        #[repr(u8)]
+        pub enum $name {
+            $( $(#[$vmeta])* $variant = $tag, )*
+        }
+
+        impl $name {
+            /// Wire byte for this value.
+            #[must_use]
+            pub const fn $to(self) -> u8 {
+                self as u8
+            }
+
+            /// Decode a wire byte; `None` for a value this build does not define.
+            #[must_use]
+            pub const fn $from(value: u8) -> Option<Self> {
+                match value {
+                    $( $tag => Some(Self::$variant), )*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
 /// Wire type byte for one SPEC §7 message-catalog entry. As a `#[repr(u8)]`
 /// enum a duplicated type byte is compile error E0081. New allocations come
 /// from `docs/spec/appendix-reserved.md` §1.

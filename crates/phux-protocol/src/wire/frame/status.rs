@@ -256,8 +256,8 @@ impl ErrorCode {
         })
     }
 }
+wire_enum! { as_wire / from_wire;
 /// Why a bootstrap generation can no longer preserve stream continuity.
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TombstoneReason {
@@ -276,37 +276,17 @@ pub enum TombstoneReason {
     /// A bounded, explicit reason not represented by an earlier tag.
     Other = 6,
 }
-
-impl TombstoneReason {
-    /// Stable wire discriminant.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode a known tombstone reason.
-    #[must_use]
-    pub const fn from_wire(value: u8) -> Option<Self> {
-        Some(match value {
-            0 => Self::RawReplayOverflow,
-            1 => Self::OutboundGap,
-            2 => Self::Resize,
-            3 => Self::RelayReconnect,
-            4 => Self::ExplicitReattach,
-            5 => Self::CodecFailure,
-            6 => Self::Other,
-            _ => return None,
-        })
-    }
 }
 
+wire_enum! { as_wire / from_wire;
 /// Why the server ended an attach (`docs/spec/proto.md` §7.2).
 ///
 /// Carried by `DETACHED`, which — with the transport close that follows it —
 /// is the only ending a consumer is allowed to act on. An `ERROR` is never
 /// itself an ending (proto.md §9), so this enum is the sole channel through
-/// which a consumer learns *why* its connection is over.
-#[repr(u8)]
+/// which a consumer learns *why* its connection is over. An unrecognised
+/// byte decodes as `None` (unstated), never as a frame error, so a new reason
+/// is never a fleet-wide break (ADR-0061).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DetachReason {
@@ -336,39 +316,9 @@ pub enum DetachReason {
     /// The server hit an unrecoverable internal fault.
     InternalError = 255,
 }
+}
 
 impl DetachReason {
-    /// Stable wire discriminant.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode a known detach reason, or `None` for a value this build does
-    /// not recognise.
-    ///
-    /// Unlike [`TombstoneReason`] and [`ErrorCode`], an unrecognised value
-    /// here is deliberately *not* a decode error. `DETACHED` is the
-    /// termination signal; failing the frame would convert a clean, explained
-    /// ending into an unexplained transport error, and would make every later
-    /// `DetachReason` allocation a fleet-wide break (ADR-0061). Callers treat
-    /// `None` exactly as they treat an absent `reason` field: unstated.
-    #[must_use]
-    pub const fn from_wire(value: u8) -> Option<Self> {
-        Some(match value {
-            0 => Self::Requested,
-            1 => Self::ServerShutdown,
-            2 => Self::SessionKilled,
-            3 => Self::Replaced,
-            4 => Self::ProtocolError,
-            5 => Self::AuthenticationFailed,
-            6 => Self::AuthorizationRevoked,
-            7 => Self::AuthorizationExpired,
-            255 => Self::InternalError,
-            _ => return None,
-        })
-    }
-
     /// One-line human-readable summary, for consumers that surface the
     /// ending on a cooked terminal.
     #[must_use]
@@ -459,8 +409,8 @@ impl CloseReason {
     }
 }
 
+wire_enum! { as_wire / from_wire;
 /// Why one progressive history cursor can no longer be consumed.
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum HistoryTombstoneReason {
@@ -481,33 +431,10 @@ pub enum HistoryTombstoneReason {
     /// The selected native codec rejected history capture or import.
     CodecFailure = 7,
 }
-
-impl HistoryTombstoneReason {
-    /// Stable wire discriminant.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode a known history-tombstone reason.
-    #[must_use]
-    pub const fn from_wire(value: u8) -> Option<Self> {
-        Some(match value {
-            0 => Self::Stale,
-            1 => Self::Pruned,
-            2 => Self::Reset,
-            3 => Self::Resize,
-            4 => Self::Expired,
-            5 => Self::Released,
-            6 => Self::Limit,
-            7 => Self::CodecFailure,
-            _ => return None,
-        })
-    }
 }
 
+wire_enum! { as_wire / from_wire;
 /// Why one history request was rejected without advancing its cursor.
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum HistoryRejectionReason {
@@ -518,24 +445,6 @@ pub enum HistoryRejectionReason {
     /// Capture is temporarily busy; retrying the same cursor is permitted.
     Busy = 2,
 }
-
-impl HistoryRejectionReason {
-    /// Stable wire discriminant.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        self as u8
-    }
-
-    /// Decode a known history-rejection reason.
-    #[must_use]
-    pub const fn from_wire(value: u8) -> Option<Self> {
-        Some(match value {
-            0 => Self::ZeroLimit,
-            1 => Self::TooSmall,
-            2 => Self::Busy,
-            _ => return None,
-        })
-    }
 }
 
 #[cfg(test)]

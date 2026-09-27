@@ -5,24 +5,15 @@ use crate::ids::{
     ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance, SessionId,
 };
 
-// -----------------------------------------------------------------------------
-// ActorRef / EventStamp — attribution and the journal stamp (ADR-0123).
-// -----------------------------------------------------------------------------
-
 /// The connection that caused an event or a metadata change (ADR-0123).
 ///
 /// Positional on the wire: `client: u32 || credential_id: optional<str> ||
-/// client_name: optional<str>`. `client` correlates within one connection
-/// and does not survive a reconnect; `credential_id` is the durable identity
-/// on a paired route; `client_name` is the label the client gave in `HELLO`.
-/// Through a federation hub the actor is the hub's link, not the consumer
-/// behind it.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+/// client_name: optional<str>`. Through a federation hub the actor is the
+/// hub's link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ActorRef {
-    /// The acting connection's wire client id.
+    /// The acting connection's wire client id; does not survive a reconnect.
     pub client: ClientId,
     /// The paired credential the connection authenticated with, if any.
     pub credential_id: Option<String>,
@@ -56,15 +47,9 @@ impl ActorRef {
     }
 }
 
-/// The journal stamp on an `EVENT` (fields 3-6, ADR-0123).
-///
-/// A server that advertises `EVENT_JOURNAL` stamps every journaled event.
-/// On the wire the stamp is present iff field 3 (`seq`) is; the encoder
-/// always writes `seq` and `ts_ms` together and the optional two only when
-/// set. Carried boxed on [`FrameKind::Event`](super::FrameKind::Event) so the
-/// frame enum keeps its size.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+/// The journal stamp on an `EVENT` (fields 3-6, ADR-0123), present iff field
+/// 3 (`seq`) is. Boxed on the frame to keep [`FrameKind`](super::FrameKind)
+/// small.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EventStamp {
@@ -106,41 +91,23 @@ impl EventStamp {
     }
 }
 
-// -----------------------------------------------------------------------------
-// SpawnResource — the kind-bearing half of SPAWN_RESOURCE (L1.md §1.2).
-// -----------------------------------------------------------------------------
-
-/// What kind of resource a `SPAWN_RESOURCE` creates and, for a child kind,
-/// its binding and facet: fields 11-14 (`docs/spec/L1.md` §1.2).
+/// The kind, binding, and facet of a `SPAWN_RESOURCE`: fields 11-17
+/// (`docs/spec/L1.md` §1.2).
 ///
-/// Carried on [`FrameKind::SpawnResource`](super::FrameKind::SpawnResource)
-/// as `Option<Box<SpawnResource>>`. `None` is the plain Terminal spawn every
-/// pre-kind body decodes as; a `Some` whose every field is at its default is
-/// the same spawn and encodes to the same bytes, and the decoder yields
-/// `None` for it, so callers that want the identity round trip use `None`.
-/// The box keeps the frame enum at its Terminal-era size: the four fields
-/// are set on one spawn in a session, and read on none of the hot paths.
-///
-/// The decoder validates the pair with the rest of the body per kind: an
-/// [`AgentSession`](ResourceKind::AgentSession) spawn requires `parent` and
-/// `provider` and carries none of `command`, `cwd`, `env`, `term`,
-/// `owner_terminal`, or `initial_size`; a [`Terminal`](ResourceKind::Terminal)
-/// spawn carries none of `parent`, `provider`, or `native_id`; an
-/// [`Unknown`](ResourceKind::Unknown) kind is not validated, so the server
-/// can answer [`SpawnError::UnsupportedKind`] instead of the connection
-/// failing on a malformed frame. Gated on
-/// [`ServerFeature::ResourceKinds`](crate::caps::ServerFeature::ResourceKinds):
-/// a server without the bit skips the fields by length and spawns a
-/// Terminal, so a client MUST see the bit before asking for another kind.
+/// An all-default value encodes to no fields and decodes back as `None`.
+/// The decoder enforces per-kind rules: an
+/// [`AgentSession`](ResourceKind::AgentSession) requires `parent` and
+/// `provider` and forbids the PTY-shape fields; a
+/// [`Terminal`](ResourceKind::Terminal) forbids `parent`, `provider`, and
+/// `native_id`; an [`Unknown`](ResourceKind::Unknown) kind is passed through
+/// so the server can answer [`SpawnError::UnsupportedKind`]. A client MUST
+/// see [`ServerFeature::ResourceKinds`](crate::caps::ServerFeature::ResourceKinds)
+/// before asking for another kind.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SpawnResource {
-    /// What kind of resource to spawn (field 11; absent on the wire means
-    /// `Terminal`, and the encoder writes the field only for another kind).
+    /// Kind to spawn (field 11; absent means `Terminal`).
     pub kind: ResourceKind,
-    /// The resource the new one is bound to (field 12). Required for
-    /// `AgentSession`, whose parent is always a Terminal; set at spawn,
-    /// immutable, and the server closes the child with
-    /// `CloseReason::ParentClosed` when the parent closes.
+    /// Parent resource (field 12); closing it closes the child.
     pub parent: Option<ResourceId>,
     /// Agent provider name, e.g. `claude` (field 13; at most
     /// [`MAX_RESOURCE_PROVIDER_BYTES`](super::MAX_RESOURCE_PROVIDER_BYTES)
@@ -148,29 +115,19 @@ pub struct SpawnResource {
     pub provider: Option<String>,
     /// Opaque provider-native session id (field 14; at most
     /// [`MAX_RESOURCE_NATIVE_ID_BYTES`](super::MAX_RESOURCE_NATIVE_ID_BYTES)
-    /// bytes, non-empty). The same value ADR-0068's
-    /// `phux.agent-session/v1` record carries as `native_id`.
+    /// bytes, non-empty).
     pub native_id: Option<String>,
-    /// Ask the server to bind the new resource to its instance token
-    /// (field 15, `docs/spec/L1.md` §3.1, ADR-0109). A server that
-    /// advertises [`ServerFeature::ConditionalKill`](crate::caps::ServerFeature::ConditionalKill)
-    /// answers such a spawn with [`SpawnResult::OkBound`]; one without the
-    /// bit skips the field by length and answers [`SpawnResult::Ok`]. Valid
-    /// for every kind.
+    /// Bind the new resource to the server's instance token (field 15,
+    /// ADR-0109), answered with [`SpawnResult::OkBound`] by a server
+    /// advertising [`ServerFeature::ConditionalKill`](crate::caps::ServerFeature::ConditionalKill).
     pub bind_instance: bool,
-    /// Keep the resource inspectable for this many seconds after its
-    /// process exits (field 16, ADR-0124). `None` is today's close-at-exit;
-    /// `Some(0)` asks for the server's default. Terminal only: the decoder
-    /// refuses it on an `AgentSession` spawn. A server without
-    /// [`ServerFeature::RetainOnExit`](crate::caps::ServerFeature::RetainOnExit)
-    /// skips the field and closes at exit.
+    /// Keep a Terminal inspectable this many seconds after exit (field 16,
+    /// ADR-0124); `Some(0)` is the server default. Needs
+    /// [`ServerFeature::RetainOnExit`](crate::caps::ServerFeature::RetainOnExit).
     pub retain_secs: Option<u32>,
-    /// Make the spawn idempotent under this key (field 17, ADR-0126): a
-    /// repeat with the same key and payload is answered with the original
-    /// id and [`SpawnResult::Replayed`]. Valid for every kind. A server
-    /// without
-    /// [`ServerFeature::SpawnIdempotency`](crate::caps::ServerFeature::SpawnIdempotency)
-    /// skips the field and spawns again.
+    /// Idempotency key (field 17, ADR-0126): a same-payload repeat answers
+    /// [`SpawnResult::Replayed`]. Needs
+    /// [`ServerFeature::SpawnIdempotency`](crate::caps::ServerFeature::SpawnIdempotency).
     pub idempotency_key: Option<IdempotencyKey>,
 }
 
@@ -229,13 +186,7 @@ impl SpawnResource {
     }
 }
 
-// -----------------------------------------------------------------------------
-// AttachTarget tagged union — SPEC §13.
-// -----------------------------------------------------------------------------
-
-/// Session the client wishes to attach to, per SPEC §13.
-///
-/// Tagged union; each variant maps to one of SPEC's four selection modes.
+/// Session the client wishes to attach to (SPEC §13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AttachTarget {
@@ -259,13 +210,7 @@ pub enum AttachTarget {
     },
 }
 
-/// Viewport metrics the client advertises at attach time.
-///
-/// SPEC §13: `{ cols, rows, pixel_w: optional<u16>, pixel_h: optional<u16> }`.
-/// Pixel dimensions support sub-cell rendering and image protocols; cells are
-/// the load-bearing axis.
-///
-/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_pixels`.
+/// Viewport metrics the client advertises (SPEC §13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ViewportInfo {
@@ -280,9 +225,7 @@ pub struct ViewportInfo {
 }
 
 impl ViewportInfo {
-    /// Construct a `ViewportInfo` from cell dimensions, the load-bearing
-    /// axis per SPEC §13. Pixel dimensions default to `None`; supply them
-    /// via [`Self::with_pixels`] when the host kernel reports them.
+    /// A viewport of `cols` x `rows` cells with no pixel size.
     #[must_use]
     pub const fn new(cols: u16, rows: u16) -> Self {
         Self {
@@ -293,8 +236,7 @@ impl ViewportInfo {
         }
     }
 
-    /// Builder setter for the optional pixel dimensions (`pixel_w`,
-    /// `pixel_h`). Pass `None` for either axis the kernel did not report.
+    /// Builder setter for the optional pixel dimensions.
     #[must_use]
     pub const fn with_pixels(mut self, pixel_w: Option<u16>, pixel_h: Option<u16>) -> Self {
         self.pixel_w = pixel_w;
@@ -303,25 +245,8 @@ impl ViewportInfo {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Scope — SPEC §7.4 / §11.L3 (phux-4li.2). The "where does this key live?"
-// tagged union shared by every L3 metadata frame.
-// -----------------------------------------------------------------------------
-
-/// Scope of an L3 metadata key (SPEC §7.4 / §11.L3).
-///
-/// Tagged union:
-/// - `Terminal { terminal_id }` — keys scoped to a single Terminal. Killed
-///   with the Terminal.
-/// - `Group { group_id }` — keys scoped to a Group (opaque grouping key).
-///   v0.1 servers expose a single default Group that satisfies the
-///   reference TUI's `phux.tui.layout/v1` use case (see ADR-0019).
-/// - `Global` — keys scoped to the server (e.g. cross-Group prefs).
-///
-/// Wire encoding: 1-byte tag + per-variant body.
-/// - tag `0x00` → `Terminal`, body = tagged `ResourceId`.
-/// - tag `0x01` → `Group`, body = `u32` (the inner `GroupId`).
-/// - tag `0x02` → `Global`, body = empty.
+/// Scope of an L3 metadata key (SPEC §7.4): a 1-byte tag (`0` resource,
+/// `1` group, `2` global) plus the id, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Scope {
@@ -333,84 +258,32 @@ pub enum Scope {
     Global,
 }
 
-// -----------------------------------------------------------------------------
-// SpawnError / SpawnResult — SPEC §7.2 / §10.1 (phux-4li.10).
-//
-// `SpawnResult` is the `Result<ResourceId, SpawnError>` carried inside
-// `RESOURCE_SPAWNED`. Modelled as a dedicated tagged union (rather than
-// reusing the Rust `Result` type directly on the wire) so the codec
-// stays in lockstep with the SPEC text and so future error variants can
-// land without touching call sites that match on the type.
-//
-// Both `SpawnResult` and `SpawnError` are `#[non_exhaustive]`: forward-
-// compatible additions are protocol-minor changes, mirroring the
-// existing [`ErrorCode`] / [`AttachTarget`] / [`Scope`] precedent.
-//
-// Wire encoding:
-//   SpawnResult tag 0x00 Ok  → tagged ResourceId
-//   SpawnResult tag 0x01 Err → SpawnError
-//   SpawnError  tag 0x00 GroupNotFound → no body
-//   SpawnError  tag 0x01 SpawnFailed        → length-prefixed UTF-8 str
-// -----------------------------------------------------------------------------
-
-/// Error variants for [`FrameKind::ResourceSpawned`](super::FrameKind::ResourceSpawned), SPEC §7.2 / §10.1.
-///
-/// `#[non_exhaustive]` so a v0.2.x server may add codes (e.g.
-/// `PermissionDenied`, `ResourceExhausted`) without breaking downstream
-/// matches. Unknown wire tags surface as
-/// [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue) rather than coercing to a
-/// placeholder.
+/// Why a spawn was refused (SPEC §7.2 / §10.1). Unknown tags decode as
+/// [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SpawnError {
-    /// The `group` named in [`FrameKind::SpawnResource`](super::FrameKind::SpawnResource) does not
-    /// exist on this server. v0.1 servers expose a single default
-    /// Group at `GroupId(1)` (SPEC §7.4 L2-dependency note);
-    /// any other id MAY surface this error.
+    /// The named `group` does not exist.
     GroupNotFound,
-    /// Spawning the underlying PTY failed for an implementation-specific
-    /// reason. The carried string is a human-readable diagnostic — short
-    /// enough to log inline; the SPEC does not constrain its contents
-    /// beyond UTF-8.
+    /// Spawning failed; carries a diagnostic.
     SpawnFailed(String),
-    /// The spawn named a satellite (`SPAWN_RESOURCE.satellite`) but this
-    /// server cannot route to it: it is not a federation hub, or the host
-    /// is absent from its satellite registry (phux-v45.6). The spawn-reply
-    /// mirror of `ErrorCode::UnsupportedSatelliteRoute` — a configuration
-    /// refusal, fixed by `phux server --hub` / `phux host add --role satellite`.
+    /// This server cannot route to the named satellite (not a hub, or the
+    /// host is unregistered).
     UnsupportedSatelliteRoute,
-    /// The spawn named a satellite this hub dials, but the link is down,
-    /// dialing, refused fail-closed, or did not answer within the relay
-    /// deadline (phux-v45.6). The spawn-reply mirror of
-    /// `ErrorCode::SatelliteUnreachable`; carries the same human-readable
-    /// diagnostic. Retryable — the hub redials with backoff.
+    /// The hub's link to the named satellite is down; retryable.
     SatelliteUnreachable(String),
-    /// The spawn named a `kind` this server does not serve: either a tag it
-    /// does not recognise (`ResourceKind::Unknown`) or one it knows but has
-    /// no engine for. A server that does not advertise
-    /// `ServerFeature::ResourceKinds` answers every non-Terminal kind this
-    /// way. Wire tag `0x04`.
+    /// This server does not serve the requested `kind`.
     UnsupportedKind,
-    /// The spawn's `parent` names a resource that does not exist on this
-    /// server. Wire tag `0x05`.
+    /// The `parent` does not exist.
     ParentNotFound,
-    /// The spawn's `parent` exists but is not a kind that may own the
-    /// requested child: an `AgentSession` requires a Terminal parent, and a
-    /// resource that is itself a child cannot be a parent. Wire tag `0x06`.
+    /// The `parent` may not own this child kind.
     ParentKindMismatch,
-    /// The spawn's `idempotency_key` is already bound, inside the retry
-    /// horizon, to a spawn with a different payload (ADR-0126). Nothing was
-    /// created. Wire tag `0x07`.
+    /// The `idempotency_key` is bound to a different payload (ADR-0126);
+    /// nothing was created.
     IdempotencyConflict,
 }
 
-/// Tagged union carried by [`FrameKind::ResourceSpawned`](super::FrameKind::ResourceSpawned), SPEC §7.2 / §10.1.
-///
-/// Either the server-allocated [`ResourceId`] of the freshly spawned
-/// Terminal, or a structured [`SpawnError`]. Modelled as a dedicated
-/// enum rather than the Rust `core::result::Result` directly so the
-/// codec mirrors the SPEC's tagged-union vocabulary and so the
-/// `#[non_exhaustive]` contract carries through unchanged.
+/// The `RESOURCE_SPAWNED` result (SPEC §7.2 / §10.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SpawnResult {
@@ -418,22 +291,16 @@ pub enum SpawnResult {
     Ok(ResourceId),
     /// Structured failure; see [`SpawnError`].
     Err(SpawnError),
-    /// The freshly spawned resource's identifier, bound to the instance
-    /// token of the server that allocated it (ADR-0109). Only a spawn that
-    /// set [`SpawnResource::bind_instance`] is answered this way, so a
-    /// caller that never asks never sees it. On the wire it is the `Ok` tag
-    /// plus `RESOURCE_SPAWNED` field 3 (`docs/spec/L1.md` §3.1).
+    /// The new id plus the instance token, answering
+    /// [`SpawnResource::bind_instance`] (ADR-0109): the `Ok` tag plus field 3.
     OkBound {
         /// The freshly spawned resource.
         id: ResourceId,
         /// The token naming the id space `id` was allocated from.
         instance: ServerInstance,
     },
-    /// The id of the resource an earlier spawn with the same idempotency key
-    /// and payload created (ADR-0126); nothing new was spawned. Only a spawn
-    /// that set [`SpawnResource::idempotency_key`] is answered this way. On
-    /// the wire it is the `Ok` tag plus `RESOURCE_SPAWNED` field 4, and field
-    /// 3 when the original spawn was bound.
+    /// The id an earlier same-key spawn created; nothing new was spawned
+    /// (ADR-0126). The `Ok` tag plus field 4 (and field 3 when bound).
     Replayed {
         /// The resource the original spawn created.
         id: ResourceId,
@@ -471,33 +338,17 @@ impl SpawnResult {
     }
 }
 
-/// Error variants for [`FrameKind::ResourceMoved`](super::FrameKind::ResourceMoved) (ADR-0056).
-///
-/// `#[non_exhaustive]` on the same contract as [`SpawnError`]: additive
-/// variants are protocol-minor changes, and an unknown wire tag surfaces
-/// as [`DecodeError::UnknownEnumValue`](crate::wire::error::DecodeError::UnknownEnumValue).
+/// Why a move was refused (ADR-0056).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MoveError {
-    /// The re-parent was refused or failed: either Terminal does not
-    /// exist, the destination window is gone, or the registry rejected
-    /// the move. The carried string is a human-readable diagnostic,
-    /// unconstrained beyond UTF-8 (the [`SpawnError::SpawnFailed`]
-    /// shape).
+    /// The move was refused or failed; carries a diagnostic.
     MoveFailed(String),
-    /// The move named a satellite-tagged Terminal on either end. A move
-    /// is local-only (ADR-0056): federation routing for it does not
-    /// exist, matching the spawn-reply mirror
-    /// [`SpawnError::UnsupportedSatelliteRoute`].
+    /// A satellite-tagged Terminal was named; moves are local-only.
     UnsupportedSatelliteRoute,
 }
 
-/// Tagged union carried by [`FrameKind::ResourceMoved`](super::FrameKind::ResourceMoved) (ADR-0056).
-///
-/// Either the moved Terminal's (unchanged) [`ResourceId`] — echoed back
-/// so a caller can correlate without holding request state — or a
-/// structured [`MoveError`]. A move never changes identity: the id is
-/// stable across it, so subscriptions and outstanding waits survive.
+/// The `RESOURCE_MOVED` result (ADR-0056); the id is stable across a move.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MoveResult {
