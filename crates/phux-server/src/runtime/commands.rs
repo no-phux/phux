@@ -48,6 +48,14 @@ pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
     }
 }
 
+/// The `TERMINAL_NOT_FOUND` refusal for `terminal_id`.
+fn terminal_not_found(terminal_id: &phux_protocol::ids::ResourceId) -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::TerminalNotFound,
+        message: format!("no such terminal: {terminal_id:?}"),
+    }
+}
+
 /// The grid a pane is built at when its real geometry arrives later (an
 /// attaching viewport, or a spawn without `SPAWN_RESOURCE.initial_size`).
 pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = crate::state::HEADLESS_TERMINAL_DIMS;
@@ -387,24 +395,10 @@ pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 /// edge-filtered and re-derives each tick, so a dropped event is re-published.
 pub(crate) const AGENT_STATE_SINK_CAPACITY: usize = 8;
 
-/// Handle a client's `RESIZE_TERMINAL` (L1 §3.1).
-///
-/// The explicit, per-Terminal counterpart to [`handle_viewport_resize`]: the
-/// caller names one Terminal and its exact cell dimensions, rather than
-/// reporting a viewport the window-size policy then folds across every
-/// subscriber. It deliberately does NOT consult
-/// [`crate::state::ServerState::resolve_terminal_geometry`] — the point of
-/// the frame is to set a size a view could not have produced, which is what
-/// makes it the only way a headless caller (an agent, `phux resize`) can
-/// size a pane at all. The resize applies whether or not anyone is attached;
-/// under the view-derived `window-size` policies the next attach / detach /
-/// `VIEWPORT_RESIZE` recomputes geometry from views and supersedes it, and
-/// under `WindowSize::Manual` nothing ever does. That precedence is
-/// documented for consumers in `docs/consumers/tui.md` §4.2 and is why
-/// `phux resize` reads the result back instead of trusting the send.
-///
-/// No reply frame: the S→C `TERMINAL_RESIZED` discriminant is spec-only, so
-/// every not-found path here is a `debug!` and a drop.
+/// Handle a client's `RESIZE_TERMINAL` (L1 §3.1): set one Terminal's exact
+/// size, bypassing the window-size policy, so a headless caller can size a
+/// pane. A later view-derived recompute may supersede it (tui.md §4.2).
+/// There is no reply frame, so not-found paths log and drop.
 pub(crate) fn handle_terminal_resize(
     state: &SharedState,
     client_id: ClientId,
@@ -415,9 +409,6 @@ pub(crate) fn handle_terminal_resize(
     state.with_mut(|s| {
         let local = match s.resolve_resource(wire_terminal_id).into_owned() {
             ResolvedOwned::Remote(route) => {
-                // Federation relay (phux-v45.4): forward the frame verbatim
-                // with the id rewritten to the satellite's Local space.
-                // Off-hub (or for an unknown host) it stays a warn-drop.
                 if !relay_satellite_frame(
                     client_id,
                     wire_terminal_id,
@@ -452,26 +443,15 @@ pub(crate) fn handle_terminal_resize(
             ResolvedOwned::Local(local) => local,
         };
         let terminal = local.id;
-        // ADR-0124: a retained pane's grid is the record of how its process
-        // ended; a resize would reflow it for nobody. A no-op, not an error.
+        // ADR-0124: a retained pane's grid records how its process ended.
         if s.retained_exit(terminal).is_some() {
             debug!(?client_id, ?wire_terminal_id, "RESIZE_TERMINAL: pane exited; ignored");
             return;
         }
-        // Clamp to the same one-cell floor `TerminalActor::handle_resize`
-        // applies. libghostty has no zero-dimension grid, so a `0` on either
-        // axis becomes a `1` down there regardless; recording the raw request
-        // here would leave the registry claiming `0x24` for a grid that is
-        // really `1x24`, and `GET_STATE` — which `phux resize` reads back to
-        // decide whether the resize took — would report a size no pane has.
-        // The wire codec still round-trips zero faithfully (L1 §3.1); this is
-        // the "treat zero as a no-op rather than a kernel error" SHOULD,
-        // applied consistently on both sides of the actor boundary.
+        // The actor clamps to one cell; record the same so `GET_STATE` (which
+        // `phux resize` reads back) never reports a size no grid has.
         let cols = cols.max(1);
         let rows = rows.max(1);
-        // Keep the registry's recorded dims in sync so future
-        // `TERMINAL_SNAPSHOT` payloads report the post-resize cols/rows.
-        // Mirrors what `handle_viewport_resize` does for VIEWPORT_RESIZE.
         if let Some(pane) = s.registry_mut().terminal_mut(terminal) {
             pane.dims = (cols, rows);
         }
@@ -479,10 +459,8 @@ pub(crate) fn handle_terminal_resize(
             Ok(terminal) => terminal,
             Err(error) => {
                 debug!(?client_id, ?terminal, %error, "RESIZE_TERMINAL: not a Terminal; dropping");
-                // docs/spec/L1.md §1.1's WRONG_RESOURCE_KIND rule: no reply
-                // frame exists for RESIZE_TERMINAL, so the refusal rides an
-                // uncorrelated ERROR to the sender instead of a log line
-                // only the server ever sees.
+                // L1 §1.1: with no reply frame, the refusal rides an
+                // uncorrelated ERROR to the sender.
                 if let Some(mailbox) = s.client_mailbox(client_id) {
                     let _ = mailbox.try_send(Outbound::Frame(FrameKind::Error {
                         request_id: None,
@@ -493,10 +471,8 @@ pub(crate) fn handle_terminal_resize(
                 return;
             }
         };
-        // Live per-pane resize (RESIZE_TERMINAL): resync clients so their
-        // mirrors reconverge after reflow (phux-8v1). An agent's explicit
-        // resize carries cell counts only — no pixel truth — so the actor
-        // keeps its last-known cell pixel size.
+        // Resync clients so mirrors reconverge after reflow; no pixel size
+        // rides this frame, so the actor keeps its last one.
         match terminal.resize.try_send(ResizeRequest {
             cols,
             rows,
@@ -526,19 +502,10 @@ pub(crate) fn handle_terminal_resize(
     });
 }
 
-/// Perform the attach mutation in one critical section: call
-/// [`crate::state::ServerState::attach`], build the snapshot, and collect
-/// both the pane handles that can bootstrap and snapshot panes that must be
-/// authoritatively closed before `ATTACH_READY`.
-///
-/// The snapshot is a whole-workspace catalog, while only the focused session
-/// participates in this attach generation. Within that session, a registry
-/// pane without an actor handle cannot produce `BOOTSTRAP_*`; returning it in
-/// the fourth tuple slot lets the publisher resolve the client's attach
-/// barrier with `RESOURCE_CLOSED` instead of silently stranding it.
-///
-/// Pulled out so [`crate::runtime::attach::handle_attach`] stays under clippy's
-/// `too_many_lines` ceiling.
+/// Perform the attach mutation in one critical section: attach, build the
+/// snapshot, and collect the panes that can bootstrap plus the focused-session
+/// panes without an actor, which must be closed before `ATTACH_READY` rather
+/// than stranding the client's attach barrier.
 pub(crate) fn prepare_attach(
     state: &SharedState,
     client_id: ClientId,
@@ -578,12 +545,6 @@ pub(crate) fn prepare_attach(
             bootstrap_profile,
             bootstrap_limits,
         )?;
-        // Record successful attach as session activity before we build
-        // the snapshot. The order doesn't matter for
-        // correctness (we're still inside the with_mut critical
-        // section), but doing it here keeps the recording adjacent to
-        // the attach call that justified it — easier to reason about
-        // when reading the code.
         s.touch_session(sid);
         let snapshot = s
             .build_session_snapshot(sid)
@@ -618,21 +579,8 @@ pub(crate) fn prepare_attach(
     })
 }
 
-// -----------------------------------------------------------------------------
-// Control-plane command dispatch — SPEC §5 (phux-k61 / ADR-0021).
-// -----------------------------------------------------------------------------
-
-/// Dispatch a `COMMAND` envelope and reply with `COMMAND_RESULT`
-/// correlated by `request_id`. The control plane for the CLI's `ls` /
-/// `kill` verbs. Per SPEC §5 a command is asynchronous: the result MAY
-/// follow other frames the command triggered (e.g. `KILL_RESOURCE`'s
-/// `RESOURCE_CLOSED`).
-/// Stable, payload-free label for a [`Command`] variant — the `kind` field
-/// on the `handle_command` lifecycle span. A hand-written map (rather than
-/// `?command`) keeps the trace line small and free of user payloads
-/// (session names, env, input bytes) while still localizing which control
-/// command ran. `Command` is `#[non_exhaustive]`, hence the wildcard; a new
-/// variant logs as `"other"` until an arm is added here.
+/// Stable, payload-free label for a [`Command`] variant: the `kind` field on
+/// the `handle_command` span, kept free of session names, env, and input.
 pub(crate) const fn command_kind(command: &Command) -> &'static str {
     match command {
         Command::AttachResource { .. } => "attach_terminal",
@@ -658,10 +606,23 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
     }
 }
 
-// Lifecycle span (info): one per L2 COMMAND. `kind` is a payload-free
-// label so the trace localizes which control command ran without leaking
-// session names / env / input bytes; the CLOSE duration times the command
-// (some, e.g. GET_SCREEN, round-trip to an actor).
+/// Queue `result` as the `COMMAND_RESULT` for `request_id`; a closed mailbox
+/// means the connection is already gone.
+async fn send_result(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    request_id: u32,
+    result: CommandResult,
+) {
+    let _ = out_tx
+        .send(Outbound::Frame(FrameKind::CommandResult {
+            request_id,
+            result,
+        }))
+        .await;
+}
+
+/// Dispatch a `COMMAND` and reply with its correlated `COMMAND_RESULT`
+/// (SPEC §5). The result may follow frames the command triggered.
 #[tracing::instrument(
     level = "info",
     name = "handle_command",
@@ -685,89 +646,47 @@ pub(crate) async fn handle_command(
     input_lane: Option<&InputLaneHandle>,
     connection_token: &CancellationToken,
     root_token: &CancellationToken,
-    // QUIC multi-stream (proto.md §4.2): subscribe now, bootstrap at
-    // `STREAM_BIND`. The command registers the subscription (lifecycle
-    // fanout, input gates, bind authorization) and answers `Ok`; the
-    // Terminal's content stream starts when the client binds a QUIC
-    // stream to it. `false` everywhere else: subscribe and bootstrap
-    // together, as before.
+    // QUIC multi-stream (proto.md §4.2): subscribe now, bootstrap when the
+    // client binds a stream (`STREAM_BIND`).
     defer_subscription: bool,
 ) {
-    // UPGRADE is handled out-of-band: `handle_upgrade` acks the client itself
-    // and then re-execs the process, so it never returns a `CommandResult` for
-    // the shared send below (ADR-0032).
+    // UPGRADE and SHUTDOWN ack the client themselves and then re-exec or end
+    // the process, so neither reaches the shared result send below.
     if matches!(command, Command::Upgrade) {
         handle_upgrade(state, request_id, out_tx).await;
         return;
     }
-
-    // SHUTDOWN is the other command whose subject is the server rather than a
-    // Terminal, and it is out-of-band for the same reason as its sibling: it
-    // acks and then ends the process, so there is no `CommandResult` left for
-    // the shared send below (phux-pimp).
     if matches!(command, Command::Shutdown) {
         handle_shutdown(state, client_id, request_id, out_tx, root_token).await;
         return;
     }
 
-    // PUT_FILE chunks may carry 8 MiB. Route this variant by ownership before
-    // the borrowed generic helper so a hub does not clone the payload merely
-    // to rewrite a satellite ResourceId.
-    let command = match command {
-        Command::PutFile {
-            upload_id,
-            terminal_id,
-            extension,
-            offset,
-            data,
-            final_chunk,
-            sha256,
-        } => match crate::hub::relay::satellite_route(&terminal_id) {
-            Some((sat_host, local_id)) => {
-                handle_satellite_command(
-                    state,
-                    client_id,
-                    request_id,
-                    &sat_host,
-                    Command::PutFile {
-                        upload_id,
-                        terminal_id: phux_protocol::ids::ResourceId::local(local_id),
-                        extension,
-                        offset,
-                        data,
-                        final_chunk,
-                        sha256,
-                    },
-                    out_tx,
-                    bootstrap_profile,
-                    bootstrap_limits,
-                    connection_token,
-                )
-                .await;
-                return;
-            }
-            None => Command::PutFile {
-                upload_id,
-                terminal_id,
-                extension,
-                offset,
-                data,
-                final_chunk,
-                sha256,
-            },
-        },
-        other => other,
-    };
+    // PUT_FILE chunks may carry 8 MiB: rewrite a satellite id in place rather
+    // than cloning the payload through the generic router below.
+    let mut command = command;
+    if let Command::PutFile { terminal_id, .. } = &mut command
+        && let Some((sat_host, local_id)) = crate::hub::relay::satellite_route(terminal_id)
+    {
+        *terminal_id = phux_protocol::ids::ResourceId::local(local_id);
+        handle_satellite_command(
+            state,
+            client_id,
+            request_id,
+            &sat_host,
+            command,
+            out_tx,
+            bootstrap_profile,
+            bootstrap_limits,
+            connection_token,
+        )
+        .await;
+        return;
+    }
 
     // ADR-0127: `{ VIEWER, DELIBERATE }` is refused before anything is
-    // subscribed or relayed, local and satellite alike.
+    // subscribed or relayed.
     if let Some(result) = refuse_invalid_role_policy(&command) {
-        let _ = out_tx
-            .send(Outbound::Frame(FrameKind::CommandResult {
-                request_id,
-                result,
-            }))
-            .await;
+        send_result(out_tx, request_id, result).await;
         return;
     }
 
@@ -775,9 +694,7 @@ pub(crate) async fn handle_command(
     // spawned counts as attaching it; noted before the verb runs.
     note_local_use(state, client_id, &command);
 
-    // Federation relay (phux-v45.4, ADR-0007 §4): a command targeting a
-    // satellite-owned terminal never touches local dispatch — see
-    // `handle_satellite_command`.
+    // ADR-0007 §4: a satellite-owned target never touches local dispatch.
     if let Some((sat_host, local_command)) = crate::hub::relay::route_to_satellite(&command) {
         handle_satellite_command(
             state,
@@ -794,19 +711,13 @@ pub(crate) async fn handle_command(
         return;
     }
 
-    // `docs/spec/L1.md` §5.1.1: a keyed supervisory command is admitted
-    // here, after routing, so one bound for a satellite never takes a slot
-    // on this server: the satellite that runs it owns its dedupe.
+    // L1 §5.1.1: keyed commands are admitted after routing; a satellite owns
+    // the dedupe of what it runs.
     let claim = match super::keyed_ops::admit(state, &command).await {
         super::keyed_ops::KeyedAdmission::Unkeyed => None,
         super::keyed_ops::KeyedAdmission::Owner(claim) => Some(claim),
         super::keyed_ops::KeyedAdmission::Answer(result) => {
-            let _ = out_tx
-                .send(Outbound::Frame(FrameKind::CommandResult {
-                    request_id,
-                    result,
-                }))
-                .await;
+            send_result(out_tx, request_id, result).await;
             return;
         }
     };
@@ -1006,10 +917,7 @@ pub(crate) async fn handle_command(
             )
             .await
         }
-        // `Command` is `#[non_exhaustive]`: a forward-compat command this
-        // server doesn't implement decodes only if a newer peer sent a
-        // tag we allocated but haven't wired (the decoder rejects truly
-        // unknown tags). Refuse it per SPEC §5 with `INVALID_COMMAND`.
+        // A known-but-unwired tag of the `#[non_exhaustive]` catalog (SPEC §5).
         _ => CommandResult::Error {
             code: ErrorCode::InvalidCommand,
             message: "command not supported by this server".to_owned(),
@@ -1020,22 +928,9 @@ pub(crate) async fn handle_command(
         ?client_id,
         request_id, "COMMAND dispatched; sending COMMAND_RESULT"
     );
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result,
-        }))
-        .await;
+    send_result(out_tx, request_id, result).await;
 }
 
-/// Build the reply for `KILL_RESOURCE`: resolve the wire id to the core
-/// pane, then cancel its actor. Cancellation drops the actor's
-/// `exit_notify`, which the per-pane EOF watcher (phux-it8) treats
-/// identically to PTY EOF: it broadcasts `RESOURCE_CLOSED` and reaps the
-/// pane (phux-60s), cascading to session removal + server self-exit when
-/// the last session empties. So `KILL_RESOURCE` reuses the exact teardown
-/// a natural shell exit takes — no separate kill plumbing, and the async
-/// `RESOURCE_CLOSED` still fires.
 /// The attribution a kill stamps on the `pane_closed` of everything it
 /// closes: the sending connection and, when keyed, its `operation_id`.
 const fn kill_attribution(
@@ -1048,6 +943,8 @@ const fn kill_attribution(
     }
 }
 
+/// `KILL_RESOURCE`: close the pane through the same teardown a natural exit
+/// takes, so `RESOURCE_CLOSED` still fires.
 fn handle_kill_terminal(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -1056,14 +953,9 @@ fn handle_kill_terminal(
     state
         .with(|s| s.terminal_from_wire(terminal_id))
         .map_or_else(
-            || CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: format!("no such terminal: {terminal_id:?}"),
-            },
+            || terminal_not_found(terminal_id),
             |core_id| {
-                // ADR-0104 §2: the target and everything bound to it close
-                // in one acquisition of the lock, so no client observes a
-                // child whose parent is gone.
+                // ADR-0104 §2: the target and its children close in one lock.
                 state.with_mut(|s| {
                     s.close_resources_attributed(
                         &[core_id],
@@ -1076,10 +968,8 @@ fn handle_kill_terminal(
         )
 }
 
-/// Build the reply for `KILL_RESOURCE_IF` (ADR-0109, L1 §5.2.1): check the
-/// precondition and kill in one acquisition of the state lock, so no attach
-/// can land between the two. A refusal kills nothing. The teardown is the
-/// same one `KILL_RESOURCE` takes.
+/// `KILL_RESOURCE_IF` (ADR-0109, L1 §5.2.1): check and kill under one lock so
+/// no attach lands between them. A refusal kills nothing.
 fn handle_kill_resource_if(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -1099,10 +989,7 @@ fn kill_if_refusal(
     refusal: crate::state::KillIfRefusal,
 ) -> CommandResult {
     match refusal {
-        crate::state::KillIfRefusal::NotFound => CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
-        },
+        crate::state::KillIfRefusal::NotFound => terminal_not_found(terminal_id),
         crate::state::KillIfRefusal::Precondition(why) => CommandResult::Error {
             code: ErrorCode::PreconditionFailed,
             message: format!("{terminal_id} not killed: {why}"),
@@ -1110,27 +997,13 @@ fn kill_if_refusal(
     }
 }
 
-/// Handle `ATTACH_RESOURCE` (SPEC §5.1 tag 0x01, phux-v45.7): subscribe the
-/// caller to one Terminal's content stream without a session-scoped
-/// `ATTACH`. Registers the caller as an output subscriber (which also opens
-/// the `INPUT_*` / `FRAME_ACK` gates for it — see `handle_terminal_input`),
-/// registers the per-consumer state-sync entry so `FRAME_ACK` eviction
-/// works (ADR-0018), spawns a cancellable output pump, and primes the
-/// caller with an authoritative `TERMINAL_SNAPSHOT` before any
-/// `RESOURCE_OUTPUT` delta (the same snapshot-first gate `handle_attach`
-/// enforces — ADR-0007 §4's snapshot-on-attach invariant rides on it
-/// across the federation hop).
-///
-/// Idempotent: a re-attach re-sends a fresh snapshot without spawning a
-/// second pump — this is what a federation hub relays when a second
-/// consumer attaches to a terminal the link already streams; the
-/// duplicate snapshot is a convergent repaint for existing observers.
-///
-/// Deliberately does NOT resize the Terminal (no viewport rides the
-/// command); interactive callers follow with `RESIZE_TERMINAL`.
+/// Handle `ATTACH_RESOURCE` (SPEC §5.1): subscribe the caller to one
+/// Terminal's content stream, snapshot first, without a session `ATTACH`.
+/// Idempotent: a re-attach re-sends a snapshot without a second pump. It
+/// never resizes; interactive callers follow with `RESIZE_TERMINAL`.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the negotiated connection context (caps, bootstrap profile, bootstrap limits) is threaded verbatim from the dispatch surface; boxing it here would only rename the same list"
+    reason = "negotiated connection context threaded from dispatch"
 )]
 async fn handle_attach_terminal(
     state: &SharedState,
@@ -1143,9 +1016,6 @@ async fn handle_attach_terminal(
     connection_token: &CancellationToken,
     role: RolePolicy,
 ) -> CommandResult {
-    // Profile validation lives in `bootstrap_attach_terminal` (it runs
-    // after subscribe so the bind path shares it); a bad profile fails
-    // there and this path drops the subscription it just registered.
     let subscription =
         match subscribe_attach_terminal(state, client_id, terminal_id, out_tx, Some(role)) {
             Ok(subscription) => subscription,
@@ -1178,13 +1048,8 @@ async fn handle_attach_terminal(
     {
         Ok(()) => CommandResult::Ok,
         Err(failure) => {
-            // The COMMAND path owns its subscription: a failed bootstrap
-            // drops it (the pre-refactor behavior). The STREAM_BIND path
-            // keeps it — see `bootstrap_attach_terminal`. A lease this
-            // attach seized is handed back, and a widening it made is undone
-            // (ADR-0127): a failed attach must neither leave an unsubscribed
-            // client holding the wheel nor shed a viewer tombstone. A
-            // declared `VIEWER` stays declared.
+            // The COMMAND path drops its subscription on failure and undoes
+            // any lease seizure or role widening it made (ADR-0127).
             let restore = was_viewer && !role.is_viewer();
             let (released, holder) = state.with_mut(|s| {
                 s.unsubscribe_terminal(client_id, core);
@@ -1223,25 +1088,15 @@ async fn handle_attach_terminal(
 }
 
 /// Bootstrap one Terminal's content stream into `content_tx` without
-/// touching the caller's subscription.
+/// touching the caller's subscription. The QUIC `STREAM_BIND` path
+/// (proto.md §4.2) subscribes on the control mailbox and bootstraps on the
+/// stream's; the COMMAND path uses one mailbox for both.
 ///
-/// Split out of [`handle_attach_terminal`] for the QUIC multi-stream
-/// `STREAM_BIND` path (proto.md §4.2): the bind subscribes with the
-/// *control* mailbox (lifecycle fanout, input gates, bind authorization)
-/// and bootstraps with the *stream* mailbox (actor emission, pump, BEGIN /
-/// READY). The COMMAND path calls this with the same mailbox for both,
-/// then drops the subscription on failure to preserve its exact prior
-/// behavior.
-///
-/// Failures cancel the generation (pump, native lease, actor consumer
-/// entry) but NEVER unsubscribe: a bind caller retries the bind, and an
-/// `ATTACH_RESOURCE` caller still holds its registration. The returned
-/// [`AttachResourceFailure`] shapes the caller's refusal (correlated
-/// `COMMAND_RESULT` on the command path; uncorrelated `ERROR` on control
-/// plus a stream reset on the bind path).
+/// Failures cancel the generation but never unsubscribe; the returned
+/// [`AttachResourceFailure`] shapes the caller's refusal.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the negotiated connection context plus the split mailboxes; same list as handle_attach_terminal"
+    reason = "negotiated connection context plus the split mailboxes"
 )]
 pub(crate) async fn bootstrap_attach_terminal(
     state: &SharedState,
@@ -1263,10 +1118,7 @@ pub(crate) async fn bootstrap_attach_terminal(
             message: "ATTACH_RESOURCE selected an unsupported bootstrap profile".to_owned(),
         });
     };
-    // A non-Terminal stream has its own bootstrap shape, and none of the
-    // grid machinery below applies to it: it forks here, with the
-    // subscription already registered and nothing else yet committed
-    // (ADR-0103 §4).
+    // A non-Terminal stream has its own bootstrap shape (ADR-0103 §4).
     if handle.kind == crate::resource::ResourceKind::AgentSession {
         return match crate::runtime::resource_commands::attach_agent_session(
             state,
@@ -1282,17 +1134,12 @@ pub(crate) async fn bootstrap_attach_terminal(
         {
             CommandResult::Ok | CommandResult::OkWith(_) => Ok(()),
             CommandResult::Error { code, message } => Err(AttachResourceFailure { code, message }),
-            // `CommandResult` is non-exhaustive; anything else is a shape
-            // this path does not understand, which is an internal fault.
             other => Err(AttachResourceFailure::internal(&format!(
                 "agent session attach returned an unexpected result: {other:?}"
             ))),
         };
     }
 
-    // Allocated before the session takes ownership of the handle: exhausting
-    // the id space leaves the subscription registered above in place, exactly
-    // as it did when this was one linear body.
     let Some(bootstrap_id) = state.with_mut(|s| s.next_attach_terminal_bootstrap_id(client_id))
     else {
         return Err(AttachResourceFailure {
@@ -1301,8 +1148,6 @@ pub(crate) async fn bootstrap_attach_terminal(
         });
     };
 
-    // The Terminal facet is resolved once here; every later stage reads it
-    // from the session.
     let terminal = match handle.terminal() {
         Ok(terminal) => terminal.clone(),
         Err(error) => {
@@ -1333,49 +1178,21 @@ pub(crate) async fn bootstrap_attach_terminal(
         Err(failure) => return Err(session.failed(failure)),
     };
 
-    if let Some(state_sync) = generation.state_sync_bootstrap.take() {
-        return match session.finish_state_sync(&generation, state_sync).await {
-            Ok(()) => Ok(()),
-            Err(failure) => Err(session.failed(failure)),
-        };
-    }
-
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    if native_checkpoint_profile(stream_profile) {
-        return match session.finish_native(&mut generation).await {
-            Ok(()) => Ok(()),
-            Err(failure) => Err(session.failed(failure)),
-        };
-    }
-
-    match session.finish_snapshot(&mut generation).await {
-        Ok(()) => Ok(()),
-        Err(failure) => Err(session.failed(failure)),
-    }
+    let finished = if let Some(state_sync) = generation.state_sync_bootstrap.take() {
+        session.finish_state_sync(&generation, state_sync).await
+    } else {
+        session.finish_bootstrap(&mut generation).await
+    };
+    finished.map_err(|failure| session.failed(failure))
 }
 
 /// Resolve the wire terminal id and register the caller as an output
 /// subscriber in one critical section.
 ///
-/// Codec selection is connection-scoped and comes directly from HELLO; it is
-/// never re-probed or replaced with compatibility defaults here.
-///
-/// The caller's mailbox is captured with the subscription (phux-w7z2.56):
-/// `ATTACH_RESOURCE` does not require a session-scoped `ATTACH` (L1 §5.1),
-/// so this consumer may have no `attached` entry, and the server's
-/// out-of-band terminal-scoped fanout — `RESOURCE_CLOSED`, which L1 §3.1
-/// requires for "every client subscribed to the Terminal" — has no other
-/// way to reach it. Content rides the pump; lifecycle does not.
-///
-/// The `STREAM_BIND` path subscribes with the *control* mailbox and
-/// bootstraps with the stream's: lifecycle fanout and bind authorization
-/// resolve through the remembered mailbox, content through the passed one.
-///
-/// `role` is the attach's declared intent (ADR-0127), applied in this same
-/// critical section: the observe-only mark, and for a deliberate takeover the
-/// lease seizure, land with the subscription or not at all. `None` leaves the
-/// connection's role untouched — the `STREAM_BIND` of a Terminal whose
-/// `ATTACH_RESOURCE` already declared it.
+/// The mailbox is remembered with the subscription because a session-less
+/// subscriber has no other route for lifecycle fanout such as
+/// `RESOURCE_CLOSED` (L1 §3.1). `role` (ADR-0127) applies in the same
+/// critical section; `None` leaves the role untouched (a `STREAM_BIND`).
 pub(crate) fn subscribe_attach_terminal(
     state: &SharedState,
     client_id: ClientId,
@@ -1383,10 +1200,7 @@ pub(crate) fn subscribe_attach_terminal(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     role: Option<RolePolicy>,
 ) -> Result<AttachSubscription, CommandResult> {
-    let not_found = || CommandResult::Error {
-        code: ErrorCode::TerminalNotFound,
-        message: format!("no such terminal: {terminal_id:?}"),
-    };
+    let not_found = || terminal_not_found(terminal_id);
     state.with_mut(|s| {
         let core = s.terminal_from_wire(terminal_id).ok_or_else(not_found)?;
         let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
@@ -1430,10 +1244,7 @@ pub(crate) struct AttachSubscription {
 }
 
 /// Broadcast what an attach's declared role changed (ADR-0127) through the
-/// pane's engine, the path `ACQUIRE_INPUT` uses, so journaling and lifecycle
-/// stamping stay the engine's: `ROLE_CHANGED` first, then the lease
-/// transition, each naming the attaching connection as the actor. A
-/// deliberate takeover therefore reaches every subscriber as one `SEIZED`.
+/// pane's engine: `ROLE_CHANGED` first, then the lease transition.
 pub(crate) async fn announce_role_effects(subscription: &AttachSubscription, client_id: ClientId) {
     announce_role_effects_on(
         &subscription.handle,
@@ -1512,12 +1323,8 @@ const fn native_checkpoint_profile(profile: phux_protocol::caps::BootstrapStream
     )
 }
 
-/// Why an `ATTACH_RESOURCE` stage failed.
-///
-/// Carried back to [`AttachResourceSession::failed`] so the partial
-/// generation is rolled back exactly once on the way to the caller's
-/// `COMMAND_RESULT` — or to the bind path's uncorrelated `ERROR` (see
-/// [`bootstrap_attach_terminal`]).
+/// Why an `ATTACH_RESOURCE` stage failed; [`AttachResourceSession::failed`]
+/// rolls the partial generation back exactly once.
 #[derive(Debug)]
 pub(crate) struct AttachResourceFailure {
     /// Wire error code the caller receives.
@@ -1559,12 +1366,8 @@ struct AttachResourceGeneration {
 }
 
 /// One in-flight `ATTACH_RESOURCE`: the resolved terminal plus the negotiated
-/// connection context every stage of the handshake needs.
-///
-/// The stages run as methods so the `resolve -> subscribe -> register -> pump
-/// -> snapshot` ordering stays explicit without threading a dozen arguments
-/// through each one, and so every failure funnels through the single
-/// [`Self::failed`] rollback.
+/// connection context every stage needs. Every failure funnels through
+/// [`Self::failed`].
 struct AttachResourceSession<'a> {
     state: &'a SharedState,
     out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
@@ -1593,9 +1396,7 @@ impl AttachResourceSession<'_> {
     }
 
     /// Undo a partial generation: cancel it, release any native lease, and
-    /// detach the per-consumer state entry — but KEEP the subscription, which
-    /// the caller owns (the COMMAND path drops it after this returns; the
-    /// `STREAM_BIND` path keeps it for a retrying bind).
+    /// detach the per-consumer state entry. The subscription is the caller's.
     fn failed(&self, failure: AttachResourceFailure) -> AttachResourceFailure {
         use crate::terminal_actor::ConsumerDetachRequest;
 
@@ -1618,12 +1419,8 @@ impl AttachResourceSession<'_> {
     }
 
     /// Register the per-consumer state-sync entry (ADR-0018) so `FRAME_ACK`
-    /// from this consumer drives the actor's eviction loop.
-    ///
-    /// `None` when the terminal is not local or the actor refused the
-    /// registration. `StateSync` cannot degrade to the raw broadcast path: its
-    /// selected wire profile requires this actor-owned generation to exist
-    /// before bootstrap publication.
+    /// drives the actor's eviction loop. `None` when the terminal is not local
+    /// or the actor refused.
     async fn register_consumer(
         &self,
         bootstrap_id: phux_protocol::ids::BootstrapId,
@@ -1647,9 +1444,7 @@ impl AttachResourceSession<'_> {
                 bootstrap_max_bytes: usize::MAX,
                 bootstrap_max_frames: usize::MAX,
                 bootstrap_chunk_bytes: 1,
-                // phux-v45.8: `ATTACH_RESOURCE` over a reliable transport; the
-                // emit-once model is correct. Forwarded-leg loss-tolerance is
-                // the deferred activation (ADR-0042).
+                // Reliable transport: emit-once is correct (ADR-0042).
                 loss_tolerant: false,
                 reply,
             })
@@ -1690,8 +1485,7 @@ impl AttachResourceSession<'_> {
         }
         let tick_managed = outcome.as_ref().is_some_and(|outcome| outcome.tick_managed);
         if tick_managed {
-            // No raw pump owns this generation; replacement may proceed without
-            // waiting on a task that will never exist.
+            // No raw pump will own this generation.
             drop(pump_done_guard.take());
         }
         if let Some((prior_bootstrap_id, _, prior_last_seq)) = prior
@@ -1820,6 +1614,18 @@ impl AttachResourceSession<'_> {
             .store(state_sync.base_seq, std::sync::atomic::Ordering::Release);
         let _ = generation.live_gate_tx.send(true);
         Ok(())
+    }
+
+    /// Publish the negotiated bootstrap: a native checkpoint or a snapshot.
+    async fn finish_bootstrap(
+        &self,
+        generation: &mut AttachResourceGeneration,
+    ) -> Result<(), AttachResourceFailure> {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if native_checkpoint_profile(self.stream_profile) {
+            return self.finish_native(generation).await;
+        }
+        self.finish_snapshot(generation).await
     }
 
     /// Capture a native checkpoint bootstrap from the pane actor.
@@ -2018,14 +1824,8 @@ struct AttachResourcePumpCtx {
     generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// Where the pump currently sits in one terminal's output: the receiver it is
-/// draining and how far the published generation has reached.
-///
-/// The generation state itself is [`PumpGeneration`], shared verbatim with the
-/// ATTACH pump in [`crate::runtime::attach`]. It was duplicated here once, and
-/// the copy silently missed the gap fence (phux-l96p.10) — so this consumer
-/// kept detaching on a sequence gap after interactive attach was fixed. There
-/// is one copy of the rules now.
+/// Where the pump sits in one terminal's output: the receiver it drains and
+/// the [`PumpGeneration`] rules it shares with the session ATTACH pump.
 struct AttachResourcePumpStream {
     output_rx: tokio::sync::broadcast::Receiver<crate::terminal_actor::PaneOutput>,
     generation: PumpGeneration,
@@ -2071,10 +1871,6 @@ impl AttachResourcePumpCtx {
 
     /// Forward this pane's output to one `ATTACH_RESOURCE` consumer until the
     /// generation is cancelled, replaced, or the consumer goes away.
-    ///
-    /// `break` and `return` were interchangeable in the inline body this
-    /// replaces — the task ended at the loop either way — so both arrive here
-    /// as [`PumpStep::Stop`].
     async fn run(
         self,
         channels: AttachResourcePumpChannels,
@@ -2118,17 +1914,13 @@ impl AttachResourcePumpCtx {
         loop {
             let next = tokio::select! {
                 biased;
-                // A ready resync must beat cooperative cancel: reap cancels
-                // this token, and taking cancel first would drop the final
-                // screen a fenced consumer is owed (phux-fpgl.28).
+                // A ready resync beats cancel: reap cancels this token, and
+                // the fenced consumer is still owed the final screen.
                 next = pump::next_event(&stream.generation, &mut stream.output_rx) => next,
                 () = token.cancelled() => break,
             };
             let msg = match next {
                 pump::PumpWait::Event(msg) => msg,
-                // Fenced, and the replacement generation has not arrived
-                // within this attempt's backoff. Ask again rather than sit on
-                // a screen that can never change.
                 pump::PumpWait::RetryResync => {
                     if self.retry_resync_after_lag(&mut stream).await == PumpStep::Stop {
                         break;
@@ -2167,8 +1959,7 @@ impl AttachResourcePumpCtx {
                 audience,
                 base_seq,
             }) => {
-                // A gap resync some other pump asked for is not ours to
-                // take (phux-auqy).
+                // A gap resync another pump asked for is not ours.
                 if !stream
                     .generation
                     .takes_resync(&audience, self.resync_target(&stream.generation))
@@ -2191,11 +1982,8 @@ impl AttachResourcePumpCtx {
         }
     }
 
-    /// Forward one post-bootstrap byte delta.
-    ///
-    /// A full mailbox fences rather than parks: waiting for capacity keeps
-    /// this pump off the broadcast, so a pane that exits in that window
-    /// cannot answer the resync the pump would then ask for (phux-fpgl.28).
+    /// Forward one post-bootstrap byte delta. A full mailbox fences rather
+    /// than parks, so the pump stays on the broadcast to see the resync.
     async fn forward_live(
         &self,
         stream: &mut AttachResourcePumpStream,
@@ -2286,15 +2074,9 @@ impl AttachResourcePumpCtx {
         PumpStep::Continue
     }
 
-    /// Fence the generation and ask the actor for an in-band resync after the
-    /// broadcast ring dropped deltas out from under this pump.
-    ///
-    /// The fence is the whole point and is set *before* the request: resuming
-    /// live deltas across the dropped window puts a `RESOURCE_OUTPUT` whose
-    /// `seq` skips it on the wire, and the consumer's session kernel rejects
-    /// that as a protocol error rather than tolerating it — so the consumer
-    /// dies before the resync it just asked for can arrive. See
-    /// [`PumpGeneration::forwards`].
+    /// Fence the generation, then ask the actor for an in-band resync after
+    /// deltas were dropped: forwarding across the gap would be a `seq` skip
+    /// the consumer rejects as a protocol error.
     async fn resync_after_lag(
         &self,
         stream: &mut AttachResourcePumpStream,
@@ -2320,14 +2102,7 @@ impl AttachResourcePumpCtx {
     }
 
     /// The resync asked for at the last gap has not arrived within its
-    /// backoff: ask again.
-    ///
-    /// A fenced pump forwards nothing, so a request the actor accepted but
-    /// never answered would otherwise leave the consumer on a screen that can
-    /// never change — silence being the one failure the unfenced behaviour did
-    /// not have. `DEBUG`, not `WARN`: the first gap already warned, and a
-    /// retry loop that warns every time turns one wedged actor into a log
-    /// flood.
+    /// backoff: ask again (at debug; the first gap already warned).
     async fn retry_resync_after_lag(&self, stream: &mut AttachResourcePumpStream) -> PumpStep {
         debug!(
             terminal_id = ?self.wire_terminal_id,
@@ -2338,9 +2113,7 @@ impl AttachResourcePumpCtx {
         self.request_resync(&stream.generation).await
     }
 
-    /// The gap spent its whole request budget without the actor ever
-    /// broadcasting a replacement generation. Tell the consumer and stop,
-    /// rather than hold it on a screen that can never change.
+    /// The gap spent its request budget unanswered: fail the consumer.
     async fn abandon_unanswered_gap(&self, stream: &AttachResourcePumpStream) -> PumpStep {
         warn!(
             terminal_id = ?self.wire_terminal_id,
@@ -2393,10 +2166,8 @@ impl AttachResourcePumpCtx {
         stream: &mut AttachResourcePumpStream,
         resync: &PumpResync,
     ) -> PumpStep {
-        // Resync is control, so an unchanged cut still tombstones and
-        // replaces the published generation. The id advances only once the
-        // replacement frames are queued, so a deferred snapshot does not
-        // relabel live output the client has not opened.
+        // Even an unchanged cut replaces the generation; the id advances only
+        // once the replacement frames are queued.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if native_checkpoint_profile(self.stream_profile) {
             let prior_bootstrap_id = stream.generation.bootstrap_id();
@@ -2522,8 +2293,7 @@ impl AttachResourcePumpCtx {
             self.connection_token.cancel();
             return PumpStep::Stop;
         };
-        // Unfenced here, before the replay, so the replay's own frames pass
-        // the same `forwards` gate every other live delta does.
+        // Unfenced before the replay so its frames pass the `forwards` gate.
         stream.generation.republished_at(cut);
         stream.output_rx = publication.live;
         if self.forward_native_replay(stream, publication.replay).await == PumpStep::Stop {
@@ -2544,10 +2314,8 @@ impl AttachResourcePumpCtx {
         stream: &mut AttachResourcePumpStream,
         replay: Vec<(u64, Bytes)>,
     ) -> PumpStep {
-        // Through the same gate as any other live delta, not around it. A
-        // replay entry at or behind the published cut is already inside the
-        // checkpoint, and re-sending it under this `bootstrap_id` is a
-        // `DuplicateSequence` to the client kernel — which detaches on it.
+        // An entry at or behind the cut is already in the checkpoint; resending
+        // it is a `DuplicateSequence` the client detaches on.
         for (seq, bytes) in replay {
             if !stream.generation.forwards(seq) {
                 continue;
@@ -2588,12 +2356,9 @@ const fn tombstone_reason(
     }
 }
 
-/// Handle `DETACH_RESOURCE` (SPEC §5.1 tag 0x02, phux-v45.7): drop the
-/// caller's per-terminal subscriptions — every output task, whether created
-/// by `ATTACH`, `SPAWN_RESOURCE`, or `ATTACH_RESOURCE` (pump joined, subscriber
-/// entry removed, per-consumer state-sync entry released) and the per-terminal agent-event
-/// subscription. Idempotent: unknown terminals and never-attached callers
-/// reply `Ok`, so a detach can never race a natural close into an error.
+/// Handle `DETACH_RESOURCE` (SPEC §5.1): drop every output task and the
+/// event subscription the caller holds on the terminal. Idempotent, so a
+/// detach never races a natural close into an error.
 pub(crate) async fn handle_detach_terminal(
     state: &SharedState,
     client_id: ClientId,
@@ -2603,8 +2368,7 @@ pub(crate) async fn handle_detach_terminal(
 
     let handle = state.with_mut(|s| {
         s.unsubscribe_terminal_events(client_id, terminal_id);
-        // A declared `VIEWER` is a tombstone that outlives the subscription
-        // (ADR-0127): detaching, or a Terminal stream's reset, never widens.
+        // A declared `VIEWER` outlives the subscription (ADR-0127).
         let core = s.terminal_from_wire(terminal_id)?;
         s.unsubscribe_terminal(client_id, core);
         Some((core, s.resource_handle(core).cloned()))
@@ -2615,9 +2379,7 @@ pub(crate) async fn handle_detach_terminal(
     pump::stop_output(state, client_id, core).await;
     state.with_mut(|s| s.cancel_attach_terminal_pump(client_id, core));
     if let Some(handle) = handle {
-        // An actor-emitted StateSync frame is another output producer. Its
-        // acknowledged detach fences that producer and releases native leases
-        // before COMMAND_RESULT enters the same ordered outbound mailbox.
+        // Fence actor-emitted StateSync output before COMMAND_RESULT is queued.
         let (reply_tx, reply_rx) = oneshot::channel();
         let _ = handle
             .consumer_detach
@@ -2632,27 +2394,9 @@ pub(crate) async fn handle_detach_terminal(
     CommandResult::Ok
 }
 
-/// Handle `SHUTDOWN` (phux-pimp): stop the server, on request, over the local
-/// socket only.
-///
-/// Cancelling the root token is the *same* signal idle-exit (ADR-0063), the
-/// last-pane self-exit, and SIGINT/SIGTERM already deliver, so this is not a
-/// second shutdown path -- it is a fourth door onto the one that exists. That
-/// is what makes it correct rather than merely effective: every pane gets
-/// `TerminalActor::shutdown_pty`'s SIGHUP-then-grace-then-reap and the socket
-/// is unlinked by `unlink_socket_if_ours`, because both hang off the token
-/// rather than off the caller.
-///
-/// Acks itself, like [`handle_upgrade`], because the process is gone before a
-/// returned `CommandResult` could be sent. The ack goes out BEFORE the cancel
-/// and its result is ignored: the client is about to see its connection close
-/// either way, and a client that already hung up is not a reason to refuse a
-/// stop.
-///
-/// **Local only.** Who may stop a server -- whether a paired phone should be
-/// able to end every pane on the host -- is a policy question phux has not
-/// answered, so rather than answer it by accident this refuses any transport
-/// but the Unix socket (`L1.md` §5.1 permits the restriction).
+/// Handle `SHUTDOWN`: cancel the root token, the same shutdown idle-exit and
+/// signals take, after acking. Accepted on the Unix socket only (L1 §5.1):
+/// whether a remote peer may stop the host is an unanswered policy question.
 async fn handle_shutdown(
     state: &SharedState,
     client_id: ClientId,
@@ -2670,23 +2414,16 @@ async fn handle_shutdown(
             ?transport,
             "SHUTDOWN refused: local socket only"
         );
-        let _ = out_tx
-            .send(Outbound::Frame(FrameKind::CommandResult {
-                request_id,
-                result: CommandResult::Error {
-                    code: ErrorCode::PermissionDenied,
-                    message: "SHUTDOWN is accepted on the local socket only".to_owned(),
-                },
-            }))
-            .await;
+        let refusal = CommandResult::Error {
+            code: ErrorCode::PermissionDenied,
+            message: "SHUTDOWN is accepted on the local socket only".to_owned(),
+        };
+        send_result(out_tx, request_id, refusal).await;
         return;
     }
 
     info!(?client_id, "SHUTDOWN requested; stopping the server");
-    // ADR-0104 §4: every resource still live is leaving because the server
-    // is, so its `RESOURCE_CLOSED` says so rather than claiming the inner
-    // process exited. Recorded before the root token cancels, so whichever
-    // exit watchers still reach a client find the reason waiting.
+    // ADR-0104 §4: record the close reason before the exit watchers run.
     state.with_mut(|s| {
         for resource in s.resource_ids() {
             s.mark_resource_closing(
@@ -2695,12 +2432,7 @@ async fn handle_shutdown(
             );
         }
     });
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result: CommandResult::Ok,
-        }))
-        .await;
+    send_result(out_tx, request_id, CommandResult::Ok).await;
     // Let the ack reach the writer before the teardown races it.
     tokio::task::yield_now().await;
     root_token.cancel();
@@ -2716,19 +2448,12 @@ async fn handle_upgrade(
 ) {
     let result = match super::upgrade::prepare_upgrade(state).await {
         Ok(plan) => {
-            // Ack `Ok` and let the writer flush it before we replace the
-            // process — best-effort; the client reconnects regardless.
-            let _ = out_tx
-                .send(Outbound::Frame(FrameKind::CommandResult {
-                    request_id,
-                    result: CommandResult::Ok,
-                }))
-                .await;
+            // Best-effort ack flushed before exec; the client reconnects.
+            send_result(out_tx, request_id, CommandResult::Ok).await;
             tokio::task::yield_now().await;
             info!("UPGRADE: re-exec'ing the new binary");
             let err = plan.exec();
-            // Only reached if the exec itself failed: nothing was closed, so
-            // the old image keeps serving and no child is stranded.
+            // Only reached if exec failed: the old image keeps serving.
             error!(error = %err, "UPGRADE exec failed; continuing on the current image");
             return;
         }
@@ -2740,50 +2465,22 @@ async fn handle_upgrade(
             }
         }
     };
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result,
-        }))
-        .await;
+    send_result(out_tx, request_id, result).await;
 }
 
-/// Relay one satellite-targeted command over the owning hub link and send
-/// the correlated `COMMAND_RESULT` (phux-v45.4, ADR-0007 §4): the command
-/// arrives here already rewritten to the satellite's `Local` id space by
-/// [`crate::hub::relay::route_to_satellite`], and the reply correlates
-/// through the link's own request-id remap. On a non-hub server (or for a
-/// host absent from the hub table) this resolves to a typed
-/// `UnsupportedSatelliteRoute` error, and an unreachable satellite fails
-/// fast with `SatelliteUnreachable` — never a hang.
+/// Relay one satellite-targeted command (already rewritten to the
+/// satellite's `Local` ids) over the owning hub link and send the correlated
+/// `COMMAND_RESULT` (ADR-0007 §4). A non-hub server answers
+/// `UnsupportedSatelliteRoute`; an unreachable satellite fails fast.
 ///
-/// **Stream-establishing commands** (`SUBSCRIBE_RESOURCE_EVENTS`,
-/// `ATTACH_RESOURCE`) register the caller's outbound mailbox as a hub-side
-/// proxy subscriber *atomically with* the relayed command
-/// ([`crate::hub::relay::RelayHandle::command_subscribing`], phux-v45.11):
-/// the return-leg frames the satellite pushes on the link are re-tagged
-/// `Local -> Satellite { host, .. }` and fanned out to this consumer, and
-/// a satellite error rolls the registration back. `DETACH_RESOURCE` is
-/// resolved hub-side: the consumer's proxy subscription is withdrawn and
-/// the link session itself relays a satellite-side `DETACH_RESOURCE` only
-/// when the **last** proxy subscriber for that terminal is gone —
-/// relaying every consumer's detach verbatim would tear down the link's
-/// single shared stream under the other consumers still watching it.
-///
-/// **Input-lease aliasing** (phux-v45.7, L1 §9.1): every hub consumer
-/// shares the link's one client identity on the satellite, so the
-/// satellite's lease map cannot distinguish them. The hub therefore owns
-/// lease exclusion *between its own consumers* via
-/// `ServerState::satellite_leases`: a cooperative `ACQUIRE_INPUT` against
-/// a terminal another hub consumer holds is refused here without touching
-/// the link; `RELEASE_INPUT` from a non-holder is the idempotent no-op
-/// `Ok` (never forwarded — forwarding would release the real holder's
-/// satellite-side lease); `ROUTE_INPUT` from a non-holder is refused with
-/// `InputLeaseHeld`. The relayed lease (held by the link identity) still
-/// excludes the satellite's own local clients.
+/// Stream-establishing commands register the caller as a hub-side proxy
+/// subscriber atomically with the relay; `DETACH_RESOURCE` is resolved
+/// hub-side so one consumer's detach never tears down the shared link
+/// stream. Every hub consumer is one identity on the satellite, so the hub
+/// owns input-lease exclusion between its consumers (L1 §9.1).
 #[allow(
     clippy::too_many_arguments,
-    reason = "the relay surface carries the caller's identity, the routed command, its outbound mailbox, and the negotiated bootstrap context; the dispatch call site owns all eight and boxing them would only rename the list"
+    reason = "caller identity, routed command, mailbox, and negotiated bootstrap context"
 )]
 async fn handle_satellite_command(
     state: &SharedState,
@@ -2891,11 +2588,8 @@ async fn handle_satellite_command(
 }
 
 /// ADR-0109 (L1 §5.2.1): the resource `command` attaches, drives, or reads,
-/// if any. A connection other than the spawner naming a resource this way
-/// counts as attaching it for `UNATTACHED_SINCE_SPAWN`, whether or not the
-/// command then succeeds: `ATTACH_RESOURCE`, input without a subscription
-/// (`ROUTE_INPUT`, `APPLY_INPUT`, what `phux send-keys` sends), the input
-/// lease, an upload, a transcription, a signal, and a screen read.
+/// which counts as attaching it for `UNATTACHED_SINCE_SPAWN` whether or not
+/// the command then succeeds.
 const fn used_resource(command: &Command) -> Option<&phux_protocol::ids::ResourceId> {
     match command {
         Command::AttachResource { terminal_id, .. }
@@ -2919,12 +2613,8 @@ pub(super) fn note_local_use(state: &SharedState, client_id: ClientId, command: 
     }
 }
 
-/// ADR-0109: note a hub consumer's use of a satellite resource (see
-/// [`used_resource`]) in the hub's spawn ledger, before it is relayed.
-/// Every hub consumer is the same connection on the satellite, so only the
-/// hub can tell whether the use came from the consumer that spawned the
-/// resource. Noted on forward, not on success, so a kill checked after it
-/// cannot race it.
+/// ADR-0109: note a hub consumer's use of a satellite resource in the hub's
+/// spawn ledger before relaying; only the hub can tell its consumers apart.
 fn note_satellite_use(
     state: &SharedState,
     host: &phux_protocol::ids::SatelliteHost,
@@ -2937,12 +2627,9 @@ fn note_satellite_use(
     state.with_mut(|s| s.hub_note_satellite_use(host, id, client_id));
 }
 
-/// Relay a `KILL_RESOURCE_IF` to the satellite that owns the resource, with
-/// its precondition unchanged, once the hub has checked the half of
-/// `UNATTACHED_SINCE_SPAWN` only it can see: that it spawned the resource and
-/// no other hub consumer has attached it (ADR-0109, L1 §9.1). The satellite
-/// then checks the instance token and its own attachments. A refusal here
-/// kills nothing and never touches the link.
+/// Relay a `KILL_RESOURCE_IF` once the hub has checked the half of
+/// `UNATTACHED_SINCE_SPAWN` only it can see (ADR-0109, L1 §9.1); the
+/// satellite checks the rest. A refusal never touches the link.
 async fn relay_conditional_kill(
     state: &SharedState,
     relay: &crate::hub::relay::RelayHandle,
@@ -2975,10 +2662,7 @@ async fn relay_conditional_kill(
 }
 
 /// `true` unless the kill asks for `UNATTACHED_SINCE_SPAWN` and the hub's
-/// spawn ledger cannot vouch for it under the kill's instance token. A
-/// record from before a satellite restart carries the old token, so it never
-/// vouches for the new pane that reuses its id. `terminal_id` is already
-/// satellite-local.
+/// spawn ledger cannot vouch for it under the kill's instance token.
 fn hub_vouches_for_kill(
     state: &SharedState,
     host: &phux_protocol::ids::SatelliteHost,
@@ -2999,11 +2683,10 @@ fn hub_vouches_for_kill(
 }
 
 /// Record the hub-side proxy attach a successful `ATTACH_RESOURCE` just
-/// established, then correlate the relayed reply back to the caller
-/// (phux-v45.4, ADR-0007 §4).
+/// established, then send the relayed reply to the caller.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the correlated relay reply needs the consumer cancellation token alongside its existing routing and command context"
+    reason = "routing, command, and cancellation context"
 )]
 async fn reply_satellite_command(
     state: &SharedState,
@@ -3036,15 +2719,11 @@ async fn reply_satellite_command(
     }
 }
 
-/// Relay a stream-establishing command and register the caller's outbound
-/// mailbox as a hub-side proxy subscriber *atomically with* it
-/// ([`crate::hub::relay::RelayHandle::command_subscribing`], phux-v45.11).
-///
-/// A command that names no satellite-local terminal has nothing to subscribe
-/// and relays plainly.
+/// Relay a stream-establishing command and register the caller's mailbox as
+/// a hub-side proxy subscriber atomically with it.
 #[allow(
     clippy::too_many_arguments,
-    reason = "connection cancellation is part of the same atomic relay subscription context as the consumer identity, mailbox, and negotiated bootstrap"
+    reason = "consumer identity, mailbox, cancellation, and negotiated bootstrap"
 )]
 async fn relay_stream_establishing(
     relay: &crate::hub::relay::RelayHandle,
@@ -3065,6 +2744,8 @@ async fn relay_stream_establishing(
             message: "client connection cancellation is unavailable".to_owned(),
         };
     };
+    // Only ATTACH_RESOURCE opens a content stream with a snapshot to await.
+    let content = matches!(command, Command::AttachResource { .. });
     relay
         .command_subscribing(
             command.clone(),
@@ -3073,20 +2754,11 @@ async fn relay_stream_establishing(
                 client: client_id,
                 out_tx: out_tx.clone(),
                 consumer_cancel,
-                // Stamped with the issue-order token by
-                // `command_subscribing` at enqueue.
+                // Stamped by `command_subscribing` at enqueue.
                 seq: 0,
-                // Only ATTACH_RESOURCE opens a content stream
-                // with a return-leg TERMINAL_SNAPSHOT, so only
-                // it gates deltas until that snapshot lands
-                // (phux-v45.14). SUBSCRIBE_RESOURCE_EVENTS
-                // carries no snapshot; gating it would strand
-                // its EVENT stream.
-                awaits_snapshot: matches!(command, Command::AttachResource { .. }),
-                bootstrap_profile: matches!(command, Command::AttachResource { .. })
-                    .then_some(bootstrap_profile),
-                bootstrap_limits: matches!(command, Command::AttachResource { .. })
-                    .then_some(bootstrap_limits),
+                awaits_snapshot: content,
+                bootstrap_profile: content.then_some(bootstrap_profile),
+                bootstrap_limits: content.then_some(bootstrap_limits),
             },
         )
         .await
@@ -3121,11 +2793,8 @@ async fn resolve_hub_detach_terminal(
 }
 
 /// The command the link forwards for a hub consumer's
-/// `SUBSCRIBE_RESOURCE_EVENTS`: always unfiltered. The link is one client
-/// on the satellite, where the latest filter on a scope wins, so a
-/// consumer's filter forwarded as-is would narrow every other consumer of
-/// that Terminal; each consumer's filter is applied here instead, by the
-/// hub's registry (ADR-0123). Every other command is forwarded unchanged.
+/// `SUBSCRIBE_RESOURCE_EVENTS`: unfiltered, because the link is one client on
+/// the satellite; each consumer's filter is applied by the hub (ADR-0123).
 fn unfiltered_for_link(command: &Command) -> Command {
     match command {
         Command::SubscribeResourceEvents { terminal_id, .. } => Command::SubscribeResourceEvents {
@@ -3136,12 +2805,8 @@ fn unfiltered_for_link(command: &Command) -> Command {
     }
 }
 
-/// Finish a relayed `SUBSCRIBE_RESOURCE_EVENTS` (`change` is what
-/// [`register_satellite_event_filter`] installed): start the consumer's
-/// event pump when the satellite accepted it, and put the registry scope
-/// back as it was when it did not, so a stream that never started leaves
-/// nothing behind and an established scope is kept. Every other command
-/// installed nothing and is left alone.
+/// Finish a relayed `SUBSCRIBE_RESOURCE_EVENTS`: start the event pump on
+/// success, or restore the scope [`register_satellite_event_filter`] changed.
 fn settle_satellite_event_filter(
     state: &SharedState,
     client_id: ClientId,
@@ -3158,11 +2823,9 @@ fn settle_satellite_event_filter(
     super::client::ensure_event_pump(state, client_id);
 }
 
-/// Install the hub registry scope a relayed `SUBSCRIBE_RESOURCE_EVENTS`
-/// delivers through (ADR-0123): relayed events reach a hub consumer only
-/// through the registry, under the filter the consumer asked for. Returns
-/// what the scope held before, for the rollback; `None` for every other
-/// relayed command, which installs nothing.
+/// Install the hub registry scope, with the consumer's filter, that a relayed
+/// `SUBSCRIBE_RESOURCE_EVENTS` delivers through (ADR-0123). Returns the prior
+/// scope for rollback; `None` for any other command.
 fn register_satellite_event_filter(
     state: &SharedState,
     client_id: ClientId,
@@ -3191,11 +2854,8 @@ fn register_satellite_event_filter(
 }
 
 /// The hub-side lease coordinates one satellite-routed input command acts on.
-///
-/// Every hub consumer shares the link's one client identity on the satellite
-/// (phux-v45.7, L1 §9.1), so lease exclusion *between* hub consumers is
-/// resolved here, against `ServerState::satellite_leases`, before anything
-/// touches the link.
+/// Hub consumers share one identity on the satellite, so exclusion between
+/// them is resolved here before anything touches the link (L1 §9.1).
 struct SatelliteLeaseTarget<'a> {
     state: &'a SharedState,
     host: &'a phux_protocol::ids::SatelliteHost,
@@ -3228,11 +2888,8 @@ impl<'a> SatelliteLeaseTarget<'a> {
     }
 }
 
-/// Apply the hub's own lease exclusion to `ACQUIRE_INPUT` before relaying it.
-///
-/// A cooperative acquire against a terminal another hub consumer holds is
-/// refused here without touching the link. The relayed lease (held by the
-/// link identity) still excludes the satellite's own local clients.
+/// Apply the hub's own lease exclusion to `ACQUIRE_INPUT` before relaying:
+/// a cooperative acquire against another hub consumer's lease is refused.
 async fn relay_satellite_acquire_input(
     target: &SatelliteLeaseTarget<'_>,
     relay: &crate::hub::relay::RelayHandle,
@@ -3249,31 +2906,13 @@ async fn relay_satellite_acquire_input(
             message: format!("input lease held by client {}", holder.0),
         };
     }
-    // Mark this terminal's lease pending *before* awaiting the relay
-    // (review round 2, medium finding: reply and event delivery share one
-    // link but are not ordered against each other, so a stale
-    // Released/Expired mirrored from an *earlier* lease on this terminal
-    // could otherwise overtake this acquire's own reply and clear the
-    // ledger entry this call is about to install). The reply below does
-    // NOT clear this mark on success — it bypasses the event pump
-    // entirely, so it cannot itself prove the stream has caught up. The
-    // mirror in `hub::relay::RelaySession::mirror_satellite_lease_state`
-    // clears it on the first event it sees for this terminal afterward
-    // instead, swallowing that event if it turns out to be exactly the
-    // stale report this window exists to catch.
+    // Mark the lease pending before relaying: replies and events are not
+    // ordered on the link, so a stale Released/Expired from an earlier lease
+    // could otherwise clear the entry this acquire installs. The lease mirror
+    // clears the mark on the next event for this terminal.
     target
         .state
         .with_mut(|s| s.mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal));
-    // Cooperative-over-free/self OR a SEIZE takeover. Relay
-    // to the satellite (the link identity's lease keeps
-    // excluding the satellite's own local clients), then
-    // record the new hub-side holder. A SEIZE that preempts
-    // a *different* hub consumer returns the evicted lease:
-    // notify that holder it lost the wheel — mirroring the
-    // local `TerminalControl(Seized)` broadcast (phux-v45.13,
-    // L1 §9.1). Without it the prior holder keeps believing
-    // it holds the wheel while its relayed INPUT_* is silently
-    // dropped at the hub lease gate.
     let result = relay.command(command.clone()).await;
     settle_satellite_seize(target, &result, out_tx);
     result
@@ -3288,17 +2927,14 @@ fn settle_satellite_seize(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
     if matches!(result, CommandResult::Error { .. }) {
-        // A refused/failed acquire never installs a lease: stop ignoring
-        // Released/Expired for this terminal, or a genuinely free lease
-        // would stay wrongly pinned forever.
+        // A failed acquire installs nothing, so stop ignoring lease events.
         target
             .state
             .with_mut(|s| s.clear_satellite_lease_acquire_pending(target.host, target.terminal));
         return;
     }
-    // Deliberately NOT clearing the pending mark here: see the comment in
-    // `relay_satellite_acquire_input` where it is set.
-    // `mirror_satellite_lease_event` clears it.
+    // On success the pending mark stays; the lease mirror clears it. A seize
+    // that evicts another hub consumer tells it that it lost the wheel.
     let evicted = target.state.with_mut(|s| {
         s.set_satellite_lease(
             target.host.clone(),
@@ -3312,21 +2948,14 @@ fn settle_satellite_seize(
     }
 }
 
-/// `ATTACH_RESOURCE` for a satellite Terminal on a hub (ADR-0127).
-///
-/// Every hub consumer reaches the satellite through the link's one identity,
-/// so the consumer's declared role is the hub's to hold: a viewer mark keyed
-/// by the satellite-tagged id, which the dispatch guard enforces before any
-/// relay, and a deliberate takeover as a hub-ledger seize under the same
-/// pending-mark discipline as `ACQUIRE_INPUT`. The link carries the takeover
-/// only to a satellite advertising `ATTACH_ROLES`, where the attach and the
-/// seize land in one command ([`crate::hub::relay::link_attach_command`]);
-/// any other satellite gets a plain attach followed by a relayed
-/// `ACQUIRE_INPUT { SEIZE }`, the degraded two-command path. If that seize
-/// fails, the attach stands and the seize's refusal is the reply.
+/// `ATTACH_RESOURCE` for a satellite Terminal on a hub (ADR-0127). The hub
+/// holds the consumer's declared role: a viewer mark keyed by the
+/// satellite-tagged id, and a takeover as a hub-ledger seize. A satellite
+/// without `ATTACH_ROLES` gets a plain attach then a relayed seize; if that
+/// seize fails, the attach stands and its refusal is the reply.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the lease target, relay, routed command, and declared role plus the negotiated bootstrap context the stream-establishing relay needs"
+    reason = "lease target, relay, command, role, and negotiated bootstrap context"
 )]
 async fn relay_satellite_attach(
     target: &SatelliteLeaseTarget<'_>,
@@ -3340,9 +2969,8 @@ async fn relay_satellite_attach(
     let state = target.state;
     let local = phux_protocol::ids::ResourceId::local(target.terminal);
     let wire = phux_protocol::ids::ResourceId::satellite(target.host.clone(), target.terminal);
-    // A narrowing applies before the relay, in the lock, so no input slips
-    // through while it is in flight; a widening applies only once the
-    // satellite has accepted the attach (ADR-0127).
+    // Narrow before the relay so no input slips through; widen only once the
+    // satellite accepted the attach.
     let (was_attached, was_viewer, narrowed) = state.with_mut(|s| {
         let was_attached =
             s.has_satellite_proxy_attach(target.client_id, target.host, target.terminal);
@@ -3370,10 +2998,7 @@ async fn relay_satellite_attach(
     )
     .await;
     if matches!(attached, CommandResult::Error { .. }) {
-        // A refused first narrowing must not leave a tombstone: the hub
-        // marks before the relay so no input slips through, but a satellite
-        // that then refuses never subscribed this id (phux-4z1y). A prior
-        // mark or proxy attach stays; a refused widening never applied.
+        // A refused first narrowing must not leave a viewer tombstone.
         if role.is_viewer() && !was_viewer && !was_attached {
             state.with_mut(|s| s.set_viewer_mark(target.client_id, &wire, false));
         }
@@ -3382,8 +3007,7 @@ async fn relay_satellite_attach(
         }
         return attached;
     }
-    // The attach stands, so its proxy registration is recorded here, even
-    // when a degraded seize after it is refused.
+    // The attach stands even if a degraded seize after it is refused.
     state.with_mut(|s| {
         s.register_satellite_proxy_attach(target.client_id, target.host.clone(), target.terminal);
     });
@@ -3402,10 +3026,8 @@ async fn relay_satellite_attach(
     attached
 }
 
-/// Finish a deliberate takeover whose attach the satellite accepted: a
-/// satellite advertising `ATTACH_ROLES` already seized with the attach;
-/// any other gets the relayed `ACQUIRE_INPUT { SEIZE }`. The hub ledger
-/// records the new holder either way.
+/// Finish a takeover whose attach the satellite accepted: relay a seize
+/// unless the satellite already seized with the attach (`ATTACH_ROLES`).
 async fn seize_after_satellite_attach(
     target: &SatelliteLeaseTarget<'_>,
     relay: &crate::hub::relay::RelayHandle,
@@ -3427,9 +3049,8 @@ async fn seize_after_satellite_attach(
     result
 }
 
-/// A hub consumer that narrows to `VIEWER` gives back the satellite lease it
-/// holds (L1 §8.1), through the ordinary release relay so the satellite and
-/// the hub ledger converge.
+/// A hub consumer that narrows to `VIEWER` releases its satellite lease
+/// (L1 §8.1).
 async fn release_satellite_lease_for_viewer(
     target: &SatelliteLeaseTarget<'_>,
     relay: &crate::hub::relay::RelayHandle,
@@ -3443,25 +3064,23 @@ async fn release_satellite_lease_for_viewer(
     let _ = relay_satellite_release_input(target, relay, &release).await;
 }
 
-/// Whether the link carried the takeover with the attach: the satellite
-/// advertised `ATTACH_ROLES`.
+/// Whether the satellite advertised `ATTACH_ROLES`, so the link carried the
+/// takeover with the attach.
 fn satellite_seizes_on_attach(target: &SatelliteLeaseTarget<'_>) -> bool {
     target.state.with(|s| {
         s.satellite_advertises(target.host, phux_protocol::caps::ServerFeature::AttachRoles)
     })
 }
 
-/// Journal a hub consumer's role flip on a satellite Terminal (ADR-0127)
-/// hub-side: the satellite never sees the role, so only the hub can report
-/// it.
+/// Journal a hub consumer's role flip on a satellite Terminal (ADR-0127);
+/// the satellite never sees the role.
 fn journal_satellite_role_change(
     target: &SatelliteLeaseTarget<'_>,
     wire: phux_protocol::ids::ResourceId,
 ) {
     target.state.with_mut(|s| {
         let event = AgentEvent::TerminalControl {
-            // The hub keeps no satellite lifecycle (see
-            // `notify_satellite_lease_seized`); `Running` is its default.
+            // The hub keeps no satellite lifecycle; `Running` is its default.
             lifecycle: ResourceLifecycle::Running,
             exit_status: None,
             input_holder: s
@@ -3485,10 +3104,8 @@ async fn relay_satellite_release_input(
     if let Some(holder) = target.holder()
         && holder != target.client_id
     {
-        // Idempotent no-op per ADR-0033 — and deliberately
-        // NOT forwarded: on the satellite this consumer is
-        // indistinguishable from the holder, so forwarding
-        // would release the holder's lease (L1 §9.1).
+        // Idempotent no-op (ADR-0033), never forwarded: on the satellite
+        // this consumer is the holder's identity (L1 §9.1).
         return CommandResult::Ok;
     }
     let result = relay.command(command.clone()).await;
@@ -3517,19 +3134,8 @@ async fn relay_satellite_route_input(
     relay.command_from(command.clone(), target.client_id).await
 }
 
-/// Notify the hub consumer evicted by a SEIZE takeover over a satellite
-/// terminal that it no longer holds the input lease (phux-v45.13, L1
-/// §9.1).
-///
-/// The hub synthesizes the same `TerminalControl(Seized)` event the local
-/// takeover path broadcasts to every subscriber. The satellite cannot: all
-/// hub consumers reach it through the link's single client identity, so a
-/// relayed SEIZE reads there as a same-identity re-acquire and its
-/// broadcast names the shared link identity, not the evicted hub consumer.
-/// Best-effort (`try_send`, the fire-and-forget event discipline): the
-/// evicted holder re-renders the locked state from this event exactly as a
-/// local viewer does, and stops sending input the hub would now drop at the
-/// lease gate.
+/// Tell the hub consumer a satellite SEIZE evicted that it lost the lease
+/// (L1 §9.1): the satellite sees one link identity and cannot. Best-effort.
 fn notify_satellite_lease_seized(
     host: &phux_protocol::ids::SatelliteHost,
     id: u32,
@@ -3539,16 +3145,8 @@ fn notify_satellite_lease_seized(
     let frame = FrameKind::Event {
         terminal: Some(phux_protocol::ids::ResourceId::satellite(host.clone(), id)),
         event: AgentEvent::TerminalControl {
-            // phux-v45.14 sub-finding (b): a Frozen satellite pane would be
-            // mis-reported as Running here. The hub keeps no cheaply-readable
-            // per-satellite-pane lifecycle at this SEIZE path — `SatelliteLease`
-            // carries only the holder and its mailbox, and the aggregate view
-            // is a round-trip away — so `Running` is the pragmatic default.
-            // The event's load-bearing field for the evicted holder is the
-            // `Seized` action + `input_holder` handoff, not the lifecycle;
-            // the holder re-renders locked state either way, and a Frozen pane
-            // reconciles on its next TERMINAL_CONTROL. Revisit if the hub
-            // starts tracking satellite pane lifecycle locally.
+            // The hub keeps no satellite lifecycle; the load-bearing fields
+            // are the action and the holder.
             lifecycle: ResourceLifecycle::Running,
             exit_status: None,
             input_holder: Some(wire_client_id(new_holder)),
@@ -3575,22 +3173,9 @@ fn notify_satellite_lease_seized(
     }
 }
 
-/// Forward one fire-and-forget frame (`INPUT_*`, `FRAME_ACK`, `RESIZE_TERMINAL`)
-/// targeting a satellite terminal over the hub link (phux-v45.4): `build`
-/// receives the id rewritten to the satellite's `Local` space and produces
-/// the frame to relay verbatim.
-///
-/// Returns `true` when a relay route existed (the frame was queued, or
-/// dropped under the same bounded-mailbox backpressure contract these
-/// frames have locally); `false` when this server has no route to the
-/// host — the caller keeps its non-hub warn-drop.
-///
-/// Scope honesty (phux-v45.7): the satellite applies its own attach /
-/// subscription / lease gates to what arrives on the link under the
-/// link's single client identity. `ATTACH_RESOURCE` relayed over the link
-/// opens those gates for the link consumer, so `INPUT_*` / `FRAME_ACK` from a
-/// hub consumer that attached the terminal through the hub flow end to
-/// end; `ROUTE_INPUT` remains the attach-free input path.
+/// Forward one fire-and-forget frame (`INPUT_*`, `FRAME_ACK`,
+/// `RESIZE_TERMINAL`) for a satellite terminal over the hub link; `build`
+/// receives the satellite-local id. `false` when there is no route.
 fn relay_satellite_frame(
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
@@ -3612,19 +3197,10 @@ fn relay_satellite_frame(
     true
 }
 
-/// Handle `KILL_RESOURCES` (L1 §5.2): tear down every local id in one
-/// acquisition of the state lock, then relay each satellite's part to its
-/// host and await every answer.
-///
-/// An unkeyed batch answers `OK`, as it always has, because an older client
-/// reads any other success shape as unexpected: the local teardown is atomic,
-/// an unknown or already-dead id is a silent skip, and a satellite part that
-/// failed is logged. A keyed batch (L1 §5.1.1) answers `OkWith(Json)` with one
-/// outcome per id. A client sends a key only after seeing `KEYED_SIGNAL`, so
-/// it knows that shape. Each satellite's part carries the batch's key, so a
-/// keyed batch is keyed at every hop and the satellite's own outcomes are
-/// merged; a non-hub server reports its satellite ids as failed with
-/// `UNSUPPORTED_SATELLITE_ROUTE`.
+/// Handle `KILL_RESOURCES` (L1 §5.2): close every local id under one lock,
+/// then relay each satellite's part and await every answer. An unkeyed batch
+/// answers `OK` (skips and relay failures are logged); a keyed batch
+/// (L1 §5.1.1) answers one outcome per id, merged across hops.
 pub(crate) async fn handle_kill_terminals(
     state: &SharedState,
     client_id: ClientId,
@@ -3657,12 +3233,9 @@ pub(crate) async fn handle_kill_terminals(
     results.into_result()
 }
 
-/// `CLOSE_TAB_RESOURCES`: the same atomic local close as
-/// [`handle_kill_terminals`], without releasing keep-empty on a fully
-/// covered session (L1 §5.2.2, ADR-0114). It is unkeyed and answers `OK`:
-/// satellite ids go to their hosts as detached batches of the same command,
-/// which is idempotent and tolerates skips, so the hub neither awaits nor
-/// merges their answers, and a server with no route to a host skips its ids.
+/// `CLOSE_TAB_RESOURCES` (L1 §5.2.2, ADR-0114): the atomic local close of
+/// [`handle_kill_terminals`] that keeps keep-empty sessions. Unkeyed; the
+/// satellite parts are relayed detached and not awaited.
 pub(crate) fn handle_close_tab_resources(
     state: &SharedState,
     ids: &[phux_protocol::ids::ResourceId],
@@ -3688,12 +3261,20 @@ fn satellite_partitions(ids: &[phux_protocol::ids::ResourceId]) -> KillPartition
     by_host
 }
 
-/// Close the local ids of a batch in one acquisition of the lock, so no
-/// other command observes a half-closed group on this server, and return
-/// which local ids named a live resource and which named nothing.
-///
-/// `preserve_keep_empty` is `CLOSE_TAB_RESOURCES`: a batch naming every pane
-/// of a keep-empty session leaves it empty instead of releasing its mark.
+/// Satellite-tagged ids rewritten into their host's `Local` space.
+fn satellite_local_ids(
+    wire_ids: &[phux_protocol::ids::ResourceId],
+) -> Vec<phux_protocol::ids::ResourceId> {
+    wire_ids
+        .iter()
+        .filter_map(crate::hub::relay::satellite_route)
+        .map(|(_, id)| phux_protocol::ids::ResourceId::local(id))
+        .collect()
+}
+
+/// Close the local ids of a batch under one lock and return which named a
+/// live resource and which named nothing. `preserve_keep_empty` is
+/// `CLOSE_TAB_RESOURCES`.
 fn kill_local_batch(
     state: &SharedState,
     ids: &[phux_protocol::ids::ResourceId],
@@ -3720,10 +3301,8 @@ fn kill_local_batch(
                 not_found.push(wire_id.clone());
             }
         }
-        // ADR-0105: a KILL_RESOURCES batch naming every pane of a
-        // keep-empty session is a group teardown, so the session's mark is
-        // released and the ordinary cascade removes it as its panes are
-        // reaped. CLOSE_TAB_RESOURCES skips that release (ADR-0114).
+        // ADR-0105: a batch naming every pane of a keep-empty session releases
+        // its mark; CLOSE_TAB_RESOURCES keeps it (ADR-0114).
         if !preserve_keep_empty {
             for name in s.release_keep_empty_covered_by(&targets) {
                 let _ = s.metadata_broadcast(
@@ -3733,9 +3312,7 @@ fn kill_local_batch(
                 );
             }
         }
-        // The closure — targets plus everything bound to one of them — is
-        // computed and closed in this one borrow (ADR-0104 §2). An id named
-        // twice, or named alongside its own parent, is closed exactly once.
+        // ADR-0104 §2: targets and their children close once, in this borrow.
         let closed = s.close_resources_attributed(
             &targets,
             phux_protocol::wire::frame::CloseReason::Killed,
@@ -3753,11 +3330,7 @@ fn kill_local_batch(
 /// that host's own batch of the same command.
 fn relay_close_tab_partitions(state: &SharedState, ids: &[phux_protocol::ids::ResourceId]) {
     for (host, wire_ids) in satellite_partitions(ids) {
-        let local_ids = wire_ids
-            .iter()
-            .filter_map(crate::hub::relay::satellite_route)
-            .map(|(_, id)| phux_protocol::ids::ResourceId::local(id))
-            .collect::<Vec<_>>();
+        let local_ids = satellite_local_ids(&wire_ids);
         match state.with(|s| s.hub_relay(&host)) {
             Some(relay) => {
                 debug!(
@@ -3794,13 +3367,8 @@ async fn relay_kill_partition(
     ids: Vec<phux_protocol::ids::ResourceId>,
     operation_id: Option<phux_protocol::ids::IdempotencyKey>,
 ) -> KillPartition {
-    let local_ids = ids
-        .iter()
-        .filter_map(crate::hub::relay::satellite_route)
-        .map(|(_, id)| phux_protocol::ids::ResourceId::local(id))
-        .collect();
     let command = Command::KillResources {
-        ids: local_ids,
+        ids: satellite_local_ids(&ids),
         operation_id,
     };
     let result = match state.with(|s| s.hub_relay(&host)) {
@@ -3831,35 +3399,15 @@ fn warn_failed_partitions(relayed: &[KillPartition]) {
     }
 }
 
-/// Force-detach clients from *outside* the attach UI (`phux detach`).
-///
-/// Gathers the target clients — those attached to `session`, or every attached
-/// client when `session` is `None` — and their outbound mailboxes under one
-/// read borrow, then (off-lock, since the teardown re-locks) pushes a
-/// `DETACHED` frame to each so its TUI exits cleanly and runs the normal
-/// per-client detach teardown. Returns the count as a JSON number so the CLI
-/// can report how many clients it detached. An unknown session name detaches
-/// nobody and reports `0` — not an error, matching `KILL_RESOURCES`'s
-/// skip-silently shape.
-///
-/// Scope: this targets *session-attached* clients (the `ATTACH` consumers the
-/// `C-a d` keybinding serves) only. Terminal-level subscribers riding
-/// `ATTACH_RESOURCE` are a different consumer surface with their own detach
-/// verb (`DETACH_RESOURCE`) and are deliberately not swept here.
+/// Force-detach the session-attached clients of `session` (all when `None`)
+/// for `phux detach`, answering the count as JSON. An unknown session
+/// detaches nobody. `ATTACH_RESOURCE` subscribers are not swept.
 pub(crate) fn handle_detach_clients(state: &SharedState, session: Option<&str>) -> CommandResult {
     let targets = state.with(|s| s.attached_clients_to_detach(session));
     let count = targets.len();
     for (client_id, tx) in targets {
-        // Best-effort DETACHED push via `try_send`: a full or wedged mailbox
-        // is exactly the "stuck client" case `phux detach` exists to clear,
-        // so we must never await capacity here — that would hang the command
-        // loop on the victim's back-pressure. If the frame is dropped, the
-        // teardown below still removes the client and its connection closes,
-        // which the TUI treats as a disconnect and exits anyway.
-        // `REQUESTED` covers an operator asking on the client's behalf as well
-        // as the client's own `DETACH`: proto.md §7.2 reads it as "a detach was
-        // asked for", not "*this* connection asked". The distinguishing detail
-        // rides the message.
+        // `try_send`: a wedged mailbox is the stuck client this verb exists to
+        // clear, so never await its capacity; the teardown still runs.
         let _ = tx.try_send(Outbound::Frame(FrameKind::Detached {
             reason: Some(DetachReason::Requested),
             message: "detached by `phux detach`".to_owned(),
@@ -3948,13 +3496,8 @@ pub(crate) fn create_named_session(
     }
 }
 
-/// Create a keep-empty session named `name` with zero windows (ADR-0105) —
-/// the `empty: true` form of the `SESSION_CREATE_KEY` write.
-///
-/// Like [`create_named_session`], the existence check and the insert share one
-/// state borrow, so two racing creates cannot both succeed, and success arms
-/// the last-session self-exit. No terminal is spawned, so there is no seed
-/// pane to announce. `Err` carries a log-only message.
+/// Create a keep-empty session with zero windows (ADR-0105), the
+/// `empty: true` form of the `SESSION_CREATE_KEY` write.
 pub(crate) fn create_empty_session(state: &SharedState, name: &str) -> Result<(), String> {
     state.with_mut(|s| {
         if s.session_by_name(name).is_some() {
@@ -3966,18 +3509,8 @@ pub(crate) fn create_empty_session(state: &SharedState, name: &str) -> Result<()
     })
 }
 
-/// Build the `OK_WITH(STATE(..))` reply for `GET_STATE`.
-///
-/// v0.1 supports only [`StateScope::Server`] (the whole-server snapshot).
-/// The snapshot reuses the `ATTACHED`
-/// [`phux_protocol::wire::info::SessionSnapshot`] shape; `phux ls`
-/// and client-side selector resolution read its `sessions` list and ignore
-/// the focused-* fields. An empty server yields an empty session list with
-/// sentinel focus ids (the wire requires the focus fields to be present).
-/// `GET_PERF`: snapshot the server's in-process telemetry (`crate::perf`) as
-/// a JSON `phux_perf::PerfReport`. The registry-derived gauges are refreshed
-/// first so the report is self-contained; `reset` zeroes every metric after
-/// the snapshot so the next report covers only the interval since.
+/// `GET_PERF`: the server's telemetry as a JSON `phux_perf::PerfReport`,
+/// with registry gauges refreshed first; `reset` zeroes metrics afterwards.
 pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult {
     let (sessions, panes) =
         state.with_mut(|s| (s.registry().session_count(), s.registry().terminal_count()));
@@ -4001,6 +3534,8 @@ pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult
     CommandResult::OkWith(CommandValue::Json(report.to_json()))
 }
 
+/// `GET_STATE { SERVER }`: the whole-server snapshot in the `ATTACHED`
+/// `SessionSnapshot` shape, focused on the most recently touched session.
 pub(crate) fn handle_get_state(
     state: &SharedState,
     viewer: Option<ClientId>,
@@ -4015,26 +3550,16 @@ pub(crate) fn handle_get_state(
                 let mut snapshot = focus
                     .and_then(|sid| s.build_session_snapshot(sid))
                     .unwrap_or_else(empty_session_snapshot);
-                // `build_session_snapshot` already attaches the report when the
-                // registry has a focus session; an empty registry still needs
-                // the listener table so `phux doctor` can see a boot-time
-                // disable with no panes (phux-kyna).
+                // An empty registry still reports listeners for `phux doctor`.
                 if snapshot.listeners().is_none() && s.has_remote_listener_report() {
                     snapshot = snapshot.with_listeners(s.remote_listeners().clone());
                 }
-                // The journal head at the cut (L1 §7.3), read under the lock
-                // the snapshot is built in, so a consumer knows how far a
-                // cursor replay must reach before it trusts an absence. It is
-                // the viewer's: the newest seq its subscriptions admit, so
-                // other scopes' events never hold its catch-up open. This
-                // server always advertises EVENT_JOURNAL; a hub's head is its
-                // own journal's, the space its consumers' cursors live in.
+                // L1 §7.3: the viewer's journal head at the cut, read under
+                // the snapshot's lock.
                 snapshot.with_journal_head(Some(s.journal_head_for(viewer)))
             });
             CommandResult::OkWith(CommandValue::State(snapshot))
         }
-        // `StateScope` is `#[non_exhaustive]`; a narrower scope a newer
-        // peer requests is not yet supported.
         _ => CommandResult::Error {
             code: ErrorCode::InvalidCommand,
             message: "unsupported GET_STATE scope".to_owned(),
@@ -4042,46 +3567,13 @@ pub(crate) fn handle_get_state(
     }
 }
 
-/// `GET_STATE` with federation aggregation (phux-v45.5, L1 §9.1): on a
-/// hub, the local snapshot from [`handle_get_state`] is merged with every
-/// dialed satellite's terminal inventory. Off-hub (no relays) this is
-/// exactly the local path.
-///
-/// Per satellite the hub relays `GET_STATE { scope: SERVER }` over the
-/// link (all links queried concurrently, each bounded by the relay's
-/// per-command deadline — see `crate::hub::relay::RELAY_COMMAND_TIMEOUT`)
-/// and appends the returned `panes` re-tagged
-/// `Local { id }` -> `Satellite { host, id }`.
-///
-/// **Result-shape honesty.** Only *terminals* aggregate. Session and
-/// window identities are not federation-routable (ADR-0016 makes
-/// `ResourceId` the wire primary), so the satellite's `sessions` /
-/// `windows` lists and focus fields are discarded — their `u32` ids
-/// would collide with the hub's own. A satellite pane's `window_id` is
-/// passed through **verbatim**: it is satellite-local, resolvable only on
-/// the satellite, and has no entry in the merged snapshot's `windows`
-/// list. `cols` / `rows` / `title` / `cwd` are likewise relayed verbatim
-/// from the satellite's snapshot; the hub synthesizes nothing.
-///
-/// **Host-session inventory (`ServerFeature::HostSessions`).** Sessions do
-/// not merge, but they are not dropped either: each satellite contributes
-/// one [`HostInventory`](phux_protocol::wire::info::HostInventory) row to
-/// `snapshot.hosts`, carrying its sessions under their satellite-local ids
-/// (never renumbered into the hub's space) with window and pane counts and
-/// the session's active pane re-tagged `Satellite { host, id }`. Rows are
-/// sorted by host name. A satellite that is itself a hub has its own
-/// `hosts` ignored, like its Satellite-tagged ids (no chaining).
-///
-/// **Degradation.** A satellite that is unreachable, saturated, or
-/// answers with an error contributes no resources and NEVER fails the
-/// aggregate. It keeps an inventory row marked unreachable, so a consumer
-/// shows it degraded rather than missing, and the requesting consumer also
-/// gets the spec's observable-teardown shape: one un-correlated `ERROR`
-/// frame (typically `SatelliteUnreachable`), naming the host, pushed before
-/// the `COMMAND_RESULT`.
-///
-/// Every id a satellite reports is retagged by
-/// [`retag_satellite_resource_id`].
+/// `GET_STATE` with federation aggregation (L1 §9.1): on a hub, merge every
+/// satellite's terminals (retagged `Satellite { host, id }`, queried
+/// concurrently) into the local snapshot. Satellite sessions and windows do
+/// not merge; each satellite contributes one `HostInventory` row instead,
+/// sorted by host (no chaining). An unreachable satellite never fails the
+/// aggregate: its row is marked unreachable and the caller gets one
+/// uncorrelated `ERROR` before the result.
 pub(crate) async fn handle_get_state_federated(
     state: &SharedState,
     viewer: ClientId,
@@ -4313,30 +3805,54 @@ fn retag_satellite_resource_id(
     }
 }
 
-/// Highest `GET_SCREEN.format` selector this build renders (D9): `1`
-/// HTML, `2` VT — the low 7 bits of the wire byte
-/// ([`phux_protocol::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK`]).
-/// Anything above it is refused with `INVALID_COMMAND` by
-/// [`handle_get_screen`] before the request reaches the pane actor. The
-/// high bit ([`phux_protocol::wire::frame::GET_SCREEN_FORMAT_UNWRAP`]) is
-/// not a selector and is not checked here.
+/// Highest `GET_SCREEN.format` selector (low 7 bits) this build renders:
+/// `1` HTML, `2` VT.
 const MAX_SCREEN_FORMAT: u8 = 2;
 
-/// Build the `OK_WITH(JSON(..))` reply for `GET_SCREEN`.
-///
-/// Resolves the wire id to its pane actor, then asks the actor to project
-/// its own `Terminal` grid into a [`phux_core::screen::ScreenState`]
-/// serialized as JSON — the stable agent-surface contract (ADR-0022 §2).
-/// This is side-effect-free: it neither attaches nor resizes, so polling
-/// it (the `phux wait`/`run` floor) never disturbs the live pane.
-///
-/// `format` additionally requests a libghostty-vt Formatter rendering into
-/// `ScreenState.rendered` (D9): its low 7 bits select `0` none, `1` HTML,
-/// `2` VT. A selector this build does not define is refused with
-/// `INVALID_COMMAND` — the server never guesses at an unknown rendering.
-/// A rendering that would exceed the server's per-read byte budget is
-/// refused with `RESOURCE_EXHAUSTED` instead of a truncated or silently
-/// empty capture (review item 2(b)).
+/// Resolve `terminal_id` to its Terminal facet and ask the actor for a screen
+/// projection; `verb` names the command in failure messages.
+async fn request_screen(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    scrollback: Option<u32>,
+    cells: bool,
+    format: u8,
+    verb: &str,
+) -> Result<(TerminalHandle, ScreenReply), CommandResult> {
+    let handle = state.with(|s| {
+        s.terminal_from_wire(terminal_id)
+            .and_then(|core| s.resource_handle(core).cloned())
+    });
+    let Some(handle) = handle else {
+        return Err(terminal_not_found(terminal_id));
+    };
+    let terminal = handle.terminal().map_err(wrong_resource_kind)?.clone();
+    let internal = |message: String| CommandResult::Error {
+        code: ErrorCode::InternalError,
+        message,
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    terminal
+        .screen
+        .send(ScreenRequest {
+            pane: terminal_id.local_id().unwrap_or(0),
+            scrollback,
+            cells,
+            format,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| internal(format!("pane actor unavailable for {verb}")))?;
+    let reply = reply_rx
+        .await
+        .map_err(|_| internal(format!("pane actor dropped the {verb} reply")))?;
+    Ok((terminal, reply))
+}
+
+/// `GET_SCREEN`: the pane's [`phux_core::screen::ScreenState`] as JSON
+/// (ADR-0022 §2), without attaching or resizing. `format` optionally adds a
+/// rendering (D9); an unknown selector is `INVALID_COMMAND` and one over the
+/// byte budget is `RESOURCE_EXHAUSTED`.
 pub(crate) async fn handle_get_screen(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -4351,48 +3867,19 @@ pub(crate) async fn handle_get_screen(
             message: format!("unknown GET_SCREEN format: {format}"),
         };
     }
-    // Clone the (Send) handle out of the lock; the actor reply is awaited
-    // outside the critical section.
-    let handle = state.with(|s| {
-        s.terminal_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core).cloned())
-    });
-    let Some(handle) = handle else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
-        };
-    };
-    let terminal = match handle.terminal() {
-        Ok(terminal) => terminal,
-        Err(error) => return wrong_resource_kind(error),
-    };
-    let pane = terminal_id.local_id().unwrap_or(0);
-    let (reply_tx, reply_rx) = oneshot::channel();
-    if terminal
-        .screen
-        .send(ScreenRequest {
-            pane,
-            scrollback: request_scrollback,
-            cells,
-            format,
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor unavailable for GET_SCREEN".to_owned(),
-        };
-    }
-    reply_rx.await.map_or_else(
-        |_| CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor dropped the GET_SCREEN reply".to_owned(),
-        },
-        screen_reply_result,
+    match request_screen(
+        state,
+        terminal_id,
+        request_scrollback,
+        cells,
+        format,
+        "GET_SCREEN",
     )
+    .await
+    {
+        Ok((_, reply)) => screen_reply_result(reply),
+        Err(refusal) => refusal,
+    }
 }
 
 /// Turn a [`ScreenReply`] into the `GET_SCREEN` `CommandResult`.
@@ -4418,105 +3905,32 @@ fn screen_reply_result(reply: ScreenReply) -> CommandResult {
     }
 }
 
-/// Build the `Ok_With(Json(TerminalState))` reply for `GET_TERMINAL_STATE`.
-///
-/// L2 Collection-aware counterpart to [`handle_get_screen`]: returns a
-/// comprehensive snapshot of terminal state (grid, scrollback, cursor, shell
-/// metadata, sequence number, and timestamp) in a structured JSON format.
-/// Backs agent polling and state inspection without requiring an attach or
-/// subscription (ADR-0022, ADR-0015 L2).
-///
-/// Unlike `GET_SCREEN` which returns raw `ScreenState` with only grid
-/// dimensions and viewport text, `GET_TERMINAL_STATE` returns structured
-/// JSON with:
-/// - Grid cells with text and styling
-/// - Cursor position and visibility
-/// - Optional scrollback history (if `include_scrollback` is true)
-/// - Shell process metadata (PID, name, jobs, copy-mode state)
-/// - Pending command tracking (overlay layer)
-/// - Logical sequence number (for change detection)
-/// - Timestamp (for agent polling)
-///
-/// Handler flow:
-/// 1. Resolve `terminal_id` to a `TerminalActor` handle (reuse same pattern as
-///    `handle_get_screen`)
-/// 2. Query screen state via `ScreenRequest` (reuse existing path)
-/// 3. Walk grid cells: parse `ScreenState.lines` and merge styling from
-///    `ScreenState.cells` (`CellInfo`)
-/// 4. Extract cursor, scrollback, and dimensions
-/// 5. Query shell state (gracefully degrade to None if unavailable)
-/// 6. Build JSON and encode as JSON
-/// 7. Return as `COMMAND_RESULT Ok_With(Json(TerminalState))`
-///
-/// Error cases:
-/// - Unknown `terminal_id` → `TERMINAL_NOT_FOUND`
-/// - Actor unavailable → `INTERNAL_ERROR`
-/// - Shell query fails → populate `shell_state: None`, continue gracefully
-#[allow(clippy::too_many_lines)]
+/// `GET_TERMINAL_STATE` (ADR-0022, ADR-0015 L2): a structured JSON snapshot
+/// of the grid, cursor, optional scrollback, and process facet, without an
+/// attach. An actor that cannot report its process degrades to
+/// `process: null`.
 pub(crate) async fn handle_get_terminal_state(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     include_scrollback: bool,
     max_scrollback_lines: u16,
 ) -> CommandResult {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Step 1: Resolve terminal_id to TerminalActor handle (same pattern as
-    // handle_get_screen).
-    let handle = state.with(|s| {
-        s.terminal_from_wire(terminal_id)
-            .and_then(|core| s.resource_handle(core).cloned())
-    });
-
-    let Some(handle) = handle else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
-        };
-    };
-
-    let terminal = match handle.terminal() {
-        Ok(terminal) => terminal,
-        Err(error) => return wrong_resource_kind(error),
-    };
-    let pane = terminal_id.local_id().unwrap_or(0);
-
-    // Step 2: Query screen state via ScreenRequest (reuse existing path).
-    // This gives us canonical grid snapshot, scrollback (if requested), and
-    // cell styling information.
-    let (reply_tx, reply_rx) = oneshot::channel();
-    if terminal
-        .screen
-        .send(ScreenRequest {
-            pane,
-            scrollback: if include_scrollback {
-                Some(u32::from(max_scrollback_lines))
-            } else {
-                None
-            },
-            cells: true, // Always request cells for semantic info (styles, OSC-133 marks)
-            format: 0, // GET_TERMINAL_STATE has no rendered-capture surface (D9 is GET_SCREEN-only)
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
+    let scrollback = include_scrollback.then_some(u32::from(max_scrollback_lines));
+    // Cells are always requested for their semantic marks; no rendering.
+    let (terminal, reply) = match request_screen(
+        state,
+        terminal_id,
+        scrollback,
+        true,
+        0,
+        "GET_TERMINAL_STATE",
+    )
+    .await
     {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor unavailable for GET_TERMINAL_STATE".to_owned(),
-        };
-    }
-
-    let Ok(reply) = reply_rx.await else {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor dropped the GET_TERMINAL_STATE reply".to_owned(),
-        };
+        Ok(found) => found,
+        Err(refusal) => return refusal,
     };
-    // `format: 0` above never triggers a `ScreenReply::TooLarge` refusal
-    // (review item 2(b) only ever applies to a requested rendering); this
-    // arm exists so an enum a future format-aware caller could reach
-    // fails loudly here instead of via a non-exhaustive match.
+    // `format: 0` never yields `TooLarge`.
     let ScreenReply::Projection(screen_state) = reply else {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
@@ -4524,49 +3938,7 @@ pub(crate) async fn handle_get_terminal_state(
         };
     };
 
-    // Step 3: Convert ScreenState viewport to JSON cells array.
-    // ScreenState carries:
-    // - lines: Vec<String> — viewport text, one row per element, right-trimmed
-    // - cells: Option<Vec<CellInfo>> — sparse: only cells with non-default
-    //   style or OSC-133 semantic marks, in row-major order
-    //
-    // We parse each line into characters and emit cells as JSON objects.
-    // Note: a full implementation using unicode-segmentation::Graphemes
-    // would handle combining marks, emoji, and wide glyphs more precisely;
-    // for now we estimate width based on ASCII vs. non-ASCII.
-
-    let mut viewport_cells = Vec::new();
-
-    // Emit viewport cells by parsing each line.
-    // Each line is right-trimmed, so we don't need to emit trailing blanks.
-    #[allow(clippy::cast_possible_truncation)]
-    for (row_idx, line_text) in screen_state.lines.iter().enumerate() {
-        let row = row_idx as u16;
-        let mut col = 0u16;
-
-        for ch in line_text.chars() {
-            // Estimate cell width: ASCII is 1 column, everything else is 2
-            // (emoji, CJK). libghostty tracks actual widths; we approximate.
-            let width = if ch.is_ascii() { 1u16 } else { 2u16 };
-
-            // Emit this cell as JSON.
-            viewport_cells.push(serde_json::json!({
-                "col": col,
-                "row": row,
-                "text": ch.to_string(),
-                "width": width as u8,
-                "selected": false,
-            }));
-
-            col += width;
-            // Stop if we exceed grid width (shouldn't happen in right-trimmed lines)
-            if col >= screen_state.cols {
-                break;
-            }
-        }
-    }
-
-    // Extract cursor state as JSON.
+    let viewport_cells = viewport_cells_json(&screen_state);
     let cursor = screen_state.cursor.map(|cs| {
         serde_json::json!({
             "x": cs.x,
@@ -4574,44 +3946,27 @@ pub(crate) async fn handle_get_terminal_state(
             "visible": cs.visible,
         })
     });
-
-    // Step 4: Convert scrollback lines to JSON.
-    let mut scrollback_lines = Vec::new();
     #[allow(clippy::cast_possible_truncation)]
     let scrollback_count_total = screen_state.scrollback.len() as u32;
+    let scrollback_lines: Vec<_> = if include_scrollback {
+        screen_state
+            .scrollback
+            .iter()
+            .map(|line_text| serde_json::json!({ "text": line_text, "cells": [] }))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
-    if include_scrollback {
-        for line_text in &screen_state.scrollback {
-            scrollback_lines.push(serde_json::json!({
-                "text": line_text,
-                "cells": [],
-            }));
-        }
-    }
-
-    // Step 5: Query the typed process facet (PHA-406 D5): the PTY child and
-    // its start time, the tty's foreground group, the kernel cwd, the
-    // OSC-133 prompt state, and the exit facet. Every kernel fact inside is
-    // already best-effort (`null` when unobtainable). An actor that cannot
-    // answer at all degrades to `process: null` rather than failing the
-    // whole snapshot. `shell_state` mirrors the prompt facet.
-    let mut process = query_process_facet(terminal).await;
+    let mut process = query_process_facet(&terminal).await;
     reconcile_process_exit(state, terminal_id, process.as_mut());
     let shell_state = process
         .as_ref()
         .and_then(|process| serde_json::to_value(process.prompt).ok());
-
-    // Step 6: Compute timestamp and sequence number.
-    let timestamp_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    let timestamp_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
 
-    // Sequence number is a logical clock maintained per terminal for change
-    // detection. For now, placeholder; should be sourced from actor's state
-    // in a future iteration (phux-y2t Phase 2). See ADR-0015 for the versioning model.
-    let seq = 0u64;
-
-    // Step 7: Build the TerminalState as JSON.
     let terminal_state_json = serde_json::json!({
         "schema_version": phux_core::process::TERMINAL_STATE_SCHEMA_VERSION,
         "process": process,
@@ -4624,10 +3979,9 @@ pub(crate) async fn handle_get_terminal_state(
         "shell_state": shell_state,
         "pending_command": serde_json::Value::Null,
         "timestamp_secs": timestamp_secs,
-        "seq": seq,
+        // No per-terminal logical clock exists yet.
+        "seq": 0u64,
     });
-
-    // Step 8: Serialize to JSON string and return.
     match serde_json::to_string(&terminal_state_json) {
         Ok(json) => CommandResult::OkWith(CommandValue::Json(json)),
         Err(err) => CommandResult::Error {
@@ -4637,10 +3991,35 @@ pub(crate) async fn handle_get_terminal_state(
     }
 }
 
+/// The viewport as JSON cells, one per char of each right-trimmed line. Width
+/// is approximated: ASCII is one column, anything else two.
+fn viewport_cells_json(screen_state: &phux_core::screen::ScreenState) -> Vec<serde_json::Value> {
+    let mut viewport_cells = Vec::new();
+    #[allow(clippy::cast_possible_truncation)]
+    for (row_idx, line_text) in screen_state.lines.iter().enumerate() {
+        let row = row_idx as u16;
+        let mut col = 0u16;
+        for ch in line_text.chars() {
+            let width = if ch.is_ascii() { 1u16 } else { 2u16 };
+            viewport_cells.push(serde_json::json!({
+                "col": col,
+                "row": row,
+                "text": ch.to_string(),
+                "width": width as u8,
+                "selected": false,
+            }));
+            col += width;
+            if col >= screen_state.cols {
+                break;
+            }
+        }
+    }
+    viewport_cells
+}
+
 /// Make `process.exit` the record `GET_STATE` reports (ADR-0124, L1 §1.1):
-/// a retained pane's exit facet replaces the engine's, and a pane whose close
-/// is still being emitted takes its `reason` from the close ledger rather
-/// than the engine's "exited", so a kill reads `killed` on both surfaces.
+/// a retained pane's exit wins, and a closing pane takes its ledger reason so
+/// a kill reads `killed` on both surfaces.
 fn reconcile_process_exit(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
@@ -4744,10 +4123,7 @@ pub(crate) fn with_route_input_destination<R>(
                 });
             }
             Resolved::Unknown => {
-                return Err(CommandResult::Error {
-                    code: ErrorCode::TerminalNotFound,
-                    message: format!("no such terminal: {terminal_id:?}"),
-                });
+                return Err(terminal_not_found(terminal_id));
             }
             Resolved::Local(local) => local,
         };
@@ -4923,10 +4299,7 @@ pub(crate) async fn handle_acquire_input(
         }
     });
     match outcome {
-        AcquireOutcome::NotFound => CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
-        },
+        AcquireOutcome::NotFound => terminal_not_found(terminal_id),
         AcquireOutcome::WrongKind(error) => wrong_resource_kind(error),
         AcquireOutcome::Denied(holder) => CommandResult::Error {
             code: ErrorCode::InputLeaseHeld,
@@ -5135,10 +4508,7 @@ pub(crate) async fn handle_release_input(
         Released::Ok(handle, did_release)
     });
     match released {
-        Released::NotFound => CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
-        },
+        Released::NotFound => terminal_not_found(terminal_id),
         Released::WrongKind(error) => wrong_resource_kind(error),
         Released::Ok(handle, did_release) => {
             if did_release {
@@ -5185,10 +4555,7 @@ pub(crate) async fn handle_signal_terminal(
             };
         }
         (ResolvedOwned::Unknown, _) => {
-            return CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: format!("no such terminal: {terminal_id:?}"),
-            };
+            return terminal_not_found(terminal_id);
         }
     };
     // docs/spec/L1.md §1.1: a signal targets a Terminal's PTY child, which
@@ -5305,10 +4672,7 @@ pub(crate) async fn handle_report_agent_state(
             };
         }
         ResolvedOwned::Unknown => {
-            return CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: format!("no such terminal: {terminal_id:?}"),
-            };
+            return terminal_not_found(terminal_id);
         }
     };
     // docs/spec/L1.md §1.1: REPORT_AGENT_STATE addresses a Terminal — the
@@ -5377,10 +4741,7 @@ pub(crate) fn handle_subscribe_terminal_events(
         Some(())
     });
     if registered.is_none() {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
-        };
+        return terminal_not_found(terminal_id);
     }
     super::client::ensure_event_pump(state, client_id);
     debug!(
@@ -5416,10 +4777,7 @@ pub(crate) fn handle_report_asked(
             };
         }
         ResolvedOwned::Unknown => {
-            return CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                message: format!("no such terminal: {terminal_id:?}"),
-            };
+            return terminal_not_found(terminal_id);
         }
     };
     if let Some(message) = validate_asked_payload(&id, &question, &suggestions) {
