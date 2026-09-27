@@ -14,19 +14,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 
-use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
-use std::io;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
-use chrono::Utc;
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, Compression, LayerSet,
-};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, Compression};
 use phux_protocol::ids::{GroupId, InputOperationId, ResourceId as WireResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
@@ -42,49 +34,13 @@ use tokio_util::sync::CancellationToken;
 
 use super::client::handle_client;
 use super::input_lane::{InputLaneHandle, spawn_input_lane};
-use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
+use super::test_support::{Feed, Wire, encode, hello, owner_peer, workload_identity};
+use crate::auth::AuthenticatedCredential;
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
 use crate::state::{ClientId, SharedState};
-use crate::transport::{FrameReader, FrameWriter};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 
 const CLIENT: ClientId = ClientId(21);
-
-/// Frames the client sends, then silence.
-struct Script(VecDeque<BytesMut>);
-
-impl FrameReader for Script {
-    async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-        match self.0.pop_front() {
-            Some(frame) => Ok(Some(frame)),
-            None => std::future::pending().await,
-        }
-    }
-}
-
-/// Everything the server writes, decoded, and whether it closed.
-#[derive(Clone, Default)]
-struct Wire {
-    frames: Rc<RefCell<Vec<FrameKind>>>,
-    closed: Rc<Cell<bool>>,
-}
-
-#[allow(
-    clippy::unused_async_trait_impl,
-    reason = "the recording test writer implements the production async transport trait without I/O"
-)]
-impl FrameWriter for Wire {
-    async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        let decoded = FrameKind::decode(frame).expect("server frame").0;
-        self.frames.borrow_mut().push(decoded);
-        Ok(())
-    }
-
-    async fn close(&mut self) -> io::Result<()> {
-        self.closed.set(true);
-        Ok(())
-    }
-}
 
 /// Mints the same scoped grant for every connection: the shape a
 /// HELLO-requested attenuation would produce, including Group and Terminal
@@ -168,7 +124,7 @@ fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fi
     };
     state.with_mut(|s| {
         s.set_policy_engine(policy);
-        s.set_connection_identity(CLIENT, workload_identity(&id));
+        s.set_connection_identity(CLIENT, workload_identity(&id, &["*@global"]));
     });
     Fixture {
         _dir: dir,
@@ -177,46 +133,6 @@ fn fixture(engine: Engine, ceiling: impl FnOnce(&Topology) -> Vec<String>) -> Fi
         alpha,
         beta,
     }
-}
-
-fn workload_identity(id: &str) -> ConnectionIdentity {
-    ConnectionIdentity {
-        peer: PeerIdentity {
-            uid: 0,
-            pid: None,
-            exe_path: None,
-            mcp_host_key: Some(id.to_owned()),
-            transport: TransportType::Quic,
-            source_addr: None,
-        },
-        credential: Some(AuthenticatedCredential {
-            id: id.to_owned(),
-            principal: id.to_owned(),
-            scopes: vec!["*@global".to_owned()],
-            issued_at: Utc::now(),
-            expires_at: None,
-            generation: 1,
-            registry_instance: None,
-        }),
-        ssh_origin: None,
-        bearer: None,
-    }
-}
-
-fn hello() -> FrameKind {
-    FrameKind::Hello {
-        client_name: "scope-matrix".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::new().with_layers(LayerSet::all()),
-    }
-}
-
-fn encode(frame: &FrameKind) -> BytesMut {
-    let mut out = BytesMut::new();
-    frame.encode(&mut out);
-    out
 }
 
 fn script(frames: &[FrameKind]) -> Vec<BytesMut> {
@@ -364,7 +280,7 @@ async fn exchange(
     let root = CancellationToken::new();
     let connection = root.child_token();
     let task = tokio::task::spawn_local(handle_client(
-        Script(frames.into()),
+        Feed::scripted(frames),
         wire.clone(),
         state.clone(),
         CLIENT,
@@ -408,7 +324,7 @@ async fn denials_are_rate_limited_and_never_close_the_connection() {
     LocalSet::new()
         .run_until(async {
             let fixture = paired(&["observe@global"]);
-            let mut frames = vec![hello()];
+            let mut frames = vec![hello("scope-matrix")];
             frames.extend((0..5).map(|_| paste(&fixture.alpha, b"x".to_vec())));
             frames.push(FrameKind::Ping { nonce: 9 });
             let outcome = exchange(&fixture.state, script(&frames), None, |frames| {
@@ -452,7 +368,7 @@ async fn apply_input_on_the_input_lane_is_guarded() {
             let lane = spawn_input_lane(refused.state.clone()).unwrap();
             let outcome = exchange(
                 &refused.state,
-                script(&[hello(), apply(refused.alpha.clone())]),
+                script(&[hello("scope-matrix"), apply(refused.alpha.clone())]),
                 Some(lane.handle()),
                 has_result(3),
             )
@@ -468,7 +384,7 @@ async fn apply_input_on_the_input_lane_is_guarded() {
             let lane = spawn_input_lane(admitted.state.clone()).unwrap();
             let outcome = exchange(
                 &admitted.state,
-                script(&[hello(), apply(admitted.alpha.clone())]),
+                script(&[hello("scope-matrix"), apply(admitted.alpha.clone())]),
                 Some(lane.handle()),
                 has_result(3),
             )
@@ -504,7 +420,7 @@ async fn relayed_command_is_authorized_on_the_hub_before_forwarding() {
                 let fixture = paired(&[scope]);
                 let outcome = exchange(
                     &fixture.state,
-                    script(&[hello(), kill.clone()]),
+                    script(&[hello("scope-matrix"), kill.clone()]),
                     None,
                     has_result(5),
                 )
@@ -529,7 +445,7 @@ async fn owner_addressed_spawn_with_disagreeing_payload_group_is_spawn_failed_af
             });
             let before = fixture.state.with(|s| s.registry().terminal_count());
             let frames = [
-                hello(),
+                hello("scope-matrix"),
                 spawn_owned_by(4, 7, &fixture.alpha),
                 spawn_owned_by(5, 1, &fixture.beta),
             ];
@@ -577,7 +493,7 @@ async fn denied_move_answers_with_its_own_refusal() {
                 terminal: fixture.alpha.clone(),
                 owner_terminal: fixture.beta.clone(),
             };
-            let outcome = exchange(&fixture.state, script(&[hello(), moving]), None, |frames| {
+            let outcome = exchange(&fixture.state, script(&[hello("scope-matrix"), moving]), None, |frames| {
                 frames
                     .iter()
                     .any(|frame| matches!(frame, FrameKind::ResourceMoved { request_id: 6, .. }))
@@ -611,7 +527,7 @@ async fn absent_and_unauthorized_targets_get_the_same_denial() {
                 vec![format!("*@group:{}", t.alpha_group)]
             });
             let frames = [
-                hello(),
+                hello("scope-matrix"),
                 get_screen(6, fixture.beta.clone()),
                 get_screen(7, WireResourceId::local(999)),
             ];
@@ -638,7 +554,7 @@ async fn handler_bypass_canary_unclassified_frame_is_denied() {
             // Even every verb at Global does not open a default-deny row.
             let fixture = paired(&["*@global"]);
             let frames = [
-                hello(),
+                hello("scope-matrix"),
                 FrameKind::Pong { nonce: 1 },
                 FrameKind::Ping { nonce: 2 },
             ];
@@ -662,7 +578,7 @@ async fn shutdown_is_denied_before_its_handler() {
             let fixture = paired(&["signal@global"]);
             let outcome = exchange(
                 &fixture.state,
-                script(&[hello(), command(8, Command::Shutdown)]),
+                script(&[hello("scope-matrix"), command(8, Command::Shutdown)]),
                 None,
                 has_result(8),
             )
@@ -689,7 +605,7 @@ async fn whoami_reports_the_effective_grant() {
             let fixture = paired(&["observe@global", "input@host:devbox"]);
             let outcome = exchange(
                 &fixture.state,
-                script(&[hello(), whoami(9)]),
+                script(&[hello("scope-matrix"), whoami(9)]),
                 None,
                 has_metadata(9),
             )
@@ -719,7 +635,7 @@ async fn a_narrowly_scoped_workload_reads_its_own_whoami() {
                 });
                 let outcome = exchange(
                     &fixture.state,
-                    script(&[hello(), whoami(10)]),
+                    script(&[hello("scope-matrix"), whoami(10)]),
                     None,
                     has_metadata(10),
                 )
@@ -741,8 +657,13 @@ async fn a_second_hello_on_a_paired_connection_still_closes() {
     LocalSet::new()
         .run_until(async {
             let fixture = paired(&["*@global"]);
-            let outcome =
-                exchange(&fixture.state, script(&[hello(), hello()]), None, |_| false).await;
+            let outcome = exchange(
+                &fixture.state,
+                script(&[hello("scope-matrix"), hello("scope-matrix")]),
+                None,
+                |_| false,
+            )
+            .await;
             assert!(outcome.closed, "HELLO is valid only in PRE_HELLO");
         })
         .await;
@@ -763,7 +684,7 @@ async fn client_sent_frame_compressed_is_refused_at_decode() {
             );
             let outcome = exchange(
                 &fixture.state,
-                vec![encode(&hello()), compressed],
+                vec![encode(&hello("scope-matrix")), compressed],
                 None,
                 |_| false,
             )
@@ -793,17 +714,13 @@ async fn the_owner_socket_keeps_todays_behaviour() {
                     CLIENT,
                     PeerIdentity {
                         uid: 501,
-                        pid: None,
-                        exe_path: None,
-                        mcp_host_key: None,
-                        transport: TransportType::UnixSocket,
-                        source_addr: None,
+                        ..owner_peer()
                     },
                 );
             });
             let outcome = exchange(
                 &state,
-                script(&[hello(), FrameKind::Pong { nonce: 1 }]),
+                script(&[hello("scope-matrix"), FrameKind::Pong { nonce: 1 }]),
                 None,
                 |_| false,
             )

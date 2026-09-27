@@ -55,6 +55,8 @@ mod approvals;
 mod dispatch_guard;
 #[cfg(test)]
 mod scope_matrix;
+#[cfg(test)]
+mod test_support;
 mod workload_auth;
 
 pub(crate) use attach::*;

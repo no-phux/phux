@@ -17,22 +17,19 @@
     reason = "tests"
 )]
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use chrono::Utc;
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, LayerSet};
 use phux_protocol::ids::{InputOperationId, ResourceId as WireResourceId, SatelliteHost};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
-use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::policy::PeerIdentity;
 use phux_protocol::scope::TerminalScopeSet;
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, Command, CommandResult, ControlAction, DetachReason, ErrorCode,
@@ -45,13 +42,13 @@ use tokio_util::sync::CancellationToken;
 use super::client::handle_client;
 use super::input_lane::{InputLaneHandle, spawn_input_lane};
 use super::revocation::{Watcher, revoke_connection, spawn_revocation_watcher};
+use super::test_support::{Feed, Wire, hello, owner_peer, workload_identity};
 use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
 use crate::hub::relay::{HubRelays, RelayHandle, RelayRequest, Unsubscribe};
 use crate::policy::{
     ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, Revocation, ScopedPolicy,
 };
 use crate::state::{ClientId, EventRecord, Outbound, ServerState, SharedState};
-use crate::transport::{FrameReader, FrameWriter};
 use crate::workload::{ReloadingWorkloadRegistry, WorkloadRegistry};
 
 mod stores;
@@ -65,42 +62,6 @@ const KEY: &[u8] = b"revocation-conformance-key";
 
 /// How long any one expectation may take before the case fails.
 const PATIENCE: Duration = Duration::from_secs(5);
-
-/// Frames the test feeds the connection whenever it chooses, then silence.
-struct Feed(mpsc::UnboundedReceiver<BytesMut>);
-
-impl FrameReader for Feed {
-    async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-        match self.0.recv().await {
-            Some(frame) => Ok(Some(frame)),
-            None => std::future::pending().await,
-        }
-    }
-}
-
-/// Everything the server writes, decoded, and whether it closed.
-#[derive(Clone, Default)]
-struct Wire {
-    frames: Rc<RefCell<Vec<FrameKind>>>,
-    closed: Rc<Cell<bool>>,
-}
-
-#[allow(
-    clippy::unused_async_trait_impl,
-    reason = "the recording test writer implements the production async transport trait without I/O"
-)]
-impl FrameWriter for Wire {
-    async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        let decoded = FrameKind::decode(frame).expect("server frame").0;
-        self.frames.borrow_mut().push(decoded);
-        Ok(())
-    }
-
-    async fn close(&mut self) -> io::Result<()> {
-        self.closed.set(true);
-        Ok(())
-    }
-}
 
 /// Mints a scoped grant over `set` that expires `ttl` after its HELLO.
 #[derive(Debug)]
@@ -221,7 +182,7 @@ impl Fixture {
         let wire = Wire::default();
         let token = self.root.child_token();
         let task = tokio::task::spawn_local(handle_client(
-            Feed(rx),
+            Feed::silent_on_close(rx),
             wire.clone(),
             self.state.clone(),
             client,
@@ -246,14 +207,14 @@ impl Fixture {
     }
 
     async fn workload_with_lane(&self, lane: Option<InputLaneHandle>) -> Connection {
-        let connection = self.connect(workload_identity(&self.credential_id), lane);
+        let connection = self.connect(workload_identity(&self.credential_id, &["*@global"]), lane);
         connection.hello().await;
         connection
     }
 
     /// The owner's connection over its Unix socket, past its HELLO.
     async fn owner(&self) -> Connection {
-        let connection = self.connect(owner_identity(), None);
+        let connection = self.connect(owner_peer().into(), None);
         connection.hello().await;
         connection
     }
@@ -296,7 +257,7 @@ impl Connection {
     }
 
     async fn hello(&self) {
-        self.send(&hello());
+        self.send(&hello("revocation-conformance"));
         self.wait_for("HELLO_OK", |frame| {
             matches!(frame, FrameKind::HelloOk { .. })
         })
@@ -441,56 +402,6 @@ fn write_owner_only(path: &Path, bytes: &[u8]) {
     std::fs::write(&staged, bytes).unwrap();
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600)).unwrap();
     std::fs::rename(&staged, path).unwrap();
-}
-
-/// A workload's QUIC connection, its certificate verified. The cached
-/// credential claims `*@global`; the grant always comes from the engine.
-fn workload_identity(id: &str) -> ConnectionIdentity {
-    ConnectionIdentity {
-        peer: PeerIdentity {
-            uid: 0,
-            pid: None,
-            exe_path: None,
-            mcp_host_key: Some(id.to_owned()),
-            transport: TransportType::Quic,
-            source_addr: None,
-        },
-        credential: Some(AuthenticatedCredential {
-            id: id.to_owned(),
-            principal: id.to_owned(),
-            scopes: vec!["*@global".to_owned()],
-            issued_at: Utc::now(),
-            expires_at: None,
-            generation: 1,
-            registry_instance: None,
-        }),
-        ssh_origin: None,
-        bearer: None,
-    }
-}
-
-/// The owner's Unix socket: the serving uid, which `paired` keeps at the
-/// owner's grant.
-fn owner_identity() -> ConnectionIdentity {
-    PeerIdentity {
-        uid: nix::unistd::geteuid().as_raw(),
-        pid: None,
-        exe_path: None,
-        mcp_host_key: None,
-        transport: TransportType::UnixSocket,
-        source_addr: None,
-    }
-    .into()
-}
-
-fn hello() -> FrameKind {
-    FrameKind::Hello {
-        client_name: "revocation-conformance".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::new().with_layers(LayerSet::all()),
-    }
 }
 
 fn attach(attach_id: u32) -> FrameKind {
@@ -652,8 +563,8 @@ async fn malformed_reload_revokes_every_workload_session_until_a_valid_generatio
         );
 
         // The last known-good generation is not preserved: HELLO is refused.
-        let refused = fx.connect(workload_identity(&fx.credential_id), None);
-        refused.send(&hello());
+        let refused = fx.connect(workload_identity(&fx.credential_id, &["*@global"]), None);
+        refused.send(&hello("revocation-conformance"));
         refused
             .wait_for("the HELLO refusal", |frame| {
                 matches!(
@@ -874,11 +785,11 @@ async fn a_revoked_grant_admits_no_frame_even_before_the_connection_closes() {
 async fn a_connection_revoked_before_hello_closes_without_a_frame() {
     local(async {
         let fx = Fixture::paired(&["*@global"]);
-        let pending = fx.connect(workload_identity(&fx.credential_id), None);
+        let pending = fx.connect(workload_identity(&fx.credential_id, &["*@global"]), None);
         settle().await;
 
         revoke_connection(&fx.state, pending.client, Revocation::Revoked);
-        pending.send(&hello());
+        pending.send(&hello("revocation-conformance"));
         pending.wait_closed().await;
         settle().await;
         assert!(

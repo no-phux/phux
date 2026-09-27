@@ -9,16 +9,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
 
-use std::cell::RefCell;
 use std::io;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
-use chrono::Utc;
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::{ClientCapabilities, LayerSet};
 use phux_protocol::ids::{ApprovalId, ResourceId as WireResourceId};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::scope::TerminalScopeSet;
@@ -31,10 +26,10 @@ use tokio::task::{JoinHandle, LocalSet};
 use tokio_util::sync::CancellationToken;
 
 use super::client::handle_client;
-use crate::auth::{AuthenticatedCredential, ConnectionIdentity};
+use super::test_support::{Feed, Wire, hello, owner_peer, workload_identity};
+use crate::auth::AuthenticatedCredential;
 use crate::policy::{ConnectionGrant, GrantFuture, PolicyEngine, PolicyError, ScopedPolicy};
 use crate::state::{ClientId, SharedState};
-use crate::transport::{FrameReader, FrameWriter};
 
 const REQUESTER: ClientId = ClientId(31);
 const APPROVER: ClientId = ClientId(32);
@@ -44,36 +39,6 @@ const UNSIGNALED: ClientId = ClientId(35);
 
 /// The held request's id in every test.
 const HELD: u32 = 7;
-
-/// Frames a test feeds one connection as it goes. Dropping the sender is
-/// the peer's EOF.
-struct Feed(mpsc::UnboundedReceiver<BytesMut>);
-
-impl FrameReader for Feed {
-    async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-        Ok(self.0.recv().await)
-    }
-}
-
-/// Everything the server writes to one connection, decoded.
-#[derive(Clone, Default)]
-struct Wire(Rc<RefCell<Vec<FrameKind>>>);
-
-#[allow(
-    clippy::unused_async_trait_impl,
-    reason = "the recording test writer implements the production async transport trait without I/O"
-)]
-impl FrameWriter for Wire {
-    async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-        let decoded = FrameKind::decode(frame).expect("server frame").0;
-        self.0.borrow_mut().push(decoded);
-        Ok(())
-    }
-
-    async fn close(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 /// Mints each credential's grant; a connection with no credential gets the
 /// owner's grant.
@@ -143,56 +108,10 @@ fn world(grants: impl FnOnce(u32, u32) -> Vec<(ClientId, Vec<String>)>) -> World
         s.set_policy_engine(Arc::new(engine));
         s.set_peer_identity(OBSERVER, owner_peer());
         for (client, _) in &grants {
-            s.set_connection_identity(*client, workload_identity(&credential_id(*client)));
+            s.set_connection_identity(*client, workload_identity(&credential_id(*client), &[]));
         }
     });
     World { state, alpha, beta }
-}
-
-/// The owner's socket: the serving uid over the Unix socket.
-fn owner_peer() -> PeerIdentity {
-    PeerIdentity {
-        uid: nix::unistd::geteuid().as_raw(),
-        pid: None,
-        exe_path: None,
-        mcp_host_key: None,
-        transport: TransportType::UnixSocket,
-        source_addr: None,
-    }
-}
-
-fn workload_identity(id: &str) -> ConnectionIdentity {
-    ConnectionIdentity {
-        peer: PeerIdentity {
-            uid: 0,
-            pid: None,
-            exe_path: None,
-            mcp_host_key: Some(id.to_owned()),
-            transport: TransportType::Quic,
-            source_addr: None,
-        },
-        credential: Some(AuthenticatedCredential {
-            id: id.to_owned(),
-            principal: id.to_owned(),
-            scopes: Vec::new(),
-            issued_at: Utc::now(),
-            expires_at: None,
-            generation: 1,
-            registry_instance: None,
-        }),
-        ssh_origin: None,
-        bearer: None,
-    }
-}
-
-fn hello() -> FrameKind {
-    FrameKind::Hello {
-        client_name: "approval-matrix".to_owned(),
-        protocol_major: PROTOCOL_VERSION.major,
-        protocol_minor: PROTOCOL_VERSION.minor,
-        protocol_patch: PROTOCOL_VERSION.patch,
-        client_caps: ClientCapabilities::new().with_layers(LayerSet::all()),
-    }
 }
 
 /// One live connection the test drives.
@@ -209,7 +128,7 @@ async fn connect(state: &SharedState, client: ClientId, transport: TransportType
     let root = CancellationToken::new();
     let token = root.child_token();
     let task = tokio::task::spawn_local(handle_client(
-        Feed(frames),
+        Feed::eof_on_close(frames),
         wire.clone(),
         state.clone(),
         client,
@@ -225,7 +144,7 @@ async fn connect(state: &SharedState, client: ClientId, transport: TransportType
         token,
         task,
     };
-    peer.send(&hello());
+    peer.send(&hello("approval-matrix"));
     assert!(
         peer.until(|frames| frames
             .iter()
@@ -254,13 +173,13 @@ impl Peer {
     }
 
     fn frames(&self) -> Vec<FrameKind> {
-        self.wire.0.borrow().clone()
+        self.wire.frames.borrow().clone()
     }
 
     async fn until(&self, done: impl Fn(&[FrameKind]) -> bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if done(&self.wire.0.borrow()) {
+            if done(&self.wire.frames.borrow()) {
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
