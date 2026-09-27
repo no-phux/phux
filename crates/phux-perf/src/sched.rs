@@ -1,15 +1,10 @@
 //! Thread scheduling policy for the interactive path.
 //!
-//! A terminal multiplexer sits between the keyboard and the glass, so its
-//! hot threads belong in the same scheduling class as the terminal emulator
-//! itself. Left at the default, they compete evenly with every batch job on
-//! the box: measured on a 14-core laptop, a full-CPU hog took keystroke echo
-//! from a p99 of 0.5 ms to 15 ms with the server itself using 0.3% CPU. On
-//! macOS the fix is the per-thread `QoS` class: `USER_INTERACTIVE` raises the
-//! thread's priority band and keeps it off the efficiency cores, and any
-//! thread may request it for itself without privilege. Linux has no
-//! unprivileged equivalent (lowering `nice` needs `CAP_SYS_NICE`), so
-//! [`promote_current_thread`] is a documented no-op there.
+//! Hot threads belong in the terminal emulator's scheduling class; left at
+//! the default, a CPU hog took keystroke echo p99 from 0.5 ms to 15 ms. On
+//! macOS the unprivileged per-thread `USER_INTERACTIVE` `QoS` class fixes that.
+//! Linux has no unprivileged equivalent, so [`promote_current_thread`] is a
+//! no-op there.
 
 /// Ask the OS to schedule the calling thread as user-interactive.
 ///
