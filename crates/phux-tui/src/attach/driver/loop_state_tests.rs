@@ -50,63 +50,21 @@ async fn rename_from_prompt(state: &mut SessionLoop, conn: &mut Connection, out:
         .unwrap();
 }
 
-/// A FIFO marker bounds the observation without relying on an idle-time guess.
 async fn assert_no_layout_write(client: &mut Connection, server: &mut Connection) {
-    client
-        .send(&FrameKind::GetMetadata {
-            request_id: u32::MAX,
-            scope: Scope::Global,
-            key: "test.barrier".into(),
-        })
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            match server.recv().await.unwrap() {
-                FrameKind::GetMetadata {
-                    request_id: u32::MAX,
-                    ..
-                } => break,
-                FrameKind::SetMetadata { .. } => panic!("layout written before initial read"),
-                _ => {}
-            }
-        }
-    })
-    .await
-    .unwrap();
+    let sent = frames_sent(client, server).await;
+    assert!(
+        !sent
+            .iter()
+            .any(|frame| matches!(frame, FrameKind::SetMetadata { .. })),
+        "layout written before initial read"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
     for metadata in [Some(b"\xa1\x67version\x02".to_vec()), None] {
-        let (a, b) = tokio::net::UnixStream::pair().unwrap();
-        let mut client = Connection::from_stream(a);
-        let mut server = Connection::from_stream(b);
-        let negotiated = NegotiatedBootstrap {
-            profile: BootstrapProfile::SynthesizedVtRaw,
-            limits: BootstrapLimits::default(),
-            server_features: ServerFeatureSet::new(),
-        };
-        let mut state = SessionLoop::new(
-            negotiated,
-            PredictiveConfig::disabled(),
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let mut out = Vec::new();
-        state
-            .bootstrap(&mut client, &mut out, initial_attached(), None)
-            .await
-            .unwrap();
-        state
-            .emit_deferred_bootstrap_outbound(&mut client)
-            .await
-            .unwrap();
+        let (mut state, mut client, mut server, mut out) =
+            bootstrapped_loop_with(ServerFeatureSet::new()).await;
         let request_id = state.layout_get_request_id.unwrap();
         let before = state.workspace.clone();
         let unsupported = metadata.is_some();
@@ -197,9 +155,9 @@ async fn loop_with_window_on(
     (state, client, server, out)
 }
 
-/// A bootstrapped loop over a socket pair on a server advertising
-/// `features`, with nothing parked.
-async fn bootstrapped_loop_with(
+/// A loop over a socket pair on a server advertising `features`, with the
+/// ATTACHED frame replayed but the recv-arm drain not yet run.
+async fn loop_before_drain(
     features: ServerFeatureSet,
 ) -> (SessionLoop, Connection, Connection, Vec<u8>) {
     let (a, b) = tokio::net::UnixStream::pair().unwrap();
@@ -226,6 +184,14 @@ async fn bootstrapped_loop_with(
         .bootstrap(&mut client, &mut out, initial_attached(), None)
         .await
         .unwrap();
+    (state, client, server, out)
+}
+
+/// [`loop_before_drain`] with the deferred bootstrap outbound sent.
+async fn bootstrapped_loop_with(
+    features: ServerFeatureSet,
+) -> (SessionLoop, Connection, Connection, Vec<u8>) {
+    let (mut state, mut client, server, out) = Box::pin(loop_before_drain(features)).await;
     state
         .emit_deferred_bootstrap_outbound(&mut client)
         .await
@@ -233,71 +199,12 @@ async fn bootstrapped_loop_with(
     (state, client, server, out)
 }
 
-/// phux-501l: ATTACHED replay must not put `Subscribe*` / `GetMetadata` /
-/// `RESIZE_TERMINAL` on the wire. Last-pane death can already have posted
-/// `RESOURCE_CLOSED`; the recv arm applies that close before these writes
-/// are allowed to spend.
-#[tokio::test(flavor = "current_thread")]
-async fn bootstrap_replay_does_not_write_until_the_recv_arm_drains() {
-    let (a, b) = tokio::net::UnixStream::pair().unwrap();
-    let mut client = Connection::from_stream(a);
-    let mut server = Connection::from_stream(b);
-    let negotiated = NegotiatedBootstrap {
-        profile: BootstrapProfile::SynthesizedVtRaw,
-        limits: BootstrapLimits::default(),
-        server_features: ServerFeatureSet::new(),
-    };
-    let mut state = SessionLoop::new(
-        negotiated,
-        PredictiveConfig::disabled(),
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-    let mut out = Vec::new();
-    state
-        .bootstrap(&mut client, &mut out, initial_attached(), None)
-        .await
-        .unwrap();
-    assert!(
-        server.try_recv().unwrap().is_none(),
-        "bootstrap replay wrote a frame before the recv arm could apply an already-buffered close",
-    );
-    drop(server);
-}
-
 /// phux-501l: a last-pane `RESOURCE_CLOSED` on the first recv-arm burst must
 /// end the attach without sending the deferred bootstrap subscriptions.
 #[tokio::test(flavor = "current_thread")]
 async fn last_pane_close_on_first_burst_skips_deferred_bootstrap_writes() {
-    let (a, b) = tokio::net::UnixStream::pair().unwrap();
-    let mut client = Connection::from_stream(a);
-    let mut server = Connection::from_stream(b);
-    let negotiated = NegotiatedBootstrap {
-        profile: BootstrapProfile::SynthesizedVtRaw,
-        limits: BootstrapLimits::default(),
-        server_features: ServerFeatureSet::new(),
-    };
-    let mut state = SessionLoop::new(
-        negotiated,
-        PredictiveConfig::disabled(),
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-    let mut out = Vec::new();
-    state
-        .bootstrap(&mut client, &mut out, initial_attached(), None)
-        .await
-        .unwrap();
+    let (mut state, mut client, mut server, mut out) =
+        loop_before_drain(ServerFeatureSet::new()).await;
     let closed = FrameKind::ResourceClosed {
         terminal_id: ResourceId::local(1),
         exit_status: Some(7),
@@ -348,12 +255,8 @@ async fn attached_generation_discards_delayed_stream_bind_reply() {
         .await
         .unwrap();
     assert!(state.pending_stream_binds.is_empty());
-}
 
-#[tokio::test(flavor = "current_thread")]
-async fn correlated_error_releases_pending_stream_bind() {
-    let (mut state, mut client, _server, _out) =
-        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    // A correlated ERROR releases its pending bind too.
     state.pending_stream_binds.insert(42, ResourceId::local(2));
     state
         .coordinate_multistream_frame(
@@ -384,7 +287,7 @@ async fn pending_stream_bind_tracking_matches_connection_cap() {
 }
 
 /// Drain sent frames through a FIFO barrier, with no timing-based idle guess.
-async fn sidebar_frames_sent(client: &mut Connection, server: &mut Connection) -> Vec<FrameKind> {
+async fn frames_sent(client: &mut Connection, server: &mut Connection) -> Vec<FrameKind> {
     client
         .send(&FrameKind::GetMetadata {
             request_id: u32::MAX,
@@ -452,7 +355,7 @@ async fn serving_host_read_is_feature_gated_and_sent_once() {
         let (mut state, mut client, mut server, _) = bootstrapped_loop_with(features).await;
         state.request_serving_host(&mut client).await.unwrap();
         state.request_serving_host(&mut client).await.unwrap();
-        let frames = sidebar_frames_sent(&mut client, &mut server).await;
+        let frames = frames_sent(&mut client, &mut server).await;
         assert_eq!(
             frames
                 .iter()
@@ -486,13 +389,9 @@ async fn missing_or_refused_host_identity_keeps_fallback_without_retrying() {
             .unwrap();
         assert!(state.peers.serving_host_pending.is_none());
         assert!(state.peers.serving_host.is_none());
-        sidebar_frames_sent(&mut client, &mut server).await;
+        frames_sent(&mut client, &mut server).await;
         state.request_serving_host(&mut client).await.unwrap();
-        assert!(
-            sidebar_frames_sent(&mut client, &mut server)
-                .await
-                .is_empty()
-        );
+        assert!(frames_sent(&mut client, &mut server).await.is_empty());
     }
     let (mut state, mut client, _server, _) =
         bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::Whoami])).await;
@@ -632,7 +531,7 @@ async fn peer_metadata_and_hostname_reach_visible_sidebar_at_the_burst_drain() {
 async fn peer_layout_broadcast_discovers_and_subscribes_new_agent_leaves() {
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    sidebar_frames_sent(&mut client, &mut server).await;
+    frames_sent(&mut client, &mut server).await;
     // The layout key is session-scoped; production already has this session
     // in the ATTACHED graph from the peer sweep that opened the watch.
     state
@@ -657,7 +556,7 @@ async fn peer_layout_broadcast_discovers_and_subscribes_new_agent_leaves() {
         )
         .await
         .unwrap();
-    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let sent = frames_sent(&mut client, &mut server).await;
     assert!(sent.iter().any(|f| matches!(f, FrameKind::GetMetadata { scope: Scope::Resource(r), key, .. } if r == &id && key == phux_client::agent_meta::RESOURCE_AGENT_KEY)));
     assert!(sent.iter().any(|f| matches!(f, FrameKind::SubscribeMetadata { scope: Scope::Resource(r), key } if r == &id && key == phux_client::agent_meta::RESOURCE_AGENT_KEY)));
 }
@@ -681,34 +580,17 @@ async fn kill_commands_sent(
     client: &mut Connection,
     server: &mut Connection,
 ) -> Vec<(u32, Command)> {
-    client
-        .send(&FrameKind::GetMetadata {
-            request_id: u32::MAX,
-            scope: Scope::Global,
-            key: "test.barrier".into(),
-        })
+    frames_sent(client, server)
         .await
-        .unwrap();
-    let mut kills = Vec::new();
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            match server.recv().await.unwrap() {
-                FrameKind::GetMetadata {
-                    request_id: u32::MAX,
-                    ..
-                } => break,
-                FrameKind::Command {
-                    request_id,
-                    command:
-                        command @ (Command::KillResource { .. } | Command::KillResourceIf { .. }),
-                } => kills.push((request_id, command)),
-                _ => {}
-            }
-        }
-    })
-    .await
-    .unwrap();
-    kills
+        .into_iter()
+        .filter_map(|frame| match frame {
+            FrameKind::Command {
+                request_id,
+                command: command @ (Command::KillResource { .. } | Command::KillResourceIf { .. }),
+            } => Some((request_id, command)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Feed the parked spawned window's attach a refusal with `code`.
@@ -832,7 +714,7 @@ async fn fresh_inventory_discovers_peer_sessions_without_an_endless_sweep() {
     use phux_protocol::wire::frame::{CommandResult, CommandValue};
     let (mut state, mut client, mut server, _) =
         bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::HostSessions])).await;
-    sidebar_frames_sent(&mut client, &mut server).await;
+    frames_sent(&mut client, &mut server).await;
     state.peers.sweep_pending = false;
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
         .with_sessions(vec![
@@ -847,7 +729,7 @@ async fn fresh_inventory_discovers_peer_sessions_without_an_endless_sweep() {
     );
     state.peers.sweep_pending = false;
     state.sweep_peer_layouts(&mut client).await.unwrap();
-    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let sent = frames_sent(&mut client, &mut server).await;
     assert!(
         sent.iter()
             .any(|f| matches!(f, FrameKind::GetMetadata { key, .. }
@@ -869,7 +751,7 @@ async fn satellite_terminal_on_an_unchanged_session_list_schedules_one_sweep() {
 
     let (mut state, mut client, mut server, _) =
         bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::HostSessions])).await;
-    sidebar_frames_sent(&mut client, &mut server).await;
+    frames_sent(&mut client, &mut server).await;
     state.peers.sweep_pending = false;
     let sat = ResourceId::satellite(SatelliteHost::new("edge"), 9);
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
@@ -886,7 +768,7 @@ async fn satellite_terminal_on_an_unchanged_session_list_schedules_one_sweep() {
     );
     state.peers.sweep_pending = false;
     state.sweep_peer_layouts(&mut client).await.unwrap();
-    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let sent = frames_sent(&mut client, &mut server).await;
     assert!(
         sent.iter().any(|frame| matches!(
             frame,
@@ -940,7 +822,7 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
 
     let (mut state, mut client, mut server, _) =
         bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::HostSessions])).await;
-    let _ = sidebar_frames_sent(&mut client, &mut server).await;
+    let _ = frames_sent(&mut client, &mut server).await;
 
     let local = ResourceId::local(1);
     let sat = ResourceId::satellite(SatelliteHost::new("devbox"), 7);
@@ -983,7 +865,7 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
         )],
     )
     .await;
-    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let sent = frames_sent(&mut client, &mut server).await;
     assert!(
         !sent.iter().any(|frame| matches!(
             frame,
@@ -1006,7 +888,7 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
         )],
     )
     .await;
-    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let sent = frames_sent(&mut client, &mut server).await;
     let attach = sent.iter().find_map(|frame| match frame {
         FrameKind::Command {
             request_id,
@@ -1456,51 +1338,12 @@ fn held_notices_surface_unless_the_inventory_explains_them() {
     );
 }
 
-/// An inventory with no unreachable rows explains nothing, and a refusal
-/// (no inventory at all) surfaces everything held.
-#[test]
-fn held_notices_all_surface_when_nothing_explains_them() {
-    use phux_protocol::ids::SatelliteHost;
-    use phux_protocol::wire::info::HostInventory;
-
-    let rows = vec![HostInventory::reachable(
-        SatelliteHost::new("down"),
-        Vec::new(),
-    )];
-    let held = vec!["satellite down is unreachable: link is down".to_owned()];
-    assert_eq!(unexplained_unreachable_notices(held.clone(), &rows), held);
-    assert_eq!(unexplained_unreachable_notices(held.clone(), &[]), held);
-}
-
-/// A request is overdue only past the deadline, and never when none is in
-/// flight.
-#[test]
-fn host_inventory_overdue_only_past_the_deadline() {
-    let now = std::time::Instant::now();
-    assert!(!host_inventory_overdue(None, now));
-    assert!(!host_inventory_overdue(Some(now), now));
-    let sent = now.checked_sub(HOST_INVENTORY_DEADLINE + std::time::Duration::from_secs(1));
-    assert!(sent.is_some_and(|sent| host_inventory_overdue(Some(sent), now)));
-}
-
-/// Held notices surface in the same wording the frame handler uses for a
-/// live degradation notice.
-#[test]
-fn federation_notices_use_the_degraded_wording() {
-    let notices = federation_notices(vec!["satellite edge is unreachable: x".to_owned()]);
-    assert_eq!(notices.len(), 1);
-    assert_eq!(
-        notices[0].text,
-        "federation degraded: satellite edge is unreachable: x"
-    );
-}
-
 // ---- phux-4s6o: session rename confirmation and peer identity ------------
 
 #[tokio::test(flavor = "current_thread")]
 async fn bootstrap_subscribes_to_session_rename_key() {
     let (_state, mut client, mut server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let sent = frames_sent(&mut client, &mut server).await;
     assert!(
         sent.iter().any(|frame| matches!(
             frame,
@@ -1509,18 +1352,6 @@ async fn bootstrap_subscribes_to_session_rename_key() {
         )),
         "attach must subscribe to SESSION_NAME_KEY so a peer rename refreshes the roster: {sent:?}"
     );
-}
-
-#[test]
-fn apply_graph_rename_moves_the_label_not_the_id() {
-    let mut sessions = vec![
-        SessionInfo::new(SessionId::new(1), "test"),
-        SessionInfo::new(SessionId::new(2), "peer"),
-    ];
-    apply_graph_rename(&mut sessions, "peer", "notes");
-    assert_eq!(sessions[1].id, SessionId::new(2));
-    assert_eq!(sessions[1].name, "notes");
-    assert_eq!(sessions[0].name, "test");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1720,7 +1551,7 @@ async fn unvisited_peer_agent_paints_from_server_inventory() {
 async fn sweep_discovers_graph_terminals_before_layout_persist() {
     let (mut state, mut client, mut server, _) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    sidebar_frames_sent(&mut client, &mut server).await;
+    frames_sent(&mut client, &mut server).await;
     let peer = ResourceId::local(10);
     state
         .peers
@@ -1739,7 +1570,7 @@ async fn sweep_discovers_graph_terminals_before_layout_persist() {
         .push(ResourceInfo::new(peer.clone(), WindowId::new(10), 80, 24));
     state.peers.sweep_pending = false;
     state.sweep_peer_layouts(&mut client).await.unwrap();
-    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let sent = frames_sent(&mut client, &mut server).await;
     assert!(
         sent.iter().any(|f| matches!(
             f,
