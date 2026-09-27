@@ -132,9 +132,7 @@ things `zig build` will not: it gives this worktree its own Zig global cache
 (sharing only the package directory, by symlink), it kills build runners
 orphaned by a dead session in THIS tree before starting, and it refuses to run
 when your shell is standing in a different checkout than the one it would
-build. A held lock on the shared global cache was measured blocking a build
-past 45 seconds while an isolated one finished in 3; `scripts/zig-cache-isolation-check.sh`
-reproduces that A/B on demand. See phux-cockpit-2ml.11.
+build.
 
 **Judge the run by the exit code.** Never by a log line. Nothing printed to
 stdout or stderr is authoritative, and a green run has previously ended with a

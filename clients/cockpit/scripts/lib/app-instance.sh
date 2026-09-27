@@ -81,13 +81,7 @@ app_instance_pids() {
     pgrep -x "$APP_INSTANCE_NAME" 2>/dev/null || true
 }
 
-# ---------------------------------------------------------------------------
-# Decisions. These take their inputs as ARGUMENTS rather than reading the
-# machine, so scripts/instance-guard-check.sh can drive every branch - including
-# the corpse transcript from the bead - without needing to reproduce the race
-# that produced it. A guard whose failure paths have never been executed is a
-# guard you are trusting, not one you have tested.
-# ---------------------------------------------------------------------------
+# Decisions take their inputs as arguments rather than reading the machine.
 
 # Refuse unless the set of live pids is empty. Used before launching.
 # Arguments: the live pids (may be none).

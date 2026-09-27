@@ -23,8 +23,6 @@
 #   held lock + isolated global cache -> exit 0 in 3s
 #   lock released + shared cache      -> exit 0 in 1s
 #
-# (scripts/zig-cache-isolation-check.sh runs that A/B on demand.)
-#
 # WHAT IS ISOLATED AND WHAT IS DELIBERATELY NOT
 #
 # Isolating the whole global cache per worktree would be the easy answer and the
