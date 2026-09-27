@@ -57,11 +57,9 @@ pub const Error = error{ InvalidRequest, BufferTooSmall };
 /// context tells the provider it was sent to from one that took its id.
 pub const Flight = struct { coordinator: support.ProviderId, context: u64, epoch: u64, request_id: u32 };
 
-/// One rename slot per coordinator Cockpit can hold (the active one and its
-/// peers). A pending rename refuses a second rename on its own coordinator
-/// only: the client holds one rename per connection, and every coordinator
-/// has its own connection. `last` is the coordinator the latest rename went
-/// to, whose outcome `status` reports.
+/// One rename slot per coordinator (each has its own connection); a pending
+/// rename refuses only a second rename on the same coordinator. `last` is the
+/// coordinator whose outcome `status` reports.
 pub const Flights = struct {
     slots: std.ArrayList(?Flight) = .empty,
     last: ?support.ProviderId = null,
@@ -189,13 +187,9 @@ const row_gone: Reply = .{ .phase = .unavailable, .reason = "That session is no 
 /// A session to rename and the coordinator that owns it.
 pub const Target = struct { provider: *support.PhuxProvider, session: u32, name: []const u8 };
 
-/// The session a switcher row names, on the coordinator that listed the row
-/// and on no other. The captured target is resolved against that
-/// coordinator's current context (catalog_targets.zig); a session row is the
-/// active coordinator's and a peer session row that peer's, each looked up by
-/// the id the target carries, never by name. Null (so nothing is sent) when
-/// that coordinator is no longer held, has moved on, or no longer lists it.
-/// A listing peer qualifies: its negotiated connection can write metadata.
+/// The session a switcher row names, resolved by id against the coordinator
+/// that listed it, as captured. Null (nothing sent) when that coordinator is
+/// gone, moved on, or no longer lists it.
 pub fn rowTarget(engine: anytype, bytes: []const u8) ?Target {
     if (comptime !support.phux_enabled) return null;
     const model = engine.model;

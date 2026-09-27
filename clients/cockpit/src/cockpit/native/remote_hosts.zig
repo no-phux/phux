@@ -194,16 +194,10 @@ fn disconnectAll(engine: anytype, fx: anytype) Reply {
     return .{ .phase = .local };
 }
 
-/// Remove one registered host and nothing else: every other coordinator
-/// keeps its connection, its tabs and its slot. A listed host's slot goes.
-/// The active host hands over to this Mac, whose standby slot is freed
-/// rather than listing it twice. `target` names a host by its exact target
-/// first, across the active host and every peer, and only then by registry
-/// name (`heldHost`): the same registry entry can be held twice under two
-/// typed targets (`mini` and `me@mini`), so a name matching more than one
-/// is refused rather than guessed. A host Cockpit does not hold but still
-/// remembers is forgotten (`forgetUnheld`); anything else is refused and
-/// nothing changes.
+/// Remove one host; every other coordinator keeps its connection, tabs and
+/// slot, and an active host hands over to this Mac. `target` matches an exact
+/// held target first, then a registry name (`heldHost`); an ambiguous name is
+/// refused. A remembered but unheld host is forgotten (`forgetUnheld`).
 fn disconnectHost(engine: anytype, fx: anytype, target: []const u8, scratch: *Scratch) Reply {
     const model = engine.model;
     const active = model.phux() orelse return .{ .phase = .local };

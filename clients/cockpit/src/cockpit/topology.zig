@@ -41,38 +41,22 @@ pub const SurfaceSelection = union(enum) {
     }
 };
 
-/// v5 adds bounded remote attachment references. v4 carries windows. v3 was
-/// one window's tree schema plus per-terminal
-/// working directories; v2 was the same tree with no directories; v1 encoded a
-/// fixed two-pane workspace (`layout: {single,split}`, `attachments[2]`, one
-/// `split_fraction`, `focused_attachment`) and cannot express a tab that owns a
-/// nested tree, so it is MIGRATED, not read: every v1 terminal becomes its own
-/// tab, and a v1 split becomes a horizontal split inside the focused tab.
-///
-/// v3 -> v4 is the same shape one level up: a pre-multi-window file describes
-/// exactly one window, so it migrates to a single `SnapshotWindow` owning
-/// every tab it carried.
+/// v5 adds remote attachment references; v4 windows; v3 per-terminal
+/// working directories; v2 the tree schema. v1 (a fixed two-pane workspace)
+/// is migrated: each terminal becomes a tab and its split a horizontal branch
+/// in the focused tab. Pre-v4 files migrate to a single window.
 pub const topology_snapshot_version: u16 = 5;
 
 /// Windows one snapshot can carry — the model's own ceiling (the scene's
 /// window plus the toolkit's four declared ones).
 pub const max_snapshot_windows: usize = 5;
 
-/// Tabs one snapshot can carry ACROSS every window.
-///
-/// `max_tabs` is the per-window ceiling. This whole-session ceiling matches
-/// the combined local and remote leaf budget, preserving the v4 bound while
-/// allowing every leaf to be remote.
+/// Tabs one snapshot can carry across every window (the combined leaf budget).
 pub const max_snapshot_tabs: usize = max_terminals;
 
-/// Byte ceiling for one persisted working directory.
-///
-/// Deliberately far below `std.fs.max_path_bytes` (1024): the snapshot is
-/// passed BY VALUE through migration and validation, and a full-length path
-/// per registry slot would put half a megabyte on the stack for a field whose
-/// realistic occupancy is a few dozen bytes. A path past the ceiling is simply
-/// not recorded, which degrades to "this pane opens in $HOME" — the behaviour
-/// of a pane whose shell never reported OSC 7.
+/// Byte ceiling for one persisted working directory, kept small because the
+/// snapshot is passed by value; longer paths are not recorded (the pane
+/// opens in $HOME).
 pub const max_snapshot_cwd_bytes: usize = 256;
 
 /// One terminal's persisted working directory. Empty means UNKNOWN — the
@@ -137,13 +121,8 @@ pub const SnapshotTab = struct {
     focus: layout.NodeId = layout.none,
 };
 
-/// One serialized WINDOW: how many of the snapshot's tabs are its, and which
-/// of them it had selected.
-///
-/// Tabs are stored once, in one flat array, laid out in window order — so a
-/// window owns the CONTIGUOUS run starting after every earlier window's tabs.
-/// There is deliberately no per-tab window tag: a tag and a count are two
-/// encodings of one fact, and only one of them can be wrong.
+/// One serialized window: its tab count and selection. Tabs live in one
+/// flat array in window order, so a window owns a contiguous run.
 pub const SnapshotWindow = struct {
     tab_count: u8 = 0,
     /// The selected tab, numbered WITHIN this window's run. Window-relative so
@@ -174,13 +153,8 @@ pub const TopologySnapshot = struct {
     tab_count: u8 = 0,
     tabs: [max_snapshot_tabs]SnapshotTab = [_]SnapshotTab{.{}} ** max_snapshot_tabs,
     tab_placement: TabPlacement = .top,
-    /// Working directories, indexed by REGISTRY OFFSET rather than by node.
-    ///
-    /// A cwd belongs to a terminal, not to the pane that happens to hold it,
-    /// and `validate` already proves every leaf's terminal is a distinct
-    /// registry offset — so a flat 32-entry table is both the honest shape and
-    /// an order of magnitude smaller than one path per tree node (31 nodes x
-    /// 16 tabs) would be.
+    /// Working directories indexed by registry offset (a cwd belongs to a
+    /// terminal, not a pane).
     cwds: [max_terminals]SnapshotCwd = [_]SnapshotCwd{.{}} ** max_terminals,
     references: attachments.Table = .{},
 
@@ -486,11 +460,8 @@ pub fn primarySelection(snapshot: *const TopologySnapshot) SnapshotSelection {
     return snapshot.windows[0].selection;
 }
 
-/// v1 → v2: every terminal in the old tab order becomes its own tab. A v1
-/// split had TWO terminals sharing the content area while both also appeared
-/// in the tab strip; the tree model has no such duality, so the split's two
-/// terminals merge into ONE tab holding a horizontal branch and the second
-/// terminal loses its separate tab.
+/// v1 -> v2: every terminal becomes its own tab, and a v1 split merges its
+/// two terminals into one tab with a horizontal branch.
 fn migrateV1(legacy: LegacyTopologySnapshotV1) !TopologySnapshot {
     if (legacy.terminal_count > legacy.terminal_order.len) return error.InvalidTopology;
     if (!std.math.isFinite(legacy.split_fraction)) return error.InvalidTopology;

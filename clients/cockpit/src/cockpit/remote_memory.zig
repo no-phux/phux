@@ -42,18 +42,12 @@ const max_shown_line_bytes = shown_key.len + 10 + 1 + 21 + 1 + 32 + 1 + 1 + 1;
 /// actual encoded size and does not use this as a catalog limit.
 pub const max_list_file_bytes = shown_header.len + 3 * (key.len + config_module.max_phux_remote_bytes + 1 + max_shown_line_bytes);
 
-/// What a remembered host's coordinator was showing (ADR-0110): the session,
-/// by id and creation time, the shared window of its selected tab, and
-/// whether that tab was the selected tab of the front window. Keyed by the
-/// `target=` line it follows, so by that host's coordinator id; a session
-/// id is never read without it.
+/// What a remembered host's coordinator was showing (ADR-0110), keyed by the
+/// `target=` line it follows.
 pub const Shown = struct {
     session: u32,
-    /// The session's creation time from the session list, in Unix seconds.
-    /// With the id it names the session across a graceful server upgrade,
-    /// which keeps both, while a cold restart that reissues the id creates
-    /// the session anew. Null in a record written before creation times were
-    /// kept, which names the server incarnation instead (`server`).
+    /// Session creation time (Unix seconds); with the id it survives a
+    /// graceful upgrade. Null in older records, which name `server` instead.
     created: ?i64 = null,
     /// Only for a record without `created`: `serverHash` of the
     /// HELLO_OK.server_id it was kept under.

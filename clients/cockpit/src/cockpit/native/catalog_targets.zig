@@ -257,38 +257,19 @@ fn decodeRemote(bytes: []const u8, provider_id: support.ProviderId) ?Resource {
 }
 
 // ---------------------------------------------------------------------------
-// Exact source targets (phux-2jza.4.3).
+// Exact source targets.
 //
-// A v2 `Target` names its source by coordinator: `resolve` finds the provider
-// through `provider_id` (`phuxForConst` / `peerSlot`), which answers the
-// active attachment or the FIRST peer of that coordinator. Several Client
-// attachments to one machine now project identical refs and session numbers
-// into different windows, so that lookup can land on a sibling attachment
-// and act on the wrong window's session. `Context.provider` already holds the
-// capturing `PhuxProvider.context_id`, but nothing resolves through it, and
-// a placed row carries neither its window lifetime nor its tab identity, so
-// `locateTerminal` picks whichever window shows the ref first.
-//
-// `Exact` is the in-process capture that closes those gaps: the exact
-// attachment (a provider context from the process-wide monotonic allocator,
-// never recycled, and disjoint between the local provider and every Phux
-// attachment), that attachment's host lifetime and connection, the created
-// identity of the session the row belongs to, and for a placed row its
-// window epoch and tab identity. It resolves only while all of them are
-// current and never falls back to a coordinator, a name or a first match.
-// Menu/page rows keep the live v2 encoder above: host-filter tokens already
-// use tag 3, and a catalog version-3 byte would collide with that filter in
-// the opaque target slot. `Context.provider` already stores the attachment
-// context_id; Exact is the in-process capture that *resolves* through it
-// (plus placement and session creation). A distinct wire TAG, if needed,
-// stays a parent/frontend coordination item — not this lane.
+// A v2 `Target` resolves by coordinator id, which can land on a sibling
+// attachment of the same machine. `Exact` captures the exact attachment (a
+// never-recycled provider context), its host lifetime and connection, the
+// session's created identity, and for a placed row its window epoch and tab
+// identity; it resolves only while all are current and never falls back to a
+// coordinator, name or first match.
 // ---------------------------------------------------------------------------
 
-/// A Phux session as created: its number on that server and the creation
-/// time its catalog reported. Numbers are reused after a session ends, so
-/// the number alone never authorizes acting on "the same" session. Null
-/// `created_at` means the source had no current listing of it at capture;
-/// it then matches only a source that still has none.
+/// A Phux session as created: its number plus catalog creation time (numbers
+/// are reused). Null `created_at` matches only a source that still has no
+/// listing of it.
 pub const SessionIdentity = struct { id: u32, created_at: ?i64 };
 
 /// Where a placed row was captured: the native window's lifetime and the
@@ -382,11 +363,8 @@ pub const Exact = struct {
     }
 };
 
-/// A current destination plus the exact attachment that must act on it.
-/// `entry` alone is not enough for `.session`, `.placed_terminal` or
-/// `.peer_unavailable`, whose payloads name only a coordinator or a ref;
-/// callers reach the provider through `Model.phuxForAttachment(attachment)`
-/// and never through `phux()`, `phuxFor(coordinator)` or `peerSlot`.
+/// A current destination plus the exact attachment that must act on it
+/// (reach it via `Model.phuxForAttachment`, never by coordinator).
 pub const Resolved = struct { entry: Entry, attachment: u64 };
 
 const Role = enum { active, peer, other };

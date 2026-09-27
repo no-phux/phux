@@ -1,25 +1,14 @@
-//! A showing peer's session across relaunch (ADR-0110).
+//! A showing peer's session across relaunch (ADR-0110). The `.remote` file
+//! keeps, per remembered host, the session its coordinator was showing (id
+//! and creation time), its selected tab's shared window, and whether that tab
+//! was in front (`remote_memory.Shown`); the coordinator owns the layout.
 //!
-//! The `.remote` file keeps, beside each remembered host, the one session
-//! its coordinator was showing, by id and creation time, the
-//! shared window of its selected tab, and whether that tab was the selected
-//! tab of the front window (`remote_memory.Shown`). Nothing else about the
-//! layout is kept: the coordinator's shared workspace owns its windows,
-//! tabs and splits.
-//!
-//! At launch every remembered host lists first. Its record is judged when
-//! its first list arrives (`onListed`), against that list and that server:
-//!
-//! - A record that is not front never attaches anything. It is kept only as
-//!   a hint for which tab to select if the user picks that session.
-//! - The front record shows its session through the ordinary show path, and
-//!   only once the front window has a measured size, so the ATTACH carries
-//!   that window's real grid. Its first projection takes the selection, so
-//!   the peer is displaying from the moment it attaches (rule A in the ADR).
-//!
-//! A record that no longer matches is dropped. It is never applied to
-//! another coordinator: every record names its coordinator id, and only the
-//! peer holding that id may consult it (rule B).
+//! Every remembered host lists first, and its record is judged on its first
+//! list (`onListed`). A non-front record only hints which tab to select if
+//! the user picks that session. The front record is shown once the front
+//! window has a measured size, so ATTACH carries its real grid. A record that
+//! no longer matches is dropped, and records only ever apply to the peer
+//! holding their coordinator id.
 
 const std = @import("std");
 const contract = @import("provider_contract");
@@ -83,13 +72,8 @@ pub fn cancelFront(model: *Model) void {
     }
 }
 
-/// The peer's connection failed before its front record was shown. The
-/// first time, the record is kept for the backoff redial: that connection is
-/// a lister's, so it attaches nothing, and the record is judged when it
-/// lists, exactly as on the first connection. A choice the user makes
-/// meanwhile cancels it as before. A second failure drops it, so the peer
-/// comes back listing only and a host that returns later never takes the
-/// front window.
+/// The peer failed before its front record was shown: keep the record for
+/// the backoff redial once, and drop it on a second failure.
 pub fn failed(model: *Model, slot: usize) void {
     const restore = if (model.peers.items[slot].restore) |*value| value else return;
     if (!restore.pending) return;
@@ -113,11 +97,8 @@ pub fn takeHint(model: *Model, coordinator: support.ProviderId, session: u32) ?[
     return restore.shown.window;
 }
 
-/// Whether the slot's record may still be applied: it names the peer held
-/// in that slot, and the peer's list still carries that session, the same
-/// session and not only the same id, and not as an empty session (which has
-/// no tab to display; the server's EMPTY flag says so, as it does for a pick
-/// in the switcher).
+/// Whether the slot's record still applies: it names the peer in the slot,
+/// and the peer lists that same session (not merely the id), non-empty.
 fn current(model: *const Model, slot: usize, restore: model_module.PeerRestore) bool {
     const peer = model.phuxPeerAtConst(slot) orelse return false;
     if (peer.providerId() != restore.coordinator) return false;
@@ -128,12 +109,8 @@ fn current(model: *const Model, slot: usize, restore: model_module.PeerRestore) 
     return false;
 }
 
-/// A listed session with the record's id is the record's session when it
-/// was created at the same second. A graceful upgrade keeps both the id and
-/// the creation time; a cold restart that reissues the id creates the
-/// session anew, so only one created in that same second would be taken for
-/// it. A record kept before creation times were is judged as it was then:
-/// only the server incarnation it names matches.
+/// The same session: same id and creation second (a graceful upgrade keeps
+/// both). Records without a creation time match the server incarnation.
 fn sameSession(peer: anytype, shown: Shown, created: i64) bool {
     if (shown.created) |value| return value == created;
     const server = peer.serverId() orelse return false;

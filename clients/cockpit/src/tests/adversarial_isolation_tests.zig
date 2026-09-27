@@ -1,9 +1,6 @@
-//! ADVERSARIAL PROBES, written by a validator who did not build this.
-//!
-//! These do not trust the build agents' tests. Each one is designed to
-//! FAIL if the two panes are secretly sharing emulator state, sharing a
-//! display-list id namespace, running with an unbounded (0) command
-//! budget, or routing input to the wrong pty.
+//! Adversarial probes: each FAILS if panes share emulator state or a
+//! display-list id namespace, run with an unbounded budget, or route input
+//! to the wrong pty.
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
@@ -96,15 +93,8 @@ test "ADVERSARIAL: hostile terminal tab switches retain collision-free ids" {
 
 // --------------------------------------------------- A3/A4: budget reality
 
-/// Rows the pane actually put on screen this paint.
-///
-/// A screen paints as one packed `cell_grid` command PER ROW, and
-/// `CellGridView` aggregates the rows of one pane's namespace back into
-/// a screen — so the painted-row count is read straight off the lattice
-/// instead of inferred from distinct text-run baselines. Same number,
-/// exact instead of derived. Reading one row command's `rows` field
-/// would report 1 for every screen, which is precisely the mistake this
-/// seam exists to prevent.
+/// Rows the pane put on screen this paint, read off its `cell_grid` row
+/// commands.
 fn paintedRows(display_list: canvas.DisplayList) usize {
     const view = support.findCellGrid(display_list) orelse return 0;
     return view.rows();
@@ -130,20 +120,8 @@ fn feedHostileRows(session: *grid.Session, cols: usize, rows: usize) void {
     }
 }
 
-/// The true worst case for a display-list painter: a distinct truecolor
-/// foreground AND background on every cell, so no two neighbours can merge
-/// into one run and each cell costs its own background rect plus its own
-/// text run.
-///
-/// `feedHostileRows` alternates two ANSI colors, which used to overflow the
-/// envelope comfortably — back when every cell of it cost a background rect
-/// and a text run. Nothing about a colour costs a COMMAND any more: the
-/// whole row is one packed `cell_grid`, so this screen is priced in cells
-/// and could never demonstrate a command bound again. The rule it was
-/// written for still holds and now runs the other way: density has to
-/// outrun whichever ceiling a test is measuring, so the command envelope is
-/// exercised with BOX drawing (the one ink the lattice cannot carry) and
-/// this truecolor screen is what exercises the CELL store.
+/// A distinct truecolor fg and bg on every cell: it spends the cell store
+/// (box drawing is what exercises the command envelope).
 fn feedTruecolorRows(session: *grid.Session, cols: usize, rows: usize) void {
     var line: [8192]u8 = undefined;
     for (0..rows) |row| {
@@ -163,21 +141,8 @@ fn feedTruecolorRows(session: *grid.Session, cols: usize, rows: usize) void {
 }
 
 test "ADVERSARIAL: the selected terminal command envelope genuinely binds" {
-    // A budget that was secretly 0 (unbounded) would still pass a test
-    // that only asserts `len <= budget` on a quiet screen. This compares
-    // the SAME hostile screen painted bounded vs unbounded: if the bound
-    // did nothing, the two lists would be the same length.
-    //
-    // The SCREEN had to change, following this file's own stated rule
-    // that density has to outrun the ceiling for the assertion to keep
-    // meaning what it says. A truecolor screen no longer costs commands
-    // by DENSITY at all — a whole row of it is one packed `cell_grid`
-    // command, so bounded and unbounded would differ only by however
-    // many rows fit, and a 40-row screen fits either way. Box drawing is
-    // what still prices in COMMANDS (it renders as exact geometry at
-    // cell bounds, never glyphs), so that is the screen the command
-    // envelope is measured against. The cell budget, which is what the
-    // truecolor screen actually spends, is pinned by its own test below.
+    // Paint the same hostile box-drawing screen bounded and unbounded: an
+    // unbounded (0) budget would produce equal lengths.
     const gpa = testing.allocator;
     const cols = 60;
     const rows = 40;
@@ -185,15 +150,8 @@ test "ADVERSARIAL: the selected terminal command envelope genuinely binds" {
     defer session.destroy();
     feedBoxRows(session, cols, rows);
 
-    // The anti-tautology check, re-derived from the SDK's own price for
-    // this glyph rather than from a remembered number: one U+256C costs
-    // `maxCommands` commands, a row costs that per column plus its own
-    // grid command, and the screen has to cost more than the envelope
-    // for "the bound binds" to be demonstrable at all. The envelope
-    // itself moved under this test (the SDK's per-view ceiling went back
-    // from 4096 to 2048 once terminals stopped costing a command per
-    // run), which is exactly the kind of move this expression survives
-    // and a hardcoded one would not.
+    // Re-derived from the SDK's own price so the screen provably exceeds the
+    // envelope.
     const row_command_cost = cols * canvas.terminal_box.maxCommands(0x256C) + 1;
     try testing.expect(rows * row_command_cost > app.chrome_command_envelope);
 
@@ -239,12 +197,8 @@ test "ADVERSARIAL: the selected terminal command envelope genuinely binds" {
     // the glass under the bound than without it.
     try testing.expect(bounded_rows < unbounded_rows);
 
-    // Truncation must be LOUD. Rows dropped off the bottom of the glass used
-    // to be indistinguishable from a short screen: the frame presented
-    // successfully and the missing rows were bare background. The painter now
-    // records the loss on the builder, which is the only way a caller can
-    // tell "the shell printed 40 rows and you are seeing all of them" from
-    // "you are seeing the first 30".
+    // Truncation must be reported on the builder, not look like a short
+    // screen.
     const loss = bounded.degradation orelse return error.TruncationWentUnreported;
     try testing.expectEqual(canvas.DisplayListStore.commands, loss.store);
     try testing.expectEqual(bounded_rows, loss.produced);
@@ -262,13 +216,9 @@ test "ADVERSARIAL: the selected terminal command envelope genuinely binds" {
 }
 
 test "ADVERSARIAL: the packed cell budget genuinely binds a dense screen" {
-    // The other half of the split above, and the budget that actually
-    // bounds a terminal now: a screen costs CELLS, 20 bytes each, and
-    // the frame's cell store is what a split has to divide between
-    // panes. The same anti-tautology discipline applies — the truecolor
-    // screen is painted with the whole store and again with only ten
-    // rows' worth of it left unreserved, and the bound has to be visible
-    // in the painted rows, not merely satisfied.
+    // The cell store bounds a terminal: paint the truecolor screen with the
+    // whole store and with ten rows' worth, and the bound must show in the
+    // painted rows.
     const gpa = testing.allocator;
     const cols = 60;
     const rows = 40;
@@ -364,11 +314,8 @@ test "ADVERSARIAL: either selected tab gets the same full hostile-content budget
         used[index] = builder.displayList().commands.len;
         painted[index] = paintedRows(builder.displayList());
         try testing.expect(used[index] <= app.chrome_command_envelope);
-        // The command count is only comparable across the two tabs
-        // because a command IS a painted row now (plus the paint's fixed
-        // prologue and epilogue). Pinning that relation is what keeps
-        // "both tabs spent the same" from being satisfiable by two panes
-        // that painted different screens into the same overhead.
+        // A command is a painted row (plus fixed overhead), so equal spend
+        // means equal screens.
         try testing.expect(used[index] >= painted[index]);
         try testing.expect(used[index] <= painted[index] + support.paint_fixed_commands);
         // Whichever tab is selected, nothing of its screen was lost to a

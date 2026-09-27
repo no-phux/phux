@@ -1,19 +1,7 @@
-//! Every SGR attribute the packed cell can hold, fed as the real escape
-//! sequence and read back off the painted lattice.
-//!
-//! The projection (`terminal/session.zig`) used to carry a code point,
-//! two colours, one boolean underline, and a wide flag; bold, italic,
-//! strikethrough, overline, the underline STYLE and the underline COLOUR
-//! were dropped at the seam. They all have destinations on
-//! `canvas.TerminalCell` now, so each one gets a test that starts from
-//! the bytes a program actually writes and ends at
-//! `canvas.CellFlags` — no hand-built snapshots, because a hand-built
-//! snapshot would pass with the projection deleted.
-//!
-//! Two of these read the SNAPSHOT rather than the display list. The
-//! cursor's blink state has no painted consequence in the SDK today (the
-//! painter draws the visible phase and leaves arming the animation to the
-//! host), so the honest place to pin it is the projection's own output.
+//! Every SGR attribute the packed cell can hold, fed as real escape
+//! sequences and read back off the painted lattice (never a hand-built
+//! snapshot). The cursor blink state has no painted consequence, so it is
+//! read from the projection's snapshot.
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
@@ -63,17 +51,8 @@ test "bold reaches the cell as a flag" {
 }
 
 test "a weighted row occupies exactly the same cells as a plain one" {
-    // The grid is a LATTICE: every column is one cell wide and every row
-    // one cell tall, whatever ink lands in them. That has to survive the
-    // renderer growing a weight axis — a bold face has different advances
-    // than the regular one, and a projection or a painter that let the
-    // face influence the cell box would shear a bold prompt out of
-    // alignment with the output under it, move every mouse report, and
-    // desynchronize the PTY column count from what is on the glass.
-    //
-    // Written against the CURRENT renderer, which synthesizes weight
-    // rather than selecting a face, precisely so it is already standing
-    // when real bold/italic faces are registered. See the handoff note.
+    // Cells stay a fixed lattice regardless of weight, so a bold face can
+    // never shear alignment, mouse reports or the PTY column count.
     const session = try createSession(30, 4);
     defer session.destroy();
     session.feed("REG abcdefgh\r\n");
@@ -280,13 +259,8 @@ test "bold-as-bright and the bold flag both apply, on different channels" {
     const dim_x = view.findInRow(0, "DIMRED") orelse return error.TestExpectedCell;
     const exact_x = view.findInRow(0, "EXACT") orelse return error.TestExpectedCell;
 
-    // The DECISION, written down: a bold ANSI-1 cell gets BOTH. The
-    // bright palette entry is the colour channel (bold-as-bright, which
-    // every prompt theme is calibrated against and which is the only
-    // thing that makes `\x1b[1;31m` look different from `\x1b[31m` on a
-    // single mono face), and the flag is the weight channel. They are
-    // not redundant and they cannot double-apply, because neither one
-    // reads the other's output.
+    // A bold ANSI-1 cell gets both the bright palette entry (colour) and the
+    // bold flag (weight); neither reads the other.
     const bright = vt.color.default[9];
     const bold_fg = view.foreground(bold_x, 0) orelse return error.TestExpectedCell;
     try testing.expectEqual(bright.r, bold_fg.r);
