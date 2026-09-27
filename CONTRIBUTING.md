@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-22
+last-reviewed: 2026-09-27
 ---
 
 # Contributing to phux
@@ -10,9 +10,8 @@ last-reviewed: 2026-09-22
 use `just ci-full` for the full root PR bar. Update `docs/spec/` +
 CHANGELOG for wire changes; write an ADR for any decision that closes
 off design space; no homegrown crypto, scripting language, plugin
-host, tmux-style copy-mode clone, or template DSL. Doc conventions live in
-[`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md). The mental model is
-[`docs/CONCEPTS.md`](./docs/CONCEPTS.md).
+host, tmux-style copy-mode clone, or template DSL. Doc conventions and the
+mental model live in `docs/CONVENTIONS.md` and `docs/CONCEPTS.md`.
 
 phux is an experiment in building the terminal multiplexer that would
 exist if libghostty had been available in 2007. We are picky about
@@ -93,26 +92,16 @@ produce a different dependency feature union and rebuild downstream crates.
 The `just test`, `just e2e` and `just stress` recipes share that build selection.
 
 For timing evidence, append `--timings` to a Cargo build and inspect
-`target/cargo-timings/`. Measure cold, unchanged, and one-source-edit builds
-separately; package counts alone do not predict wall time. Keep each concurrent
-worktree's Cargo target directory private.
+`target/cargo-timings/`. Keep each concurrent worktree's Cargo target
+directory private.
 
 ### Gate-by-gate: local vs CI
 
-The local bar is a **superset** of `.github/workflows/ci.yml` by design. It
-is not enough for `just ci` to be *similar* to CI: a gate that CI runs and
-`just ci` does not is a gate you discover by pushing. PR #306 shipped five
-`rustdoc::private_intra_doc_links` failures to a red build after a green
-local run, because `just ci` had no rustdoc step. Every row below is a
-commitment to keep the two columns aligned.
-
-Most rows now say "same recipe" rather than "(identical)". That is the point:
-`ci.yml` used to re-type the cargo invocations, and "identical" was a promise a
-human had to keep on every edit. The workflow calls the recipes instead, so the
-flags exist in exactly one place — `just/*.just` — and the columns cannot
-disagree. A row that names a bare `cargo` command under CI is a row where that
-promise is back; prefer adding the recipe. Product recipes stay out of the
-root `justfile` so CI can route by which module changed.
+The local bar is a **superset** of `.github/workflows/ci.yml`: a gate CI runs
+and `just ci` does not is a gate you discover by pushing. The workflow calls
+the `just/*.just` recipes instead of re-typing cargo flags, so flags live in
+one place; prefer adding a recipe to naming a bare `cargo` command in CI.
+Product recipes stay out of the root `justfile` so CI can route by module.
 
 | Gate | CI (`ci.yml`) | Local |
 |---|---|---|
@@ -136,74 +125,27 @@ root `justfile` so CI can route by which module changed.
 | fast e2e + perf gates | `just e2e` | `just e2e`, via `just ci-full` |
 | agent example smoke | `just agents-fleet-smoke` | same, via `just ci-full` |
 
-Two rows are worth reading twice:
+Unit and e2e tests share the default feature set; optional profiling
+surfaces compile under `just lint` and `just doc` with `--all-features`.
+`just e2e` stays out of `just ci` because it spawns real PTY-backed servers
+with wall-clock ceilings a loaded laptop can miss; `just ci-full` includes it.
 
-- **Unit and e2e tests share the default feature set.** Optional profiling
-  surfaces compile under `just lint` and `just doc` with `--all-features`.
-  Keeping test build selections aligned avoids recompiling a different
-  feature union between lanes. Heap profiling has its own `phux-dhat-heap`
-  executable; the ordinary `phux` executable retains its normal allocator.
-  `test-cargo` also runs doctests, but does not reproduce nextest's retries/filtersets.
-- **`just e2e` is not in `just ci`.** It spawns real PTY-backed servers and
-  ends in two wall-clock ceilings, which a laptop under load can miss for
-  reasons that say nothing about the diff. Keeping it out means a `just ci`
-  is easier to diagnose; `just ci-full` is where you pay
-  for the full picture.
+### Gates that are CI-only or local-only
 
-### Gates that are CI-only, and why
+Native environment smoke runs in `native-setup.yml` (Linux; reproduce with
+`just native-smoke`) and `cockpit-ci.yml` (macOS). These have no local
+equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
+rust-cache, sccache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use
+`just dep-stats` or `just timings` locally), the post-merge/nightly `stress`
+workflow (run `just stress` locally; 2-core runners starve the current-thread
+runtime), commit-message linting, and the release/publish lanes
+(`just release-preflight <tag>` runs their offline parts).
 
-Native environment smoke coverage lives in `native-setup.yml` (Linux) and the
-existing `cockpit-ci.yml` (macOS). They use the contributor setup helpers from
-`docs/SETUP.md`. `just native-smoke` reproduces the Linux lane's commands on
-your native host; it is environment coverage, not another full workspace suite.
-
-These have no local equivalent and none is planned. If you are chasing a
-red build in one of them, the answer is on the runner, not on your machine.
-
-- **Draft / docs-only fast paths** (`changes` job). Pure GitHub event
-  plumbing — it decides which lanes to skip based on the PR diff and draft
-  state. There is nothing to run locally; locally you just run the gate.
-- **Caching and build acceleration** (Cachix, `Swatinem/rust-cache`,
-  sccache, the runner disk-headroom step). Runner infrastructure. A cache
-  miss is a slow CI run, never a wrong one.
-- **CI observability** (`scripts/ci/timed.sh` and the `lane signal` step).
-  Pure step-summary rendering on the run page; nothing is stored (ADR-0082).
-  Run `just dep-stats` or `just timings` locally for the same lenses.
-- **Heavy stress storms** (`stress` workflow, post-merge and nightly). Not
-  slow because they are thorough — slow because a 2-core hosted runner
-  starves the server's current-thread runtime, turning a 0.3s test into 13
-  minutes. `just stress` runs them locally, where they are fast; they will
-  never be a PR gate.
-- **Commit-message linting** (`conventional-commits` workflow). Needs the
-  PR's base/head SHAs and the PR title, which only exist server-side. Write
-  conventional commits and it never fires.
-- **Release and publish lanes** (`release`, `release-please`,
-  `publish-crate`). Need tags, a tap token, and a crates.io token.
-  `just release-preflight <tag>` runs the parts that do not — version
-  checks, install-surface drift, formula generation, and a `phux-protocol`
-  package dry-run.
-
-### Gates that are local-only, and why
-
-The mirror image of the list above: these have no CI equivalent, on purpose,
-because the thing they check does not exist on a runner.
-
-- **Release-milestone label coverage** (`just milestone-check`,
-  `scripts/check-milestone-labels.mjs`). Asserts that every non-closed bead
-  carries exactly one of `rc-1.0` / `post-1.0`, so that "what is left for
-  1.0" — which is a label query — cannot silently undercount. It queries the
-  live Dolt store through `bd`. CI has no store to query: `.beads/dolt/` and
-  `.beads/embeddeddolt/` are gitignored, and the tracked
-  `.beads/issues.jsonl` is a passive export that is also deliberately
-  scrubbed, so it is neither current nor complete by design. A check reading
-  it could pass while the store has unlabelled beads and fail on records the
-  store no longer has, which is why the JSONL fallback does not exist. Run it
-  at session close; it is advisory. **Failure modes, all deliberate:** no
-  `bd` on PATH or no local store prints `SKIPPED` and exits 0 without
-  claiming anything about labels; an unlabelled or double-labelled bead exits
-  1 and names it. Every run prints the store path, the record counts it read,
-  and the export it did not read, so the verdict is never separable from its
-  provenance.
+`just milestone-check` is local-only and advisory: it asserts every non-closed
+bead carries exactly one of `rc-1.0` / `post-1.0` by querying the live Dolt
+store through `bd`. CI has no store, and the tracked `.beads/issues.jsonl`
+export is scrubbed, so there is no JSONL fallback. Without `bd` or a store it
+prints `SKIPPED` and exits 0; an unlabelled or double-labelled bead exits 1.
 
 ## Additional expectations
 
@@ -235,21 +177,15 @@ because the thing they check does not exist on a runner.
   fix; you do for "should this be in `core` or `server`?"
 - **Public APIs are documented.** Workspace lints warn on missing docs
   for library crates. The binary crate is exempt.
-- **Alias a wire type at the import when its bare name is taken.** Several
-  domain concepts are modelled twice on purpose — `phux-core` holds the
-  in-memory shape, `phux-protocol` holds the wire shape, and
-  [`docs/adr/0011`](./docs/adr/0011-protocol-core-independence.md) keeps the two crates
-  independent of each other. Where both are in scope, or where the importing
-  crate defines its own, import the protocol one under a `Wire` prefix:
-  `use phux_protocol::ids::ResourceId as WireResourceId;`. That puts the seam
-  at the use site instead of leaving a reader to infer it from context.
-  Twenty files already do this — it is the rule, not a local habit. It
-  currently matters for `ClientId`, `ResourceId`, `SessionId`, `WindowId`,
-  `LayoutNode`, `SplitDir`, `WindowInfo`, and `HistoryRejectionReason`. The
-  pair that motivates the rule: `phux_protocol::ids::ClientId` is a `u32`
-  wire identity, `phux_server::state::client::ClientId` is a `u64` routing
-  identity the server allocates. Same name, different width, different
-  authority.
+- **Alias a wire type at the import when its bare name is taken.**
+  `phux-core` holds the in-memory shape and `phux-protocol` the wire shape of
+  several concepts, kept independent by
+  [`docs/adr/0011`](./docs/adr/0011-protocol-core-independence.md). Where both
+  are in scope, import the protocol one with a `Wire` prefix:
+  `use phux_protocol::ids::ResourceId as WireResourceId;`. This matters for
+  `ClientId` (a `u32` wire identity versus the server's `u64` routing id),
+  `ResourceId`, `SessionId`, `WindowId`, `LayoutNode`, `SplitDir`,
+  `WindowInfo`, and `HistoryRejectionReason`.
 - **`unsafe` requires justification.** Every `unsafe` block carries a
   `// SAFETY: …` comment naming the invariant it relies on. We prefer
   zero `unsafe` and lint for it (`#![forbid(unsafe_code)]` is the default
@@ -265,19 +201,13 @@ Asking saves us both time:
   If you want logic, write a script and shell out.
 - **An in-process plugin host.** Plugins are external packages declared in
   config, not code loaded into the server.
-- **A homegrown selection engine.** Selection and copy delegate: text
-  selection (word/line/output boundaries, OSC-133-aware) and extraction
-  (plain/VT/HTML) belong to the host terminal and to libghostty-vt's
-  Selection + Formatter APIs (Ghostty PR \#12794), never reimplemented
-  here. phux may provide a client-local copy-mode projection over the
-  focused pane: cursor movement, viewport scrolling, and highlight
-  rendering are UI navigation over libghostty state, not a second
-  selection model. phux also owns find-in-scrollback (`phux-server`'s
-  `search` module), a literal search over the scrollback rows we already
-  mirror — libghostty exposes no search or regex, so that locating step is
-  ours. Search produces match coordinates and hands them to libghostty for
-  extraction; it does not reimplement word/output boundaries or mouse drag
-  selection.
+- **A homegrown selection engine.** Selection (word/line/output boundaries,
+  OSC-133-aware) and extraction (plain/VT/HTML) belong to the host terminal
+  and libghostty-vt's Selection + Formatter APIs. phux may provide a
+  client-local copy-mode projection (cursor movement, scrolling, highlight)
+  over libghostty state, and owns find-in-scrollback (`phux-server`'s
+  `search` module) because libghostty has no search; matches are handed back
+  to libghostty for extraction.
 - **Homegrown crypto.** SSH and Unix socket perms are the model.
 - **"Just supporting tmux's behavior here for compatibility."** We are
   not tmux. We will be better in places and different in others, and we
@@ -300,124 +230,70 @@ If your change conflicts with these, open a [Discussion] before a PR.
       git merge --ff-only "$branch"
   done
   ```
-- **One commit per task.** Squash WIP commits before merge. The
-  commit message tells the story of the change, not the keystrokes
-  that produced it.
-- **The squashed subject is what release-please reads.** Releases are cut
-  from the conventional-commit log on `main` (see
-  [`docs/RELEASING.md`](./docs/RELEASING.md)), so the *squashed* subject —
-  not the WIP messages underneath it — decides the version bump and the
-  changelog entry. A `feat:` bumps the minor, a `fix:` the patch, and a
-  non-conventional subject is silently omitted from both.
-- **Conventional commits are machine-enforced.** The `commitlint` check
-  (required by main's ruleset) lints every commit in a PR *and* the PR
-  title against [`commitlint.config.mjs`](./commitlint.config.mjs). A PR
-  cannot merge until both conform, closing the "silently omitted from the
-  release" hole above. Subjects may run to 120 chars; body lines are
-  unlimited.
-- **Never `--no-verify`.** Pre-commit hooks are load-bearing. If a
-  hook fails, fix the root cause.
-- **Draft PRs skip the compile lanes.** `check`/`test` do not run until
-  the PR is marked "Ready for review" (that event triggers them), so use
-  drafts freely for work-in-progress without burning CI. The `commitlint`
-  gate still runs on drafts — message feedback is cheap and better early.
+- **One commit per task.** Squash WIP commits before merge.
+- **The squashed subject is what release-please reads** (see
+  [`docs/RELEASING.md`](./docs/RELEASING.md)): `feat:` bumps the minor,
+  `fix:` the patch, and a non-conventional subject is omitted from both.
+- **Conventional commits are machine-enforced.** The required `commitlint`
+  check lints every commit in a PR *and* the PR title against
+  [`commitlint.config.mjs`](./commitlint.config.mjs). Subjects may run to 120
+  chars; body lines are unlimited.
+- **Never `--no-verify`.** If a hook fails, fix the root cause.
+- **Draft PRs skip the compile lanes.** `check`/`test` run once the PR is
+  marked ready for review; `commitlint` still runs on drafts.
 
 ## Multi-agent fan-out
 
-When fanning out parallel agent work (e.g. four agents in wave 1 of
-the protocol epic):
+1. **Pre-create explicit worktrees** before launching parallel agents
+   (`git worktree add /tmp/phux-<wave>-<task> -b <branch> main`); the Agent
+   tool's `isolation: worktree` flag has raced and shared the main checkout.
+2. **Pre-scaffold shared files** (`mod.rs`, `lib.rs`) so each agent owns
+   disjoint files.
+3. Each agent verifies its worktree first and produces **one squashed commit**.
+4. **Integrate with rebase + ff-only merge**, then remove the worktree and
+   branch.
 
-1. **Pre-create explicit worktrees** before launching agents:
-   ```bash
-   git worktree add /tmp/phux-<wave>-<task> -b <branch-name> main
-   ```
-   Do NOT rely on the Claude Code Agent tool's `isolation: worktree`
-   flag for parallel launches — in wave 1 only 2 of 4 agents got real
-   worktrees (race condition); the other 2 shared the main checkout.
-   Self-managed worktrees are race-free.
-2. **Pre-scaffold shared files** (e.g. `mod.rs`, `lib.rs`) so each
-   agent owns disjoint files. This is how wave 1 avoided merge
-   conflicts on `crates/phux-protocol/src/input/mod.rs`.
-3. **Each agent's prompt MUST start with** a `cd /tmp/phux-...; pwd`
-   to verify they're in their worktree, and an instruction to produce
-   **one squashed commit** on their branch.
-4. **Integration uses rebase + ff-only merge** per the Git workflow
-   section above.
-5. **Clean up after merge**:
-   ```bash
-   git worktree remove /tmp/phux-<wave>-<task>
-   git branch -d <branch-name>
-   ```
-
-Shared registries are where disjoint-file merges bite: two wave-3 branches
-each created a different ADR-0086 with zero git conflicts, a wave-2 branch
-re-added a manifest key its sibling had just deleted, and two branches both
-claimed spec CHANGELOG row `0.8.0-draft.4`. The defense is a shared row every
-claimant has to edit, so a duplicate claim becomes a textual conflict at
-rebase and a `just docs-check` failure either way. Two registries are
-mechanically enforced, both by `check_registry_rows` in
-`scripts/check-docs.sh`:
+Shared registries are where disjoint-file merges bite: two branches can claim
+the same ADR number or spec version with no textual conflict. Two registries
+are enforced by `check_registry_rows` in `scripts/check-docs.sh`, which
+requires unique keys and strict ordering:
 
 | Registry | Key | Order | Gate |
 |---|---|---|---|
 | `docs/adr/README.md` index (see docs/CONVENTIONS.md §"The index row") | ADR number `NNNN` | ascending, and the row's link must resolve to that ADR | `adr-index-sync` |
 | `docs/spec/CHANGELOG.md` | wire version, e.g. `0.9.0-draft.1` | descending, newest at the top | `spec-version-sync` |
 
-Each enforces unique keys and strict ordering, so a second claim on the same
-identifier fails the gate whether or not git noticed. When you add a third
-such registry, instantiate the helper for it rather than hand-rolling a gate.
-`ServerFeature` bits and command or event tags are the same kind of claim
-and are not in the table. They are first-come on main:
-[`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md) is the
-rule, and a branch plan is not a reservation. For any registry not yet
-covered, rebase onto the integration branch and re-run the relevant gate
-before declaring a branch done.
+Instantiate the helper for any new registry rather than hand-rolling a gate.
+`ServerFeature` bits and command or event tags are first-come on main
+([`docs/adr/0137`](./docs/adr/0137-server-feature-word-extends.md)); a branch
+plan is not a reservation. Rebase and re-run the gate before declaring a
+branch done.
 
 ## Observability: CI itself
 
-CI reports where its own minutes go, and keeps nothing (ADR-0082). Where to
-look, cheapest first:
+CI keeps no metrics store (ADR-0082). Each run's step summary shows cargo
+phase timings, cache hits, target size, and slowest tests; locally use
+`just timings`, `just llvm-lines`, `just bloat`, and `just dep-stats`.
 
-- **Any run's step summary** — every lane renders its cargo phase timings,
-  rust-cache hit/miss, target-dir size, and slowest tests right on the run
-  page. That is the dashboard; there is no store behind it.
-- **The Actions run list** — per-run and per-step wall times, for as long as
-  GitHub retains the run.
-- **Locally, when a build feels slow**: `just timings` (cold `cargo clean`
-  first for a real timeline), `just llvm-lines`, `just bloat`,
-  `just dep-stats`. These are the same lenses the retired `observatory`
-  workflow ran weekly, on your machine and on demand.
+## Profiling
 
-## Observability: tokio-console
-
-`phux-server` has an opt-in `tokio-console` cargo feature that attaches
-the [tokio-console](https://github.com/tokio-rs/console) debugger to a
-running server — handy for inspecting broadcast lag, task stalls, and
-poll counts in the actor system. Requires Tokio built with
-`--cfg tokio_unstable`:
+`phux-server`'s opt-in `tokio-console` feature attaches
+[tokio-console](https://github.com/tokio-rs/console) to a running server
+(broadcast lag, task stalls, poll counts):
 
 ```sh
 RUSTFLAGS='--cfg tokio_unstable' cargo run --features phux-server/tokio-console -- server
-# in another shell:
-cargo install --locked tokio-console
-tokio-console   # connects to 127.0.0.1:6669 by default
+tokio-console   # in another shell; connects to 127.0.0.1:6669
 ```
 
-## Heap profiling: dhat
-
-The `phux` binary has an opt-in `dhat-heap` cargo feature that swaps in
-the [dhat](https://docs.rs/dhat) allocator and installs a heap profiler
-for the lifetime of `main()`. On clean shutdown, a `dhat-heap.json`
-report is written to the current working directory:
+The `dhat-heap` feature builds a separate `phux-dhat-heap` executable with the
+[dhat](https://docs.rs/dhat) allocator; the ordinary `phux` binary keeps the
+system allocator. A clean shutdown writes `dhat-heap.json` to the working
+directory (view it in dh_view). Profiling builds only; it is slow.
 
 ```sh
-cargo run --features dhat-heap -- server
-# Ctrl-C the server to flush; then open dhat-heap.json at:
-#   https://nnethercote.github.io/dh_view/dh_view.html
+cargo run -p phux --features dhat-heap --bin phux-dhat-heap -- server
 ```
-
-The instrumented allocator is significantly slower than the system
-allocator — use for profiling only, never for production builds.
 
 ## Reviewing your own work before opening a PR
 

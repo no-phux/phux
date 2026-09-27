@@ -90,15 +90,8 @@ execute a one-shot command and return its output and exit code directly.
 
 ## 4. Connect an agent
 
-The same pane is addressable from a script or an MCP client:
-
-```sh
-phux ls --json
-phux snapshot --json .
-```
-
-Selectors, input, wait, watch, and agent sessions:
-[`consumers/agents.md`](./consumers/agents.md).
+Scripts and MCP clients use the same loop with `--json`. Selectors, input,
+wait, watch, and agent sessions: [`consumers/agents.md`](./consumers/agents.md).
 
 ## Know the edges
 
@@ -106,8 +99,8 @@ Gaps: [`CONCEPTS.md`](./CONCEPTS.md#status).
 
 ## When something misbehaves
 
-`phux status`, `phux doctor`, and `phux logs`. Details in the
-[README](../README.md#troubleshooting) and [operations](./operations.md).
+`phux status`, `phux doctor`, and `phux logs`. Details in
+[operations](./operations.md).
 
 ## Next steps
 

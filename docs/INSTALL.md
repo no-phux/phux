@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-20
+last-reviewed: 2026-09-27
 ---
 
 # Install
@@ -268,14 +268,10 @@ version-manager shim, `phux update` warns and names it. The JSON reports it as
 2. Downloads `phux-<tag>-<target>.tar.gz` and its `.sha256` sidecar.
 3. **Verifies the checksum before unpacking anything.** A mismatch refuses,
    names both digests, and installs nothing.
-4. Unpacks to a staging directory beside the installed binaries — same
-   filesystem — and publishes under an update lock. Before either binary
-   changes, it fsyncs a recovery journal containing the old pair; each atomic
-   `rename` is followed by a directory fsync, and publishing that journal as
-   the rollback backup is the commit point. A later update or rollback repairs
-   any interrupted pre-commit transaction before proceeding, so `phux` and an
-   installed sibling `phux-mcp` recover together as the old or new release.
-   Replacement preserves the mode of each file being replaced.
+4. Unpacks to a staging directory on the same filesystem and publishes under
+   an update lock with a fsynced recovery journal, so `phux` and a sibling
+   `phux-mcp` recover together as the old or new release after an
+   interruption. File modes are preserved.
 5. Asks a running server to graceful-upgrade (the `phux upgrade` path), so live
    panes survive the swap. Pass `--no-restart` to skip that.
 
@@ -299,13 +295,6 @@ An unknown location is a **refusal, not a best-effort overwrite**. If you keep
 phux somewhere else on purpose, set `PHUX_INSTALL_DIR` to that directory and
 `phux update` will maintain it.
 
-### macOS and Linux
-
-Both platforms use the same command and the same artifact contract. macOS ships
-arm64 only; an Intel Mac has no release artifact and `phux update` says so
-rather than installing something that cannot exec. Linux ships x86\_64 and
-arm64.
-
 ### Homebrew
 
 ```sh
@@ -319,21 +308,14 @@ re-execs its own path, so the two steps together preserve live panes.
 
 ### Direct archives
 
-If you installed with the curl installer or by unpacking a tarball,
-`phux update` is the supported path — it repeats exactly what you did by hand,
-with the checksum verified for you. Re-running the curl installer also works
-and is equivalent (add `--channel next` if that is the rail you are on):
-
-```sh
-curl -fsSL https://phux.sh/install | sh
-curl -fsSL https://phux.sh/install | sh -s -- --channel next
-```
+For curl-installer or tarball installs, `phux update` is the supported path;
+re-running the curl installer (with `--channel next` if that is your rail) is
+equivalent.
 
 ### NixOS and Nix profiles
 
-Nix store paths are read-only by construction, so `phux update` never modifies
-them — detecting the store and printing the right command is the correct
-behavior, not a fallback.
+Nix store paths are read-only, so `phux update` prints the right command
+instead:
 
 ```sh
 # NixOS, phux from a flake input
@@ -378,9 +360,8 @@ with a manifest naming the version they are:
 phux update --rollback
 ```
 
-They are ordinary files in an ordinary directory, which is the point: if the
-release you installed is old enough that it has no `phux update` verb, restore
-by hand and nothing is lost.
+They are ordinary files, so a release too old to have `phux update` can be
+restored by hand:
 
 ```sh
 cd ~/.local/bin
@@ -412,10 +393,9 @@ the curl installer, release tarballs, or a source build.
 ## Shell completions
 
 `phux completion SHELL` writes a completion script to stdout for `bash`,
-`elvish`, `fish`, `powershell`, or `zsh`. The script is generated from the
-binary's own argument parser, so it can only ever offer verbs the installed
-build actually accepts. It contacts no server and reads no config, which is
-what makes it safe to call from a shell startup file.
+`elvish`, `fish`, `powershell`, or `zsh`, generated from the binary's own
+argument parser. It contacts no server and reads no config, so it is safe in
+a shell startup file.
 
 ```sh
 # zsh — any directory on $fpath works

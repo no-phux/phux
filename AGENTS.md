@@ -13,31 +13,24 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
 
 ## Setup and validation scope
 
-- Start at [`docs/SETUP.md`](./docs/SETUP.md). Pick `mise install` or
-  `nix develop` (both first-class); then `just doctor` and the smallest
-  relevant gate. Just is the command layer, not a third environment.
-- Run `bash scripts/doctor.sh <area>` for prerequisites. Expand validation for
-  shared APIs, protocol/FFI, Cargo inputs, or build scripts. Report exact
-  checks; a scoped pass is not a full CI pass.
-- Keep setup/version details in that guide and the toolchain pins, not in agent
-  instruction files. Browser engine regeneration uses verified pinned source.
-- Beads is maintainer/agent task tracking, not a compiler or contributor gate
-  dependency. Outside contributors can use a GitHub issue/PR without installing
-  the maintainer orchestration stack.
+- Start at [`docs/SETUP.md`](./docs/SETUP.md): `mise install` or
+  `nix develop`, then `just doctor <area>` and the smallest relevant gate.
+  Expand validation for shared APIs, protocol/FFI, Cargo inputs, or build
+  scripts. Report exact checks; a scoped pass is not a full CI pass.
+- Beads is maintainer/agent task tracking, not a contributor gate; outside
+  contributors can use a GitHub issue/PR.
 - Use non-interactive shell commands (`-f` / `-y` where appropriate).
-- See [`CLAUDE.md`](./CLAUDE.md) for architecture and code conventions;
+- [`CLAUDE.md`](./CLAUDE.md) holds architecture and code conventions;
   [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md) governs documentation.
 
 ## Worktree Isolation
 
-- **Never implement on `main` or in the primary repository worktree.** Before
-  editing, create a dedicated branch and linked worktree from current `main`;
-  make all code, documentation, test, and commit changes there.
-- Reserve the primary worktree for integration only: update `main`, squash or
-  fast-forward verified feature work, push, and remove completed worktrees.
-- If the primary worktree is dirty or another agent is using it, do not stash,
-  reset, clean, or overwrite those changes. Leave them untouched and isolate
-  your work in a new worktree.
+- **Never implement on `main` or in the primary repository worktree.** Create
+  a dedicated branch and linked worktree from current `main` for all code,
+  docs, tests, and commits. The primary worktree is for integration only:
+  update `main`, fast-forward verified work, push, remove finished worktrees.
+- Never stash, reset, clean, or overwrite a dirty primary worktree; isolate
+  your work in a new worktree instead.
 
 ## Never touch the installed phux
 
@@ -53,19 +46,16 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
 ## Finish the work
 
 - **Commit verified task changes before the final handoff.** This is standing
-  repository authorization for local commits on the isolated feature branch.
-  Do not stop at "changes are uncommitted" or ask whether to commit. An explicit
-  user instruction such as "do not commit" or "leave this as a draft" wins.
-- Review the diff, stage only task-owned changes, and make scoped conventional
-  commits. Preserve unrelated changes and report the commit IDs and checks run.
-- When the user asks to push, merge, or land work on `main`, carry that through
-  the repository's integration and validation path without asking again for the
-  same authorization. Keep local `main` synchronized after landing. Repository
-  ownership boundaries, branch protections, and explicit no-push instructions
-  still apply; local commit authorization does not authorize remote operations.
-- **Routine commits, pushes, merges, and cleanup are steps of the existing
-  task, not new Beads tasks.** Track substantive implementation and follow-up
-  work; do not create administrative tickets just to finish shipping it.
+  authorization for local commits on the isolated feature branch; do not ask
+  whether to commit. An explicit "do not commit" wins.
+- Stage only task-owned changes, make scoped conventional commits, and report
+  commit IDs and checks run.
+- When asked to push, merge, or land on `main`, carry it through integration
+  and validation without re-asking, and keep local `main` synchronized.
+  Ownership boundaries, branch protections, and no-push instructions still
+  apply; local commit authorization does not authorize remote operations.
+- Routine commits, pushes, merges, and cleanup are steps of the existing
+  task, not new Beads tasks.
 - If a step is genuinely blocked, report what failed and the exact remedy.
 
 This policy overrides the conservative/minimal commit defaults in the managed

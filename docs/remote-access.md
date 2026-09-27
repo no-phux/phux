@@ -264,23 +264,17 @@ installing the *remote* unit only; the local `--hub` ensure still runs.
 
 ## Why an overlay
 
-phux already ships everything a remote attach needs except reachability: wss://
-(TLS 1.3) and QUIC transports, `phux pair` to mint a bearer token plus a
-certificate fingerprint, and a non-loopback bind that engages TLS and token
-auth automatically
-([ADR-0031](adr/0031-remote-consumer-auth-and-encryption.md)). What remains
-is purely packet reachability — a self-hosted server behind NAT or CGNAT has no
-inbound-reachable address. The sanctioned answer is a WireGuard-class overlay
-network ([ADR-0037](adr/0037-overlay-network-reachability.md)): an L3
-substrate that hands the client a routable address (a `100.x` IP or a MagicDNS
-`*.ts.net` name) which phux dials exactly like a LAN address, with zero new
-code. Cert pinning is on the fingerprint, not the hostname, so overlay DNS
-names work unchanged. phux is overlay-agnostic, and the fully-OSS
-Headscale/WireGuard path is first-class, not a downgrade. Hosted relays,
-rendezvous servers, and hole-punching are deliberately out of scope. The trust
-model and environment knobs live in
-[operations.md](./operations.md#connecting-from-another-network-overlay-reachability);
-this page owns the step-by-step task.
+Everything a remote attach needs ships except reachability: wss:// and QUIC
+(TLS 1.3), `phux pair` for a bearer token plus certificate fingerprint, and
+automatic TLS and token auth on any non-loopback bind
+([ADR-0031](adr/0031-remote-consumer-auth-and-encryption.md)). A server behind
+NAT or CGNAT still needs a routable address, and the sanctioned answer is a
+WireGuard-class overlay ([ADR-0037](adr/0037-overlay-network-reachability.md))
+that phux dials like a LAN address. The pin is on the fingerprint, not the
+hostname, so overlay DNS names work unchanged, and the fully-OSS
+Headscale/WireGuard path is first-class. The trust model and environment
+knobs live in
+[operations.md](./operations.md#connecting-from-another-network-overlay-reachability).
 
 ## Common steps: pair, then listen
 
@@ -322,30 +316,25 @@ fingerprint is SHA-256, 64 hex digits, optionally colon-separated.
 
 Keep the non-secret credential ID for lifecycle operations. Rotation prints a
 new bearer once and keeps the previous generation valid for at most five
-minutes by default; `--overlap-seconds 0` cuts over immediately. An existing
-absolute expiry is preserved and can shorten that overlap. An already-expired
-credential cannot be rotated and produces no replacement token. Revocation
-affects new connections immediately, while already-established sessions
-continue until they disconnect:
+minutes by default (`--overlap-seconds 0` cuts over immediately); an existing
+absolute expiry is preserved, and an expired credential cannot be rotated.
+Revocation and the end of a rotation overlap also disconnect established
+sessions using that credential
+([operations.md](./operations.md#remote-consumer-trust-model-opt-in)):
 
 ```sh
 phux pair rotate <credential-id> --overlap-seconds 300
 phux pair revoke <credential-id>
 ```
 
-For a phone or tablet, skip the transcription entirely: when the server
-address is known — pass `--host HOST:PORT` (or a full `ws://`/`wss://` URL),
-or let it fall back to a detected overlay address plus the `PHUX_WS_ADDR`
-port — `phux pair` also prints a one-tap
-`https://phux.sh/connect?url=…&fp=…&token=…` link carrying the URL,
-fingerprint, and token together, and `phux pair --qr` renders that same link
-as a scannable terminal QR. It is an https Universal Link rather than a
-custom `phux://` scheme so that only the app which owns the domain can
-receive it — a custom scheme is not exclusive on iOS, and the link carries a
-bearer token. The same link is printed a second time as `phux://connect?…`
-for app builds that predate Universal Link support. Treat the link, the QR,
-and the second spelling like the token itself: they carry the credential.
-`--name` labels the server in the device's list.
+For a phone or tablet, pass `--host HOST:PORT` (or a full `ws://`/`wss://`
+URL), or let `phux pair` fall back to a detected overlay address plus the
+`PHUX_WS_ADDR` port, and it also prints a one-tap
+`https://phux.sh/connect?url=…&fp=…&token=…` Universal Link (an https link so
+only the app owning the domain receives the bearer token), a
+`phux://connect?…` spelling for older app builds, and with `--qr` a terminal
+QR of the same link. Treat all three like the token itself. `--name` labels
+the server in the device's list.
 
 ```sh
 # Credentials + a scannable one-tap QR for the device:
@@ -364,102 +353,61 @@ phux server --quic 0.0.0.0:8788        # (= PHUX_QUIC_ADDR)
 Prefer QUIC where UDP is open — it handles roaming and connection migration
 better. Use `--ws wss://` when UDP is blocked by a network or firewall.
 
-## Path A: Tailscale
+## Paths A-C: an overlay network
 
-[Tailscale](https://tailscale.com) is the frictionless on-ramp.
-
-1. Install Tailscale on both the server host and the client device.
-2. Run `tailscale up` on each.
-3. Confirm both peers appear in `tailscale status`.
-4. Find the server's address: `tailscale status` prints both the `100.x.y.z`
-   IP and the MagicDNS name (like `myhost.tailnet-name.ts.net`).
-
-Then dial from the client:
+phux only ever sees an IP, so every overlay is dialed the same way once both
+peers are on it:
 
 ```sh
-# QUIC (preferred when UDP is open):
-phux attach --quic myhost.tailnet-name.ts.net:8788 --token HEX --cert-fingerprint FP
-
-# TLS WebSocket fallback (when UDP is blocked):
-phux attach --ws wss://myhost.tailnet-name.ts.net:8787 --token HEX --cert-fingerprint FP
+phux attach --quic HOST:8788 --token HEX --cert-fingerprint FP     # preferred when UDP is open
+phux attach --ws wss://HOST:8787 --token HEX --cert-fingerprint FP # when UDP is blocked
 ```
 
 Routable hosts require `--cert-fingerprint` (only loopback trusts the dev
-cert). The pin is fingerprint-based, so the MagicDNS name and the `100.x` IP
-are interchangeable — no re-pairing when you switch between them. The honest
-tradeoff: trust extends to Tailscale's coordination plane, mitigated by phux's
-own TLS + token riding on top.
+cert).
 
-## Path B: Headscale
+- **Path A: [Tailscale](https://tailscale.com).** Install it on both ends and
+  run `tailscale up`; `tailscale status` lists both peers with their `100.x`
+  IP and MagicDNS name (`myhost.tailnet-name.ts.net`), which are
+  interchangeable for the pin. Trust extends to Tailscale's coordination
+  plane, mitigated by phux's own TLS + token.
+- **Path B: [Headscale](https://github.com/juanfont/headscale)**, the
+  self-hostable OSS control plane for the same data plane. Run a Headscale
+  server, `headscale users create NAME`, `headscale preauthkeys create --user
+  NAME`, then on each node
+  `tailscale up --login-server https://headscale.example.com --authkey KEY`.
+  Dial the assigned `100.x` address.
+- **Path C: raw [WireGuard](https://www.wireguard.com).** Generate a keypair
+  on each end (`wg genkey | tee privatekey | wg pubkey > publickey`), write
+  `/etc/wireguard/wg0.conf` on each, `wg-quick up wg0`, and check `wg show`
+  for a recent handshake. There is no MagicDNS; dial the tunnel IP. Server
+  side:
 
-[Headscale](https://github.com/juanfont/headscale) is a self-hostable,
-fully-OSS control plane for the same data plane, for operators who will not
-depend on a third-party coordinator. The client tooling is identical.
+  ```ini
+  [Interface]
+  Address = 10.8.0.1/24
+  ListenPort = 51820
+  PrivateKey = <server privatekey>
 
-1. Run a Headscale server.
-2. Create a user and a preauth key:
-   `headscale users create NAME`, then
-   `headscale preauthkeys create --user NAME`.
-3. Join each node:
-   `tailscale up --login-server https://headscale.example.com --authkey KEY`.
-4. Verify both peers with `tailscale status`.
+  [Peer]
+  PublicKey = <client publickey>
+  AllowedIPs = 10.8.0.2/32
+  ```
 
-Dial exactly as in Path A, using the Headscale-assigned `100.x` address (or
-its DNS name if configured):
+  Client side (the `Endpoint` goes on whichever side can see the other's
+  public address):
 
-```sh
-phux attach --quic 100.64.0.2:8788 --token HEX --cert-fingerprint FP
-# or
-phux attach --ws wss://100.64.0.2:8787 --token HEX --cert-fingerprint FP
-```
+  ```ini
+  [Interface]
+  Address = 10.8.0.2/24
+  PrivateKey = <client privatekey>
 
-## Path C: Raw WireGuard
-
-A hand-rolled [WireGuard](https://www.wireguard.com) overlay works the same
-way — all three paths look identical to phux, which only ever sees an IP.
-
-1. Generate a keypair on both ends:
-   `wg genkey | tee privatekey | wg pubkey > publickey`.
-2. Write a minimal `/etc/wireguard/wg0.conf` on each end. Server side:
-
-   ```ini
-   [Interface]
-   Address = 10.8.0.1/24
-   ListenPort = 51820
-   PrivateKey = <server privatekey>
-
-   [Peer]
-   PublicKey = <client publickey>
-   AllowedIPs = 10.8.0.2/32
-   ```
-
-   Client side (the `Endpoint` goes on whichever side can see the other's
-   public address):
-
-   ```ini
-   [Interface]
-   Address = 10.8.0.2/24
-   PrivateKey = <client privatekey>
-
-   [Peer]
-   PublicKey = <server publickey>
-   AllowedIPs = 10.8.0.1/32
-   Endpoint = server.example.com:51820
-   PersistentKeepalive = 25
-   ```
-
-3. Bring the tunnel up on both ends: `wg-quick up wg0`.
-4. Verify a recent handshake with `wg show`.
-
-Dial the peer's tunnel address:
-
-```sh
-phux attach --quic 10.8.0.1:8788 --token HEX --cert-fingerprint FP
-# or
-phux attach --ws wss://10.8.0.1:8787 --token HEX --cert-fingerprint FP
-```
-
-With raw WireGuard there is no MagicDNS; use the tunnel IP or your own DNS.
+  [Peer]
+  PublicKey = <server publickey>
+  AllowedIPs = 10.8.0.1/32
+  Endpoint = server.example.com:51820
+  PersistentKeepalive = 25
+  ```
 
 ## Path D: via a reference relay
 
@@ -524,23 +472,16 @@ Failures fall into a few classes, and the symptom tells you which one you have.
   that no host firewall drops the port. QUIC needs UDP end to end — if QUIC
   times out but wss:// works, UDP is blocked; stay on `--ws`.
 - **Connect succeeds, then hangs forever; `phux ls` on the server is fine.**
-  This is a host firewall stealth-drop, not an overlay failure. On macOS the
-  Application Firewall completes the TCP handshake and never delivers the
-  bytes to phux, so the server logs nothing and UDS/loopback checks stay
-  green. phux ships adhoc-signed, so it is not covered by "automatically
-  allow signed software" and needs an explicit allowlist entry. That entry
-  is keyed to the exact binary path — Homebrew's
-  `/opt/homebrew/Cellar/phux/<version>/bin/phux` changes on every upgrade,
-  which silently breaks a previous allow. `phux upgrade` re-execs the
-  installed path (not a deleted tempfile) so the *current* Cellar binary
-  can be allowlisted; the next version bump still needs a new allow.
-  `phux doctor` on the server host probes the bound non-loopback listener
-  and names this as `remote-reachable`. Until release binaries are
-  Developer ID signed and notarized, the durable workaround on a host that
-  already lives behind Tailscale/WireGuard is to turn the Application
-  Firewall off, or re-allow the new Cellar path after every upgrade. Check
-  with
-  `/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate`.
+  This is a host firewall stealth-drop. The macOS Application Firewall
+  completes the TCP handshake and never delivers the bytes, so the server
+  logs nothing. phux ships adhoc-signed, so it needs an explicit allowlist
+  entry keyed to the exact binary path, and Homebrew's
+  `/opt/homebrew/Cellar/phux/<version>/bin/phux` changes on every upgrade.
+  `phux doctor` on the server host names this as `remote-reachable`. Until
+  release binaries are Developer ID signed, either re-allow the new Cellar
+  path after each upgrade or, on a host already behind an overlay, turn the
+  firewall off (`/usr/libexec/ApplicationFirewall/socketfilterfw
+  --getglobalstate` shows its state).
 - **Auth failure** (HTTP 401 / unauthorized on the WebSocket upgrade; QUIC
   token rejection). The link is fine; the bearer token is missing, mistyped,
   or was revoked. Mint one with `phux pair`; it is live at the next connection

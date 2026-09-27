@@ -7,16 +7,9 @@ last-reviewed: 2026-09-21
 # Architecture Decision Records
 
 **TL;DR.** Index of every decision that has closed off a design space
-in phux. Format and `Status:` vocabulary defined in
-[`docs/CONVENTIONS.md`](../CONVENTIONS.md). Read these when
-you need to know *why* something is the way it is — the architecture
-docs describe *what* the code is.
-
-We write down decisions so future contributors (including future-us) can
-understand why the system is the way it is. Format follows [Michael
-Nygard's template][nygard].
-
-[nygard]: https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions
+in phux, in the Nygard format with the `Status:` vocabulary defined in
+the doc conventions. Read these to learn *why* something is the way it
+is; the architecture docs describe *what* the code is.
 
 ## Index
 
@@ -30,17 +23,11 @@ the filename/index identity; accepted decision bodies remain immutable under
 the [documentation policy](../CONVENTIONS.md#supersede-dont-amend).
 
 <!--
-Every ADR has exactly one row here, inserted at its numeric position when
-the ADR is written. This is enforced (`adr-index-sync` in
-scripts/check-docs.sh): a missing row, a duplicate number, or an
-out-of-order row fails `just docs-check`. The row is deliberately a
-collision point — two parallel branches claiming the same ADR number
-produce a textual conflict on this table at rebase, where the two files
-alone would merge silently (it happened: wave 3 created two different
-ADR-0086 files with zero git conflicts). The Status column is the base
-status word plus at most one relationship clause (supersedes / superseded
-by / amends / builds on), about 80 characters at most. It is navigation,
-not a summary: the TL;DR lives in the ADR.
+Every ADR has exactly one row here, at its numeric position, written with
+the ADR (`adr-index-sync` in scripts/check-docs.sh). The row is a deliberate
+collision point for parallel branches claiming the same number. The Status
+column is the base status word plus at most one relationship clause, about
+80 characters; the TL;DR lives in the ADR.
 -->
 
 | # | Decision | Status |

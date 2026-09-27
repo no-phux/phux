@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-27
 ---
 
 # Configuration and keybindings
@@ -59,16 +59,7 @@ phux config reload       # apply edits to running clients in place
 
 ### Applying changes
 
-The edit loop is edit, check, reload:
-
-```sh
-$EDITOR ~/.config/phux/config.toml
-
-phux config check        # every problem in one pass, with full dotted
-                         # paths and the layer file that introduced each
-
-phux config reload       # apply to running clients in place
-```
+The edit loop is edit, `phux config check`, `phux config reload`.
 
 `phux config reload` validates the layered config locally first — a broken
 file fails right there with the parse error and signals nothing — then
@@ -88,10 +79,8 @@ A few settings are read once at attach and still need a client restart
 `[voice]`, `[policy]`, and `[[hooks.*]]` are owned by the server and take
 effect on the next server start.
 
-Reload is explicit, never automatic: the file is not watched, because
-watch-reload introduces papercuts ("saved-mid-edit, now my keybindings
-are gone"). An explicit verb keeps a broken intermediate save inert until
-you ask for it.
+Reload is explicit: the file is not watched, so a broken intermediate save
+stays inert until you ask for it.
 
 Local config/plugin subcommands (`init`, `path`, `show`, `check`,
 `plugins`, `agents`, `plugin ...`, and plugin action `run`) read the file
@@ -343,22 +332,15 @@ is reserved at every level; don't end a free-form key (for example a
 array plainly — replacement always wins over inheritance.
 
 **Plugin manifests in layers.** A relative `manifest` in `[[plugins]]` /
-`[[plugins-append]]` normally resolves against *your config file's*
-directory. Inside an extended layer that base would be wrong — the layer
-lives elsewhere — so layer resolution rewrites a relative manifest to an
-absolute path under the layer file's own directory (lexically normalized)
-before merging. Your root `config.toml` is left verbatim; only extended
-layers are rewritten. This is what lets a distro wire plugins that live
-next to it.
+`[[plugins-append]]` resolves against your config file's directory, except
+inside an extended layer, where it is rewritten to an absolute path under
+that layer's own directory so a distro can wire plugins that live next to it.
 
 ### Where did this value come from?
 
-With several layers in play, `phux config show` tells you *what* the
-effective config is but not *who* set it. `phux config show --layers`
-answers that: it prints the resolved layer stack in merge order, then one
-row per effective leaf key naming the layer that set it. Arrays expand to
-one row per element, so an `-append` list shows exactly which layer
-contributed each entry:
+`phux config show --layers` prints the resolved layer stack in merge order,
+then one row per effective leaf key naming the layer that set it (one row per
+array element, so an `-append` shows which layer contributed each entry):
 
 ```
 layers (merge order; later layers win):
@@ -383,14 +365,11 @@ per element).
 
 ### Starter distributions: `config init --distro`
 
-A *distro* is a config layer curated as a starting point — the lazyvim
-idea applied to phux: keybindings, a status lineup, a theme, and a plugin
-set, shipped as one referenced file rather than pasted into yours. The
-repo bundles one, [`starter`](../distros/starter/README.md), which today
-carries only the demo plugin set: the keybindings, status lineup, and
-theme it used to add are now the shipped defaults, because a setting
-everyone should have does not belong behind an opt-in. A distro is for
-offering a genuine choice.
+A *distro* is a config layer curated as a starting point: keybindings, a
+status lineup, a theme, and a plugin set, referenced rather than pasted into
+yours. The repo bundles one, [`starter`](../distros/starter/README.md), which
+carries only the demo plugin set; everything else it once added is now a
+shipped default.
 
 ```sh
 phux config init --distro starter            # bundled name
@@ -405,13 +384,9 @@ statement at the top:
 extends = ["/absolute/path/to/distros/starter/starter.toml"]
 ```
 
-Nothing is copied out of the distro. Your file stays a sparse overlay:
-keys you set win over the distro, keys the distro sets win over the
-shipped defaults, and updating the distro file updates every config that
-extends it. `init --distro` validates the full merged stack before
-writing anything, so a broken or missing distro layer fails the command
-instead of leaving you an invalid config; `phux config show` then renders
-the effective result.
+Nothing is copied out of the distro: keys you set win over it, it wins over
+the shipped defaults, and updating it updates every config that extends it.
+`init --distro` validates the full merged stack before writing anything.
 
 A bundled name `n` resolves to `<dir>/n/n.toml` across, in order:
 `$PHUX_DISTROS_DIR` (explicit override), `$XDG_DATA_HOME/phux/distros`

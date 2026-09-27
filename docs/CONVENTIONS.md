@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-27
 ---
 
 # Doc conventions
@@ -49,9 +49,8 @@ Anything that's not in those four layers is scratch (see
 
 ## One fact, one home
 
-The single recurring failure mode of the previous doc tree was the same
-fact landing in four files and drifting independently. Each layer above
-has a **single owner** for each kind of content:
+The same fact in four files drifts four ways. Each layer above has a
+**single owner** for each kind of content:
 
 | Question | Owner | Don't restate it in |
 |---|---|---|
@@ -300,12 +299,8 @@ the `adr-in-force-sync` gate enforces both directions.
 ## Implementation status
 
 phux is spec-first, so `docs/spec/` and `docs/consumers/` routinely describe
-behavior before it exists. That is legitimate. What is not legitimate is a
-reader — human or agent — being unable to tell which sentences are shipped.
-The failure has happened: `docs/consumers/tui.md` §10 specified a
-`phux capture --record` verb and a server-side output tee as accepted design,
-asserted them in the present tense, and was never built. It contradicted what
-eventually shipped, and only human review caught it.
+behavior before it exists. A reader must still be able to tell which sentences
+are shipped.
 
 ### The rule
 
@@ -353,22 +348,13 @@ prevent.
 
 ### Why this and not the alternatives
 
-A **cross-reference gate mapping every spec section to an implementing
-symbol** was rejected: it demands a symbol for every paragraph, including the
-many that describe emergent behavior no single item owns, and the maintenance
-cost falls on every spec edit rather than on the rare unbuilt one.
-
-**Banning unimplemented design from `docs/spec/` outright** was rejected
-because the spec is normative and forward-looking by construction. `INPUT_RAW`
-holds discriminant `0x13` precisely so nothing else takes it; that reservation
-has to live in the spec, not in an ADR.
-
-What is left is marking, and the only marking worth having is marking a
-machine can falsify. No linter can catch an author who writes unmarked prose
-about an unbuilt feature — that is uncatchable, and this mechanism does not
-claim otherwise. What it does catch is the *stale* claim, in both directions,
-which is the drift that actually recurs: prose that outranks reality long
-after reality changed.
+Mapping every spec section to an implementing symbol was rejected: most
+paragraphs describe emergent behavior no single item owns. Banning
+unimplemented design from `docs/spec/` was rejected because the spec reserves
+wire space ahead of code (`INPUT_RAW` holds `0x13`). Marking remains, and only
+machine-falsifiable marking is worth having: the gate cannot catch unmarked
+prose about an unbuilt feature, but it does catch the stale claim in both
+directions, which is the drift that recurs.
 
 ---
 

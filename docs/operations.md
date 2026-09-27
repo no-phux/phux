@@ -22,24 +22,17 @@ the IPC boundary translate to `ERROR` messages with a stable `ErrorCode`
 and a human-readable message. [`spec/proto.md`](./spec/proto.md) owns that
 wire shape and the code catalog.
 
-A CLI verb whose **stdout reader hangs up** — `phux snapshot work | head
--8`, or quitting `less` mid-listing — is not an error. Every stdout write
-in the `phux` binary goes through one helper that treats `BrokenPipe` as
-a clean end of the pipeline: the process exits `0`, silently, running no
-further output. Any other write failure (a full disk, `EIO`) is reported
-as one stderr line with a failing status. The bin crate keeps clippy's
-`print_stdout` lint armed so a new `println!` cannot reintroduce the
-panic that used to end that pipeline.
+A CLI verb whose **stdout reader hangs up** (`phux snapshot work | head -8`)
+is not an error: every stdout write goes through one helper that treats
+`BrokenPipe` as a clean end and exits `0` silently. Any other write failure
+is one stderr line with a failing status. The bin crate keeps clippy's
+`print_stdout` lint armed so a new `println!` cannot bypass the helper.
 
-A **malformed `config.toml` is fatal at server start**. `phux server`
-loads the config exactly once; if the file exists but fails to load, the
-server refuses to start (non-zero exit) and reports the config path, the
-real loader error, and the remedy — `run: phux config check` — on **both**
-stderr and the server log via `tracing::error` (the auto-spawn path nulls
-stdio, so the log line is the durable trace there). A *missing* config
-file is not an error: the server starts with the shipped defaults. The
-server never silently reverts a broken config to defaults — a config the
-user wrote either applies in full or stops the server with the reason.
+A **malformed `config.toml` is fatal at server start**: the server refuses to
+start and reports the config path, the loader error, and the remedy
+(`phux config check`) on both stderr and the server log (the auto-spawn path
+nulls stdio). A *missing* config starts with the shipped defaults. The server
+never silently reverts a broken config to defaults.
 
 ## Runtime status
 
@@ -148,49 +141,20 @@ move. The columns are `count` / `rate/s` for counters and `p50` `p90`
 | `cmd.handle` / `attach.handle` | control-plane latency | attach p99 under 100 ms with a warm history |
 | `proc.*` | clients, panes, sessions (gauges) and, in the header, CPU split, peak RSS, context switches | idle CPU under 1 percent with agents running in panes |
 
-`GET_PERF` and `phux perf --json` include an additive `stream_diagnostics` snapshot.
-JSON watch mode preserves the latest sample as gauges. It is a
-point-in-time attribution aid rather than another metric label space: at most
-128 registered streams are returned, each identified only by numeric
-`connection_id` (a process-keyed hash of the QUIC connection identity), numeric
-QUIC `stream_id`, and a bounded `control` or `terminal`
-lane. Each stream reports whether its runtime binding is active, admitted queue
-bytes and oldest age, in-progress write age plus last/maximum write duration,
-and initial bind-to-staged-READY latency. A write duration includes the transport
-write call; a long in-progress sample identifies a stalled writer, without
-claiming to separate transport flow control from scheduler delay. Queue
-metadata is capped at 256 outstanding items per stream; registry, queue, and
-write overflows are counted explicitly instead of allocating more storage.
-Registration is removed by an RAII guard when its connection or stream drops,
-and a performance reset clears interval observations without invalidating live
-trackers or their outstanding cancellation guards.
+`GET_PERF` and `phux perf --json` also carry a `stream_diagnostics`
+snapshot for the QUIC mux: up to 128 streams, each identified only by numeric
+`connection_id`, QUIC `stream_id`, and a `control` or `terminal` lane, with
+binding state, admitted queue bytes and oldest age (from transport admission
+to dispatch or cancellation), write durations, and bind-to-READY latency.
+Storage is bounded (256 queued items per stream) and overflows are counted;
+no payloads or caller-defined labels are retained, and `--reset` clears
+interval observations without invalidating live trackers.
 
-The queue gauges cover the upgraded QUIC mux: they start when byte-budget
-permits admit a frame, include an incomplete body or a blocked channel send,
-and end at shared dispatch delivery or cancellation. Single-stream fallback has
-writer measurements but no mux queue. Bind debug logs correlate this transport
-identity with the runtime client and application stream generation. The latest
-admitted bootstrap tombstone supplies the resynchronization category; it is
-absent until one is admitted. A shared fallback stream reports its latest reason
-across terminals.
-
-Queue tickets sample **ingress admission into the tracked transport queue**, not
-outbound payload production. A producer creating bytes does not itself increase
-the queue gauge; the gauge begins only where the transport accepts that work and
-ends when the exact ticket is dropped, including cancellation and out-of-order
-completion. No payload strings or caller-defined labels are retained.
-
-The client keeps its own table. When an attach ends it writes one
-`session perf:` line to its log (`phux logs --client`) with the echo
-round trip (keystroke out to first output frame back for that pane),
-`vt_apply` and `paint.full` percentiles, frame counts, pacer waits, and
-stdout drops. `PHUX_RENDER_PROF=1` still emits the per-second
-`render_prof` line, now with `echo_p50_us` / `echo_p99_us` beside the
-counters. Degradations that used to log at debug — a full consumer
-mailbox, a dropped stdout backlog — now warn at most once per ten seconds
-with a `suppressed` count, so they are visible at the default filter
-without flooding it; a broadcast lag already warned and now also counts
-(`pump.lagged`).
+The client keeps its own table: when an attach ends it writes one
+`session perf:` line to its log (`phux logs --client`) with the echo round
+trip, `vt_apply` and `paint.full` percentiles, frame counts, pacer waits, and
+stdout drops. Degradations such as a full consumer mailbox or a dropped
+stdout backlog warn at most once per ten seconds with a `suppressed` count.
 
 For a reproducible number rather than a live one, `just perf-echo` runs
 the byte-level echo probe against an isolated server at a chosen size
@@ -204,30 +168,18 @@ the `profiling` build (symbols kept) with samply.
 | `RUST_LOG` | Filter directives. Default `phux=info,warn`. |
 | `PHUX_LOG=<path>` | Write logs to `<path>` via non-blocking file writer. Server tees to this file *in addition to* stderr; client writes here *instead of* its per-pid default. Parent directory created if missing. |
 | `PHUX_LOG_FORMAT=text\|json` | `text` (default): human single-line layer. `json`: one JSON object per line for `jq`/`grep`. Applies to both stderr and file sinks. |
-| `PHUX_RENDER_PROF=1` | Client only. Emits one `render_prof` INFO line per second carrying the attach loop's paint counters: `frames` (inbound `RESOURCE_OUTPUT` frames applied), `paints` (composited frames emitted), `skipped` (paints withheld by coalescing or the frame pacer), `bar_composes` (runs of the status-bar widget pipeline), `layouts` (pane tilings that missed the layout cache), `paced_replies` (frames admitted because they answer the user's input rather than arriving unsolicited) and `paced_waits` (frames the pacer held back for its window), and `flushes` / `bytes` (what reached the off-loop stdout writer). The `paced_replies` / `paced_waits` pair is how an input-latency regression in the paint scheduler is told apart from load on the box. Free when unset. |
+| `PHUX_RENDER_PROF=1` | Client only. One `render_prof` INFO line per second with the attach loop's paint counters (`frames`, `paints`, `skipped`, `bar_composes`, `layouts`, `paced_replies`, `paced_waits`, `flushes`, `bytes`) plus `echo_p50_us` / `echo_p99_us`. `paced_replies` versus `paced_waits` separates a paint-scheduler regression from machine load. Free when unset. |
 | `PHUX_FRAME_INTERVAL_MS=<ms>` | Client only. Minimum interval between composited frames; default `16` (one frame at 60Hz). The first frame after any lull always paints immediately, and output from the pane the user last acted on is never paced while its reply grace is open, so this only bounds how often a sustained *unsolicited* output stream repaints. `0` disables pacing entirely. |
-| `PHUX_INPUT_GRACE_MS=<ms>` | Client only. Pins the *input reply grace*: how long after the user types, clicks, or pastes that pane's output still counts as a reply and bypasses frame pacing. Unset, the grace is measured — `max(20ms, 2 x the observed input-to-output latency)`, capped at 250ms — so a session over QUIC to a distant server sizes it to that link instead of to a unix socket's microseconds. The grace is keyed to the pane the input was routed to, so typing in one pane never lifts pacing for a flood in another, and pointer motion does not arm it (a drag would otherwise refresh it continuously). `0` disables the grace, so every frame is paced. |
-| `PHUX_TTY_READINESS=0` | Client only. Read the outer terminal through tokio's blocking-pool stdin instead of on reactor readiness. The readiness path opens its own non-blocking handle to the terminal and wakes the attach loop straight off `kqueue`/`epoll`, saving a thread handoff per keystroke; it falls back on its own when the platform will not poll a terminal fd. Set this when a terminal that *is* pollable behaves badly on it — the fallback is the pre-`0.23` behaviour. |
+| `PHUX_INPUT_GRACE_MS=<ms>` | Client only. Pins how long after input that pane's output still counts as a reply and bypasses pacing. Unset, it is `max(20ms, 2 x observed input-to-output latency)` capped at 250ms, keyed to the pane the input went to; pointer motion does not arm it. `0` paces every frame. |
+| `PHUX_TTY_READINESS=0` | Client only. Read the outer terminal through tokio's blocking-pool stdin instead of reactor readiness on its own non-blocking handle. Use it when a pollable terminal misbehaves; unpollable ones fall back automatically. |
 
 The **canonical server log** is `$XDG_STATE_HOME/phux/server.log` (falls
-back to `$HOME/.local/state/phux/`). Every spawn path writes the same
-file: the auto-spawned daemon redirects its stderr there, and the
-`phux service` unit points its log capture at it. Both resolve the path
-through `phux_server::telemetry::server_log_path`, so the writers and
-every reader (`phux logs`, `phux service logs`) can never disagree about
-where it is.
-
-The **client default log path** (when `PHUX_LOG` is unset) is
-`$XDG_STATE_HOME/phux/client-<pid>.log` (falls back to
-`$HOME/.local/state/phux/`). The pid scope keeps concurrent clients from
-interleaving. Level defaults to `phux=info,warn`, so crashes and warnings
-are always captured without flooding the file.
-
-The non-blocking file writer offloads I/O to a background thread; its
-`WorkerGuard` is held for the lifetime of `main` and flushes when it is
-dropped on a normal exit. An `abort` skips that Drop, which is why the
-panic hook writes its crash record synchronously as well (see "Crash
-capture").
+back to `$HOME/.local/state/phux/`). The auto-spawned daemon and the
+`phux service` unit both write it, and every reader resolves it through
+`phux_server::telemetry::server_log_path`. The **client default log** (when
+`PHUX_LOG` is unset) is `client-<pid>.log` in the same directory, at
+`phux=info,warn`. The non-blocking file writer flushes on normal exit; an
+`abort` skips that, which is why the panic hook also writes synchronously.
 
 ### Sensitive data in logs
 
@@ -242,41 +194,26 @@ spilling the secret it carried.
 
 ### Remote WebSocket pairing admissions
 
-The default log keeps remote pairing diagnosis visible without making
-request material visible. Its decision tree is:
+Remote pairing diagnosis is visible in the default log without exposing
+request material:
 
 - Every peer-caused TLS, pairing-authentication, or WebSocket-upgrade
-  rejection produces one `DEBUG` event naming its safe `stage` and
-  `source_ip`. A listener-wide limiter also emits an immediate `WARN`,
-  then at most one `WARN` per 60 seconds while further rejections arrive.
-  A later warning carries the latest safe stage/source IP and
-  `suppressed_count` since the previous warning. The limiter has one
-  saturating counter, not a per-IP map, so hostile source churn cannot
-  grow memory or flood the default log. These handled events never fall
-  through to the accept loop's default `ERROR`, so they are not
-  duplicated.
-- Listener and resource failures the WebSocket listener did not create
-  (such as TCP accept exhaustion), and accept errors from listeners using
-  the default disposition, retain the shared accept loop's single `ERROR`
-  event.
-- Peer rejection errors are a concrete safe type recognized without
-  parsing error text. They retain stage diagnosis but exclude the
-  ephemeral port and discard the underlying TLS/HTTP/WebSocket error so
-  URIs, headers, certificates, and tokens cannot be formatted
-  accidentally. Missing, malformed, unknown, and revoked tokens all use
-  the same pairing-authentication text and the same generic HTTP 401
-  response.
-- A successfully token-authenticated WebSocket admission produces one
-  `INFO` event with only `transport=ws`, `source_ip`, and
-  `credential_id`. The stable, non-secret credential ID correlates
-  reconnects and rotated generations; it is not derived from or equal to
-  the bearer token.
-- Anonymous loopback WebSocket admissions and admissions on other
-  transports retain the shared `DEBUG` connection event; they gain no
-  default-visible identity event.
+  rejection is one `DEBUG` event with a safe `stage` and `source_ip`. A
+  single listener-wide limiter (no per-IP map, so source churn cannot grow
+  memory) also emits a `WARN` at most once per 60 seconds with the latest
+  stage and a `suppressed_count`.
+- Rejection errors are a concrete safe type: they drop the ephemeral port
+  and the underlying TLS/HTTP/WebSocket error so URIs, headers,
+  certificates, and tokens cannot be formatted. Missing, malformed, unknown,
+  and revoked tokens share one message and one HTTP 401.
+- Listener and resource failures (such as accept exhaustion) keep the shared
+  accept loop's single `ERROR`.
+- A token-authenticated WebSocket admission is one `INFO` event with only
+  `transport=ws`, `source_ip`, and the non-secret `credential_id`. Loopback
+  and other-transport admissions stay at `DEBUG`.
 
-These are connection diagnostics, not a durable access or per-operation
-audit log. `PeerIdentity` is never logged wholesale.
+These are connection diagnostics, not an audit log. `PeerIdentity` is never
+logged wholesale.
 
 ### Crash capture
 
@@ -288,24 +225,13 @@ hook's stderr backtrace would vanish into the dead alt screen). The
 `tracing`, so a daemonized server's crash lands in the log file. Both
 honor `RUST_BACKTRACE` for trace verbosity.
 
-The server hook is armed by the **long-running daemons only** — `phux
-server` and `phux relay run` install it on entry, not `telemetry::init`.
-A one-shot CLI verb shares that subscriber but keeps the default panic
-hook: when it was armed process-wide, a CLI that died reported itself as
-a `server panic`, sending triage after a server that never faltered.
-Nothing in a one-shot verb needs a durable crash record, because the
-operator is reading its stderr as it happens.
-
-The server hook's `tracing` event goes into the non-blocking appender's
-queue, and the release profile is `panic = "abort"` — no unwind, so the
-`WorkerGuard`'s flush-on-Drop never runs and a queued record would die in
-the worker's buffer. The hook therefore also appends the same facts to
-`PHUX_LOG` **synchronously** (mode `0o600`, like every other sink) before
-returning. Under unwind the queued copy may land too, so a debug build
-can show the panic twice. Release builds keep symbols and line tables
-(`[profile.release]` sets `debug = "line-tables-only"`, `strip =
-"none"`), so the logged backtrace resolves to function names and source
-lines rather than bare addresses.
+The server hook is armed only by the long-running daemons (`phux server`,
+`phux relay run`); one-shot CLI verbs keep the default hook so a CLI crash is
+not misreported as a server panic. Because release builds use
+`panic = "abort"`, the server hook also appends the record to `PHUX_LOG`
+synchronously (mode `0o600`); a debug build may therefore show it twice.
+Release builds keep line tables (`debug = "line-tables-only"`,
+`strip = "none"`) so backtraces resolve to functions and lines.
 
 ### Blast radius of a panic
 
@@ -495,37 +421,18 @@ throttled to one start per 30s:
 | throttle | `ThrottleInterval 30` | `RestartSec=30s` |
 | give up after | *(no such knob)* | `StartLimitBurst 5` / `StartLimitIntervalSec 180s` |
 
-Throttling is not giving up: `ThrottleInterval` and `RestartSec` set a
-*minimum spacing* between starts, not a limit on how many. systemd's
-start limit supplies the missing bound, sized so five throttled starts
-fit inside the window — below that the limit is unreachable and the unit
-retries forever. launchd has no equivalent, which is why
-`phux service install` refuses up front when a server already holds the
-socket rather than relying on the supervisor to notice a start that can
-never succeed.
-
-Two consequences worth knowing:
+`ThrottleInterval` and `RestartSec` only space starts; systemd's start limit
+is the bound, and launchd has none, which is why `phux service install`
+refuses when a server already holds the socket.
 
 - **A deliberately stopped server stays stopped.** `phux kill --server`
-  asks the server to stop over the wire, so it exits *cleanly* and the
-  supervisor leaves it alone. Earlier units used `KeepAlive: true`, which
-  restarts on *every* exit — a server could not be stopped at all. A
-  server killed by a signal still counts as an abnormal exit under
-  launchd and comes back, which is why the stop is a command rather than
-  a `kill(1)`. Note the next `phux attach`/`phux new` auto-spawns a fresh
-  server: this stops the current one, it does not disable phux.
-- **A crash-loop is visible.** Every server start appends a record to
-  `$XDG_STATE_HOME/phux/server-starts.log`, and `phux doctor` *fails* the
-  `server-health` check when the server has started 5+ times in an hour:
-
-  ```
-  fail server-health  the server started 9 times in the last 60 minutes — it is crash-looping
-                      -> something is killing the server on startup; the reason is in …/server.log
-  ```
-
-  A supervised server that dies and restarts otherwise looks identical to
-  one that never fell over — the socket answers either way. Counting the
-  restarts is what makes the difference legible.
+  stops the server over the wire, so it exits cleanly and the supervisor
+  leaves it alone. A server killed by a signal counts as abnormal under
+  launchd and comes back. The next `phux attach`/`phux new` auto-spawns a
+  fresh server.
+- **A crash-loop is visible.** Every server start appends to
+  `$XDG_STATE_HOME/phux/server-starts.log`, and `phux doctor` *fails*
+  `server-health` at 5+ starts in an hour, pointing at `server.log`.
 
 `phux doctor` also warns when the installed unit predates this policy;
 re-running `phux service install` replaces it.
@@ -583,18 +490,12 @@ takes over at whichever comes first: the next login or reboot, or the
 first `phux` command after the running server exits, which starts the
 supervised server instead of auto-spawning an unsupervised one.
 
-What `--adopt` deliberately does **not** do is put the currently running
-process under restart supervision. Nothing can: launchd has no way to
-place an existing process under a job, and systemd's scope units track
-processes without restarting them. Adoption therefore transfers the
-supervision, not the process — the panes survive because the running
-server is never touched, not because they are handed over. `phux service
-status` reports `state armed` while an adoption is pending, and
-`phux service uninstall` cancels it.
-
-Over a socket with nothing listening, `--adopt` is an ordinary install.
-The flag means "never stop a running server to install", so it is always
-safe to pass.
+`--adopt` transfers supervision, not the process: neither launchd nor
+systemd can put an existing process under restart supervision, so the panes
+survive because the running server is never touched. `phux service status`
+reports `state armed` while adoption is pending, `phux service uninstall`
+cancels it, and over a socket with nothing listening `--adopt` is an
+ordinary install.
 
 ### Scheduling class
 
@@ -605,16 +506,11 @@ PTY reader and writer, the input lane, the client's attach loop and
 stdout writer — requests `QOS_CLASS_USER_INTERACTIVE` for itself at start
 (no privilege needed), and the launchd unit `phux service install`
 writes declares `ProcessType` `Interactive`. `phux perf` reports the
-result as `proc.sched_interactive` (`1` granted, `0` not). Until
-2026-09-02 the unit said `Background`, which asked launchd to throttle
-exactly this process; under a full-CPU load (a cargo build, a fleet of
-agents) that turned a 0.5 ms keystroke echo p99 into 15-60 ms with the
-server itself using well under one percent of a core. `phux service
-reconcile` (run automatically after an update) rewrites an installed
-`Background` unit to `Interactive`; the change takes effect when launchd
-next starts the server. Linux has no unprivileged equivalent (lowering
-`nice` needs `CAP_SYS_NICE`), so the request is a no-op there and the
-gauge reads `0`.
+result as `proc.sched_interactive` (`1` granted, `0` not). A `Background`
+unit lets launchd throttle the keystroke path under load; `phux service
+reconcile` (run after an update) rewrites an installed `Background` unit to
+`Interactive`, effective at the next launchd start. Linux has no unprivileged
+equivalent, so the request is a no-op there and the gauge reads `0`.
 
 ## Service-managed pane environment
 
@@ -640,57 +536,29 @@ when present, spawns every command-less pane's shell in its platform
 | `fish`       | `--login`  |
 | `sh`         | `-l`       |
 
-A `defaults.shell` naming anything else gets no login flag at all, even
-under a service-managed server — an unrecognized program has unknown
-flag semantics, and a pane that fails to spawn is a worse outcome than
-one whose profile did not run.
-
-**A hand-started server is unaffected.** `phux server` run directly from
-a terminal, or auto-spawned by a bare `phux`/`phux new`, never carries
-the marker and keeps spawning plain, non-login panes exactly as before —
-that environment is already profile-initialized, and re-sourcing it a
-second time is not idempotent for every setup (`nvm`/`rbenv`/`direnv`
-guards misfiring, not just PATH duplication). This is why the marker is
-something the installer writes and the server reads back, rather than a
-guess from environment shape.
-
-**Applying the fix to an already-installed service** requires rerunning
-`phux service install`: the marker is only in units generated after this
-change, and the server reads it once, at its own startup.
-
-`phux service install` also never freezes the installing shell's own
-transient `PATH` into the generated unit — running the installer from
-inside `nix develop` or direnv leaves the unit exactly as portable as
-running it from a plain shell. The init system's own `PATH` reaches the
-server unmodified; login-shell treatment is how a *pane* recovers the
-profile's `PATH`, not a baked-in snapshot of the installer's.
+Any other `defaults.shell` gets no login flag, since its flag semantics are
+unknown. A hand-started or auto-spawned server never carries the marker and
+keeps plain, non-login panes: that environment is already
+profile-initialized, and re-sourcing is not idempotent for every setup
+(`nvm`/`rbenv`/`direnv`). The server reads the marker once at startup, so an
+older unit needs `phux service install` rerun. The installer never freezes
+its own transient `PATH` (for example from `nix develop`) into the unit.
 
 ## Workspace continuity and update survival
 
 phux has two different continuity mechanisms. They are intentionally
 separate:
 
-- **Restart restore:** `phux workspace save` writes a typed JSON archive
-  of the running workspace, reading each session's real split tree from
-  its L3 layout envelope (`phux.tui.layout/v1/<session-id>`, or the key
-  named by `save --projection KEY`) rather than from `GET_STATE`, which
-  never carries one; a session with nothing stored there falls back to a
-  bare one-pane-per-window projection, as every session did before this
-  worked. `phux workspace restore ARCHIVE` reads that archive and creates
-  any missing session names on a running server. Each restored session
-  starts a fresh PTY process per archived pane: the archived `command` is
-  used when present, an archived native agent session is resumed when it
-  still resolves to the plugin that owns it, and otherwise phux starts
-  the default shell in the archived cwd. This is a restart/recreate
-  path, not a live handoff path. Restore replays the archived split tree
-  — every captured pane, not only the session's seed process — into the
-  restored session's default layout envelope with fresh window
-  identities, confirmed with a read-back; a window the archive captured
-  with no split geometry still places every one of its panes, in a
-  simple chain. A session whose restore fails partway through is rolled
-  back on its own (every pane created for it, killed) and reported by
-  name in the summary; the rest of the archive still restores, and the
-  command exits non-zero only if at least one session failed
+- **Restart restore:** `phux workspace save` writes a typed JSON archive of
+  the running workspace, reading each session's split tree from its L3 layout
+  envelope (`phux.tui.layout/v1/<session-id>`, or `save --projection KEY`);
+  a session with none falls back to one pane per window. `phux workspace
+  restore ARCHIVE` recreates missing sessions on a running server with a fresh
+  PTY per archived pane (the archived `command`, a resumable native agent
+  session, or the default shell in the archived cwd) and replays the split
+  tree with fresh window identities, confirmed by read-back. A session that
+  fails partway is rolled back and named; the rest still restores, and the
+  command exits non-zero if any session failed
   ([ADR-0129](./adr/0129-projections-are-named-by-key.md)).
 - **Live update handoff:** `phux upgrade` keeps existing PTYs alive
   across a server binary re-exec. `phux update` is the user-facing verb

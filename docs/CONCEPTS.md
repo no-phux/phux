@@ -100,13 +100,8 @@ Scopes, attach roles, and approval gates are shipped: scope enforcement at
 dispatch ([ADR-0116](adr/0116-workload-auth-is-mtls.md)), `VIEWER`/`PRIMARY`
 attach intent on the lease ([ADR-0127](adr/0127-attach-roles-are-lease-intent.md)),
 and server-held approvals for dangerous actions
-([ADR-0128](adr/0128-approvals-are-held-actions.md)) all have nothing left
-open beyond the transitional posture row above. The next program,
-PHA-333/334 (named streams, `MULTI_STREAM`, a browser kind), composes on
-top of this phase's work rather than reopening it: a stream label becomes
-one more `Subject` dimension for the scope guard, a browser `navigate` is
-one more dangerous row in the approval catalog, and the keyed-operation
-dedupe substrate is the shared service that program already asks for.
+([ADR-0128](adr/0128-approvals-are-held-actions.md)); nothing is open beyond
+the transitional posture row above.
 
 ## Where to go next
 
