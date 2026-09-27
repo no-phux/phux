@@ -403,6 +403,19 @@ const fn ready<'a>(
     }
 }
 
+const fn closed(terminal_id: &ResourceId) -> KernelInput<'_> {
+    KernelInput::ResourceClosed {
+        terminal_id,
+        exit_status: None,
+        signal: None,
+        reason: CloseReason::Unknown,
+    }
+}
+
+const fn event_input<'a>(terminal_id: &'a ResourceId, event: &'a AgentEvent) -> KernelInput<'a> {
+    KernelInput::Event { terminal_id, event }
+}
+
 const fn output<'a>(
     terminal_id: &'a ResourceId,
     stream_id: StreamId,
@@ -429,17 +442,7 @@ fn release_terminal_preserves_initial_attach_inventory_and_barrier() {
         .unwrap();
     assert!(!kernel.release_terminal(&id));
     assert!(kernel.active_attach_contains(&id));
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &id,
-                exit_status: None,
-                signal: None,
-                reason: CloseReason::Unknown,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    kernel.update(closed(&id), &mut effects).unwrap();
     assert!(!kernel.release_terminal(&id));
     assert!(kernel.closed.contains(&id));
     kernel.update(attach_ready(10), &mut effects).unwrap();
@@ -496,17 +499,7 @@ fn release_terminal_reclaims_churn_and_allows_explicit_subscription_replacement(
         assert!(kernel.closed.is_empty());
         // Same ID can acquire a new explicitly admitted subscription.
         begin(&mut kernel, &id, stream(2), bootstrap(1), 0, &mut effects);
-        kernel
-            .update(
-                KernelInput::ResourceClosed {
-                    terminal_id: &id,
-                    exit_status: None,
-                    signal: None,
-                    reason: CloseReason::Unknown,
-                },
-                &mut effects,
-            )
-            .unwrap();
+        kernel.update(closed(&id), &mut effects).unwrap();
         assert!(kernel.closed.contains(&id));
         assert!(kernel.release_terminal(&id));
         assert!(kernel.terminals.is_empty());
@@ -546,17 +539,7 @@ fn close_transfers_the_final_replica_without_reopening_the_terminal() {
         .unwrap();
     kernel.set_retain_replica_on_close(&id, true);
 
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &id,
-                exit_status: None,
-                signal: None,
-                reason: CloseReason::Unknown,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    kernel.update(closed(&id), &mut effects).unwrap();
 
     assert!(kernel.published(&id).is_none());
     assert!(matches!(
@@ -578,17 +561,7 @@ fn close_drops_the_final_replica_unless_retention_is_requested() {
     let id = terminal(1);
     let mut effects = EffectBuffer::new();
     publish_direct(&mut kernel, &id, stream(7), bootstrap(3), 0, &mut effects);
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &id,
-                exit_status: None,
-                signal: None,
-                reason: CloseReason::Unknown,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    kernel.update(closed(&id), &mut effects).unwrap();
     assert!(kernel.take_closed_replica(&id).is_none());
 }
 
@@ -2230,15 +2203,7 @@ fn two_pane_attach_barrier_accepts_one_ready_and_one_close() {
     );
     assert!(effects.is_empty());
     kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &closed_terminal,
-                exit_status: None,
-                signal: None,
-                reason: CloseReason::Unknown,
-            },
-            &mut effects,
-        )
+        .update(closed(&closed_terminal), &mut effects)
         .unwrap();
     assert_eq!(
         effects.as_slice(),
@@ -3155,17 +3120,7 @@ fn replacement_attach_close_flushes_pending_removal_at_barrier() {
         )
         .unwrap();
     assert!(kernel.published(&terminal_id).is_some());
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &terminal_id,
-                exit_status: None,
-                signal: None,
-                reason: CloseReason::Unknown,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    kernel.update(closed(&terminal_id), &mut effects).unwrap();
     assert_eq!(
         effects.as_slice(),
         &[KernelEffect::Status(KernelStatus::Exited {
@@ -3645,17 +3600,7 @@ fn agent_session_bootstraps_into_a_typed_log_and_never_a_replica() {
     ));
 
     // Closing the session drops the view; its kind is still known.
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &agent,
-                exit_status: None,
-                signal: None,
-                reason: CloseReason::Unknown,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    kernel.update(closed(&agent), &mut effects).unwrap();
     assert!(
         effects.is_empty(),
         "closing a record stream removes no grid, and an AgentSession's exit \
@@ -4098,13 +4043,7 @@ fn cwd_changed_event_becomes_a_cwd_status() {
         cwd: "/srv/app".to_owned(),
     };
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &id,
-                event: &event,
-            },
-            &mut effects,
-        )
+        .update(event_input(&id, &event), &mut effects)
         .unwrap();
     assert_eq!(
         effects.as_slice(),
@@ -4126,13 +4065,7 @@ fn command_boundaries_become_statuses_in_order() {
 
     let started = AgentEvent::CommandStarted;
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &id,
-                event: &started,
-            },
-            &mut effects,
-        )
+        .update(event_input(&id, &started), &mut effects)
         .unwrap();
     assert_eq!(
         effects.as_slice(),
@@ -4143,13 +4076,7 @@ fn command_boundaries_become_statuses_in_order() {
 
     let finished = AgentEvent::CommandFinished { exit_code: Some(1) };
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &id,
-                event: &finished,
-            },
-            &mut effects,
-        )
+        .update(event_input(&id, &finished), &mut effects)
         .unwrap();
     assert_eq!(
         effects.as_slice(),
@@ -4163,13 +4090,7 @@ fn command_boundaries_become_statuses_in_order() {
     // is a silent no-op, not an error and not an effect.
     let bell = AgentEvent::Bell;
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &id,
-                event: &bell,
-            },
-            &mut effects,
-        )
+        .update(event_input(&id, &bell), &mut effects)
         .unwrap();
     assert!(effects.is_empty());
 }
@@ -4220,13 +4141,7 @@ fn terminal_control_exited_event_reports_status_without_closing_the_pane() {
         actor: None,
     };
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &id,
-                event: &event,
-            },
-            &mut effects,
-        )
+        .update(event_input(&id, &event), &mut effects)
         .unwrap();
     assert_eq!(
         effects.as_slice(),
@@ -4263,13 +4178,7 @@ fn terminal_control_lease_change_after_exit_does_not_reemit_status() {
         actor: None,
     };
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &id,
-                event: &exited,
-            },
-            &mut effects,
-        )
+        .update(event_input(&id, &exited), &mut effects)
         .unwrap();
     assert_eq!(
         effects.as_slice(),
@@ -4295,13 +4204,7 @@ fn terminal_control_lease_change_after_exit_does_not_reemit_status() {
         actor: None,
     };
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &id,
-                event: &unrelated_signal,
-            },
-            &mut effects,
-        )
+        .update(event_input(&id, &unrelated_signal), &mut effects)
         .unwrap();
     assert!(
         effects.is_empty(),
@@ -4326,13 +4229,7 @@ fn retained_exit_then_resource_closed_reports_status_only_once() {
         actor: None,
     };
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &id,
-                event: &exited,
-            },
-            &mut effects,
-        )
+        .update(event_input(&id, &exited), &mut effects)
         .unwrap();
     assert_eq!(
         effects.as_slice(),
@@ -4384,13 +4281,7 @@ fn event_for_an_untracked_or_already_closed_terminal_is_ignored() {
     // pane.
     let unknown = terminal(99);
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &unknown,
-                event: &event,
-            },
-            &mut effects,
-        )
+        .update(event_input(&unknown, &event), &mut effects)
         .unwrap();
     assert!(
         effects.is_empty(),
@@ -4399,33 +4290,14 @@ fn event_for_an_untracked_or_already_closed_terminal_is_ignored() {
 
     // A terminal that has since closed must also be ignored, even though
     // `self.kinds` still answers `resource_kind` for it.
-    let closed = terminal(1);
+    let gone = terminal(1);
     kernel
-        .update(
-            attach_started(1, std::slice::from_ref(&closed)),
-            &mut effects,
-        )
+        .update(attach_started(1, std::slice::from_ref(&gone)), &mut effects)
         .unwrap();
-    kernel
-        .update(
-            KernelInput::ResourceClosed {
-                terminal_id: &closed,
-                exit_status: None,
-                signal: None,
-                reason: CloseReason::Unknown,
-            },
-            &mut effects,
-        )
-        .unwrap();
+    kernel.update(closed(&gone), &mut effects).unwrap();
     effects.clear();
     kernel
-        .update(
-            KernelInput::Event {
-                terminal_id: &closed,
-                event: &event,
-            },
-            &mut effects,
-        )
+        .update(event_input(&gone, &event), &mut effects)
         .unwrap();
     assert!(
         effects.is_empty(),

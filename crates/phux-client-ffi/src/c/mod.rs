@@ -34,10 +34,6 @@ use std::ptr;
 use client::{Client, Limits};
 use error::{BridgeError, bytes_in, check_struct, outbound_bytes_in, terminal_id_in};
 #[cfg(test)]
-use phux_client_core::engine::CanonicalGeometry;
-#[cfg(test)]
-use phux_client_core::session::KernelInput;
-#[cfg(test)]
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::ResourceKind;
 use phux_protocol::SessionId;
@@ -790,13 +786,10 @@ fn advertised_client_caps(client: &Client) -> phux_protocol::ClientCapabilities 
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::needless_pass_by_value,
-    clippy::too_many_lines,
-    reason = "compatibility helper mirrors every borrowed KernelInput variant in tests"
-)]
-fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(), BridgeError> {
-    use phux_client_runtime::engine::EngineEvent;
+fn apply_engine_event(
+    client: &mut Client,
+    event: phux_client_runtime::engine::EngineEvent,
+) -> Result<(), BridgeError> {
     if client.control().engine().is_none() {
         client.install_profile(
             client
@@ -806,158 +799,6 @@ fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(),
                 .ok_or_else(|| BridgeError::state("invalid test bootstrap limits"))?,
         );
     }
-    let event = match input {
-        KernelInput::AttachStarted {
-            attach_id,
-            terminals,
-        } => EngineEvent::AttachStarted {
-            attach_id,
-            terminals: terminals.to_vec(),
-        },
-        KernelInput::AttachReady { attach_id } => EngineEvent::AttachReady { attach_id },
-        KernelInput::BootstrapBegin {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            profile,
-            geometry,
-            base_seq,
-        } => EngineEvent::BootstrapBegin {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            profile,
-            cols: geometry.cols,
-            rows: geometry.rows,
-            base_seq,
-        },
-        KernelInput::BootstrapChunk {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload,
-        } => EngineEvent::BootstrapChunk {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload: payload.to_vec(),
-        },
-        KernelInput::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor,
-        } => EngineEvent::BootstrapReady {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            history_cursor: history_cursor.map(<[u8]>::to_vec),
-        },
-        KernelInput::HistoryPage {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            page_seq,
-            rows,
-            payload,
-            cursor,
-            next_cursor,
-        } => EngineEvent::HistoryPage {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            page_seq,
-            rows,
-            payload: payload.to_vec(),
-            cursor: cursor.to_vec(),
-            next_cursor: next_cursor.map(<[u8]>::to_vec),
-        },
-        KernelInput::HistoryTombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            reason,
-        } => EngineEvent::HistoryTombstone {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            cursor: cursor.to_vec(),
-            reason,
-        },
-        KernelInput::HistoryRejected {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            reason,
-            required_bytes,
-            required_rows,
-        } => EngineEvent::HistoryRejected {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            cursor: cursor.to_vec(),
-            reason,
-            required_bytes,
-            required_rows,
-        },
-        KernelInput::ResourceOutput {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq,
-            payload,
-        } => EngineEvent::Output {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            seq,
-            bytes: payload.to_vec(),
-        },
-        KernelInput::Tombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            reason,
-            last_valid_seq,
-        } => EngineEvent::Tombstone {
-            terminal_id: terminal_id.clone(),
-            stream_id,
-            bootstrap_id,
-            reason,
-            last_valid_seq,
-        },
-        KernelInput::ResourceClosed {
-            terminal_id,
-            exit_status,
-            signal,
-            reason,
-        } => EngineEvent::Closed {
-            terminal_id: terminal_id.clone(),
-            exit_status,
-            signal,
-            reason,
-        },
-        KernelInput::Event { terminal_id, event } => EngineEvent::Agent {
-            terminal_id: terminal_id.clone(),
-            event: event.clone(),
-        },
-        KernelInput::AgentSessionDeclared(declaration) => EngineEvent::AgentSessionDeclared {
-            terminal_id: declaration.terminal_id.clone(),
-            parent: declaration.parent.cloned(),
-            provider: declaration.provider.map(str::to_owned),
-            native_id: declaration.native_id.map(str::to_owned),
-            state: declaration.state.map(str::to_owned),
-        },
-        KernelInput::Action(_) => {
-            return Err(BridgeError::state(
-                "test helper does not apply input actions",
-            ));
-        }
-    };
     client
         .control()
         .apply_engine_event(event)
@@ -1816,6 +1657,7 @@ mod tests {
     mod status_effects;
 
     use super::*;
+    use phux_client_runtime::engine::EngineEvent;
     use phux_protocol::caps::ServerCapabilities;
     use phux_protocol::wire::frame::DetachReason;
     use std::ffi::c_void;
@@ -2977,11 +2819,11 @@ mod tests {
             (*client).inner.attach_queued = true;
         }
         let authorized = [terminal_id.clone()];
-        apply_kernel_input(
+        apply_engine_event(
             unsafe { &mut (*client).inner },
-            KernelInput::AttachStarted {
+            EngineEvent::AttachStarted {
                 attach_id: 7,
-                terminals: &authorized,
+                terminals: authorized.to_vec(),
             },
         )
         .expect("seed active ATTACH inventory");
@@ -3040,11 +2882,11 @@ mod tests {
             (*client).inner.protocol_ready = true;
             (*client).inner.attach_queued = true;
         }
-        apply_kernel_input(
+        apply_engine_event(
             unsafe { &mut (*client).inner },
-            KernelInput::AttachStarted {
+            EngineEvent::AttachStarted {
                 attach_id: 7,
-                terminals: &authorized,
+                terminals: authorized.to_vec(),
             },
         )
         .expect("seed active ATTACH inventory");
@@ -3139,48 +2981,49 @@ mod tests {
         let inner = unsafe { &mut (*client).inner };
         inner.protocol_ready = true;
         inner.attach_queued = true;
-        apply_kernel_input(
+        apply_engine_event(
             inner,
-            KernelInput::AttachStarted {
+            EngineEvent::AttachStarted {
                 attach_id: 7,
-                terminals: &authorized,
+                terminals: authorized.to_vec(),
             },
         )
         .expect("start attach");
-        apply_kernel_input(
+        apply_engine_event(
             inner,
-            KernelInput::BootstrapBegin {
-                terminal_id: &terminal_id,
+            EngineEvent::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
                 stream_id,
                 bootstrap_id,
                 profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-                geometry: CanonicalGeometry::new(80, 24).expect("geometry"),
+                cols: 80,
+                rows: 24,
                 base_seq: 0,
             },
         )
         .expect("begin bootstrap");
-        apply_kernel_input(
+        apply_engine_event(
             inner,
-            KernelInput::BootstrapChunk {
-                terminal_id: &terminal_id,
+            EngineEvent::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
                 stream_id,
                 bootstrap_id,
                 chunk_seq: 0,
-                payload: b"\x1b[?1000h",
+                payload: b"\x1b[?1000h".to_vec(),
             },
         )
         .expect("set DEC mouse mode");
-        apply_kernel_input(
+        apply_engine_event(
             inner,
-            KernelInput::BootstrapReady {
-                terminal_id: &terminal_id,
+            EngineEvent::BootstrapReady {
+                terminal_id: terminal_id.clone(),
                 stream_id,
                 bootstrap_id,
                 history_cursor: None,
             },
         )
         .expect("publish terminal");
-        apply_kernel_input(inner, KernelInput::AttachReady { attach_id: 7 })
+        apply_engine_event(inner, EngineEvent::AttachReady { attach_id: 7 })
             .expect("release attach barrier");
         inner.attach_queued = false;
         inner.attached = true;
@@ -3201,14 +3044,14 @@ mod tests {
         assert!(enabled);
         assert_eq!(unsafe { &*client }.inner.selection_buf.as_ptr(), borrowed);
 
-        apply_kernel_input(
+        apply_engine_event(
             unsafe { &mut (*client).inner },
-            KernelInput::ResourceOutput {
-                terminal_id: &terminal_id,
+            EngineEvent::Output {
+                terminal_id: terminal_id.clone(),
                 stream_id,
                 bootstrap_id,
                 seq: 1,
-                payload: b"\x1b[?1000l",
+                bytes: b"\x1b[?1000l".to_vec(),
             },
         )
         .expect("reset DEC mouse mode");
