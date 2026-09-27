@@ -1,29 +1,10 @@
-//! The ssh form of `phux host add`, pinned at the binary level
-//! (ADR-0122; formerly `phux host enroll`, phux-i0e8.12.7).
-//!
-//! These tests drive the REAL binary through both role tails, network-free:
-//!
-//!   * the full ssh path runs against a fake `ssh` via `$PHUX_SSH` — the
-//!     same seam the federation hub's satellite dialer uses — which answers
-//!     `phux --version`, `phux service install`, `phux server --ensure`,
-//!     `phux pair --json`, `phux upgrade`, and `ssh -G` from a script and
-//!     logs every call;
-//!   * the direct-route probe dials TEST-NET-3 addresses that can never
-//!     answer, under a short `PHUX_DIRECT_PROBE_TIMEOUT_MS`, so every run
-//!     ends on the `ssh://` fallback with the candidate kept as `direct`.
-//!     The path where a probe answers needs a real listener and lives in
-//!     the e2e lane (`host_add_e2e.rs`);
-//!   * `--ssh-only` must never contact the host at all, so its `$PHUX_SSH`
-//!     points at a path that does not exist: any ssh attempt fails the run.
-//!
-//! What they pin: each role registers into ITS registry (`[[remote]]` vs
-//! `[[satellites]]` in the one config.toml) with the pairing token under
-//! the role-correct state directory (`remotes/` vs `satellites/`); the
-//! order of the ssh steps; the `--adopt` retry when a server is already
-//! live; the one-time legacy token-store migration; the three failure
-//! transcripts (ssh unreachable, no phux, no direct route); `--ssh-only`
-//! registers `ssh://HOST` and leaves no credential behind; and the `--json`
-//! success document is the documented `schema_version`-1 `"host"` wrapper.
+//! The ssh form of `phux host add` (ADR-0122), network-free: a fake `ssh`
+//! via `$PHUX_SSH` answers the remote verbs and logs every call, and the
+//! direct-route probe dials TEST-NET-3 under a short timeout so every run
+//! ends on the `ssh://` fallback. `--ssh-only` points `$PHUX_SSH` at a
+//! missing path, so any ssh attempt fails. Pins per-role registries and token
+//! dirs, the ssh step order, `--adopt`, legacy token-store migration, the
+//! failure transcripts, and the `--json` document.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -731,21 +712,11 @@ fn ssh_only_registers_ssh_endpoint_without_contacting_the_host() {
     );
 }
 
-/// `phux host enroll` still works as a hidden alias of the ssh form, and
 /// `phux machine` is a visible alias of `phux host` — the word people reach
 /// for.
 #[test]
-fn enroll_and_machine_spellings_reach_the_same_verb() {
+fn machine_alias_reaches_the_host_verb() {
     let never_ssh = Path::new("/nonexistent/phux-test-ssh");
-
-    let home = EnrollHome::new();
-    let (code, _stdout, stderr) = home.run(&["host", "enroll", "me@mini", "--ssh-only"], never_ssh);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stderr.contains("`phux host enroll` is deprecated") && stderr.contains("phux host add"),
-        "the alias warns toward its replacement: {stderr}"
-    );
-    assert!(home.config().contains("endpoint = \"ssh://me@mini\""));
 
     let home = EnrollHome::new();
     let (code, stdout, stderr) = home.run(&["machine", "add", "me@mini", "--ssh-only"], never_ssh);

@@ -1,25 +1,12 @@
-//! `phux host` — one visible namespace over the two machine registries
-//! (ADR-0066, ADR-0122).
+//! `phux host` — one namespace over the two machine registries (ADR-0066,
+//! ADR-0122). `--role remote` (default) operates on `[[remote]]`, servers this
+//! machine dials; `--role satellite` on `[[satellites]]`, peers a hub dials for
+//! its users. Storage stays split along that trust direction; everything
+//! delegates to [`super::remote`] and [`super::satellite`].
 //!
-//! "Register another machine" is one user intention that the CLI used to
-//! fork into two verb trees (`phux remote` and `phux satellite`) by which
-//! trust direction the entry encodes. This module absorbs that split into a
-//! `--role remote|satellite` axis (default `remote`) while the *storage*
-//! stays deliberately split: `--role remote` operates on `[[remote]]` (a
-//! server this consumer dials for itself), `--role satellite` on
-//! `[[satellites]]` (a peer a hub dials for its users). Everything delegates
-//! to the sibling registry modules — [`super::remote`] and
-//! [`super::satellite::registry`] — so the trust boundary the config schema
-//! defends is never crossed here.
-//!
-//! `phux host add` is the one front door (ADR-0122). Given `[USER@]HOST` it
-//! sets the machine up over ssh end to end — confirms phux is there, starts
-//! and supervises its server, pairs, dials the direct routes, and registers
-//! the first one that answers ([`super::enroll::enroll_over_ssh`]). Given a
-//! `NAME ENDPOINT` pair or an endpoint URI it registers what it is told,
-//! which is the form for credentials minted elsewhere. `phux host enroll`
-//! was the ssh form's old spelling and survives one release cycle as a
-//! hidden alias.
+//! `phux host add [USER@]HOST` sets a machine up over ssh end to end
+//! ([`super::enroll::enroll_over_ssh`]); `NAME ENDPOINT` or an endpoint URI
+//! registers credentials minted elsewhere.
 //!
 //! `host ls --json` emits one stable document (`schema_version` 1):
 //!
@@ -42,14 +29,10 @@
 //! }
 //! ```
 //!
-//! `enabled` is `null` for remotes (the schema has no enabled bit); `session`,
-//! `ssh`, and `direct` are `null` for satellites (a hub-dialed link has no
-//! arrival to attach and is never repaired over ssh). `ssh` and `direct`
-//! joined the document under the same `schema_version`: readers tolerate
-//! keys they do not know, so two more are not a break. `host add --json`
-//! wraps one such object under `"host"`; `host rm --json` emits
-//! `{"schema_version":1,"removed":{"name":..,"role":..}}`. Failures follow
-//! the shared JSON error contract in [`super::json_err`].
+//! `enabled` is `null` for remotes; `session`, `ssh`, and `direct` are `null`
+//! for satellites. `host add --json` wraps one such object under `"host"`;
+//! `host rm --json` emits `{"schema_version":1,"removed":{"name":..,"role":..}}`.
+//! Failures follow the shared JSON error contract in [`super::json_err`].
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -62,15 +45,11 @@ use super::enroll::{self, EnrollEvent, EnrollFailure, EnrollRequest, ServicePoli
 use super::json_err::{self, CliError, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
 use super::remote_target::RemoteTarget;
-use super::satellite::registry as satellite_registry;
+use super::satellite as satellite_registry;
 use super::service;
 
-/// Which machine registry a `phux host` operation applies to.
-///
-/// The two roles are stored apart on purpose: a *remote* is a server this
-/// machine dials on behalf of itself; a *satellite* is a peer a federation
-/// hub dials on behalf of its users. The flag names the trust direction, the
-/// verb stays one.
+/// Which machine registry a `phux host` operation applies to: the flag names
+/// the trust direction, the verb stays one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub(crate) enum HostRole {
     /// A server this machine attaches to — a `[[remote]]` entry.
@@ -103,8 +82,7 @@ impl HostRole {
     }
 }
 
-/// The flags `phux host add` takes, shared with its hidden `enroll`
-/// spelling so the two cannot drift.
+/// The flags `phux host add` takes.
 #[derive(Debug, Args)]
 pub(crate) struct AddOpts {
     /// Which registry the machine lands in: a server you attach to
@@ -197,16 +175,6 @@ pub(crate) enum HostAction {
         opts: AddOpts,
     },
 
-    /// Former spelling of `phux host add HOST`.
-    #[usage(hide)]
-    Enroll {
-        /// ssh destination, exactly as you would type it after `ssh`.
-        host: String,
-
-        #[usage(flatten)]
-        opts: AddOpts,
-    },
-
     /// List registered machines from both registries.
     ///
     /// With no `--role`, remotes and satellites are merged into one table
@@ -284,19 +252,6 @@ pub(crate) enum HostAction {
     },
 }
 
-/// The old spelling's deprecation row, whose `note` is the one line the
-/// alias prints. Read from the table rather than restated so the audit,
-/// the generated page, and the warning cannot disagree.
-fn enroll_deprecation_note() -> &'static str {
-    crate::deprecations::DEPRECATED
-        .iter()
-        .find(|row| row.old == "phux host enroll")
-        .map_or(
-            "phux: `phux host enroll` is deprecated and will be removed; use `phux host add`",
-            |row| row.note,
-        )
-}
-
 pub(crate) fn run_host(action: &HostAction) -> ExitCode {
     match action {
         HostAction::Add {
@@ -304,14 +259,6 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             endpoint,
             opts,
         } => run_add(target, endpoint.as_deref(), opts),
-        HostAction::Enroll { host, opts } => {
-            // Under `--json` stdout is the document and stderr the one-line
-            // error contract, so the note is suppressed on both.
-            if !opts.json.json {
-                eprintln!("{}", enroll_deprecation_note());
-            }
-            run_add(host, None, opts)
-        }
         HostAction::List { role, json } => run_list(*role, json.json),
         HostAction::Remove { name, role, json } => run_remove(name, *role, json.json),
         HostAction::Show { name, role, json } => run_show(name, *role, json.json),
@@ -393,11 +340,7 @@ impl HostRow {
 }
 
 /// Refuse a flag paired with the role it does not apply to, naming the
-/// remedy. Returns `None` when the pairing is coherent.
-///
-/// Enforced post-parse because the parser cannot make a flag's validity
-/// depend on another flag's *value* — and a silent ignore would be worse
-/// than either.
+/// remedy. Post-parse: the parser cannot condition a flag on another's value.
 fn role_flag_mismatch(role: HostRole, has_session: bool, has_disabled: bool) -> Option<CliError> {
     match role {
         HostRole::Satellite if has_session => Some(CliError::new(
@@ -429,10 +372,8 @@ enum AddMode {
 }
 
 impl AddMode {
-    /// `NAME ENDPOINT` and a bare endpoint URI are the manual form;
-    /// anything else is an ssh destination. A flag that belongs to the
-    /// other form is refused, with the form it belongs to named, rather
-    /// than silently ignored.
+    /// `NAME ENDPOINT` and a bare endpoint URI are the manual form; anything
+    /// else is an ssh destination. A flag from the other form is refused.
     fn classify(target: &str, endpoint: Option<&str>, opts: &AddOpts) -> Result<Self, CliError> {
         let manual = if let Some(endpoint) = endpoint {
             if opts.name.is_some() {
@@ -837,12 +778,8 @@ fn previous_enrollment(name: &str, role: HostRole) -> PreviousEnrollment {
     }
 }
 
-/// Set a registered remote up over ssh and rewrite its entry: the attach
-/// repair rung's way in, so `phux --remote` and `phux host add` register
-/// through one tail.
-///
-/// `narrate` receives each progress event; the caller prefixes it for its
-/// own output contract.
+/// Set a registered remote up over ssh and rewrite its entry, so the attach
+/// repair rung and `phux host add` register through one tail.
 pub(crate) fn enroll_remote_over_ssh(
     name: &str,
     req: &EnrollRequest<'_>,
@@ -873,13 +810,9 @@ fn local_hub_for(role: HostRole) -> Option<service::LocalHub> {
 }
 
 /// The role-specific tail of the ssh form: validate the entry, write the
-/// pairing token under the role-correct directory (`remotes/` vs
-/// `satellites/`), and register into the matching registry. `pairing` is
-/// `None` on the `--ssh-only` path.
-///
-/// Validation runs BEFORE the token hits disk: a rejected name (`../x`
-/// would escape the token directory via its join) or a quic endpoint
-/// missing its fingerprint must not leave an orphaned bearer token behind.
+/// pairing token under `remotes/` or `satellites/`, and register it
+/// (`pairing` is `None` for `--ssh-only`). Validation runs before the token
+/// hits disk so a rejected entry never leaves an orphaned bearer token.
 fn finish_enroll(
     role: HostRole,
     name: &str,
@@ -901,11 +834,8 @@ fn finish_enroll(
     )
 }
 
-/// [`finish_enroll`] with the state directory injectable, so a test can
-/// drive the validate-before-write ordering (phux-522) against a tempdir
-/// instead of the operator's real `$XDG_STATE_HOME` — this crate forbids
-/// `unsafe`, so `env::set_var` (unsafe under edition 2024) is not an option
-/// for pointing `phux_server::telemetry::state_dir()` elsewhere.
+/// [`finish_enroll`] with the state directory injectable, so tests can use a
+/// tempdir (`env::set_var` is unsafe and this crate forbids `unsafe`).
 #[allow(
     clippy::too_many_arguments,
     reason = "the tail takes every field of the entry it writes; a struct would only rename the list"
@@ -961,12 +891,8 @@ fn finish_enroll_in(
     }
 }
 
-/// Whether an enrolled entry stores its pairing token and pin.
-///
-/// The token is only meaningful for a dialed transport: an `ssh://` entry
-/// rides ssh trust and must not leave a stray credential on disk — unless
-/// it keeps a direct route to promote, which the token is for. Only the
-/// remote schema has a `direct` key; a satellite is never promoted.
+/// Whether an enrolled entry stores its token and pin: only for a dialed
+/// transport, or an `ssh://` remote that keeps a direct route to promote.
 fn keeps_credentials(role: HostRole, endpoint: &str, direct: Option<&str>) -> bool {
     !endpoint.starts_with("ssh://") || (role == HostRole::Remote && direct.is_some())
 }
@@ -990,11 +916,7 @@ fn write_pairing_token(
 }
 
 /// Report a registered machine: the `"host"` document under `--json`, the
-/// human summary otherwise — what was registered, how it connects, and the
-/// three commands worth knowing next.
-///
-/// `hub` is `Some` only for `--role satellite`, where the local unit was
-/// made a hub (or skipped, with the reason on stderr).
+/// human summary otherwise. `hub` is `Some` only for `--role satellite`.
 fn report_registered(
     row: &HostRow,
     how: &str,
@@ -1212,14 +1134,8 @@ fn print_doc(doc: &serde_json::Value) -> ExitCode {
     }
 }
 
-/// Decide which registry `host rm NAME` removes from, given where the name
-/// was found. Pure, so the ambiguity and wrong-role remedies are
-/// unit-testable without a config file.
-///
-/// A name in both registries with no `--role` is refused (exit 2) rather
-/// than resolved by the default role: `rm` is destructive, and guessing
-/// which trust direction the operator meant would delete the wrong entry
-/// half the time.
+/// Decide which registry `host rm NAME` removes from. A name in both with no
+/// `--role` is refused (exit 2): `rm` is destructive, so never guess.
 fn resolve_rm_role(
     name: &str,
     requested: Option<HostRole>,
@@ -1999,15 +1915,8 @@ mod tests {
         assert!(satellites.contains("--role satellite"));
     }
 
-    /// phux-522 regression: a name that would escape `<state>/remotes` via
-    /// `token_path`'s naive `join` (e.g. `../../evil`) must be rejected by
-    /// `NewRemote::new` before `finish_enroll` ever calls `write_token` — a
-    /// token written first and rejected second leaves a live bearer
-    /// credential sitting outside the registry's control.
-    ///
-    /// Drives [`finish_enroll_in`] against a tempdir rather than mutating
-    /// `$XDG_STATE_HOME` (this crate forbids `unsafe`, and `env::set_var`
-    /// is unsafe under edition 2024).
+    /// Regression: a name escaping `<state>/remotes` (`../../evil`) must be
+    /// rejected before any token is written.
     #[test]
     fn enroll_rejects_a_traversal_name_before_writing_any_token() {
         let state_dir = tempfile::tempdir().expect("tempdir");
@@ -2040,10 +1949,8 @@ mod tests {
         );
     }
 
-    /// phux-522 regression: a `quic://` endpoint with no `--cert-fingerprint`
-    /// fails `NewRemote::new`'s pin requirement (ADR-0038). That failure must
-    /// happen before `write_token`, or every rejected unpinned enrollment
-    /// leaves a 0600 bearer token on disk that nothing ever points at.
+    /// Regression: an unpinned `quic://` endpoint fails before `write_token`,
+    /// leaving no orphaned bearer token.
     #[test]
     fn enroll_rejects_unpinned_quic_before_writing_any_token() {
         let state_dir = tempfile::tempdir().expect("tempdir");
@@ -2073,13 +1980,8 @@ mod tests {
         );
     }
 
-    /// An `ssh://` route with no direct candidate leaves no credential
-    /// behind; one that keeps a candidate to promote stores the token and
-    /// the pin it will need; a satellite is never promoted, so it keeps
-    /// nothing beside an `ssh://` route. Pure on purpose: the tail that
-    /// acts on this writes the operator's real registry, so the binary-level
-    /// tests in `tests/fleet/host_enroll.rs` cover the write under private
-    /// config and state dirs.
+    /// An `ssh://` route with no direct candidate keeps no credential; one with a
+    /// candidate keeps token and pin; a satellite never keeps any beside `ssh://`.
     #[test]
     fn ssh_route_keeps_credentials_only_for_a_direct_candidate() {
         assert!(!keeps_credentials(HostRole::Remote, "ssh://me@mini", None));
