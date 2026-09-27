@@ -125,6 +125,7 @@ pub(super) fn run_action(
         "return-from-attention" => return_from_attention(ctx, e),
         "focus-pane" => focus_pane(resolved, ctx, e),
         "switch-session" => switch_session(resolved, ctx, e),
+        "switch-host" => switch_host(resolved, e),
         "new-session" => new_session(resolved, ctx, e),
         "detach" => e.detach = true,
         "plugin-action" => plugin_action(resolved, e),
@@ -1259,6 +1260,19 @@ fn switch_session(
         pane,
         resource: resource_id_arg(resolved),
     });
+}
+
+/// ADR-0140: `switch-host { host, name }` — re-attach this terminal to
+/// session `name` on another machine. `host` is a `phux.hosts/v1` row name:
+/// a `[[remote]]` registry name, or `local` for this machine's own server.
+/// The sidebar's machine segments commit it.
+fn switch_host(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
+    let (Some(host), Some(name)) = (str_arg(resolved, "host"), name_arg(resolved)) else {
+        tracing::warn!(args = ?resolved.args, "switch-host needs `host` and `name` args");
+        effects.bell = true;
+        return;
+    };
+    effects.switch_host = Some((host, name));
 }
 
 /// phux-c2td.3: `switch-session { name, host }` — select a session that

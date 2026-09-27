@@ -66,6 +66,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "next-attention",
     "return-from-attention",
     "switch-session",
+    "switch-host",
     "new-session",
     "take-input",
     "give-input",

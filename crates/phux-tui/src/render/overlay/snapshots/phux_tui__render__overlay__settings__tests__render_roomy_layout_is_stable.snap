@@ -12,8 +12,8 @@ expression: "render_text(&page, 100, 30)"
                │  Defaults         │   enabled                        true  default │
                │  Keybindings      │ • width                            40      you │
                │  Status bar       │   position                       left  default │
-               │ ▸Sidebar        1 │                                                │
-               │  Chrome           │                                                │
+               │ ▸Sidebar        1 │   hosts                          true  default │
+               │  Chrome           │   hosts-refresh-secs               10  default │
                │  Theme            │                                                │
                │  Experimental     │                                                │
                │  Voice            │                                                │

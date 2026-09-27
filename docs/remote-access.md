@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-26
+last-reviewed: 2026-09-27
 ---
 
 # Remote access
@@ -156,6 +156,14 @@ phux ls --remote me@mini
 phux rename --remote me@mini build ci
 phux kill --remote me@mini ci
 ```
+
+To see every machine at once, use `phux ls --all` (`-a`). It lists this
+machine and every registered host, grouped by machine. Each host is queried
+at the same time with a 3 second deadline, and a host that does not answer is
+listed as unreachable, with the reason, instead of failing the listing.
+`--json` prints the `phux.hosts/v1` document. The TUI sidebar reads the same
+document to show your other machines
+([ADR-0140](adr/0140-sidebar-machines-come-from-a-hosts-provider.md)).
 
 `ls`, `new`, `kill`, `rename`, and `detach` accept it. Each one resolves the
 target through the same ladder as `phux --remote` and dials the same QUIC or

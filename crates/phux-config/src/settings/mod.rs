@@ -688,6 +688,31 @@ pub const CATALOG: &[SettingSpec] = &[
         detail: "left (the default) or right.",
         applies: Applies::NextAttach,
     },
+    SettingSpec {
+        key: "sidebar.hosts",
+        section: SettingSection::Sidebar,
+        kind: SettingKind::Bool,
+        summary: "Show your other machines in the sidebar",
+        detail: "On (the default), the Sessions area is segmented by machine: the one this \
+                 terminal is attached to, then this machine and every registered host \
+                 (`phux host ls`), each with its sessions. Clicking a session on another \
+                 machine re-attaches there. Off lists only the attached server's sessions.",
+        applies: Applies::NextAttach,
+    },
+    SettingSpec {
+        key: "sidebar.hosts-refresh-secs",
+        section: SettingSection::Sidebar,
+        kind: SettingKind::Integer {
+            min: 2,
+            max: U32_MAX,
+        },
+        summary: "Seconds between refreshes of other machines' sessions",
+        detail: "How often the hosts provider re-lists every machine. Each run dials every \
+                 registered host at once with a short deadline, so a host that is down \
+                 costs one deadline, not a hang. The provider command itself is \
+                 `sidebar.hosts-provider` (a list, edited in the file).",
+        applies: Applies::NextAttach,
+    },
     // -- [chrome] -----------------------------------------------------------
     SettingSpec {
         key: "chrome.compact-cols",

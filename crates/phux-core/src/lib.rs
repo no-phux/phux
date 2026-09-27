@@ -9,6 +9,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+pub mod host_list;
 pub mod ids;
 pub mod process;
 pub mod registry;

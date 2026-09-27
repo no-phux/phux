@@ -40,6 +40,11 @@ const UNNAMED_AGENT: &str = "unnamed agent";
 pub(super) struct PeerInputs<'a> {
     /// The serving server's own hostname, never the TUI process's hostname.
     pub serving_host: Option<&'a str>,
+    /// ADR-0140: which machine this process attached to, when the CLI
+    /// recorded one. `None` (tests, embedders) draws no machine segments.
+    pub origin: Option<&'a crate::attach::hosts::AttachOrigin>,
+    /// ADR-0140: the hosts provider's rows, the attached machine included.
+    pub remote_hosts: &'a [phux_core::host_list::HostJson],
     /// Host-qualified satellite inventories, separate from local session ids.
     pub hosts: &'a [HostInventory],
     /// The server's session graph, from the `ATTACHED` snapshot.
@@ -306,13 +311,21 @@ pub(super) fn session_roster(
     local: &[AgentEntry],
 ) -> Vec<SessionRosterEntry> {
     let mut out = Vec::new();
+    let here = peers
+        .origin
+        .and_then(|origin| {
+            crate::attach::hosts::origin_label(peers.remote_hosts, origin, peers.serving_host)
+        })
+        .or_else(|| peers.serving_host.map(str::to_owned))
+        .unwrap_or_else(|| "this server".to_owned());
     for session in peers.ordered_sessions() {
         let mut entry = SessionRosterEntry {
             name: session.name.clone(),
             id: Some(session.id),
-            host: peers.serving_host.unwrap_or("this server").to_owned(),
+            host: here.clone(),
             active: Some(session.id) == peers.focused_session,
             route_host: None,
+            switch_host: None,
             selectable: true,
             blocked: 0,
             working: 0,
@@ -329,6 +342,52 @@ pub(super) fn session_roster(
         out.push(entry);
     }
     out.extend(satellite_roster(peers.hosts));
+    if let Some(origin) = peers.origin {
+        out.extend(machine_roster(&crate::attach::hosts::other_hosts(
+            peers.remote_hosts,
+            origin,
+        )));
+    }
+    out
+}
+
+/// ADR-0140: one segment per other machine, in provider order. A session
+/// row commits `switch-host`, which re-attaches this terminal there; an
+/// unreachable machine keeps its segment with an unselectable placeholder
+/// so "mini is down" is visible rather than a machine silently missing.
+///
+/// Agent counts are not known across machines (the provider lists
+/// sessions, not panes), so every count is zero and the dot is the quiet
+/// rung, the same "nothing known" reading a not-yet-swept peer gets.
+fn machine_roster(hosts: &[&phux_core::host_list::HostJson]) -> Vec<SessionRosterEntry> {
+    let mut out = Vec::new();
+    for host in hosts {
+        let base = SessionRosterEntry {
+            host: host.label.clone(),
+            switch_host: Some(host.name.clone()),
+            selectable: host.reachable,
+            ..SessionRosterEntry::default()
+        };
+        if !host.reachable {
+            out.push(SessionRosterEntry {
+                name: "unreachable".to_owned(),
+                ..base
+            });
+            continue;
+        }
+        if host.sessions.is_empty() {
+            out.push(SessionRosterEntry {
+                name: "no sessions".to_owned(),
+                selectable: false,
+                ..base
+            });
+            continue;
+        }
+        out.extend(host.sessions.iter().map(|session| SessionRosterEntry {
+            name: session.name.clone(),
+            ..base.clone()
+        }));
+    }
     out
 }
 
@@ -474,6 +533,8 @@ mod tests {
         fn inputs(&self) -> PeerInputs<'_> {
             PeerInputs {
                 serving_host: Some("mini"),
+                origin: None,
+                remote_hosts: &[],
                 hosts: &[],
                 sessions: &self.sessions,
                 focused_session: Some(SessionId::new(1)),
@@ -508,6 +569,92 @@ mod tests {
             attention: HashSet::new(),
             review: ReviewIndex::default(),
         }
+    }
+
+    fn machine(
+        name: &str,
+        label: &str,
+        kind: phux_core::host_list::HostKind,
+        reachable: bool,
+        sessions: &[&str],
+    ) -> phux_core::host_list::HostJson {
+        phux_core::host_list::HostJson {
+            name: name.to_owned(),
+            label: label.to_owned(),
+            kind,
+            endpoint: None,
+            reachable,
+            error: (!reachable).then(|| "timed out".to_owned()),
+            sessions: sessions
+                .iter()
+                .map(|session| phux_core::session_list::SessionJson {
+                    name: (*session).to_owned(),
+                    windows: 1,
+                    attached: false,
+                    attached_clients: 0,
+                    keep_empty: false,
+                    empty: false,
+                })
+                .collect(),
+        }
+    }
+
+    /// ADR-0140: attached to `mini`, the roster reads as three machine
+    /// segments: mini's live sessions first (labelled by its registry name,
+    /// not re-listed from the provider), then this laptop and a host that is
+    /// down, each routing a click through `switch-host`.
+    #[test]
+    fn other_machines_append_as_switchable_segments() {
+        use phux_core::host_list::HostKind;
+        let f = fixture();
+        let origin = crate::attach::hosts::AttachOrigin::Remote("mini".to_owned());
+        let hosts = vec![
+            machine("local", "laptop", HostKind::Local, true, &["work"]),
+            machine("mini", "mini", HostKind::Remote, true, &["here", "peer"]),
+            machine("xps", "xps", HostKind::Remote, false, &[]),
+        ];
+        let peers = PeerInputs {
+            origin: Some(&origin),
+            remote_hosts: &hosts,
+            ..f.inputs()
+        };
+        let roster = session_roster(&peers, &[]);
+        let rows: Vec<_> = roster
+            .iter()
+            .map(|r| {
+                (
+                    r.host.as_str(),
+                    r.name.as_str(),
+                    r.switch_host.as_deref(),
+                    r.selectable,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("mini", "here", None, true),
+                ("mini", "peer", None, true),
+                ("laptop", "work", Some("local"), true),
+                ("xps", "unreachable", Some("xps"), false),
+            ]
+        );
+    }
+
+    /// Without a recorded origin (tests, embedders) nothing is appended and
+    /// the attached server keeps its reported hostname.
+    #[test]
+    fn no_origin_means_no_machine_segments() {
+        use phux_core::host_list::HostKind;
+        let f = fixture();
+        let hosts = vec![machine("xps", "xps", HostKind::Remote, true, &["s"])];
+        let peers = PeerInputs {
+            remote_hosts: &hosts,
+            ..f.inputs()
+        };
+        let roster = session_roster(&peers, &[]);
+        assert!(roster.iter().all(|r| r.switch_host.is_none()));
+        assert!(roster.iter().all(|r| r.host == "mini"));
     }
 
     /// A peer changing state cannot jump ahead of an existing local row.

@@ -158,21 +158,30 @@ fn dial_entry(
     verb: &str,
     json: bool,
 ) -> Result<RemoteServer, ExitCode> {
-    let fail = |err: &CliError| json_err::emit(json, err, 1);
+    plan_entry(rt, entry, verb).map_err(|err| json_err::emit(json, &err, 1))
+}
+
+/// Plan a registered entry's dial without printing anything: the refusal is
+/// returned for the caller to report, which is what lets `phux ls --all`
+/// fold one bad entry into its row instead of failing the whole listing.
+pub(crate) fn plan_entry(
+    rt: &tokio::runtime::Runtime,
+    entry: &RemoteEntry,
+    verb: &str,
+) -> Result<RemoteServer, CliError> {
     let endpoint = Endpoint::parse(&entry.endpoint)
-        .map_err(|err| fail(&entry_refusal(entry, &DialRefusal::Malformed(err))))?;
+        .map_err(|err| entry_refusal(entry, &DialRefusal::Malformed(err)))?;
     let token = remote::read_token(entry)
-        .map_err(|err| fail(&unusable_entry(entry, &err, &re_pair_remedy(&entry.name))))?;
+        .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
     let fingerprint = entry.cert_fingerprint.clone();
     let plan = match endpoint {
         Endpoint::Quic(addr) => attach::plan_quic_dial(rt, &addr, token, fingerprint, None),
         Endpoint::Ws(url) => attach::plan_ws_dial(url, token, fingerprint, None),
         Endpoint::Ssh(destination) => {
-            return Err(fail(&ssh_only_refusal(&entry.name, &destination, verb)));
+            return Err(ssh_only_refusal(&entry.name, &destination, verb));
         }
     };
-    let DialPlan { dial, loopback } =
-        plan.map_err(|refusal| fail(&entry_refusal(entry, &refusal)))?;
+    let DialPlan { dial, loopback } = plan.map_err(|refusal| entry_refusal(entry, &refusal))?;
     Ok(RemoteServer {
         name: entry.name.clone(),
         endpoint: entry.endpoint.clone(),

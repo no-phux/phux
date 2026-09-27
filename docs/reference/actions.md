@@ -52,6 +52,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `next-attention` | Pane |  | Jump to the next pane waiting for an answer |
 | `return-from-attention` | Pane |  | Return to where attention navigation started |
 | `switch-session` | — | `name`; `window?` (window index to select after the switch); `pane?` (DFS leaf ordinal to focus in that window); `host?` (a satellite of this hub: opens that session's active pane here through the relay instead of re-attaching) | Re-attach this client to another session |
+| `switch-host` | — | `host` (a registered host name, or `local` for this machine); `name` (the session there) | Re-attach this terminal to a session on another machine |
 | `new-session` | Session | `name?` (bare opens an interactive prompt) | Create a new session and switch to it |
 | `take-input` | Pane |  | Take the wheel: seize exclusive input over the focused pane |
 | `give-input` | Pane |  | Give back the wheel: release the focused pane's input lease |
@@ -70,6 +71,7 @@ Why the dash rows have no palette entry:
 - `select-window` — parameterized by `index`, which the palette has no UI to collect; the window picker is the surface for "jump to window N".
 - `move-window` — parameterized by direction; bound to `<` and `>` under the leader, offered in the window context menu, and done by dragging a tab or a sidebar window row.
 - `switch-session` — requires a `name` arg supplied by the session picker (or the fleet's foreign rows), so a bare palette row would have no target to act on.
+- `switch-host` — requires `host` and `name` args supplied by the sidebar's machine segments, so a bare palette row would have no target to act on.
 - `copy-mode` — a modal input surface entered from its keybinding, not a one-shot command the palette can commit.
 - `plugin-action` — its palette rows are built dynamically from enabled plugins' manifests, one per manifest action, carrying `plugin`/`action` args a static row could not supply.
 - `plugin-pane` — same shape as `plugin-action`: dynamic rows from enabled plugins' manifest `[[panes]]`, carrying `plugin`/`pane` args.

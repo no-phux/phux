@@ -944,6 +944,24 @@ impl Connection {
         self.writer.send(frame).await
     }
 
+    /// Whether a Terminal-targeted frame for `terminal_id` can be sent now.
+    ///
+    /// Always `true` off QUIC multistream, where every frame rides the one
+    /// control stream. On multistream it is `true` once the Terminal's stream
+    /// is bound (or has already ended, whose frames [`Self::send`] drops):
+    /// a Terminal named only by a persisted layout, whose attach has not
+    /// been confirmed, has no stream yet, and sending to it is the caller
+    /// bug [`Self::send`] refuses.
+    #[must_use]
+    pub fn can_route_terminal(&self, terminal_id: &ResourceId) -> bool {
+        if !self.multistream_enabled() {
+            return true;
+        }
+        self.multistream.as_ref().is_some_and(|mux| {
+            mux.bindings.contains_key(terminal_id) || mux.ended.contains(terminal_id)
+        })
+    }
+
     /// Whether this negotiated QUIC connection supports per-Terminal
     /// streams. The feature is intentionally gated by both the negotiated
     /// bit and the transport variant: UDS/WS peers must retain their one

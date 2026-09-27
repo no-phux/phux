@@ -96,6 +96,8 @@ pub struct TuiSettings {
     pub which_key: WhichKey,
     /// `[sidebar]` geometry; attach-time only.
     pub sidebar: SidebarSettings,
+    /// `[sidebar]` hosts keys: the machine-segment provider; attach-time only.
+    pub hosts: crate::attach::hosts::HostsSettings,
     /// The global `defaults.mouse` gate the `RawModeGuard` install reads;
     /// attach-time only.
     pub mouse_capture: bool,
@@ -113,6 +115,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("plugin_panes", &self.plugin_panes.len())
             .field("which_key", &self.which_key)
             .field("sidebar", &self.sidebar)
+            .field("hosts", &self.hosts)
             .field("mouse_capture", &self.mouse_capture)
             .finish()
     }
@@ -210,6 +213,7 @@ impl TuiSettings {
                 width: 0,
                 edge: SidebarEdge::Left,
             },
+            hosts: crate::attach::hosts::HostsSettings::disabled(),
             mouse_capture: true,
         }
     }
@@ -314,6 +318,7 @@ impl TuiSettings {
                 width: cfg.sidebar.width,
                 edge: sidebar_edge(cfg.sidebar.position),
             },
+            hosts: crate::attach::hosts::HostsSettings::from_cfg(&cfg.sidebar),
             mouse_capture: cfg.defaults.mouse,
         }
     }

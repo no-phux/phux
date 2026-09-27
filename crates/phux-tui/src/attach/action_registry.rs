@@ -456,6 +456,15 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
                  have no target to act on",
     },
     NonPaletteAction {
+        name: "switch-host",
+        description: "Re-attach this terminal to a session on another machine",
+        params: "`host` (a registered host name, or `local` for this \
+                 machine); `name` (the session there)",
+        reason: "requires `host` and `name` args supplied by the sidebar's \
+                 machine segments, so a bare palette row would have no \
+                 target to act on",
+    },
+    NonPaletteAction {
         name: "copy-mode",
         description: "Enter copy-mode on the focused pane (scrollback \
                       navigation, selection, yank)",

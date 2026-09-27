@@ -88,6 +88,13 @@ async fn emit_layout_reflow(
 ) -> Result<(), AttachError> {
     let diff = crate::attach::reflow::compute_reflow(layout, prev_rects, content);
     for (terminal_id, new_rect) in &diff.changed {
+        // A leaf a persisted layout names before its ATTACH_RESOURCE is
+        // confirmed has no QUIC stream yet, and may name a pane that died
+        // with a previous server. It is sized once its stream binds.
+        if !conn.can_route_terminal(terminal_id) {
+            tracing::debug!(?terminal_id, "reflow: skipping a pane with no stream yet");
+            continue;
+        }
         conn.send(&FrameKind::ResizeTerminal {
             terminal_id: terminal_id.clone(),
             cols: new_rect.w,

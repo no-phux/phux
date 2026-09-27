@@ -116,6 +116,8 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
     static REVIEW: LazyLock<ReviewIndex> = LazyLock::new(ReviewIndex::new);
     crate::attach::sidebar_zones::PeerInputs {
         serving_host: None,
+        origin: None,
+        remote_hosts: &[],
         hosts: &[],
         sessions: SESSIONS,
         focused_session: None,

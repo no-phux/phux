@@ -394,6 +394,63 @@ fn misplaced_scoped_flag(err: &usage::Error<'_, '_>) -> Option<String> {
     flag_exists_on_any_verb(Cli::command(), long).then_some(flag)
 }
 
+/// Every verb path (`attach`, `host add`) that accepts `--long`.
+fn verbs_with_flag(cmd: &usage::Command<'_>, long: &str, prefix: &str, out: &mut Vec<String>) {
+    for sub in cmd.subcommands {
+        let path = if prefix.is_empty() {
+            sub.name.to_owned()
+        } else {
+            format!("{prefix} {}", sub.name)
+        };
+        if sub.flags.iter().any(|flag| flag.longs.contains(&long)) {
+            out.push(path.clone());
+        }
+        verbs_with_flag(sub, long, &path, out);
+    }
+}
+
+/// The teaching hint for a refused per-verb flag, keyed on where it was
+/// typed. Before any verb it is a placement mistake (`phux --json ls`).
+/// After a verb that does not take it, "place it after the verb" would be
+/// wrong advice, so the hint names the verbs that do take it instead.
+fn misplaced_flag_hint(err: &usage::Error<'_, '_>, words: &[String]) -> Option<String> {
+    let flag = misplaced_scoped_flag(err)?;
+    let long = flag.strip_prefix("--")?;
+    let root = Cli::command();
+    let at = words
+        .iter()
+        .position(|word| *word == flag || word.starts_with(&format!("{flag}=")))
+        .unwrap_or(words.len());
+    let verb = words.get(..at).unwrap_or_default().iter().find_map(|word| {
+        root.subcommands
+            .iter()
+            .find(|sub| sub.name == word || sub.aliases.contains(&word.as_str()))
+    });
+    let Some(verb) = verb else {
+        return Some(format!(
+            "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: \
+             `phux <verb> {flag} ...`"
+        ));
+    };
+    let mut holders = Vec::new();
+    verbs_with_flag(root, long, "", &mut holders);
+    let shown: Vec<String> = holders
+        .iter()
+        .take(6)
+        .map(|path| format!("`phux {path}`"))
+        .collect();
+    let more = if holders.len() > shown.len() {
+        ", ..."
+    } else {
+        ""
+    };
+    Some(format!(
+        "hint: `phux {}` does not take `{flag}`; it belongs to {}{more}",
+        verb.name,
+        shown.join(", ")
+    ))
+}
+
 fn removed_spelling_hint(
     err: &usage::Error<'_, '_>,
     argv: &[String],
@@ -489,10 +546,8 @@ fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_, '_>) -> E
                 "{}",
                 redact_long_base64(&usage::render_failure(Cli::spec(), argv, &err))
             );
-            if let Some(flag) = misplaced_scoped_flag(&err) {
-                eprintln!(
-                    "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> {flag} ...`"
-                );
+            if let Some(hint) = misplaced_flag_hint(&err, &words) {
+                eprintln!("{hint}");
             }
             if let Some(row) = removed_spelling_hint(&err, &words) {
                 eprintln!(
@@ -1128,7 +1183,10 @@ fn dispatch(
             seed_command.as_deref(),
             resume,
         ),
-        Some(Command::Ls { json, remote }) => {
+        Some(Command::Ls {
+            json, all: true, ..
+        }) => commands::ls::run_ls_all(json.json, socket),
+        Some(Command::Ls { json, remote, .. }) => {
             commands::ls::run_ls(json.json, remote.with_socket(socket))
         }
         Some(Command::Whoami { json, remote }) => {
@@ -2355,6 +2413,28 @@ mod tests {
         crate::parse_cli(["phux", "--json", "ls"])
             .expect_err("`--json` is per-verb; the root must refuse it");
         crate::parse_cli(["phux", "--no-such-flag", "ls"]).expect_err("unknown flags are refused");
+    }
+
+    /// The hint follows where the flag was typed: before the verb it says
+    /// to move it; after a verb that does not take it, moving it would not
+    /// help, so it names the verbs that do.
+    #[test]
+    fn misplaced_flag_hint_follows_the_flag_position() {
+        let hint = |argv: &[&str]| {
+            let os: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsStr::new).collect();
+            let err = Cli::parse_from_argv(&os).expect_err("refused");
+            let words: Vec<String> = argv.iter().map(|w| (*w).to_owned()).collect();
+            super::misplaced_flag_hint(&err, &words)
+        };
+        let before = hint(&["phux", "--json", "ls"]).expect("hint");
+        assert!(before.contains("place it after the verb"), "{before}");
+        let after = hint(&["phux", "ls", "--host", "mini"]).expect("hint");
+        assert!(
+            after.contains("`phux ls` does not take `--host`"),
+            "{after}"
+        );
+        assert!(!after.contains("place it after the verb"), "{after}");
+        assert_eq!(hint(&["phux", "ls", "--no-such-flag"]), None);
     }
 
     /// Every removed spelling names its actual replacement, because clap's

@@ -630,10 +630,10 @@ mod sidebar_tests {
             })
             .collect();
         assert!(rows[1].contains("reviewer"), "{rows:?}");
+        assert!(rows[12].contains("this server"), "{rows:?}");
         assert!(
-            rows[12].contains("work") && rows[12].contains("●1"),
+            rows[13].contains("work") && rows[13].contains("●1"),
             "{rows:?}"
         );
-        assert!(rows[13].contains("this server"), "{rows:?}");
     }
 }

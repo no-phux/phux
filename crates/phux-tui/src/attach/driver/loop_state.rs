@@ -286,6 +286,12 @@ struct PeerCaches {
     serving_host_attempted: bool,
     /// Rebuild the sidebar projection once at the burst drain.
     chrome_dirty: bool,
+    /// ADR-0140: which machine this process attached to, when the CLI
+    /// recorded one. `None` runs no hosts provider.
+    origin: Option<crate::attach::hosts::AttachOrigin>,
+    /// ADR-0140: the hosts provider's latest `phux.hosts/v1` rows. The
+    /// attached machine's row is filtered out at projection time.
+    remote_hosts: Vec<phux_core::host_list::HostJson>,
     /// phux-4li.20: cache of the server's session graph, refreshed from
     /// every ATTACHED snapshot. The `<leader> a` session picker reads
     /// this to list peer sessions; `focused_session` marks the row the
@@ -379,6 +385,8 @@ impl PeerCaches {
     ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
         crate::attach::sidebar_zones::PeerInputs {
             serving_host: self.serving_host.as_deref(),
+            origin: self.origin.as_ref(),
+            remote_hosts: &self.remote_hosts,
             hosts: &self.hosts,
             sessions: &self.sessions,
             focused_session: self.focused_session,
@@ -661,6 +669,14 @@ pub(super) struct SessionLoop {
     /// The receiving half of the same channel; the `plugin_rx` select arm
     /// toasts failures.
     plugin_rx: tokio::sync::mpsc::UnboundedReceiver<PluginRunResult>,
+    /// A pane's QUIC stream bound after the bootstrap reflow skipped it
+    /// (it had none yet); the next outcome drain sizes every restored leaf.
+    bind_reflow_owed: bool,
+    /// ADR-0140: the hosts provider's answers. The sender is kept here so
+    /// the channel stays open (and the arm quiet) when no provider runs; the
+    /// provider task stops once this receiver is dropped.
+    _hosts_tx: tokio::sync::mpsc::UnboundedSender<Vec<phux_core::host_list::HostJson>>,
+    hosts_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<phux_core::host_list::HostJson>>,
     /// phux-8n4w: bar ticks left to surface a background update check. The
     /// production entry kicks `attach::update_notice::spawn_background_refresh`
     /// before the loop; this poll reads its cache for a handful of ticks so a
@@ -806,6 +822,9 @@ pub(super) struct SessionLoop {
     /// old state and toasts the error. The `phux config reload` CLI
     /// doorbell reaches the same handler via `FrameOutcome::config_reload`.
     reload_request: bool,
+    /// ADR-0140: a `switch-host` committed in the last batch, as
+    /// `(host, session)`.
+    host_switch_request: Option<(String, String)>,
     /// phux-c2td.3: did the server advertise
     /// [`ServerFeature::HostSessions`](phux_protocol::caps::ServerFeature::HostSessions)?
     /// Unset, the driver sends no host-inventory `GET_STATE` at all: an
@@ -868,6 +887,11 @@ impl SessionLoop {
         }
         let server_features = negotiated.server_features;
         let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel::<PluginRunResult>();
+        let (hosts_tx, hosts_rx) = tokio::sync::mpsc::unbounded_channel();
+        let origin = crate::attach::hosts::recorded_origin();
+        if origin.is_some() {
+            crate::attach::hosts::spawn_provider(&settings.hosts, hosts_tx.clone());
+        }
         // phux-huhi: stamp the configured breakpoints once, before anything
         // can be pushed. `OverlayState::push` hands them to each overlay from
         // here, so no overlay construction site names a threshold.
@@ -926,6 +950,9 @@ impl SessionLoop {
             sidebar_painter: SidebarPainter::new(settings.theme),
             plugin_tx,
             plugin_rx,
+            bind_reflow_owed: false,
+            _hosts_tx: hosts_tx,
+            hosts_rx,
             update_poll_ticks: UPDATE_POLL_TICKS,
             overlays,
             attention_navigation: AttentionNavigation::default(),
@@ -944,6 +971,12 @@ impl SessionLoop {
             keep_empty_session: false,
             peers: PeerCaches {
                 sweep_pending: true,
+                remote_hosts: if origin.is_some() {
+                    crate::attach::hosts::last_known()
+                } else {
+                    Vec::new()
+                },
+                origin,
                 ..PeerCaches::default()
             },
             pending_window: initial_window,
@@ -965,6 +998,7 @@ impl SessionLoop {
             which_key_deadline: None,
             switch_request: None,
             reload_request: false,
+            host_switch_request: None,
             onboarding_claim,
             settings,
         })
@@ -2259,6 +2293,14 @@ impl SessionLoop {
                 Ok(Step::Continue)
             }
 
+            // ADR-0140: the hosts provider answered. Only a changed answer
+            // repaints; the chrome drain is the same one a session-graph
+            // change takes.
+            Some(hosts) = self.hosts_rx.recv() => {
+                self.on_hosts(out, sidebar, hosts);
+                Ok(Step::Continue)
+            }
+
             // SIGINT — restore the terminal explicitly (Drop wouldn't
             // fire on `exit(130)`), then exit with the shell-conventional
             // 130. `phux-roz`: this is the path that fires when the user
@@ -2450,6 +2492,14 @@ impl SessionLoop {
             self.reload_request = false;
             self.reload_config(out, sidebar);
         }
+        // ADR-0140: leave for another machine. Detach first so the server
+        // records a detach rather than a dropped client, then restore the
+        // terminal exactly as a detach does and become `phux attach` there.
+        if let Some((host, session)) = self.host_switch_request.take() {
+            let _ = conn.send(&FrameKind::Detach).await;
+            super::terminal::restore_terminal_for_handoff();
+            crate::attach::hosts::exec_switch_host(&host, &session);
+        }
         Ok(Step::Continue)
     }
 
@@ -2528,6 +2578,7 @@ impl SessionLoop {
             plugin_panes: &self.settings.plugin_panes,
             plugin_tx: Some(&self.plugin_tx),
             reload_request: &mut self.reload_request,
+            host_switch_request: &mut self.host_switch_request,
             agent_meta: &self.agent_meta.records,
             vcs: &mut self.vcs,
             input_replay: self.input_replay.as_deref(),
@@ -2765,6 +2816,9 @@ impl SessionLoop {
                 && matches!(result, phux_protocol::wire::frame::CommandResult::Ok)
             {
                 conn.bind_terminal(&terminal_id).await?;
+                // The bootstrap reflow skipped this pane while it had no
+                // stream; size it now that it has one.
+                self.bind_reflow_owed = true;
             }
             return Ok(false);
         }
@@ -3682,7 +3736,7 @@ impl SessionLoop {
         // schedules its full paint. Doing it earlier can only see the fallback;
         // doing it on first window selection turns that selection into a
         // corrective resize instead of an ordinary paint.
-        if outcome.layout_get_answered {
+        if outcome.layout_get_answered || std::mem::take(&mut self.bind_reflow_owed) {
             emit_bootstrap_workspace_reflow(conn, &self.workspace, self.content(sidebar)).await?;
         } else if outcome.reflow_panes
             && let Some(prev_rects) = prev_rects
@@ -4488,6 +4542,22 @@ impl SessionLoop {
     }
 
     /// A spawned plugin action finished: log it, and toast a failure.
+    fn on_hosts<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        hosts: Vec<phux_core::host_list::HostJson>,
+    ) {
+        if self.peers.remote_hosts == hosts {
+            return;
+        }
+        crate::attach::hosts::remember(&hosts);
+        self.peers.remote_hosts = hosts;
+        self.peers.chrome_dirty = true;
+        let mut repaint = RepaintAccumulator::default();
+        self.drain_repaint(out, sidebar, &mut repaint);
+    }
+
     fn on_plugin_result<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,

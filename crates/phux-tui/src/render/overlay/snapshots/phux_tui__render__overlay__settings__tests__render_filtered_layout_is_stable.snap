@@ -12,7 +12,7 @@ expression: "render_text(&page, 100, 24)"
                │  Defaults       6 │ • theme.accent             ██ #ff0000      you █
                │  Keybindings      │   theme.title              ██ #bef264  default █
                │  Status bar       │   theme.action               ██ reset  default │
-               │  Sidebar          │   defaults.cwd-inher… inherit-focused  default │
+               │  Sidebar        1 │   defaults.cwd-inher… inherit-focused  default │
                │  Chrome           │   voice.transcriber             unset  default │
                │ ────────────────────────────────────────────────────────────────── │
                │ theme.accent  color: name, #rrggbb, or 0-255                       │

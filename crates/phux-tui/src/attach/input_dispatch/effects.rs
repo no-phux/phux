@@ -123,6 +123,9 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     if effects.reload_config {
         *ctx.reload_request = true;
     }
+    if effects.switch_host.is_some() {
+        *ctx.host_switch_request = effects.switch_host;
+    }
     record_reattach_request(
         effects.reattach,
         ctx.switch_request,
@@ -690,6 +693,11 @@ pub(super) struct ActionEffects {
     /// matching the current session without a window/pane target is a silent
     /// no-op (the session picker uses that row to dismiss in place).
     pub(super) reattach: Option<ReattachTarget>,
+    /// ADR-0140: `switch-host { host, name }` committed. Unlike
+    /// [`Self::reattach`] this leaves the server: the batch detaches, then
+    /// the process becomes `phux attach` against that machine
+    /// ([`crate::attach::hosts::exec_switch_host`]). `(host, session)`.
+    pub(super) switch_host: Option<(String, String)>,
     /// rename-session: a committed rename. Carries the new name. The async
     /// caller ([`apply_action_effects`]) sends a `SET_METADATA` write of
     /// `SESSION_NAME_KEY` for the *current* session plus a correlated

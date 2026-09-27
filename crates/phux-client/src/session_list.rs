@@ -64,7 +64,8 @@ pub fn document(
 
 /// One session's [`SessionJson`] row. `keep_empty` and `empty` (ADR-0105)
 /// are additive keys; `empty` is exactly `windows == 0`.
-fn session_json(s: &SessionInfo) -> SessionJson {
+#[must_use]
+pub fn session_json(s: &SessionInfo) -> SessionJson {
     SessionJson {
         name: s.name.clone(),
         windows: s.window_count,

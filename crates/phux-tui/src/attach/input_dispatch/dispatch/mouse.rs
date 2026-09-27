@@ -813,6 +813,16 @@ fn sidebar_agent_action(
 fn sidebar_session_action(
     target: &crate::render::chrome::sidebar::SessionRosterTarget,
 ) -> phux_config::keybind::ResolvedAction {
+    if let Some(machine) = &target.switch_host {
+        let args = std::collections::BTreeMap::from([
+            ("host".to_owned(), toml::Value::String(machine.clone())),
+            ("name".to_owned(), toml::Value::String(target.name.clone())),
+        ]);
+        return phux_config::keybind::ResolvedAction {
+            action: "switch-host".to_owned(),
+            args,
+        };
+    }
     let mut args = switch_session_args(target.name.clone(), target.id);
     if let Some(host) = &target.host {
         args.insert("host".to_owned(), toml::Value::String(host.clone()));
