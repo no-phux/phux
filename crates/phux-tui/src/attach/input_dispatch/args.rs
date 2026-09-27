@@ -1,20 +1,29 @@
 //! `ResolvedAction` argument parsers and the pure workspace/kill
 //! helpers they feed.
 
-//! Input dispatcher: translates parser-emitted events into wire frames
-//! or layout-action effects.
-//!
-//! Owns the resolver-intercept path (prefix chord → `ResolvedAction` →
-//! mutate the active window of the `Workspace`), the predict overlay's
-//! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
-//! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_RESOURCE` reply.
-
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
 use phux_protocol::wire::frame::{Command, FrameKind, TerminalSignal};
 
 use crate::layout::{Direction, SplitDir, Workspace};
+
+/// A [`phux_config::keybind::ResolvedAction`] with no args.
+pub(super) fn bare_action(action: &str) -> phux_config::keybind::ResolvedAction {
+    phux_config::keybind::ResolvedAction {
+        action: action.to_owned(),
+        args: std::collections::BTreeMap::new(),
+    }
+}
+
+/// `select-window { index }`.
+pub(super) fn select_window_action(index: usize) -> Option<phux_config::keybind::ResolvedAction> {
+    let mut action = bare_action("select-window");
+    action.args.insert(
+        "index".to_owned(),
+        toml::Value::Integer(i64::try_from(index).ok()?),
+    );
+    Some(action)
+}
 
 /// Flatten a workspace deterministically: window order, then DFS leaf order.
 pub(super) fn ordered_workspace_panes(workspace: &Workspace) -> Vec<(usize, ResourceId)> {
@@ -58,11 +67,8 @@ pub(super) fn direction_arg(resolved: &phux_config::keybind::ResolvedAction) -> 
     }
 }
 
-/// Pull an `amount = N` arg out of a [`phux_config::keybind::ResolvedAction`]. TOML integers
-/// decode as `i64`; we clamp to `i16` (the [`actions::apply_resize`]
-/// signature). Out-of-range values are silently clamped — a `resize-pane
-/// amount = 99999` user binding gets a 32767-cell amount, which the
-/// underflow guard inside `apply_resize` then rejects.
+/// The `amount = N` arg, clamped to `i16` (an absurd amount then fails the
+/// resize underflow guard).
 #[allow(clippy::cast_possible_truncation)]
 pub(super) fn amount_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<i16> {
     let v = resolved.args.get("amount")?.as_integer()?;
@@ -75,10 +81,7 @@ pub(super) fn index_arg(resolved: &phux_config::keybind::ResolvedAction) -> Opti
     usize_arg(resolved, "index")
 }
 
-/// Pull a non-negative integer arg (`key = N`) out of a
-/// [`phux_config::keybind::ResolvedAction`] (phux-foz.7: `window` / `pane`
-/// on `focus-pane`). Negative or non-integer values yield `None` (the
-/// caller bells).
+/// A non-negative integer arg `key = N`; anything else is `None`.
 pub(super) fn usize_arg(
     resolved: &phux_config::keybind::ResolvedAction,
     key: &str,
@@ -92,22 +95,15 @@ pub(super) fn name_arg(resolved: &phux_config::keybind::ResolvedAction) -> Optio
     resolved.args.get("name")?.as_str().map(ToOwned::to_owned)
 }
 
-/// Pull a session identity out of a `switch-session` `id = N` arg.
-///
-/// Names are display labels and can move; the wire [`SessionId`] does not.
-/// Callers that painted a roster or picker row stash the id so a rename
-/// cannot retarget the click. `None` for a typed name, a satellite hop
-/// (host-local ids are not attachable here), or a malformed integer.
+/// The `switch-session` `id = N` arg: a painted row's stable session id, so
+/// a rename cannot retarget the click.
 pub(super) fn session_id_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<SessionId> {
     let v = resolved.args.get("id")?.as_integer()?;
     u32::try_from(v).ok().map(SessionId::new)
 }
 
-/// Pull a `resource = "@N"` / `"host/@N"` arg out of a `switch-session`.
-///
-/// Graph-discovered agent rows navigate by this identity instead of a
-/// fabricated TUI window/pane index. `None` for a typed name,
-/// a window-only pick, or a malformed selector.
+/// The `switch-session` `resource = "@N" | "host/@N"` arg, for rows that
+/// navigate by pane identity rather than TUI indices.
 pub(super) fn resource_id_arg(
     resolved: &phux_config::keybind::ResolvedAction,
 ) -> Option<ResourceId> {
@@ -156,10 +152,7 @@ pub(super) enum PaneMouseArg {
     Toggle,
 }
 
-/// Pull the `mouse = ...` arg out of a `set-pane` action. Accepts the
-/// documented strings (`"on"` / `"off"` / `"toggle"`) and, for TOML
-/// ergonomics in keybinding tables, plain booleans (`mouse = false` ≡
-/// `"off"`). Anything else yields `None` (the caller bells).
+/// The `set-pane` `mouse` arg: `on`/`off`/`toggle` or a boolean.
 pub(super) fn mouse_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<PaneMouseArg> {
     match resolved.args.get("mouse")? {
         toml::Value::String(s) => match s.as_str() {
@@ -177,17 +170,9 @@ pub(super) fn mouse_arg(resolved: &phux_config::keybind::ResolvedAction) -> Opti
     }
 }
 
-/// Allow `SplitDir` to be parsed from a `direction = "horizontal|vertical"`
-/// arg on a `split-pane` action. Lives here (not in `actions.rs`) so the
-/// pure helper module stays free of `ResolvedAction` parsing.
-///
-/// The `direction` string names the DIVIDER orientation (the tmux mental
-/// model the default config documents): `vertical` = a vertical divider,
-/// i.e. side-by-side panes, which geometrically is a `SplitDir::Horizontal`
-/// (split along the width — see `multi_pane::pane_rects`). `horizontal` = a
-/// horizontal divider, i.e. stacked panes = `SplitDir::Vertical`. The
-/// names are deliberately crossed here: the user-facing word describes the
-/// divider; the internal enum describes the split axis.
+/// The `split-pane` `direction` arg. It names the DIVIDER (tmux wording):
+/// `vertical` means side-by-side panes, which is `SplitDir::Horizontal`;
+/// `horizontal` means stacked, `SplitDir::Vertical`.
 pub(super) fn split_dir_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<SplitDir> {
     let s = resolved.args.get("direction")?.as_str()?;
     match s {
@@ -197,10 +182,7 @@ pub(super) fn split_dir_arg(resolved: &phux_config::keybind::ResolvedAction) -> 
     }
 }
 
-/// ADR-0033: parse the `signal` arg of a `signal-terminal` action into a
-/// [`TerminalSignal`]. Recognises `interrupt` / `freeze` / `resume` /
-/// `terminate` / `kill`; returns `None` for a missing or unknown value (the
-/// arm bells and drops the action).
+/// ADR-0033: the `signal-terminal` `signal` arg.
 pub(super) fn signal_arg(
     resolved: &phux_config::keybind::ResolvedAction,
 ) -> Option<TerminalSignal> {
@@ -214,21 +196,9 @@ pub(super) fn signal_arg(
     }
 }
 
-/// Build the `KILL_RESOURCE` command that closes `target`.
-///
-/// This used to type `exit\n` into the pane as `INPUT_KEY` events and wait
-/// for the shell to notice. That only worked when the pane's
-/// foreground process was a shell sitting at a prompt: with an editor, a
-/// pager, an agent CLI, or a wedged process in the foreground the keystrokes
-/// were swallowed and the pane simply never closed. It also could not remove
-/// a leaf whose resource was already gone, because there was nothing left to
-/// type into. The server closes the resource and broadcasts `RESOURCE_CLOSED`
-/// regardless of what the pane is running, which is the tmux `kill-pane`
-/// semantics the action's name promises.
-///
-/// `request_id` correlates the refusal: a `TerminalNotFound` reply proves the
-/// leaf is dead, which is how a stale layout leaf gets folded out (see
-/// `server_frame::handler::fold_missing_resource`).
+/// The correlated `KILL_RESOURCE` that closes `target` whatever it runs
+/// (tmux `kill-pane`). A `TerminalNotFound` refusal proves a stale leaf is
+/// dead so it can be folded out.
 pub(super) fn kill_resource_frame(target: &ResourceId, request_id: u32) -> FrameKind {
     FrameKind::Command {
         request_id,

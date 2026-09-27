@@ -35,10 +35,13 @@ fn no_alt_screen_on_pre_handshake_failure() {
             .build()
             .expect("build runtime");
         let mut captured: Vec<u8> = Vec::new();
-        let result = rt.block_on(tokio::time::timeout(
-            NO_HANG_DEADLINE,
-            attach::run_with_stdout(&socket, target, &mut captured),
-        ));
+        let result = rt.block_on(async {
+            tokio::time::timeout(
+                NO_HANG_DEADLINE,
+                attach::run_with_stdout(&socket, target, &mut captured),
+            )
+            .await
+        });
         let err = result
             .expect("attach hung instead of failing the connect")
             .expect_err("attach against an unreachable socket must fail");

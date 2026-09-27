@@ -1,41 +1,44 @@
 //! Shared fixtures for the dispatcher test suites.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ResourceId;
 use phux_protocol::input::InputEvent;
+use phux_protocol::input::key::ModSet;
+use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
+use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::actions::{PendingSplit, PendingWindow};
+use crate::attach::connection::Connection;
 use crate::attach::directory_picker::{DirectorySupport, PendingDirectory};
 use crate::attach::focus::FocusHistory;
+use crate::attach::input_replay::InputReplayJournal;
 use crate::attach::paint::SidebarReservation;
-use crate::attach::pane_state::{AttachKernel, AttentionNavigation, VcsIndex};
+use crate::attach::pane_state::{AttachKernel, AttentionNavigation, PaneSlot, VcsIndex};
 use crate::attach::plugin_actions::PluginActionEntry;
 use crate::attach::plugin_panes::PluginPaneEntry;
 use crate::layout::{SplitDir, Workspace};
+use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::SidebarTargets;
 use crate::render::chrome::status_bar::{Position, StatusBarPainter};
 use crate::render::overlay::OverlayState;
 use crate::render::{ChromeBreakpoints, Theme};
 
 use super::ctx::{DispatchCtx, DragGrab};
-use super::effects::{PendingSessionRename, ReattachTarget};
+use super::dispatch::dispatch_input_events;
+use super::effects::{ActionEffects, PendingSessionRename, ReattachTarget, apply_action_effects};
+use super::run_action::run_action;
 
-/// Ceiling for draining a scripted peer connection whose writer has
-/// already been dropped.
-///
-/// Not load-bearing: the drain ends on the peer's EOF, and the
-/// assertions are on the frames collected — never on how fast they
-/// arrived. The timeout only stops a peer that never hangs up from
-/// wedging the binary. The 5s it replaces was generous on an idle laptop
-/// and a measurement of the scheduler on a saturated one.
-pub(super) const PEER_DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Ceiling for draining a peer whose writer has been dropped. The drain ends
+/// on EOF; this only stops a peer that never hangs up from wedging the test.
+const PEER_DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub(super) fn tid(id: u32) -> ResourceId {
     ResourceId::local(id)
 }
 
-pub(super) fn test_engine_kernel() -> super::super::pane_state::AttachKernel {
+pub(super) fn test_engine_kernel() -> AttachKernel {
     phux_client_core::session::SessionKernel::new(
         phux_client_core::engine::ghostty::GhosttyAdapter::new(
             phux_protocol::BootstrapLimits::default(),
@@ -44,15 +47,10 @@ pub(super) fn test_engine_kernel() -> super::super::pane_state::AttachKernel {
     )
 }
 
-/// Owned backing state for a test [`DispatchCtx`].
-///
-/// The context is mostly `&mut` borrows of driver-owned state; this
-/// fixture owns every one of them so a test sets the fields it cares
-/// about, calls [`CtxFixture::ctx`], and reads the results back from the
-/// fixture once the context is dropped. Borrows the fixture cannot own
-/// sensibly (`control_dial`, `resolver`, `input_replay`, `keybindings`,
-/// `plugin_tx`, or state a helper's caller lends in) are left `None` /
-/// fixture-backed by `ctx()` and overridden on the returned context.
+/// Owned backing state for a test [`DispatchCtx`]: set the fields a test
+/// cares about, lend it with [`CtxFixture::ctx`], read results back after.
+/// Borrow-only fields (`control_dial`, `resolver`, `input_replay`,
+/// `keybindings`, `plugin_tx`) start `None` on the lent context.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "mirrors DispatchCtx's independent driver flags one-to-one"
@@ -90,10 +88,8 @@ pub(super) struct CtxFixture {
     pub(super) sidebar_enabled: bool,
     pub(super) sidebar_width: u16,
     pub(super) chrome: ChromeBreakpoints,
-    /// The sidebar's painted click table. `None` derives
-    /// `targets(0, workspace.windows.len(), 0)` from [`Self::workspace`]
-    /// at [`Self::ctx`] time (phux-k0cw: the strip's shape comes from the
-    /// painted target table, not from the workspace).
+    /// The painted click table; `None` derives `targets(0, windows, 0)`
+    /// from the workspace at `ctx()` time.
     pub(super) sidebar_targets: Option<SidebarTargets>,
     pub(super) bar: Option<Position>,
     pub(super) status_bar: Option<StatusBarPainter>,
@@ -106,14 +102,12 @@ pub(super) struct CtxFixture {
     pub(super) host_switch_request: Option<(String, String)>,
     pub(super) agent_meta: HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     pub(super) vcs: VcsIndex,
-    /// The table `ctx()` lends, resolved from [`Self::sidebar_targets`].
     painted_targets: SidebarTargets,
 }
 
 impl Default for CtxFixture {
     /// A single-window workspace on an 80x24 viewport with 1x1 cells, no
-    /// sidebar, no bar, a confirmed initial layout read, and every
-    /// server feature the context gates on.
+    /// sidebar or bar, a confirmed layout read, and every server feature.
     fn default() -> Self {
         Self {
             engine_kernel: test_engine_kernel(),
@@ -166,9 +160,7 @@ impl Default for CtxFixture {
 }
 
 impl CtxFixture {
-    /// Lend every owned field as a [`DispatchCtx`]. The borrowed-only
-    /// fields (`control_dial`, `resolver`, `input_replay`, `keybindings`,
-    /// `plugin_tx`) start `None`; set them on the returned context.
+    /// Lend every owned field as a [`DispatchCtx`].
     pub(super) fn ctx(&mut self) -> DispatchCtx<'_> {
         self.painted_targets = self
             .sidebar_targets
@@ -226,28 +218,188 @@ impl CtxFixture {
             vcs: &mut self.vcs,
         }
     }
-}
 
-/// Build a [`ResolvedAction`] with no args.
-pub(super) fn bare_action(name: &str) -> phux_config::keybind::ResolvedAction {
-    phux_config::keybind::ResolvedAction {
-        action: name.to_owned(),
-        args: BTreeMap::new(),
+    /// `run_action` against the fixture's workspace, focused on its active
+    /// window's focus.
+    pub(super) fn run(&mut self, action: &phux_config::keybind::ResolvedAction) -> ActionEffects {
+        self.run_in(action, &HashMap::new())
+    }
+
+    /// [`Self::run`] with the dispatcher's pane slots.
+    pub(super) fn run_in(
+        &mut self,
+        action: &phux_config::keybind::ResolvedAction,
+        panes: &HashMap<ResourceId, PaneSlot>,
+    ) -> ActionEffects {
+        let focused = self.workspace.active_window().and_then(|w| w.focus.clone());
+        let mut ctx = self.ctx();
+        run_action(action, &mut ctx, focused.as_ref(), panes)
+    }
+
+    /// `apply_action_effects` over a socket pair; returns what the peer got.
+    #[allow(clippy::future_not_send, reason = "current-thread test state")]
+    pub(super) async fn apply(&mut self, effects: ActionEffects) -> Vec<FrameKind> {
+        let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
+        let mut conn = Connection::from_stream(a);
+        let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+        {
+            let mut ctx = self.ctx();
+            apply_action_effects(
+                effects,
+                &mut Vec::new(),
+                &mut conn,
+                &mut ctx,
+                &mut None,
+                &mut false,
+                &mut predict,
+                &HashMap::new(),
+            )
+            .await
+            .expect("apply effects");
+        }
+        drop(conn);
+        drain(Connection::from_stream(b)).await
     }
 }
 
-/// A two-pane Horizontal split with focus on the left leaf, root
-/// ratio 0.5 — the fixture the `resize-pane` dispatch tests mutate.
-pub(super) fn two_pane_workspace() -> Workspace {
-    use crate::layout::{LayoutState, WindowState, split_at};
+/// A fixture over `workspace` with request ids starting at 100.
+pub(super) fn fx(workspace: Workspace) -> CtxFixture {
+    CtxFixture {
+        workspace,
+        next_request_id: 100,
+        ..CtxFixture::default()
+    }
+}
+
+/// Every frame the peer received until the writer's EOF.
+#[allow(clippy::future_not_send, reason = "current-thread test state")]
+async fn drain(mut peer: Connection) -> Vec<FrameKind> {
+    let mut received = Vec::new();
+    while let Ok(frame) = tokio::time::timeout(PEER_DRAIN_DEADLINE, peer.recv())
+        .await
+        .expect("timed out draining the peer connection")
+    {
+        received.push(frame);
+    }
+    received
+}
+
+/// What one dispatched batch did.
+pub(super) struct Sent {
+    pub(super) frames: Vec<FrameKind>,
+    pub(super) detach: bool,
+    pub(super) repainted: bool,
+}
+
+/// Everything `dispatch_input_events` threads besides the context.
+pub(super) struct Env<'a> {
+    pub(super) fx: CtxFixture,
+    pub(super) panes: HashMap<ResourceId, PaneSlot>,
+    pub(super) focused: Option<ResourceId>,
+    pub(super) predict: PredictionState,
+    pub(super) resolver: Option<phux_config::keybind::Resolver>,
+    pub(super) keybindings: Option<phux_config::KeybindingsCfg>,
+    pub(super) journal: Option<&'a RefCell<InputReplayJournal>>,
+}
+
+impl Env<'_> {
+    /// Focus on pane 1, predictor disabled, no resolver.
+    pub(super) fn new(fx: CtxFixture) -> Self {
+        Self {
+            fx,
+            panes: HashMap::new(),
+            focused: Some(tid(1)),
+            predict: PredictionState::new(PredictiveConfig::disabled(), 80, 24),
+            resolver: None,
+            keybindings: None,
+            journal: None,
+        }
+    }
+
+    /// Replace the kernel and pane slots with published replicas of
+    /// `(id, cols, rows, vt)`.
+    pub(super) fn published(mut self, entries: &[(&ResourceId, u16, u16, &[u8])]) -> Self {
+        let (kernel, _, panes) = crate::attach::pane_state::published_test_state(entries);
+        self.fx.engine_kernel = kernel;
+        self.panes = panes;
+        self
+    }
+
+    /// Install the default config's resolver and keybindings.
+    pub(super) fn with_default_bindings(mut self) -> Self {
+        let cfg = default_cfg();
+        self.resolver =
+            Some(phux_config::keybind::Resolver::new(&cfg.keybindings).expect("resolver"));
+        self.keybindings = Some(cfg.keybindings);
+        self
+    }
+
+    #[allow(clippy::future_not_send, reason = "current-thread test state")]
+    pub(super) async fn dispatch(&mut self, mut events: Vec<InputEvent>) -> Sent {
+        let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
+        let mut conn = Connection::from_stream(a);
+        let mut detach = false;
+        let repainted = {
+            let mut ctx = self.fx.ctx();
+            ctx.resolver = self.resolver.as_mut();
+            ctx.keybindings = self.keybindings.as_ref();
+            ctx.input_replay = self.journal;
+            dispatch_input_events(
+                &mut Vec::new(),
+                &mut conn,
+                &mut events,
+                &mut self.focused,
+                &mut detach,
+                &mut self.predict,
+                &Overlay,
+                &mut self.panes,
+                &mut ctx,
+            )
+            .await
+            .expect("dispatch")
+        };
+        drop(conn);
+        Sent {
+            frames: drain(Connection::from_stream(b)).await,
+            detach,
+            repainted,
+        }
+    }
+}
+
+pub(super) fn default_cfg() -> phux_config::Config {
+    phux_config::parse_str(
+        phux_config::DEFAULT_CONFIG_TOML,
+        std::path::Path::new("default.toml"),
+    )
+    .expect("default config parses")
+}
+
+/// A [`ResolvedAction`] named `name` with `args`.
+pub(super) fn act(
+    name: &str,
+    args: &[(&str, toml::Value)],
+) -> phux_config::keybind::ResolvedAction {
+    phux_config::keybind::ResolvedAction {
+        action: name.to_owned(),
+        args: args
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect(),
+    }
+}
+
+/// Two leaves split side by side at `ratio`, focus on the left.
+pub(super) fn two_pane_workspace_at(ratio: f32) -> Workspace {
+    use crate::layout::{LayoutNode, LayoutState, WindowState, split_at};
     let tree = split_at(
-        &crate::layout::LayoutNode::Leaf(tid(1)),
+        &LayoutNode::Leaf(tid(1)),
         &tid(1),
         &tid(2),
         SplitDir::Horizontal,
-        0.5,
+        ratio,
     )
-    .unwrap();
+    .expect("split");
     Workspace {
         windows: vec![WindowState::new(
             "1".to_owned(),
@@ -260,8 +412,12 @@ pub(super) fn two_pane_workspace() -> Workspace {
     }
 }
 
+pub(super) fn two_pane_workspace() -> Workspace {
+    two_pane_workspace_at(0.5)
+}
+
 pub(super) fn press(key: phux_protocol::input::key::PhysicalKey, text: Option<&str>) -> InputEvent {
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet};
+    use phux_protocol::input::key::{KeyAction, KeyEvent};
     InputEvent::Key(KeyEvent {
         action: KeyAction::Press,
         key,
@@ -273,14 +429,37 @@ pub(super) fn press(key: phux_protocol::input::key::PhysicalKey, text: Option<&s
     })
 }
 
-pub(super) fn targets(
-    needs_you: usize,
-    windows: usize,
-    roster: usize,
-) -> crate::render::chrome::sidebar::SidebarTargets {
-    use crate::render::chrome::sidebar::{
-        SessionRosterTarget, SidebarCounts, SidebarTarget, SidebarTargets,
-    };
+pub(super) fn mev(action: MouseAction, button: MouseButton, x: f64, y: f64) -> MouseEvent {
+    MouseEvent {
+        action,
+        button,
+        mods: ModSet::empty(),
+        x,
+        y,
+    }
+}
+
+pub(super) fn mouse(action: MouseAction, button: MouseButton, x: f64, y: f64) -> InputEvent {
+    InputEvent::Mouse(mev(action, button, x, y))
+}
+
+/// A left-button event at cell `(x, y)`.
+pub(super) fn left(action: MouseAction, x: u16, y: u16) -> InputEvent {
+    mouse(action, MouseButton::Left, f64::from(x), f64::from(y))
+}
+
+/// A right press at cell `(x, y)`.
+pub(super) fn right_press(x: u16, y: u16) -> InputEvent {
+    mouse(
+        MouseAction::Press,
+        MouseButton::Right,
+        f64::from(x),
+        f64::from(y),
+    )
+}
+
+pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> SidebarTargets {
+    use crate::render::chrome::sidebar::{SessionRosterTarget, SidebarCounts, SidebarTarget};
     // Window-only fixtures still represent one current session.
     let roster = roster.max(usize::from(windows > 0));
     SidebarTargets {
@@ -292,10 +471,9 @@ pub(super) fn targets(
             host_starts: (0..roster.min(128)).fold(0, |mask, j| mask | (1u128 << j)),
             rule: crate::render::chrome::sidebar::SidebarRule::Trailing,
         },
+        // Row 0 is local; the rest are peers, so one fixture covers both.
         needs_you: (0..needs_you)
             .map(|j| {
-                // Row 0 is local; the rest are peers, so one fixture
-                // exercises both commit shapes.
                 if j == 0 {
                     SidebarTarget::Window(1)
                 } else {

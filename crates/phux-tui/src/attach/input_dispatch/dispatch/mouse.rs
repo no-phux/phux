@@ -6,14 +6,15 @@
 //! A child of `dispatch` so it can extend [`EventEnv`] and read the stage
 //! types without widening their visibility.
 
+use super::super::args::{bare_action, select_window_action};
+use super::super::effects::broadcast_layout;
 use super::{
-    AttachError, ContextMenu, DEFAULT_GROUP_ID, DispatchCtx, DividerGrab, DragGrab, EventEnv,
-    FrameKind, InputEvent, ModSet, MouseAction, MouseButton, MouseEvent, PhysicalKey, Point,
-    PointCoordinate, PointSpace, ResourceId, Scope, ScreenSelectionPoint, SidebarHit, StageOutcome,
-    WindowStrip, actions, apply_focus_transition, chrome_drag, content_rect, encode_layout_or_log,
-    focused_pane_rect, hit_test, layout_key, make_named_key, published_terminal,
+    AttachError, ContextMenu, DispatchCtx, DividerGrab, DragGrab, EventEnv, InputEvent, ModSet,
+    MouseAction, MouseButton, MouseEvent, PhysicalKey, Point, PointCoordinate, PointSpace,
+    ResourceId, ScreenSelectionPoint, SidebarHit, StageOutcome, WindowStrip, actions, chrome_drag,
+    content_rect, focused_pane_rect, hit_test, make_named_key, published_terminal,
     reanchor_predict_to_pane, replica_scroll_moved, scale_to_surface_pixels, switch_session_args,
-    terminal_alt_scroll, terminal_in_alt_screen, terminal_wants_mouse_tracking, wheel_scroll_delta,
+    terminal_in_alt_screen, terminal_wants_mouse_tracking, wheel_scroll_delta,
 };
 
 #[allow(
@@ -21,20 +22,10 @@ use super::{
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
-    /// phux-4li.6 / ADR-0048: `INPUT_MOUSE` routing + click-to-focus +
-    /// divider drag-to-resize. The parser emits mouse coordinates in
-    /// outer-viewport cells (treated as 1-px-per-cell f64 per SPEC
-    /// §9.2.1); we hit-test against the multi-pane composition's
-    /// `Rect`s. A press on a divider cell *grabs* the split that
-    /// divider controls; button-motion while grabbed re-tunes the
-    /// split's ratio so the divider tracks the cursor; release drops
-    /// the grab. A click in a pane forwards the event (with pane-local
-    /// coords) to that pane — so an inner TUI that turned mouse
-    /// tracking on still receives every pointer event over its own
-    /// cells (the divider cells are the only ones whose meaning the
-    /// client claims).
-    ///
-    /// Every mouse event that reaches this stage is claimed by it.
+    /// ADR-0048 pointer stage: chrome drags, sidebar and bar clicks, then
+    /// hit-testing the pane composition. A divider press grabs its split; a
+    /// pane press focuses and forwards (pane-local), so mouse-tracking apps
+    /// still get every event over their cells. Claims every mouse event.
     pub(super) async fn route_mouse_input(
         &mut self,
         ev: &InputEvent,
@@ -52,21 +43,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if let Some(outcome) = self.route_status_bar_click(mouse).await? {
             return Ok(outcome);
         }
-        // Hit-test against the SAME inset content rect the renderer tiles
-        // into — status-bar row and sidebar columns folded off the outer
-        // viewport. Routing against the full viewport instead disagrees with
-        // what is painted: a click near a divider lands one row off (the
-        // status bar) and, with a sidebar docked, one strip-width off in x,
-        // so it focuses/forwards to the wrong pane. Clicks in the reserved
-        // chrome miss every pane rect and become a Miss (dropped).
+        // Hit-test the same inset content rect the renderer tiles into (bar
+        // and sidebar folded off), or clicks land a row/strip off.
         let content = content_rect(self.ctx.viewport, self.ctx.bar, self.ctx.sidebar);
-        // Hit-test against the RENDER layout, not the real
-        // tiled tree. When a pane is zoomed the render layout
-        // is a single full-content leaf, so any click lands on the
-        // visible zoomed pane instead of whichever hidden tiled pane sits
-        // under the cursor. Compute the decision in a scope that drops the
-        // borrowing `Cow` before the click-to-focus `active_window_mut()`
-        // below needs the workspace mutably.
+        // Hit-test the render layout, so a zoomed pane receives the click.
         let decision = {
             let Some(render_ls) = self.ctx.workspace.render_window(self.ctx.zoomed.as_ref()) else {
                 tracing::debug!("dropping mouse event: no active window");
@@ -109,15 +89,13 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return Ok(None);
         };
         match mouse.action {
-            // ADR-0048: a release ALWAYS ends the grab, wherever it lands —
-            // the cursor may have left the handle mid-drag. A divider
-            // publishes its final layout via SET_METADATA, the same path the
-            // keyboard resize uses; a window drop publishes the new order.
+            // ADR-0048: a release always ends the grab, wherever it lands, and
+            // publishes the resulting layout.
             MouseAction::Release => {
                 *self.ctx.drag = None;
                 let commit = chrome_drag::release(self.ctx, &grab, mouse);
                 if commit.broadcast {
-                    self.broadcast_dragged_layout().await?;
+                    broadcast_layout(self.conn, self.ctx).await?;
                 }
                 tracing::debug!(?grab, "chrome drag: released");
                 Ok(Some(StageOutcome::consumed(commit.layout_changed)))
@@ -127,10 +105,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             MouseAction::Motion => Ok(Some(StageOutcome::consumed(chrome_drag::motion(
                 self.ctx, &grab, mouse,
             )))),
-            // phux-npb3 hardening (PR #142 review, recorded in ADR-0048):
-            // anything else mid-drag (a second Press from a chorded button,
-            // a wheel tick, a re-encoded press glitch) is consumed so it
-            // cannot forward to a pane, move focus, or start a second grab.
+            // Anything else mid-drag (chorded press, wheel) is consumed.
             MouseAction::Press => {
                 tracing::trace!(
                     action = ?mouse.action,
@@ -142,22 +117,15 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
     }
 
-    /// End a live chrome drag whose release will never arrive: the outer
-    /// terminal lost focus, so the button went up somewhere this client
-    /// cannot see. Without this the next press, anywhere, would be eaten as
-    /// mid-drag noise. A divider keeps the ratio it reached and publishes
-    /// it, exactly as a release would; a window drop has no position, so
-    /// it is cancelled and the insertion marker must leave the strip.
-    /// The focus event itself still reaches the pane.
-    ///
-    /// Returns whether the screen changed (a cancelled window drag still
-    /// has a marker to erase).
+    /// End a drag whose release will never arrive (the outer terminal lost
+    /// focus), so the next press is not eaten. A divider keeps and publishes
+    /// its ratio; a window drag is cancelled. True when a marker must erase.
     pub(super) async fn abandon_chrome_drag(&mut self) -> Result<bool, AttachError> {
         let Some(grab) = self.ctx.drag.take() else {
             return Ok(false);
         };
         if matches!(grab, DragGrab::Divider(_)) {
-            self.broadcast_dragged_layout().await?;
+            broadcast_layout(self.conn, self.ctx).await?;
             tracing::debug!(?grab, "chrome drag: abandoned on focus loss");
             return Ok(false);
         }
@@ -165,43 +133,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(matches!(grab, DragGrab::Window(_)))
     }
 
-    /// Broadcast the layout a finished divider or window drag produced via
-    /// `SET_METADATA`, so other attached clients converge on it.
-    async fn broadcast_dragged_layout(&mut self) -> Result<(), AttachError> {
-        if self.ctx.layout_read_complete
-            && let Some(session) = self.ctx.focused_session
-            && let Some(bytes) = encode_layout_or_log(self.ctx.workspace)
-        {
-            let request_id = *self.ctx.next_request_id;
-            *self.ctx.next_request_id = self.ctx.next_request_id.wrapping_add(1);
-            self.conn
-                .send(&FrameKind::SetMetadata {
-                    request_id,
-                    scope: Scope::Group(DEFAULT_GROUP_ID),
-                    key: layout_key(session),
-                    value: bytes,
-                })
-                .await?;
-        }
-        Ok(())
-    }
-
-    /// The sidebar strip claims every pointer event over
-    /// its own cells BEFORE pane routing — its rows are hit targets,
-    /// not pane content. A left press resolves against the strip's
-    /// row model (`sidebar::hit_test`) and dispatches the mapped
-    /// action through the same `run_action` path a keybinding or
-    /// palette row uses: a window block commits `select-window`, an
-    /// agents-section row `select-window` for the
-    /// window holding that agent's pane, the `+ new` affordance
-    /// `new-window`, `= menu` the command palette (the
-    /// session/plugin menu), and the bottom-corner collapse chevron
-    /// `toggle-sidebar`. Everything else over the strip (motion,
-    /// non-left presses, headers, blank rows, the separator column)
-    /// is consumed and dropped so it can never leak into a pane
-    /// whose rect does not contain it anyway.
-    ///
-    /// `None` when the pointer is not over the strip.
+    /// The sidebar strip claims every pointer event over its cells before
+    /// pane routing. A left press commits the row's action through
+    /// `run_action` (or grabs the edge); a right press opens a menu;
+    /// everything else is consumed. `None` when not over the strip.
     async fn route_sidebar_click(
         &mut self,
         mouse: &MouseEvent,
@@ -221,14 +156,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 .sidebar_left_press(strip, hit, (cell_x, cell_y))
                 .await?;
         } else if is_right_press(mouse) {
-            // A right press on a window block (or an
-            // agents-section row, which resolves to the window
-            // holding that agent) selects that window first —
-            // acting on what you pointed at is the whole promise
-            // of a context menu — and then opens the window menu
-            // for it. Every other cell of the strip is session
-            // chrome and gets the session menu, so a right-click
-            // anywhere on the sidebar does something useful.
+            // A window row is selected first, then gets the window menu;
+            // anywhere else on the strip gets the session menu.
             let window_row = hit.filter(|r| r.action == "select-window");
             layout_changed = self
                 .open_chrome_context_menu(window_row, (cell_x, cell_y))
@@ -264,23 +193,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(layout_changed)
     }
 
-    /// The status-bar row is chrome, not pane content —
-    /// `content_rect` already excludes it, so every pointer event
-    /// here used to fall through to a Miss and get dropped. Claim
-    /// the row explicitly instead: a left press on a window tab
-    /// (resolved against the painter's cached strip, so the hit
-    /// targets are exactly the cells on screen) dispatches
-    /// `select-window { index }` through the same `run_action`
-    /// path the sidebar affordances and keybindings use. phux-qtw8:
-    /// the sidebar strip is full-height and claims its columns on
-    /// THIS row too — but it hit-tests first (above), so by here the
-    /// event is in the bar's own inset span and `window_hit_at`
-    /// (which indexes off the origin it painted at) resolves it.
-    /// Pane content is untouched — everything else on the row
-    /// (non-tab cells, motion, wheel, non-left buttons) is consumed
-    /// and dropped, matching the pre-claim behavior bit for bit.
-    ///
-    /// `None` when the pointer is not on the bar's row.
+    /// The status-bar row is chrome: a left press on a tab commits its
+    /// `select-window` (and picks it up for dragging), a right press opens a
+    /// menu, and everything else is consumed. The sidebar hit-tests first,
+    /// so by here the event is in the bar's own span. `None` off the row.
     async fn route_status_bar_click(
         &mut self,
         mouse: &MouseEvent,
@@ -309,21 +225,15 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 chrome_drag::begin_window_drag(self.ctx, index, WindowStrip::Tabs);
             }
         } else if is_right_press(mouse) {
-            // Right press on a tab selects that window
-            // (same as a left click) and opens its window menu;
-            // elsewhere on the bar — the session name, the
-            // widgets, the blank padding — the session menu. The
-            // menu is clamped into the content rect, so a
-            // bottom-docked bar opens it upward, over the panes.
+            // A tab is selected and gets the window menu; elsewhere, the
+            // session menu (clamped into the content rect).
             layout_changed = self.open_chrome_context_menu(hit, (cell_x, cell_y)).await?;
         }
         Ok(Some(StageOutcome::consumed(layout_changed)))
     }
 
-    /// Commit `window_row` (when the right press landed on a
-    /// window target) and open the matching context menu at `anchor` —
-    /// the window menu when it did, the session menu otherwise. Shared
-    /// by the sidebar strip and the status-bar row.
+    /// Commit `window_row` when given and open the window menu, else the
+    /// session menu, at `anchor`.
     async fn open_chrome_context_menu(
         &mut self,
         window_row: Option<phux_config::keybind::ResolvedAction>,
@@ -346,10 +256,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(layout_changed)
     }
 
-    /// Route a pointer event that landed inside a pane's rect: click to
-    /// focus, then the pane-level gestures the client claims (wheel,
-    /// context menu, drag-to-copy), and finally the `INPUT_MOUSE`
-    /// forward to the pane itself.
+    /// Route a press inside a pane: click to focus, then the gestures the
+    /// client claims (wheel, menu, drag-to-copy), else `INPUT_MOUSE`.
     async fn route_mouse_to_pane(
         &mut self,
         mouse: &MouseEvent,
@@ -364,13 +272,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if focus_changed {
             self.focus_pane_from_click(&target);
         }
-        // A pane opted out via `set-pane mouse off`
-        // receives no client-synthesized mouse at all — no
-        // INPUT_MOUSE forward, no local wheel viewport scroll.
-        // Click-to-focus above still applies: it is chrome-level
-        // (the pane never sees it) and it is also the path that
-        // makes the driver drop outer capture once the opted-out
-        // pane is focused, restoring the host's raw handling.
+        // An opted-out pane gets no client-synthesized mouse; click-to-focus
+        // above still applies (it is how outer capture drops).
         if self.ctx.mouse_optout.contains(&target) {
             tracing::trace!(
                 terminal = ?target,
@@ -411,16 +314,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if let Some(ls) = self.ctx.workspace.active_window_mut() {
             ls.focus = Some(target.clone());
         }
-        apply_focus_transition(
-            &mut self.ctx.focus_history,
-            self.focused_resource,
-            target.clone(),
-        );
-        // Re-anchor predict to the clicked pane: drop the
-        // old pane's queue AND reset the cursor + viewport
-        // to the new pane, so a keystroke before the next
-        // reconcile echoes at the right place rather than
-        // the old pane's (mid-screen) coordinates.
+        self.ctx
+            .focus_history
+            .transition(self.focused_resource, Some(target.clone()));
+        // Re-anchor predict so the next keystroke echoes in the new pane.
         reanchor_predict_to_pane(self.predict, self.panes, target);
     }
 
@@ -441,14 +338,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if modes.wants_mouse_tracking {
             return Ok(None);
         }
-        // Alt-screen panes have no client-local scrollback. Never
-        // local-scroll them: a missed mouse-mode bit
-        // used to feed `scroll_viewport` and either smear primary
-        // history over the app or eat a silent no-op. Translate to
-        // arrows when DECSET 1007 is on (libghostty default, same
-        // as tmux/ghostty); otherwise forward the wheel so the
-        // inner app can handle it. Apps opt out of arrows with
-        // `?1007l`.
+        // Alt-screen panes have no local scrollback: arrows under DECSET
+        // 1007 (the default), else forward to the app.
         if modes.alt_screen {
             if modes.alt_scroll {
                 self.send_wheel_as_arrows(target, delta).await?;
@@ -487,11 +378,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(())
     }
 
-    /// Scroll `target`'s local mirror by `delta`, returning `true` iff the
-    /// viewport actually moved (the caller repaints). A successful
-    /// `scroll_viewport` call is not enough: libghostty reports `Ok` at
-    /// the live tail, on an empty history, and on the alt screen, and
-    /// consuming those no-ops ate the wheel.
+    /// Scroll `target`'s mirror by `delta`; true only if the viewport moved
+    /// (libghostty reports `Ok` for no-op scrolls, which must forward).
     fn scroll_pane_viewport(&mut self, target: &ResourceId, delta: isize) -> bool {
         let scrolled = self
             .ctx
@@ -509,18 +397,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         true
     }
 
-    /// phux-wrnm (ADR-0058): a right press on a pane whose app
-    /// has NOT enabled mouse tracking opens the pane context
-    /// menu at the pointer. The gate is the same boundary
-    /// drag-to-copy respects: an inner program that asked for
-    /// the mouse (vim, htop, a TUI with its own right-click
-    /// menu) keeps every button, and the keyboard-bindable
-    /// `context-menu` action is the way in for those panes.
-    /// Click-to-focus above has already run, so the menu acts
-    /// on the pane you pointed at, not the one you left.
-    ///
-    /// The menu is anchored in viewport cells, so this takes the
-    /// un-routed event.
+    /// ADR-0058: a right press on a pane whose app does not track the mouse
+    /// opens the pane menu at the (un-routed) pointer.
     fn open_pane_context_menu(&mut self, mouse: &MouseEvent, target: &ResourceId) -> bool {
         if !is_right_press(mouse) || !pane_ignores_mouse(self.ctx.engine_kernel, target) {
             return false;
@@ -535,15 +413,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         true
     }
 
-    /// Drag-to-copy (tmux convention): a left press on a pane
-    /// whose app has NOT enabled mouse tracking starts a
-    /// copy-mode selection anchored at the click. Holding Ctrl
-    /// explicitly overrides an app's mouse tracking, matching the
-    /// conventional terminal escape hatch for selecting output from a TUI.
-    /// Motion and release then route through the overlay stage above —
-    /// release copies to the host clipboard (OSC 52) and dismisses; a click
-    /// without drag just dismisses. Without Ctrl, apps that DO track the
-    /// mouse (vim, htop, Codex) keep receiving their events untouched.
+    /// Drag-to-copy (tmux): a left press on a pane whose app does not track
+    /// the mouse, or any Ctrl-left press, starts a copy-mode selection;
+    /// motion and release then route through the overlay stage.
     fn begin_drag_to_copy(&mut self, routed: &MouseEvent, target: &ResourceId) -> bool {
         let force_copy = routed.mods.contains(ModSet::CTRL);
         if !is_left_press(routed)
@@ -581,14 +453,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         true
     }
 
-    /// ADR-0048: a LEFT-button press on a divider starts a drag
-    /// and immediately snaps the split to the press position (so
-    /// a click-without-motion still nudges, matching the
-    /// intuitive "grab here"). Scroll-wheel and right/middle
-    /// presses encode as Press too, but landing on a 1-cell
-    /// divider must not snap the split — those, and stray
-    /// grab-less motions, are dropped (the divider gap has no
-    /// pane to forward to).
+    /// ADR-0048: a left press on a divider grabs it and snaps the split to
+    /// the pointer; other presses on a divider are dropped.
     fn grab_divider(
         &mut self,
         mouse: &MouseEvent,
@@ -637,14 +503,14 @@ pub(super) fn pane_scroll_modes(
     Some(PaneScrollModes {
         wants_mouse_tracking: terminal_wants_mouse_tracking(terminal),
         alt_screen: terminal_in_alt_screen(terminal),
-        alt_scroll: terminal_alt_scroll(terminal),
+        alt_scroll: terminal
+            .mode(libghostty_vt::terminal::Mode::ALT_SCROLL)
+            .unwrap_or(false),
     })
 }
 
-/// Whether `target`'s app has NOT enabled mouse tracking — the boundary
-/// the pane context menu and drag-to-copy both respect: an inner program
-/// that asked for the mouse (vim, htop, a TUI with its own right-click
-/// menu) keeps every button.
+/// Whether `target`'s app has not enabled mouse tracking (then the client
+/// may claim its buttons).
 pub(super) fn pane_ignores_mouse(
     kernel: &crate::attach::pane_state::AttachKernel,
     target: &ResourceId,
@@ -653,17 +519,9 @@ pub(super) fn pane_ignores_mouse(
         .is_some_and(|terminal| !terminal_wants_mouse_tracking(terminal))
 }
 
-/// Apply one drag step: re-tune the grabbed split so its divider tracks
-/// `mouse`, returning `true` iff the layout changed (the caller repaints).
-///
-/// A pure mutation of the active window — no wire I/O (the `SET_METADATA`
-/// broadcast happens once on release). Reuses [`actions::apply_divider_resize`]
-/// so the drag, the keybind resize, and the persisted layout all run the
-/// same `MIN_PANE_CELL` floor + `clamp_ratio` math. The pointer is
-/// quantised to an outer-viewport cell exactly as the hit-test does.
-/// `Ok(None)` from the resize (min-cell floor hit, or a stale grab whose
-/// split the layout no longer has) leaves the layout untouched: the drag
-/// stalls at the floor rather than collapsing a pane.
+/// Apply one drag step through [`actions::apply_divider_resize`] (the same
+/// floor math as keyboard resize); true iff the layout changed. A floor hit
+/// or stale grab leaves the divider where it is.
 pub(in crate::attach::input_dispatch) fn drag_resize(
     ctx: &mut DispatchCtx<'_>,
     mouse: &MouseEvent,
@@ -706,60 +564,30 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
         && y < rect.y.saturating_add(rect.h)
 }
 
-/// Map a left press on the sidebar strip to the action it
-/// commits, or `None` when it lands on a header, blank row, or the
-/// separator.
-///
-/// The mapping goes through [`ResolvedAction`] so a sidebar click runs
-/// exactly what a keybinding, palette row, or overlay commit would — one
-/// dispatch path, no bespoke click semantics:
-///
-/// * a nested window row commits `select-window { index }`;
-/// * an agent row commits `select-window` when the
-///   agent is in this session, and `switch-session { name, resource }`
-///   (plus window/pane only when a TUI layout named them) when it is in
-///   another one — the row resolves through `targets`, which
-///   carries the NAME the frame was painted with rather than re-deriving it
-///   from a live model;
-/// * a session name or host row commits `switch-session { name, host? }`;
-/// * Agents overflow opens `agent-fleet`; Sessions overflow opens `session-picker`;
-/// * `+ new` commits `new-window` (the strip lists windows, so its create
-///   affordance creates one);
-/// * the Agents / Sessions headings open their complete management views;
-/// * the collapse chevron in the bottom corner commits
-///   `toggle-sidebar`.
+/// Map a left press on the sidebar strip to the action it commits, through
+/// the same `ResolvedAction` vocabulary as a keybinding: window rows
+/// `select-window`, agent rows a local `select-window` or a cross-session
+/// `switch-session` (from the painted `targets`), session rows
+/// `switch-session { name, host? }`, headers and overflow their management
+/// views, `+ new` `new-window`, the chevron `toggle-sidebar`.
 pub(in crate::attach::input_dispatch) fn sidebar_click_action(
     strip: crate::layout::Rect,
     targets: &crate::render::chrome::sidebar::SidebarTargets,
     x: u16,
     y: u16,
 ) -> Option<phux_config::keybind::ResolvedAction> {
-    let (action, args) = match hit_test(strip, targets.counts, x, y)? {
-        SidebarHit::Window(i) => return sidebar_window_action(i),
+    let action = match hit_test(strip, targets.counts, x, y)? {
+        SidebarHit::Window(i) => return select_window_action(i),
         SidebarHit::NeedsYou(j) => return sidebar_agent_action(targets.needs_you.get(j)?),
         SidebarHit::Roster(j) => {
             return Some(sidebar_session_action(targets.roster.get(j)?.as_ref()?));
         }
-        SidebarHit::Sessions => ("session-picker", std::collections::BTreeMap::new()),
-        SidebarHit::Fleet => ("agent-fleet", std::collections::BTreeMap::new()),
-        SidebarHit::NewWindow => ("new-window", std::collections::BTreeMap::new()),
-        SidebarHit::Collapse => ("toggle-sidebar", std::collections::BTreeMap::new()),
+        SidebarHit::Sessions => "session-picker",
+        SidebarHit::Fleet => "agent-fleet",
+        SidebarHit::NewWindow => "new-window",
+        SidebarHit::Collapse => "toggle-sidebar",
     };
-    Some(phux_config::keybind::ResolvedAction {
-        action: action.to_owned(),
-        args,
-    })
-}
-
-/// Build a window selection through the registry's index argument.
-fn sidebar_window_action(index: usize) -> Option<phux_config::keybind::ResolvedAction> {
-    Some(phux_config::keybind::ResolvedAction {
-        action: "select-window".to_owned(),
-        args: std::collections::BTreeMap::from([(
-            "index".to_owned(),
-            toml::Value::Integer(i64::try_from(index).ok()?),
-        )]),
-    })
+    Some(bare_action(action))
 }
 
 /// Agent targets distinguish client-local focus from a cross-session attach.
@@ -768,7 +596,7 @@ fn sidebar_agent_action(
 ) -> Option<phux_config::keybind::ResolvedAction> {
     use crate::render::chrome::sidebar::SidebarTarget;
     let (id, name, window, pane, resource) = match target {
-        SidebarTarget::Window(index) => return sidebar_window_action(*index),
+        SidebarTarget::Window(index) => return select_window_action(*index),
         SidebarTarget::Session {
             id,
             name,
@@ -833,60 +661,22 @@ fn sidebar_session_action(
     }
 }
 
-/// Map a left press on the status-bar row to the action it
-/// commits, or `None` when it lands on a non-tab cell (separator, another
-/// widget, blank padding) or no painter/strip is available. Named navigation
-/// cells dispatch their argument-free action through this same path.
-///
-/// Same shape as [`sidebar_click_action`]: the mapping goes through
-/// [`phux_config::keybind::ResolvedAction`] so a tab click runs exactly
-/// what a keybinding, palette row, or sidebar click would — one dispatch
-/// path, no bespoke click semantics. A window tab commits
-/// `select-window { index }`; the hit test itself lives with the painter
-/// ([`crate::render::chrome::status_bar::StatusBarPainter::hit_at`])
-/// so paint and click targets derive from the same composed strip.
+/// Map a press on the status-bar row to its action: a tab commits
+/// `select-window`, the `switch` chip the fleet, a navigation hint its
+/// action. The hit test lives with the painter, so targets match the paint.
 pub(in crate::attach::input_dispatch) fn bar_click_action(
     painter: Option<&crate::render::chrome::status_bar::StatusBarPainter>,
     x: u16,
 ) -> Option<phux_config::keybind::ResolvedAction> {
     match painter?.hit_at(x)? {
-        phux_config::widget::CellHit::Window(index) => {
-            let mut args = std::collections::BTreeMap::new();
-            args.insert(
-                "index".to_owned(),
-                toml::Value::Integer(i64::try_from(index).ok()?),
-            );
-            Some(phux_config::keybind::ResolvedAction {
-                action: "select-window".to_owned(),
-                args,
-            })
-        }
-        // The `switch` chip opens the fleet dashboard — the same overlay
-        // `prefix A` opens, through the same dispatch path. It is the
-        // right target for a pointer because it is the *only* switcher
-        // that answers all three questions at once (which sessions, which
-        // windows, which agent needs me), and on the narrow terminal
-        // where the chip is shown that is the whole point.
-        phux_config::widget::CellHit::Switch => Some(phux_config::keybind::ResolvedAction {
-            action: "agent-fleet".to_owned(),
-            args: std::collections::BTreeMap::new(),
-        }),
-        phux_config::widget::CellHit::Action(action) => {
-            Some(phux_config::keybind::ResolvedAction {
-                action: action.to_owned(),
-                args: std::collections::BTreeMap::new(),
-            })
-        }
+        phux_config::widget::CellHit::Window(index) => select_window_action(index),
+        phux_config::widget::CellHit::Switch => Some(bare_action("agent-fleet")),
+        phux_config::widget::CellHit::Action(action) => Some(bare_action(action)),
     }
 }
 
-/// Push `spec` as a context menu anchored at the viewport cell
-/// `anchor` (ADR-0058).
-///
-/// The menu is clamped inside the pane content rect — the same rect the
-/// panes tile into and centered modals are placed against — so it can
-/// never occlude the sidebar strip or the status-bar row, including when
-/// the click that opened it landed on that chrome.
+/// Push `spec` as a context menu at `anchor` (ADR-0058), clamped inside the
+/// pane content rect so it never covers the sidebar or bar.
 pub(in crate::attach::input_dispatch) fn open_context_menu(
     ctx: &mut DispatchCtx<'_>,
     spec: crate::attach::context_menu::MenuSpec,

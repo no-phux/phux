@@ -1,15 +1,6 @@
 //! The action interpreter: one arm per canonical action name, plus the
 //! action-finder overlay push.
 
-//! Input dispatcher: translates parser-emitted events into wire frames
-//! or layout-action effects.
-//!
-//! Owns the resolver-intercept path (prefix chord → `ResolvedAction` →
-//! mutate the active window of the `Workspace`), the predict overlay's
-//! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
-//! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_RESOURCE` reply.
-
 use std::collections::HashMap;
 
 use phux_protocol::ResourceId;
@@ -56,39 +47,17 @@ pub(super) fn push_action_finder(ctx: &mut DispatchCtx<'_>) {
         .push(Box::new(SelectList::new("Commands", items, ctx.theme)));
 }
 
-/// Take the next client request id, advancing the driver's counter.
-const fn take_request_id(ctx: &mut DispatchCtx<'_>) -> u32 {
-    let request_id = *ctx.next_request_id;
-    *ctx.next_request_id = ctx.next_request_id.wrapping_add(1);
-    request_id
-}
-
-/// Dispatch a resolved action against the driver's context.
-///
-/// Returns the [`ActionEffects`] the caller needs to apply. The function
-/// is sync: it never touches the connection — frame I/O happens in the
-/// caller (`dispatch_input_events`) so a hypothetical async wire-send
-/// failure doesn't leave layout state half-mutated.
-///
-/// The body is the central dispatch table: one line per canonical action
-/// name, delegating to the private per-action helper below it.
+/// Dispatch a resolved action: one arm per canonical action name. Sync by
+/// design; the caller does the frame I/O, so a send failure never leaves
+/// layout state half-mutated.
 pub(super) fn run_action(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
     focused: Option<&ResourceId>,
-    // Read-only view of the live pane slots. The `agent-fleet`
-    // arm snapshots each pane's asked flag / OSC title / cwd from it;
-    // every other arm ignores it. Threaded as a parameter (not a ctx
-    // field) because the driver also passes `panes` mutably alongside the
-    // ctx into `dispatch_input_events`.
+    // Read-only pane slots (the fleet reads them); passed apart from `ctx`
+    // because the driver lends `panes` mutably beside it.
     panes: &HashMap<ResourceId, PaneSlot>,
 ) -> ActionEffects {
-    // One event per resolved action the user triggered. Info level: a
-    // keybinding firing is a user-lifecycle event a trace reader wants under
-    // the default filter, and it is human-paced (not per-frame), so it costs
-    // nothing meaningful on the hot path. The action name is the key field;
-    // any render-triggering effect is captured by the resulting repaint /
-    // frame spans downstream.
     tracing::info!(action = %resolved.action, "input: running resolved action");
     let mut effects = ActionEffects::default();
     let e = &mut effects;
@@ -193,21 +162,9 @@ fn move_pane(
     });
 }
 
-/// `SPAWN_RESOURCE` → server allocates the new
-/// Terminal under `DEFAULT_GROUP_ID` and replies with
-/// `RESOURCE_SPAWNED { request_id, result: Ok(new_id) }`. The
-/// layout mutation happens in the reply handler — see
-/// `handle_server_frame`'s `ResourceSpawned` arm and
-/// `apply_spawned_ok`. We park a `PendingSplit` keyed by
-/// request id so the reply knows which leaf to split.
-///
-/// Splitting a satellite pane spawns the new pane on that
-/// satellite through the attached hub (`SPAWN_RESOURCE.satellite`), at the
-/// focused pane's directory there when the client knows it. The reply
-/// attaches the relayed pane and the split applies only when that attach
-/// succeeds (`server_frame::handler`). A hub without host-aware spawns
-/// ([`split_host`]) spawns the pane on itself, as before, and the reply's
-/// notice says so. A local split is unchanged: no host, no cwd.
+/// Park a `PendingSplit` and send `SPAWN_RESOURCE`; the reply handler splits.
+/// A satellite pane splits on its satellite at its cwd, applying once the
+/// relayed pane's attach succeeds; see [`split_host`] for older hubs.
 fn split_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -242,17 +199,16 @@ fn split_pane(
         open_existing_pane(ctx, effects, focused_id, dir, target);
         return;
     }
-    let request_id = take_request_id(ctx);
-    let host = explicit_split_host(host_arg(resolved), &focused_id, ctx.directory_support);
+    let request_id = ctx.take_request_id();
+    // `split-pane { host }` spawns there with no owner; else follow the pane.
+    let wanted = host_arg(resolved).or_else(|| focused_id.host().cloned());
+    let host = split_host(wanted, ctx.directory_support);
     let satellite = match &host {
         SplitHost::Satellite(satellite) => Some(satellite.clone()),
         SplitHost::Attached | SplitHost::AttachedInsteadOf(_) => None,
     };
-    // A local split's cwd inheritance is phux-4li.1; until then the
-    // server picks (typically $HOME). A satellite split starts where the
-    // pane it splits is, on that satellite. `command = None` invokes the
-    // spawning server's default shell; `env = None` inherits its
-    // environment as-is.
+    // A satellite split starts at the split pane's cwd; a local one lets
+    // the server pick.
     let cwd = satellite
         .as_ref()
         .and_then(|satellite| pane_cwd_on(Some(satellite), Some(&focused_id), panes));
@@ -281,11 +237,9 @@ fn split_pane(
     effects.spawn_terminal = Some((request_id, pending, frame));
 }
 
-/// Ask a satellite spawn to bind its pane to the satellite's
-/// instance token (ADR-0109), so a pane the spawn strands can later be
-/// killed conditionally. A hub or satellite without `CONDITIONAL_KILL`
-/// skips the field by length and answers unbound; a local spawn is left
-/// byte-identical.
+/// ADR-0109: ask a satellite spawn to bind to the satellite's instance
+/// token, so a stranded pane can later be killed conditionally. Peers
+/// without `CONDITIONAL_KILL` skip the field; local spawns are unchanged.
 fn bind_satellite_spawn(frame: &mut FrameKind) {
     if matches!(
         frame,
@@ -298,12 +252,9 @@ fn bind_satellite_spawn(frame: &mut FrameKind) {
     }
 }
 
-/// Attach `target` and split it into the current window.
-///
-/// A pane already in this workspace is focused rather than opened twice.
-/// The attach is parked on the split: the leaf appears only when
-/// `ATTACH_RESOURCE` succeeds, and a refusal does not kill a pane this
-/// client did not spawn.
+/// Attach an existing `target` and split it into the current window once
+/// the attach succeeds (a pane already here is focused instead). A refusal
+/// never kills a pane this client did not spawn.
 fn open_existing_pane(
     ctx: &mut DispatchCtx<'_>,
     effects: &mut ActionEffects,
@@ -312,7 +263,7 @@ fn open_existing_pane(
     target: ResourceId,
 ) {
     if let Some(index) = window_holding(ctx.workspace, &target) {
-        focus_open_satellite_pane(ctx, effects, index, target);
+        focus_in_window(ctx, effects, index, target);
         return;
     }
     if attach_in_flight(ctx.pending_windows, &target)
@@ -323,14 +274,8 @@ fn open_existing_pane(
     {
         return;
     }
-    let request_id = take_request_id(ctx);
-    let host = match target.host().cloned() {
-        Some(host) if ctx.directory_support == DirectorySupport::HostAware => {
-            SplitHost::Satellite(host)
-        }
-        Some(host) => SplitHost::AttachedInsteadOf(host),
-        None => SplitHost::Attached,
-    };
+    let request_id = ctx.take_request_id();
+    let host = split_host(target.host().cloned(), ctx.directory_support);
     let pending = PendingSplit {
         focused_at_request: focused_id,
         dir,
@@ -339,64 +284,35 @@ fn open_existing_pane(
         adopt: None,
         open_existing: Some(target.clone()),
     };
-    effects.spawn_terminal = Some((
-        request_id,
-        pending,
-        FrameKind::Command {
-            request_id,
-            command: Command::AttachResource {
-                terminal_id: target,
-                role_policy: crate::attach::attach_role::pane_attach_role(),
-            },
-        },
-    ));
+    effects.spawn_terminal = Some((request_id, pending, attach_frame(request_id, target)));
 }
 
-/// The host a split spawns on.
-///
-/// `wanted` is `split-pane { host }`: the new pane is spawned
-/// on that satellite with `owner_terminal: None`, and the returned
-/// Satellite id is what the layout leaf stores. Absent `wanted`, a split
-/// follows the focused pane.
-fn explicit_split_host(
-    wanted: Option<SatelliteHost>,
-    focused: &ResourceId,
-    support: DirectorySupport,
-) -> SplitHost {
-    match wanted {
+/// `ATTACH_RESOURCE` for an existing pane.
+fn attach_frame(request_id: u32, terminal_id: ResourceId) -> FrameKind {
+    FrameKind::Command {
+        request_id,
+        command: Command::AttachResource {
+            terminal_id,
+            role_policy: crate::attach::attach_role::pane_attach_role(),
+        },
+    }
+}
+
+/// Where a split onto `host` (`None`: the attached server) spawns. Only a
+/// hub advertising `LIST_DIRECTORY_HOST` (shipped with host-aware spawns)
+/// honors `SPAWN_RESOURCE.satellite`; an older one would skip the field and
+/// spawn on itself, so the split stays there and says so.
+fn split_host(host: Option<SatelliteHost>, support: DirectorySupport) -> SplitHost {
+    match host {
+        None => SplitHost::Attached,
         Some(host) if support == DirectorySupport::HostAware => SplitHost::Satellite(host),
         Some(host) => SplitHost::AttachedInsteadOf(host),
-        None => split_host(focused, support),
     }
 }
 
-/// The host a split of `focused` spawns on.
-///
-/// A local pane splits on the attached server. A satellite pane splits on
-/// its satellite when the hub advertises `LIST_DIRECTORY_HOST`, the bit that
-/// shipped with host-aware spawns (`new-window { host }`). A hub without it
-/// may predate `SPAWN_RESOURCE.satellite`, and such a peer skips the
-/// unknown field and spawns on itself, so against it the split stays on the
-/// hub and says so rather than landing somewhere the user did not expect.
-fn split_host(focused: &ResourceId, support: DirectorySupport) -> SplitHost {
-    let Some(host) = focused.host() else {
-        return SplitHost::Attached;
-    };
-    if support == DirectorySupport::HostAware {
-        SplitHost::Satellite(host.clone())
-    } else {
-        SplitHost::AttachedInsteadOf(host.clone())
-    }
-}
-
-/// Close the focused pane: one correlated `KILL_RESOURCE` for its Terminal.
-/// The server tears the resource down and broadcasts `RESOURCE_CLOSED`, which
-/// `handle_server_frame` folds out of the layout; a `TerminalNotFound`
-/// refusal folds the leaf out just the same, so a pane whose resource died
-/// under us (a server restart, a reaped PTY) can still be dismissed.
-///
-/// This replaced the phux-4li.12 soft-kill, which typed `exit\n` at the pane
-/// and only closed panes whose foreground process was a cooperative shell.
+/// Close the focused pane with one correlated `KILL_RESOURCE`. A
+/// `TerminalNotFound` refusal folds the leaf out too, so a pane whose
+/// resource died under us can still be dismissed.
 fn kill_focused_pane(
     ctx: &mut DispatchCtx<'_>,
     focused: Option<&ResourceId>,
@@ -407,7 +323,7 @@ fn kill_focused_pane(
         effects.bell = true;
         return;
     };
-    let request_id = take_request_id(ctx);
+    let request_id = ctx.take_request_id();
     effects.kill_frames = vec![kill_resource_frame(&focused_id, request_id)];
     effects.kill_requests = vec![(request_id, focused_id.clone())];
     // Mark the close as ours so the resulting
@@ -415,48 +331,47 @@ fn kill_focused_pane(
     effects.expected_closes = vec![focused_id];
 }
 
-/// ADR-0033: seize the focused pane's input lease so only this
-/// client's keystrokes reach the PTY. `Seize` preempts any holder;
-/// the server broadcasts `TerminalControl` so the badge updates.
+/// Send `command(focused pane)` as a correlated `COMMAND`, or bell with no
+/// focused pane.
+fn focused_command(
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    effects: &mut ActionEffects,
+    command: impl FnOnce(ResourceId) -> Command,
+) {
+    let Some(focused_id) = focused.cloned() else {
+        tracing::warn!("no focused pane; dropping action");
+        effects.bell = true;
+        return;
+    };
+    let request_id = ctx.take_request_id();
+    effects.command_frames.push(FrameKind::Command {
+        request_id,
+        command: command(focused_id),
+    });
+}
+
+/// ADR-0033: seize the focused pane's input lease (preempting any holder).
 fn take_input(
     ctx: &mut DispatchCtx<'_>,
     focused: Option<&ResourceId>,
     effects: &mut ActionEffects,
 ) {
-    let Some(focused_id) = focused.cloned() else {
-        tracing::warn!("take-input: no focused pane; dropping action");
-        effects.bell = true;
-        return;
-    };
-    let request_id = take_request_id(ctx);
-    effects.command_frames.push(FrameKind::Command {
-        request_id,
-        command: Command::AcquireInput {
-            terminal_id: focused_id,
-            mode: InputMode::Seize,
-            ttl_ms: 0,
-        },
+    focused_command(ctx, focused, effects, |terminal_id| Command::AcquireInput {
+        terminal_id,
+        mode: InputMode::Seize,
+        ttl_ms: 0,
     });
 }
 
-/// ADR-0033: release the focused pane's input lease back to open
-/// input. A no-op server-side if we do not hold it.
+/// ADR-0033: release the focused pane's input lease.
 fn give_input(
     ctx: &mut DispatchCtx<'_>,
     focused: Option<&ResourceId>,
     effects: &mut ActionEffects,
 ) {
-    let Some(focused_id) = focused.cloned() else {
-        tracing::warn!("give-input: no focused pane; dropping action");
-        effects.bell = true;
-        return;
-    };
-    let request_id = take_request_id(ctx);
-    effects.command_frames.push(FrameKind::Command {
-        request_id,
-        command: Command::ReleaseInput {
-            terminal_id: focused_id,
-        },
+    focused_command(ctx, focused, effects, |terminal_id| Command::ReleaseInput {
+        terminal_id,
     });
 }
 
@@ -477,29 +392,17 @@ fn signal_terminal(
         effects.bell = true;
         return;
     };
-    let Some(focused_id) = focused.cloned() else {
-        tracing::warn!("signal-terminal: no focused pane; dropping action");
-        effects.bell = true;
-        return;
-    };
-    let request_id = take_request_id(ctx);
-    effects.command_frames.push(FrameKind::Command {
-        request_id,
-        command: Command::SignalTerminal {
-            terminal_id: focused_id,
+    focused_command(ctx, focused, effects, |terminal_id| {
+        Command::SignalTerminal {
+            terminal_id,
             signal,
             operation_id: None,
-        },
+        }
     });
 }
 
-/// phux-npb3 (ADR-0048 decision 3 follow-up): flip the focused
-/// pane's per-pane mouse opt-out. `mouse = "off"` opts the pane
-/// out of client mouse handling (no synthesized `INPUT_MOUSE`; the
-/// driver drops outer capture while the pane is focused, so the
-/// host terminal's raw mouse handling returns for it alone);
-/// `"on"` opts back in; `"toggle"` flips. Entirely client-local —
-/// nothing crosses the wire.
+/// Flip the focused pane's client-local mouse opt-out (ADR-0048): off means
+/// no synthesized `INPUT_MOUSE` and outer capture dropped while focused.
 fn set_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -539,27 +442,15 @@ fn set_pane(
     // top of every loop iteration.
 }
 
-/// Open a new window. Spawn a fresh Terminal
-/// (same SPAWN as a split) and park a `PendingWindow`; the
-/// reply (`handle_server_frame`'s `ResourceSpawned` arm) adds a
-/// window seeded on the spawned pane and makes it active. The
-/// new pane is a bare leaf — the server files it under the
-/// default Group; the TUI groups it into a window itself
-/// (windows are a client convention, ADR-0017).
-///
-/// An optional `cwd` arg starts the window's shell there. The path is
-/// interpreted by the attached server, on its own host — the confirm row of
-/// the `go-to-directory` picker commits exactly this. An optional `host` arg
-/// spawns the window on that satellite through the attached hub
-/// (`SPAWN_RESOURCE.satellite`), `cwd` then naming a path on the satellite:
-/// the confirm row of a satellite listing. The reply attaches the relayed
-/// pane (`server_frame::handler::handle_window_spawned`).
+/// Open a new window: spawn a Terminal and park a `PendingWindow`; the reply
+/// opens and activates the window. `cwd` starts the shell there; `host`
+/// spawns on that satellite through the hub (`cwd` is then a satellite path).
 fn new_window(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
     effects: &mut ActionEffects,
 ) {
-    let request_id = take_request_id(ctx);
+    let request_id = ctx.take_request_id();
     let name = ctx.workspace.default_window_name();
     let mut frame = FrameKind::SpawnResource {
         request_id,
@@ -581,14 +472,9 @@ fn new_window(
     effects.spawn_window = Some((request_id, PendingWindow { name, adopt: None }, frame));
 }
 
-/// Browse directories on the host a listing reads (`docs/spec/L3.md` §4).
-///
-/// The host is the `host` arg, else the focused pane's satellite, else the
-/// attached server ([`listing_host`]). The listing starts at the `path` arg,
-/// else the focused pane's directory when that pane lives on the listed
-/// host, else that host user's home (the empty path); the reply opens the
-/// picker (`crate::attach::directory_picker`). Against a server that does
-/// not advertise the query the action bells and sends nothing.
+/// Request a directory listing (`docs/spec/L3.md` §4) on [`listing_host`],
+/// starting at `path`, else the focused pane's cwd when it lives on that
+/// host, else home. Bells when the server lacks `LIST_DIRECTORY`.
 fn go_to_directory(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -607,7 +493,7 @@ fn go_to_directory(
     let path = str_arg(resolved, "path")
         .or_else(|| pane_cwd_on(host.satellite(), focused, panes))
         .unwrap_or_default();
-    let request_id = take_request_id(ctx);
+    let request_id = ctx.take_request_id();
     // Modal from the moment the request leaves: the placeholder swallows
     // keystrokes and Escape cancels, so nothing typed during a slow listing
     // reaches the pane and a cancelled listing never opens late.
@@ -632,10 +518,9 @@ fn host_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<Satellite
         .map(SatelliteHost::new)
 }
 
-/// The host one listing reads: `wanted` (the `host` arg), else the focused
-/// pane's satellite, else the attached server. A hub that predates
-/// `LIST_DIRECTORY.host` would skip the field and list itself, so against
-/// one the request stays on the attached server and the picker says so.
+/// The host one listing reads: `wanted`, else the focused pane's satellite,
+/// else the attached server. An older hub would list itself, so the request
+/// stays there and the picker says so.
 fn listing_host(
     wanted: Option<SatelliteHost>,
     focused: Option<&ResourceId>,
@@ -669,12 +554,8 @@ fn placeholder_label(host: &ListingHost, path: &str) -> String {
         .map_or_else(|| shown.to_owned(), |host| format!("{shown} on {host}"))
 }
 
-/// Close every pane in the active window, one correlated
-/// `KILL_RESOURCE` each (the same mechanism as `kill-pane`). As each
-/// `RESOURCE_CLOSED` — or each `TerminalNotFound` refusal for a leaf whose
-/// resource is already gone — lands, `handle_server_frame` folds the pane
-/// out; when the window's tree empties it is pruned and the new layout
-/// broadcast. No synchronous window removal here.
+/// Close every pane in the active window, one correlated `KILL_RESOURCE`
+/// each; the closes fold the window away.
 fn kill_active_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let leaves = ctx
         .workspace
@@ -688,7 +569,7 @@ fn kill_active_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     }
     effects.kill_requests = leaves
         .iter()
-        .map(|leaf| (take_request_id(ctx), leaf.clone()))
+        .map(|leaf| (ctx.take_request_id(), leaf.clone()))
         .collect();
     effects.kill_frames = effects
         .kill_requests
@@ -716,10 +597,8 @@ fn select_window(
     });
 }
 
-/// Move the active window to another position in the window order: to
-/// `index` when given, otherwise `delta` slots along (negative is left),
-/// clamped to the ends. The window stays active. Order is shared window
-/// state, so a move broadcasts like a rename does.
+/// Move the active window to `index`, else `delta` slots along, clamped.
+/// It stays active; order is shared state, so the move broadcasts.
 fn move_window(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -790,14 +669,8 @@ fn rename_window(
     }
 }
 
-/// Rename the session this client is attached to. With an explicit
-/// `name` it renames directly; with no name it opens a prompt
-/// pre-filled with the current session name, which commits
-/// `rename-session { name }` back through this same path (the
-/// rename-window precedent). The actual `RENAME_SESSION` send +
-/// optimistic local-name update happen in `apply_action_effects`
-/// (the connection is async, `run_action` is sync — the `detach`
-/// model).
+/// Rename the attached session (`name`), or prompt for a name that commits
+/// back through here. The send happens in `apply_action_effects`.
 fn rename_session(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -825,16 +698,8 @@ fn focus_direction(
         effects.bell = true;
         return;
     };
-    if let Some(ls) = ctx.workspace.active_window_mut()
-        && let Some(new_state) = actions::apply_focus(ls, dir)
-    {
-        let new_focus = new_state.focus.clone();
-        *ls = new_state;
-        effects.layout_mutated = true;
-        effects.set_focus = new_focus;
-    }
-    // No-neighbour case: silently drop (tmux convention —
-    // bumping into the layout edge isn't a bell).
+    // No neighbour: silently drop (tmux: the layout edge isn't a bell).
+    cycle_pane(ctx, effects, |ls| actions::apply_focus(ls, dir));
 }
 
 /// Move the focused pane's boundary by `amount` along `direction`.
@@ -870,20 +735,13 @@ fn resize_pane(
     }
 }
 
-/// Explicit live config reload. The actual re-read +
-/// swap happens in the driver after this batch (see
-/// `DispatchCtx::reload_request`): the resolver that just
-/// resolved this chord, the theme, and the keybindings
-/// snapshot are all borrowed by `ctx` right now — they are
-/// exactly the state the reload replaces.
+/// Explicit reload; the driver re-reads after the batch because `ctx`
+/// borrows exactly the state a reload replaces.
 const fn reload_config(effects: &mut ActionEffects) {
     effects.reload_config = true;
 }
 
-/// ADR-0101: open the settings page over the canonical config file. The
-/// page reads the file itself and writes it one key at a time; a saved
-/// edit comes back as `OverlayOutcome::ReloadConfig`, which the dispatcher
-/// hands up as a `reload-config`.
+/// ADR-0101: open the settings page; a saved edit returns as `reload-config`.
 fn push_settings(ctx: &mut DispatchCtx<'_>) {
     ctx.overlays
         .push(Box::new(crate::render::overlay::SettingsOverlay::open(
@@ -892,11 +750,8 @@ fn push_settings(ctx: &mut DispatchCtx<'_>) {
         )));
 }
 
-/// Capture a local bug-report bundle and toast its path.
-///
-/// The path is also copied to the host clipboard (OSC 52) so the user can
-/// paste it into an agent session. Capture is best-effort: a write failure
-/// bells and toasts the error instead of panicking the attach loop.
+/// Capture a local bug-report bundle, copy its path (OSC 52), and toast it.
+/// A write failure bells and toasts instead of panicking.
 fn report_bug(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -1001,10 +856,8 @@ fn push_copy_mode(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
     ctx.overlays.push(overlay);
 }
 
-/// phux-wrnm (ADR-0058): the keyboard route to the pane menu, and
-/// the only route for a pane whose app owns the mouse. Anchored
-/// just inside the focused pane's top-left corner so it opens over
-/// the pane it acts on, wherever that pane sits in the layout.
+/// ADR-0058: the keyboard route to the pane menu (the only one when the app
+/// owns the mouse), anchored inside the focused pane's corner.
 fn push_context_menu(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
     let rect = focused_pane_rect(ctx, focused);
     let anchor = (rect.x.saturating_add(2), rect.y.saturating_add(1));
@@ -1013,15 +866,8 @@ fn push_context_menu(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
     open_context_menu(ctx, spec, anchor);
 }
 
-/// phux-4li.19 / nav: push the `<leader> w` grouped window
-/// picker. Sessions are section headers; under the current
-/// session each window (`index:name`, pane count) commits
-/// `select-window { index }` (the same per-client switch the
-/// numeric prefix bindings use). Other sessions list their own
-/// windows as one-step `switch-session { name, window }` rows
-/// when their persisted layout is cached, falling
-/// back to a single "switch to session" row otherwise. With no
-/// rows at all it bells.
+/// Push the grouped window picker (sessions as headers, one-step rows for
+/// peers with cached layouts). Bells with no rows.
 fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let items = window_picker_items(
         ctx.workspace,
@@ -1037,18 +883,8 @@ fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
         .push(Box::new(SelectList::new("Windows", items, ctx.theme)));
 }
 
-/// Push the session picker. The current session is
-/// first and marked in its secondary text so the list is a full
-/// inventory and opens with useful orientation. Committing that
-/// row dismisses the picker as a silent no-op; peer rows commit
-/// `switch-session { name }`. A trailing "+ New session" row
-/// keeps creation reachable even when no sessions are cached.
-///
-/// Against a federation hub the rows are grouped by
-/// host — this host, then each satellite — and a satellite row
-/// commits `switch-session { name, host }`. The open also asks
-/// the driver for a fresh inventory; the list carries the live
-/// key so that reply refreshes these rows in place.
+/// Push the session picker (grouped by host on a federation hub), with a
+/// "+ New session" row, and ask the driver for a fresh host inventory.
 fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
     let items = session_picker_rows(ctx.sessions, ctx.focused_session, ctx.hosts, ctx.workspace);
     *ctx.host_refresh_request = true;
@@ -1057,22 +893,9 @@ fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
     ));
 }
 
-/// Push the agent-fleet dashboard — every pane of
-/// the attached session grouped under session headers, with its
-/// ADR-0040 agent record (name/kind + state glyph), ADR-0035
-/// asked/attention highlight, and branch/cwd. Current-session
-/// rows commit `focus-pane { window, pane }` through the single
-/// dispatch path.
-///
-/// A FOREIGN session with a cached persisted layout
-/// (`foreign_layouts`) lists one row per pane committing a
-/// one-step `switch-session { name, window, pane }`, its agent
-/// glyph/state drawn from `foreign_agents` — no attach hop to see
-/// a peer's panes. A foreign session with no cached layout still
-/// falls back to a single `switch-session { name }` row.
-/// Constructed with the fleet live key so the driver refreshes
-/// the rows in place as agent events land while it is open. With
-/// nothing to list it bells.
+/// Push the live agent-fleet dashboard: every pane with its agent record,
+/// attention, and branch; peers with cached layouts list one-step rows.
+/// Bells with nothing to list.
 fn push_agent_fleet(
     ctx: &mut DispatchCtx<'_>,
     panes: &HashMap<ResourceId, PaneSlot>,
@@ -1107,11 +930,8 @@ fn push_agent_fleet(
     ));
 }
 
-/// phux-oih5.16 / ADR-0049: advisory, client-local navigation over
-/// asking panes. Flatten windows in display order and each tree in
-/// DFS leaf order; choose the first asking pane strictly after the
-/// current pane, wrapping once. No attention means a bell-no-op and
-/// does not arm a return origin.
+/// ADR-0049: focus the next asking pane (window then DFS order, wrapping),
+/// saving one return origin. No attention: bell, no origin.
 fn next_attention(
     ctx: &mut DispatchCtx<'_>,
     focused: Option<&ResourceId>,
@@ -1143,12 +963,8 @@ fn next_attention(
     effects.set_focus = Some(target);
 }
 
-/// Jump back to the pane `next-attention` first navigated away from.
-///
-/// Consume first: a pane that disappeared while we were cycling is
-/// a safe bell-no-op, not a sticky origin that can later resolve to
-/// a different pane. `ResourceId` is stable across window reordering,
-/// so a surviving origin is found in its current window/DFS slot.
+/// Jump back to the saved origin, consuming it even when that pane is gone
+/// (a bell, never a sticky origin that could resolve elsewhere).
 fn return_from_attention(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let Some(origin) = ctx.attention_navigation.take_origin() else {
         effects.bell = true;
@@ -1166,13 +982,8 @@ fn return_from_attention(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects)
     effects.set_focus = Some(origin);
 }
 
-/// Focus a specific pane addressed as
-/// (window index, DFS leaf ordinal) — the commit the fleet
-/// dashboard's current-session rows carry. Per-client, like
-/// `select-window` (no broadcast): switch to the window, then
-/// move its client-local focus onto the target leaf. Stale
-/// coordinates (the layout changed since the rows were built)
-/// bell rather than focusing the wrong pane.
+/// Focus the pane at (window, DFS ordinal), per-client; stale coordinates
+/// bell rather than focus the wrong pane.
 fn focus_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -1203,37 +1014,12 @@ fn focus_pane(
         effects.bell = true;
         return;
     };
-    switch_window(ctx, effects, |w| {
-        w.select(win);
-    });
-    if let Some(ls) = ctx.workspace.active_window_mut() {
-        ls.focus = Some(target.clone());
-    }
-    effects.layout_mutated = true;
-    effects.set_focus = Some(target);
+    focus_in_window(ctx, effects, win, target);
 }
 
-/// Re-target this client to another
-/// session. The effect carries the target up to
-/// `apply_action_effects`, which routes it to the driver's
-/// outer re-attach loop (in-process re-attach on the same
-/// connection). A bad/absent `name` arg bells.
-///
-/// An optional `window = N` arg makes it the
-/// one-step cross-session window pick — after the re-attach
-/// loads the target's persisted layout, the driver selects
-/// window `N`. The grouped window picker's foreign-session
-/// rows commit this form.
-///
-/// An additional optional `pane = P` arg extends it
-/// to a one-step cross-session PANE pick — after selecting the
-/// window, the driver focuses its DFS leaf ordinal `P`. The
-/// agent-fleet dashboard's foreign pane rows commit this form.
-///
-/// An optional `host = "NAME"` arg names a federation
-/// satellite instead of a session on this server, and takes the
-/// [`open_satellite_session`] path — the session picker's satellite
-/// rows commit that form.
+/// Re-attach to another session. Optional `window`/`pane` make it a
+/// one-step cross-session pick, `id`/`resource` pin identity, and `host`
+/// takes the [`open_satellite_session`] path.
 fn switch_session(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -1322,13 +1108,13 @@ fn open_satellite_session(
         return;
     };
     if let Some(index) = window_holding(ctx.workspace, &target) {
-        focus_open_satellite_pane(ctx, effects, index, target);
+        focus_in_window(ctx, effects, index, target);
         return;
     }
     if attach_in_flight(ctx.pending_windows, &target) {
         return;
     }
-    let request_id = take_request_id(ctx);
+    let request_id = ctx.take_request_id();
     ctx.pending_windows.insert(
         request_id,
         PendingWindow {
@@ -1339,17 +1125,13 @@ fn open_satellite_session(
     // The pane exists already, so there is no spawn: attach it. Its
     // bootstrap seeds the slot, and the reply decides whether the window
     // opens (`server_frame::handler`).
-    effects.command_frames.push(FrameKind::Command {
-        request_id,
-        command: Command::AttachResource {
-            terminal_id: target,
-            role_policy: crate::attach::attach_role::pane_attach_role(),
-        },
-    });
+    effects
+        .command_frames
+        .push(attach_frame(request_id, target));
 }
 
-/// Focus the window already holding a satellite session's pane.
-fn focus_open_satellite_pane(
+/// Switch to window `index` and focus `target` in it (per-client).
+fn focus_in_window(
     ctx: &mut DispatchCtx<'_>,
     effects: &mut ActionEffects,
     index: usize,
@@ -1389,11 +1171,7 @@ fn satellite_session_pane(
         .clone()
 }
 
-/// Create a fresh session (or attach to one already named) and
-/// switch this client to it in-process. An explicit `name`
-/// creates it directly; with no name we open a prompt to type
-/// one, which commits `new-session { name }` back through this
-/// same path. Either way the re-attach uses `CreateIfMissing`.
+/// Create-or-switch to a named session, or prompt for a name.
 fn new_session(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -1407,12 +1185,7 @@ fn new_session(
     }
 }
 
-/// Run a plugin manifest action through the same
-/// child-process runtime `phux config run PLUGIN ACTION` uses.
-/// Sync dispatch only records the intent; the async caller
-/// (`apply_action_effects`) spawns the run off the input loop so
-/// a slow plugin never freezes the TUI. Completion arrives on
-/// the driver's plugin-events channel; failures toast.
+/// Record a plugin action run; the async caller spawns it off the input loop.
 fn plugin_action(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
     let (Some(plugin), Some(action)) = (str_arg(resolved, "plugin"), str_arg(resolved, "action"))
     else {
@@ -1426,19 +1199,9 @@ fn plugin_action(resolved: &phux_config::keybind::ResolvedAction, effects: &mut 
     effects.run_plugin = Some((plugin, action));
 }
 
-/// Open a plugin manifest `[[panes]]` entry as a
-/// real server-side Terminal running the pane's argv. Routes
-/// through the SAME `SPAWN_RESOURCE` machinery `split-pane` /
-/// `new-window` use (ADR-0017: no plugin-privileged wire
-/// surface) — the manifest supplies the command, the plugin
-/// root the cwd, and `PHUX_PLUGIN_*` the additive env. Placement
-/// picks the parked intent: `split`/`zoomed` park a
-/// `PendingSplit` (zoomed also zooms the new pane when the
-/// reply lands), `tab` parks a `PendingWindow` named after the
-/// pane title. `overlay` entries never reach the snapshot
-/// (deferred), so an unknown (plugin, pane) pair here also
-/// covers a disabled plugin or an overlay declaration bound
-/// directly in user config.
+/// Open a plugin `[[panes]]` entry as a Terminal via the ordinary spawn
+/// (ADR-0017): `split`/`zoomed` park a split, `tab` a window. An unknown
+/// pair (disabled, typo, overlay) bells.
 fn plugin_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -1467,7 +1230,7 @@ fn plugin_pane(
         effects.bell = true;
         return;
     };
-    let request_id = take_request_id(ctx);
+    let request_id = ctx.take_request_id();
     let mut frame = entry.spawn_frame(request_id);
     match entry.placement {
         HostedPlacement::Split | HostedPlacement::Zoomed => {
@@ -1510,12 +1273,11 @@ fn plugin_pane(
     }
 }
 
-/// Step the active window's focus with `step` (`next-pane` /
-/// `previous-pane`), adopting the resulting layout state.
+/// Step the active window's focus with `step`, adopting the new state.
 fn cycle_pane(
     ctx: &mut DispatchCtx<'_>,
     effects: &mut ActionEffects,
-    step: fn(&LayoutState) -> Option<LayoutState>,
+    step: impl FnOnce(&LayoutState) -> Option<LayoutState>,
 ) {
     if let Some(ls) = ctx.workspace.active_window_mut()
         && let Some(new_state) = step(ls)
@@ -1527,11 +1289,8 @@ fn cycle_pane(
     }
 }
 
-/// One-entry MRU jump-back. The target may be in another window;
-/// locate it by stable `ResourceId`, switch the client-local active
-/// window, and restore that window's local focus. Applying the
-/// resulting focus change records the pane we jumped from as the
-/// next MRU, so repeated invocations toggle between two panes.
+/// One-entry MRU jump-back, across windows; applying it records the pane
+/// left, so repeats toggle.
 fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &mut ActionEffects) {
     let Some(target) = ctx.focus_history.target(focused, ctx.workspace) else {
         effects.bell = true;
@@ -1556,10 +1315,8 @@ fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &
     effects.set_focus = Some(target);
 }
 
-/// Zoom needs more than one pane (a single-pane window
-/// bells, like tmux). When already zoomed the REAL tree still has >1
-/// leaf, so this same check permits un-zooming. The driver owns
-/// the `zoomed` state; we just signal intent + request a repaint.
+/// Zoom needs more than one pane (tmux bells); the same check permits
+/// un-zooming, since the real tree keeps its leaves.
 fn toggle_zoom(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
     let multi = ctx
         .workspace
@@ -1574,19 +1331,8 @@ fn toggle_zoom(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
     }
 }
 
-/// Show/hide the window sidebar.
-///
-/// The strip costs its width off every pane. On a terminal too
-/// narrow to afford it and still leave a usable pane area, the
-/// driver's reservation folds to `None` — so turning it "on"
-/// would change nothing on screen and the keypress would read
-/// as broken. Refuse with the bell instead, the same way zoom
-/// refuses on a single-pane window: a refusal you can hear
-/// beats a toggle that silently does nothing.
-///
-/// Turning it *off* is always allowed: that direction never
-/// needs room, and a user shrinking their terminal must be
-/// able to reclaim the columns.
+/// Show/hide the sidebar. Showing it where it cannot fit would change
+/// nothing on screen, so that bells instead; hiding is always allowed.
 const fn toggle_sidebar(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
     if !*ctx.sidebar_enabled
         && crate::attach::paint::sidebar_reservation(
