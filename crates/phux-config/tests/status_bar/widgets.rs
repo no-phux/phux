@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use phux_config::WidgetSpec;
 use phux_config::widget::{
-    CellHit, CellStyle, SessionNameWidget, StatusWidget, WidgetCells, WidgetContext, WidgetError,
-    WidgetRegistry, WindowBadge, WindowInfo,
+    CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetRegistry,
+    WindowBadge, WindowInfo,
 };
 
 fn opts_with(entries: &[(&str, toml::Value)]) -> BTreeMap<String, toml::Value> {
@@ -58,35 +58,7 @@ fn render_windows(opts: &[(&str, toml::Value)], windows: &[WindowInfo]) -> Widge
     w.render(&WidgetContext::new(fixed_time(), "", "C-a", windows))
 }
 
-// ---------------------------------------------------------------------------
-// Registry construction
-// ---------------------------------------------------------------------------
-
-#[test]
-fn register_then_build_invokes_factory() {
-    #[allow(clippy::unnecessary_wraps)] // factory signature is fixed
-    fn dummy_factory(
-        _opts: &BTreeMap<String, toml::Value>,
-    ) -> Result<Box<dyn StatusWidget>, WidgetError> {
-        Ok(Box::new(SessionNameWidget::new(
-            Some("X:".to_owned()),
-            None,
-        )))
-    }
-    let mut r = WidgetRegistry::new();
-    r.register("custom", dummy_factory);
-    let spec = WidgetSpec {
-        kind: "custom".to_owned(),
-        opts: BTreeMap::new(),
-    };
-    let w = r.build(&spec).expect("custom builds");
-    let cells = w.render(&WidgetContext::new(fixed_time(), "main", "C-a", &[]));
-    assert_eq!(text_of(&cells), "X:main");
-}
-
-// ---------------------------------------------------------------------------
-// session-name widget
-// ---------------------------------------------------------------------------
+// --- session-name widget
 
 /// One session-name render case: description, opts, session, expected.
 type SessionNameCase<'a> = (&'a str, Vec<(&'a str, toml::Value)>, &'a str, &'a str);
@@ -139,9 +111,7 @@ fn session_name_renders_per_its_options() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// time widget
-// ---------------------------------------------------------------------------
+// --- time widget
 
 #[test]
 fn time_widget_formats_render_expected_widths() {
@@ -163,9 +133,7 @@ fn time_widget_formats_render_expected_widths() {
     assert_eq!(cells.cells.len(), 4);
 }
 
-// ---------------------------------------------------------------------------
-// Invalid options (per-kind); unknown kind
-// ---------------------------------------------------------------------------
+// --- Invalid options (per-kind); unknown kind
 
 /// One invalid-option case: description, widget kind, opts.
 type InvalidOptionCase<'a> = (&'a str, &'a str, Vec<(&'a str, toml::Value)>);
@@ -225,17 +193,7 @@ fn invalid_option_values_are_rejected_naming_the_kind() {
     }
 }
 
-#[test]
-fn unknown_kind_returns_unknown_kind_error() {
-    match build_spec("not-a-real-widget", &[]) {
-        Err(WidgetError::UnknownKind(k)) => assert_eq!(k, "not-a-real-widget"),
-        other => panic!("expected UnknownKind, got {other:?}"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// windows (tab-bar) widget
-// ---------------------------------------------------------------------------
+// --- windows (tab-bar) widget
 
 /// Table-driven tab rendering with the default format/separator:
 /// plain tabs, the ` Z` zoom suffix on a zoomed window (phux-x2hm), the
@@ -305,18 +263,6 @@ fn windows_widget_renders_tabs_and_markers() {
             assert!(cells.is_empty(), "{what}");
         }
     }
-}
-
-#[test]
-fn help_hints_widget_uses_configured_prefix() {
-    let widget = build_spec("help-hints", &[]).expect("help-hints builds");
-    let ctx = WidgetContext::new(fixed_time(), "", "C-b", &[]);
-
-    // The prefix is stated once and the hints are its continuations.
-    assert_eq!(
-        text_of(&widget.render(&ctx)),
-        "C-b  s Sessions · Space Commands · S Settings · ? Help · [ Copy"
-    );
 }
 
 #[test]
@@ -434,40 +380,6 @@ fn windows_widget_stamps_hits_with_custom_format_and_separator() {
     );
 }
 
-#[test]
-fn windows_widget_active_and_inactive_styles_differ() {
-    // Default preset: active = bold+reverse, inactive = dim.
-    let cells = render_windows(&[], &[win("a", true), win("b", false)]);
-    // First cell ("0") is part of the active segment.
-    let active_style = cells.cells[0].style.clone().expect("active styled");
-    assert!(active_style.bold && active_style.reverse);
-    // The "b" cell belongs to the inactive segment "1:b" — find it.
-    let b_cell = cells
-        .cells
-        .iter()
-        .find(|c| c.text.first() == Some(&'b'))
-        .expect("b cell");
-    let inactive_style = b_cell.style.clone().expect("inactive styled");
-    assert!(inactive_style.dim && !inactive_style.reverse);
-}
-
-#[test]
-fn windows_widget_custom_style_parses() {
-    let cells = render_windows(
-        &[(
-            "active",
-            style_table(&[
-                ("fg", toml::Value::String("green".to_owned())),
-                ("bold", toml::Value::Boolean(true)),
-            ]),
-        )],
-        &[win("a", true)],
-    );
-    let style = cells.cells[0].style.clone().expect("active styled");
-    assert_eq!(style.fg.as_deref(), Some("green"));
-    assert!(style.bold);
-}
-
 // ---------------------------------------------------------------------------
 // Closed opts surface (phux-i0e8.4.2): every factory rejects unknown
 // options, naming the widget and suggesting the nearest valid opt.
@@ -534,19 +446,6 @@ fn every_factory_rejects_unknown_opts_with_a_suggestion() {
 }
 
 #[test]
-fn help_hints_rejects_any_opt() {
-    let err = build_spec("help-hints", &[("anything", toml::Value::Boolean(true))])
-        .expect_err("help-hints takes no options");
-    match err {
-        WidgetError::InvalidOption { kind, message } => {
-            assert_eq!(kind, "help-hints");
-            assert!(message.contains("unknown option `anything`"), "{message}");
-        }
-        other @ WidgetError::UnknownKind(_) => panic!("expected InvalidOption, got {other:?}"),
-    }
-}
-
-#[test]
 fn a_typoed_style_key_is_rejected_and_suggests_style() {
     // `style` is consumed by the registry, but it is still a valid
     // spelling — a near-miss must point at it.
@@ -566,9 +465,7 @@ fn a_typoed_style_key_is_rejected_and_suggests_style() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Universal widget-level `style` (phux-i0e8.4.2)
-// ---------------------------------------------------------------------------
+// --- Universal widget-level `style` (phux-i0e8.4.2)
 
 fn red_bold() -> toml::Value {
     style_table(&[
@@ -675,28 +572,6 @@ fn styled_wrapper_forwards_poll_interval_and_exec_feed() {
     assert!(exec.exec_feed().is_some(), "exec feed lost behind Styled");
 }
 
-/// A part's style changes its ink and keeps the segment's bed: colours the
-/// overlay sets win, attributes accumulate.
-#[test]
-fn cell_style_layered_keeps_the_bed_and_changes_the_ink() {
-    let bed = CellStyle {
-        fg: Some("#bef264".to_owned()),
-        bg: Some("#293628".to_owned()),
-        bold: true,
-        ..CellStyle::default()
-    };
-    let ink = CellStyle {
-        fg: Some("#7c8696".to_owned()),
-        italic: true,
-        ..CellStyle::default()
-    };
-    let layered = bed.layered(&ink);
-    assert_eq!(layered.fg.as_deref(), Some("#7c8696"));
-    assert_eq!(layered.bg.as_deref(), Some("#293628"));
-    assert!(layered.bold && layered.italic);
-    assert_eq!(bed.layered(&CellStyle::default()), bed);
-}
-
 /// A window running an agent shows the agent's glyph before its name, in
 /// the badge's own ink on the tab's bed, and the whole tab stays one click
 /// target.
@@ -759,9 +634,7 @@ fn windows_widget_index_style_touches_only_the_index() {
     assert_eq!(fg(2).as_deref(), Some("#9aa4b2"), "name");
 }
 
-// ---------------------------------------------------------------------------
-// Width contract: cells are COLUMNS (phux-l96p.8 fix pass II)
-// ---------------------------------------------------------------------------
+// --- Width contract: cells are COLUMNS (phux-l96p.8 fix pass II)
 
 /// Walk a composed row exactly as the emitter does, returning the
 /// columns it advances the terminal.

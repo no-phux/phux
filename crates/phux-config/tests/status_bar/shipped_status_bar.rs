@@ -1,11 +1,6 @@
-//! What the shipped status bar actually looks like, at the widths people
-//! actually run.
-//!
-//! Every other test in this crate exercises one widget or one rule. This
-//! one renders the *default lineup* — the exact `[status]` block in
-//! `default.toml` — across a ladder of terminal widths, and pins the
-//! whole row. It is the only test that would notice a change that is
-//! individually correct in every widget and collectively unreadable.
+//! The shipped `[status]` lineup rendered across terminal widths: the only
+//! test that notices changes individually correct and collectively
+//! unreadable.
 
 #![allow(clippy::expect_used, reason = "tests")]
 
@@ -20,11 +15,7 @@ fn win(name: &str, active: bool) -> WindowInfo {
     WindowInfo {
         name: name.to_owned(),
         active,
-        zoomed: false,
-        attention: false,
-        branch: None,
-        exited: None,
-        badge: None,
+        ..WindowInfo::default()
     }
 }
 
@@ -38,9 +29,6 @@ fn shipped_row(
         .expect("shipped defaults parse");
     let bar = StatusBar::build(&cfg.status, &WidgetRegistry::with_builtins())
         .expect("the shipped status lineup must build");
-    // A fixed instant so the clock is deterministic; the `time` widget's
-    // own formatting is covered elsewhere, here it only has to occupy a
-    // stable number of columns.
     let ctx = WidgetContext::new(
         UNIX_EPOCH + Duration::from_secs(12_345),
         session,
