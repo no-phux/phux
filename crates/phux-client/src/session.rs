@@ -1,13 +1,8 @@
-//! `phux-client` wire primitives for session-identity writes: `phux rename`
-//! and `phux new`'s create-without-attach (ADR-0022 §5).
+//! Session-identity writes: `phux rename` and `phux new`'s
+//! create-without-attach (ADR-0022 §5).
 //!
-//! Since the v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) dissolved the
-//! L2 collection tier and removed the dedicated `CREATE_SESSION` /
-//! `RENAME_SESSION` verbs, both are expressed as L3 `SET_METADATA` writes of
-//! a conventional key that the server intercepts. Selector-driven duplicate
-//! checks and the CLI's own degradation wording stay in
-//! `crates/phux/src/commands/new.rs`; this module owns the write + read-back
-//! round trips.
+//! Both are L3 `SET_METADATA` writes of a conventional key the server
+//! intercepts (ADR-0027); this module owns the write + read-back round trips.
 
 use std::collections::BTreeMap;
 
@@ -23,45 +18,6 @@ use crate::layout::Workspace;
 use crate::layout_ops::{LayoutOps, LayoutOpsError};
 use crate::rename::{BarrierVerdict, NamedSession, RenamePlan, RenameRefusal};
 use phux_protocol::wire::info::SessionSnapshot;
-
-/// The conventional rename write: `current\0new` under
-/// [`SESSION_NAME_KEY`](phux_protocol::wire::frame::SESSION_NAME_KEY).
-///
-/// Since the v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) dissolved the
-/// L2 collection tier and removed the `RENAME_SESSION` verb, a rename is
-/// expressed as an L3 `SET_METADATA` write of this conventional key
-/// (`Scope::Global`, value `current\0new`). The server is authoritative —
-/// it intercepts this write and applies the registry rename. The bytes are
-/// [`crate::rename::write_frame`].
-#[must_use]
-pub fn rename_frame(request_id: u32, session: &str, new_name: &str) -> FrameKind {
-    crate::rename::write_frame(request_id, session, new_name)
-}
-
-/// Send the fire-and-forget rename write.
-///
-/// `SET_METADATA` carries no reply frame, so existence and name-collision
-/// checks are the caller's job against a fresh `GET_STATE` snapshot, before
-/// and (as an ordering barrier) after this call.
-///
-/// `request_id` is the caller's to allocate: earlier revisions of this path
-/// hardcoded `1` inside the write itself, so a caller composing two renames
-/// on one connection sent the identical id twice. Taking it as a parameter
-/// lets a caller vary it — see the `two_renames_on_one_connection_correlate`
-/// test.
-///
-/// # Errors
-///
-/// Transport failures from [`Connection::send`].
-pub async fn rename(
-    conn: &mut Connection,
-    request_id: u32,
-    session: &str,
-    new_name: &str,
-) -> Result<(), AttachError> {
-    conn.send(&rename_frame(request_id, session, new_name))
-        .await
-}
 
 /// Why [`rename_checked`] refused to send the write.
 #[derive(Debug, thiserror::Error)]
@@ -108,20 +64,6 @@ impl RenameError {
     }
 }
 
-/// Why the rename must not be sent, judged against a pre-write snapshot:
-/// an unknown session, or a new name another session already holds.
-#[must_use]
-pub fn rename_refusal(
-    snapshot: &SessionSnapshot,
-    session: &str,
-    new_name: &str,
-) -> Option<RenameError> {
-    match crate::rename::plan_rename(&named(snapshot), session, new_name) {
-        RenamePlan::Refused(refusal) => Some(refusal.into()),
-        RenamePlan::Unchanged { .. } | RenamePlan::Send { .. } => None,
-    }
-}
-
 fn named(snapshot: &SessionSnapshot) -> Vec<NamedSession<'_>> {
     snapshot
         .sessions
@@ -135,12 +77,10 @@ fn named(snapshot: &SessionSnapshot) -> Vec<NamedSession<'_>> {
 
 /// The checked rename: the shared [`crate::rename`] policy on this connection.
 ///
-/// Refuses against a fresh snapshot, skips a no-op (the session already has
-/// `new_name`), writes, then reads `GET_STATE`. That read is the ordering
-/// barrier and the outcome: the snapshot must show the new name on the same
-/// session id, or the rename is refused. Snapshot notices from both reads
-/// are appended to `notices` (a rename cannot be misled by a partial fleet
-/// — session names are hub-local — but the CLI still warns).
+/// Refuses against a fresh snapshot, skips a no-op, writes (the rename has no
+/// reply), then reads `GET_STATE` as the ordering barrier: it must show the
+/// new name on the same session id. Snapshot notices from both reads are
+/// appended to `notices`.
 ///
 /// # Errors
 ///
@@ -158,7 +98,8 @@ pub async fn rename_checked(
         RenamePlan::Refused(refusal) => return Err(refusal.into()),
         RenamePlan::Send { session_id } => session_id,
     };
-    rename(conn, 1, session, new_name).await?;
+    conn.send(&crate::rename::write_frame(1, session, new_name))
+        .await?;
     let (after, degradation) = crate::state::get_state_on(conn).await?.into_parts();
     notices.extend(degradation.notices().iter().cloned());
     match crate::rename::barrier_verdict(&named(&after), session_id, new_name) {
@@ -168,11 +109,7 @@ pub async fn rename_checked(
     }
 }
 
-/// Failure composing the `SESSION_CREATE_KEY` request document.
-///
-/// Realistically unreachable for the shapes this module builds (owned
-/// strings, a string-keyed map), but kept typed rather than `unwrap`ped so a
-/// caller composing this into a larger fallible pipeline is not forced to.
+/// Why a session create failed.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateSessionError {
     /// Transport or decode failure.
@@ -187,12 +124,9 @@ pub enum CreateSessionError {
     Layout(#[from] LayoutOpsError),
 }
 
-/// What the atomic-agent-session-restore capability probe found.
-///
-/// Older servers treat the nonce-result namespace
-/// ([`SESSION_CREATE_RESULT_KEY_PREFIX`]) as ordinary metadata; current
-/// servers reserve it and refuse a direct write. The probe distinguishes the
-/// two without ever risking a real create.
+/// What the atomic-agent-session-restore capability probe found: current
+/// servers reserve the nonce-result namespace, older ones store it as
+/// ordinary metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AtomicPreflightOutcome {
     /// The server reserves the namespace: `agent_session` can ride the
@@ -206,11 +140,9 @@ pub enum AtomicPreflightOutcome {
 
 /// Probe whether the connected server supports atomic agent-session restore.
 ///
-/// Writes a throwaway value under a fresh nonce key, then checks whether the
-/// server reserved it (refused the read) or echoed it back (an older server
-/// treating it as ordinary metadata) — cleaning up in the latter case so no
-/// probe residue is left behind. Every interleaved degradation notice is
-/// appended to `notices`.
+/// Writes a throwaway value under a fresh nonce key and reads it back: an
+/// echo is an older server (the probe is then deleted). Interleaved
+/// degradation notices are appended to `notices`.
 ///
 /// # Errors
 ///
@@ -241,12 +173,7 @@ pub async fn atomic_agent_session_preflight(
                 key: probe_key.clone(),
             })
             .await?;
-            // Ordered read-back confirms the old server processed the
-            // cleanup before this connection closes. Its reply (including
-            // any interleaved degradation) is discarded whole, matching the
-            // pre-migration `let _ = ...` byte-for-byte: this probe's own
-            // outcome is already decided, and there is nothing left for a
-            // notice arriving on this specific round trip to inform.
+            // Ordered read-back: the cleanup landed before the close.
             let _ = conn.request_metadata(103, Scope::Global, probe_key).await?;
             Ok(AtomicPreflightOutcome::Unsupported)
         }
@@ -278,8 +205,7 @@ struct CreatedSession {
     session_id: Option<SessionId>,
 }
 
-/// A `phux new` create-without-attach request. Borrowed so a caller with
-/// owned `Option<Vec<String>>`/`Option<String>` fields need not clone them.
+/// A `phux new` create-without-attach request.
 #[derive(Debug, Clone, Copy)]
 pub struct CreateSessionRequest<'a> {
     /// The session name.
@@ -320,19 +246,12 @@ fn request_token(key: Option<IdempotencyKey>) -> String {
     )
 }
 
-/// Create a named session without attaching, via the conventional
-/// `SESSION_CREATE_KEY` write, then read the seed-pane id back from a
-/// nonce-correlated, one-shot result key.
+/// Create a named session without attaching via the `SESSION_CREATE_KEY`
+/// write, then read the seed-pane id back from a nonce-correlated result key.
 ///
-/// `agent_session_preflighted` is true only when a multi-session caller has
-/// already run [`atomic_agent_session_preflight`] before creating any member
-/// of its batch; otherwise, when `request.agent_session` is set and legacy
-/// results are not allowed, this runs that probe itself. Every interleaved
-/// degradation notice is appended to `notices`, in encounter order.
-///
-/// Duplicate-name rejection is the caller's job against a fresh `GET_STATE`
-/// snapshot taken before this call — this function only writes and reads
-/// back.
+/// Runs [`atomic_agent_session_preflight`] first unless legacy results are
+/// allowed or the caller already ran it. Duplicate-name rejection is the
+/// caller's job. Interleaved degradation notices are appended to `notices`.
 ///
 /// # Errors
 ///
@@ -466,9 +385,7 @@ pub async fn create_empty_session(
     Ok(outcome)
 }
 
-/// Send the `SESSION_CREATE_KEY` write. Frames are ordered on the
-/// connection, while the nonce inside the request prevents another
-/// concurrent creator from supplying a stale or unrelated Terminal id to the
+/// Send the `SESSION_CREATE_KEY` write; the nonce inside correlates the
 /// read-back that follows.
 async fn send_create(conn: &mut Connection, create_bytes: Vec<u8>) -> Result<(), AttachError> {
     conn.send(&FrameKind::SetMetadata {
@@ -495,9 +412,7 @@ enum ReadBack {
 }
 
 /// Read only this request's one-shot result, falling back to the legacy
-/// uncorrelated key when `allow_legacy_result`. The read-back rides
-/// `request_metadata`, not a hand-rolled wait, so a correlated `ERROR`
-/// refusal (`proto.md` §9) is reported rather than hanging forever.
+/// uncorrelated key when `allow_legacy_result`.
 async fn read_result(
     conn: &mut Connection,
     result_key: String,
@@ -679,38 +594,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_rename_write_is_current_nul_new_under_the_conventional_key() {
-        assert_eq!(
-            rename_frame(7, "work", "play"),
-            FrameKind::SetMetadata {
-                request_id: 7,
-                scope: Scope::Global,
-                key: SESSION_NAME_KEY.to_owned(),
-                value: b"work\0play".to_vec(),
-            }
-        );
-    }
-
-    #[test]
-    fn refuses_an_unknown_session_and_a_taken_name() {
-        let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
-            .with_sessions(vec![
-                SessionInfo::new(SessionId::new(0), "work"),
-                SessionInfo::new(SessionId::new(1), "play"),
-            ]);
-        assert!(matches!(
-            rename_refusal(&snap, "gone", "x"),
-            Some(RenameError::NoSuchSession)
-        ));
-        assert!(matches!(
-            rename_refusal(&snap, "work", "play"),
-            Some(RenameError::AlreadyExists { ref new_name }) if new_name == "play"
-        ));
-        assert!(rename_refusal(&snap, "work", "fresh").is_none());
-        assert!(rename_refusal(&snap, "work", "work").is_none());
-    }
-
     fn snap(names: &[(&str, u32)]) -> SessionSnapshot {
         SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
             .with_sessions(
@@ -728,15 +611,7 @@ mod tests {
         let spec = ScriptSpec::new()
             .states([snap(&[("work", 1)]), snap(&[("play", 1)])])
             .degradation_notice(NOTICE);
-        let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server =
-            tokio::spawn(
-                async move { crate::testkit::ScriptedServer::accept(&listener, spec).await },
-            );
+        let (socket, _dir, server) = scripted(spec);
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let mut notices = Vec::new();
         rename_checked(&mut conn, "work", "play", &mut notices)
@@ -834,58 +709,27 @@ mod tests {
         let _ = server.await.expect("scripted server");
     }
 
-    #[tokio::test]
-    async fn two_renames_on_one_connection_correlate() {
-        // Historically both writes hardcoded request_id 1; a caller
-        // allocating distinct ids per call (the fix) is pinned here against
-        // a scripted server that pins the two frames it sees.
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let socket = temp.path().join("rename.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
-        let spec = crate::testkit::ScriptSpec::new();
-        let server_task =
-            tokio::spawn(
-                async move { crate::testkit::ScriptedServer::accept(&listener, spec).await },
-            );
-
-        let mut conn = Connection::connect(&socket).await.expect("connect");
-        rename(&mut conn, 1, "a", "b")
-            .await
-            .expect("first rename send");
-        rename(&mut conn, 2, "a", "c")
-            .await
-            .expect("second rename send");
-        drop(conn);
-        let seen = server_task.await.expect("scripted server");
-        let ids: Vec<u32> = seen
-            .into_iter()
-            .filter_map(|frame| match frame {
-                FrameKind::SetMetadata {
-                    request_id, key, ..
-                } if key == SESSION_NAME_KEY => Some(request_id),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(ids, vec![1, 2], "each rename must carry its own request id");
-    }
-
     fn scripted(
-        spec: crate::testkit::ScriptSpec,
+        spec: ScriptSpec,
     ) -> (
         std::path::PathBuf,
         tempfile::TempDir,
         tokio::task::JoinHandle<Vec<FrameKind>>,
     ) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server =
-            tokio::spawn(
-                async move { crate::testkit::ScriptedServer::accept(&listener, spec).await },
-            );
+        let (socket, server) = crate::testkit::serve_one(dir.path(), spec);
         (socket, dir, server)
+    }
+
+    fn work_request(env: &BTreeMap<String, String>) -> CreateSessionRequest<'_> {
+        CreateSessionRequest {
+            idempotency_key: None,
+            name: "work",
+            command: None,
+            cwd: None,
+            env,
+            agent_session: None,
+        }
     }
 
     #[tokio::test]
@@ -909,14 +753,7 @@ mod tests {
 
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let env = BTreeMap::new();
-        let request = CreateSessionRequest {
-            idempotency_key: None,
-            name: "work",
-            command: None,
-            cwd: None,
-            env: &env,
-            agent_session: None,
-        };
+        let request = work_request(&env);
         let mut notices = Vec::new();
         let outcome = create_session(&mut conn, &request, true, false, &mut notices)
             .await
@@ -967,14 +804,7 @@ mod tests {
 
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let env = BTreeMap::new();
-        let request = CreateSessionRequest {
-            idempotency_key: None,
-            name: "work",
-            command: None,
-            cwd: None,
-            env: &env,
-            agent_session: None,
-        };
+        let request = work_request(&env);
         let mut notices = Vec::new();
         let outcome = create_session(&mut conn, &request, true, false, &mut notices)
             .await
@@ -995,20 +825,11 @@ mod tests {
 
     #[tokio::test]
     async fn create_session_reports_not_registered_when_legacy_is_disallowed() {
-        use crate::testkit::ScriptSpec;
-
         let (socket, _dir, server) = scripted(ScriptSpec::new());
 
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let env = BTreeMap::new();
-        let request = CreateSessionRequest {
-            idempotency_key: None,
-            name: "work",
-            command: None,
-            cwd: None,
-            env: &env,
-            agent_session: None,
-        };
+        let request = work_request(&env);
         let mut notices = Vec::new();
         let outcome = create_session(&mut conn, &request, false, true, &mut notices)
             .await
@@ -1021,8 +842,6 @@ mod tests {
 
     #[tokio::test]
     async fn atomic_preflight_reports_unsupported_and_cleans_up_an_echoed_probe() {
-        use crate::testkit::ScriptSpec;
-
         let (socket, _dir, server) = scripted(ScriptSpec::new());
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let mut notices = Vec::new();
@@ -1045,7 +864,6 @@ mod tests {
 
     #[tokio::test]
     async fn atomic_preflight_reports_a_refusal() {
-        use crate::testkit::ScriptSpec;
         use phux_protocol::wire::frame::ErrorCode;
 
         let spec = ScriptSpec::new().refuse_metadata(ErrorCode::PermissionDenied, "no");
@@ -1063,8 +881,6 @@ mod tests {
 
     #[tokio::test]
     async fn create_empty_session_refuses_before_writing_when_unsupported() {
-        use crate::testkit::ScriptSpec;
-
         let (socket, _dir, server) = scripted(ScriptSpec::new());
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let mut notices = Vec::new();
@@ -1085,7 +901,6 @@ mod tests {
 
     #[tokio::test]
     async fn create_empty_session_creates_when_the_server_confirms_it() {
-        use crate::testkit::ScriptSpec;
         use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 
         let spec = ScriptSpec::new()
