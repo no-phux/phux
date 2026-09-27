@@ -25,7 +25,7 @@ The local example happens to be in a `ghostty` source directory; that does not
 establish that the application shown is a released Ghostty version.
 
 Evidence classes **O/N/M/I/U** are defined in the [package guide](README.md).
-`Sxx` references resolve in the [viewer](index.html) and [manifest](frames.json).
+`Sxx` references name source frames; the frame captures were not kept in tree.
 
 ## Demonstrated feature inventory
 

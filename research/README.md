@@ -16,43 +16,27 @@ behavior, follow the cross-link to the ADR or to the relevant
 ## Files
 
 - [`2026-09-20-cockpit-craft.md`](./2026-09-20-cockpit-craft.md) —
-  native interaction, settings, geometry and equally legible code organization;
   scratch direction for the Cockpit craft work (`phux-3gpg`).
 - [`2026-09-09-superlogical-demo/`](./2026-09-09-superlogical-demo/README.md) —
-  evidence-labeled reconstruction of a Superlogical remote-host terminal demo:
-  transcript, screenshots, 24-feature inventory, UX flows and mockups, plus the
-  phux gap map that turned it into beads.
-- [`2026-09-09-cockpit-recovery-design.md`](./2026-09-09-cockpit-recovery-design.md) —
-  version-correct Cockpit input investigation, runtime ownership recommendation,
-  live-development loop and shipping-path acceptance plan (`phux-h8x2`).
-- [`2026-05-25-awesome-libghostty-scan.md`](./2026-05-25-awesome-libghostty-scan.md) —
-  competitive scan of the awesome-libghostty project list; what to steal
-  and whether anything invalidates the SPEC or accepted ADRs.
-- [`2026-05-25-libghostty-renderstate.md`](./2026-05-25-libghostty-renderstate.md) —
-  capability survey of `libghostty-vt`'s `RenderState` read API and
-  dirty-tracking model; the renderer-side contract phux drives in both
-  client and server.
+  reconstruction of a Superlogical remote-host terminal demo and the phux gap
+  map that turned it into beads.
+- [`2026-09-09-ci-compute-audit.md`](./2026-09-09-ci-compute-audit.md) —
+  CI and release compute measurements behind the current build ownership.
+- [`2026-08-15-agent-detection-fixture-audit.md`](./2026-08-15-agent-detection-fixture-audit.md) —
+  what each agent-detection fixture depicts, and the re-capture checklist
+  (`phux-w7z2.40`).
 - [`2026-08-12-osc-9-4-claude-code.md`](./2026-08-12-osc-9-4-claude-code.md) —
-  raw-byte capture answering whether Claude Code emits OSC 9;4 and
-  whether `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also suppresses it
-  (phux-w7z2.15); gates the OSC-9;4 detection region in phux-w7z2.16.
+  raw-byte capture of Claude Code's OSC 9;4 progress reports; the captures in
+  the sibling directory are test fixtures.
+- [`2026-05-25-libghostty-renderstate.md`](./2026-05-25-libghostty-renderstate.md) —
+  `libghostty-vt`'s `RenderState` read API and dirty-tracking model.
 
 ## archive/
 
-Holds ratified-or-absorbed notes. Each one carries a banner linking to
-the ADR or reference doc that supersedes it.
+Ratified or superseded notes, each with a banner linking to its replacement.
 
 - [`archive/2026-05-26-state-sync-algorithm.md`](./archive/2026-05-26-state-sync-algorithm.md) —
-  algorithm-composition study for long-arc wire semantics. Ratified by
-  [ADR-0018](../docs/adr/0018-lazy-state-synchronization.md).
-- [`archive/2026-06-23-agent-asked-capture-harness.md`](./archive/2026-06-23-agent-asked-capture-harness.md) —
-  clean-room harness notes for collecting empirical agent-asked evidence.
-  The capture surfaces it drove shipped as the agent-asked wire events;
-  its companion script (`scripts/agent-asked-capture.sh`) was retired
-  with it.
-- [`archive/2026-06-23-launch-polish-qa.md`](./archive/2026-06-23-launch-polish-qa.md) —
-  one-shot launch-polish QA sweep notes; the fixes it drove landed in
-  June 2026.
+  ratified by [ADR-0018](../docs/adr/0018-lazy-state-synchronization.md).
 
 ## Conventions
 
