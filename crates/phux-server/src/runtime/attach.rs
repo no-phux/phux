@@ -178,10 +178,10 @@ pub(crate) const fn next_bootstrap_id(id: BootstrapId) -> BootstrapId {
     }
 }
 
-struct OutputPumpStart {
-    published_cut: u64,
-    replay: Vec<(u64, bytes::Bytes)>,
-    live: Option<tokio::sync::broadcast::Receiver<PaneOutput>>,
+pub(crate) struct OutputPumpStart {
+    pub(crate) published_cut: u64,
+    pub(crate) replay: Vec<(u64, bytes::Bytes)>,
+    pub(crate) live: Option<tokio::sync::broadcast::Receiver<PaneOutput>>,
 }
 
 struct SnapshotGate {
@@ -555,7 +555,7 @@ pub(crate) async fn enqueue_output_resync(
 /// Why an output pump stopped. The caller decides what to release: a
 /// `SPAWN_RESOURCE` pump owns its pane, an ATTACH pump shares it.
 #[derive(Debug, Clone, Copy)]
-enum PumpFault {
+pub(crate) enum PumpFault {
     /// The client's outbound mailbox closed. Nothing is left to serve.
     OutboundClosed,
     /// A `BOOTSTRAP_TOMBSTONE` could not be queued ahead of the replacement
@@ -620,34 +620,52 @@ const fn tombstone_reason_for(
 
 /// Everything one output pump needs for the life of its subscription: the
 /// client it serves, the pane it reads, and the negotiated bootstrap shape.
-struct OutputPumpContext {
+pub(crate) struct OutputPumpContext {
     /// This client's outbound mailbox.
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    pub(crate) out_tx: tokio::sync::mpsc::Sender<Outbound>,
     /// Where a lagged pump asks the actor for an in-band resync addressed to
     /// it ([`Self::resync_target`]).
-    resize: tokio::sync::mpsc::Sender<ResizeRequest>,
+    pub(crate) resize: tokio::sync::mpsc::Sender<ResizeRequest>,
     /// Wire identity of the pane being pumped.
-    wire_terminal_id: phux_protocol::ids::ResourceId,
+    pub(crate) wire_terminal_id: phux_protocol::ids::ResourceId,
     /// Stream this pump publishes on.
-    stream_id: StreamId,
+    pub(crate) stream_id: StreamId,
     /// Generation the first published bootstrap carries.
-    initial_bootstrap_id: BootstrapId,
+    pub(crate) initial_bootstrap_id: BootstrapId,
     /// Owner of the ordered control frames this pump must honour.
-    client_id: ClientId,
+    pub(crate) client_id: ClientId,
     /// Negotiated capabilities every payload is adapted to.
-    client_caps: ClientCapabilities,
+    pub(crate) client_caps: ClientCapabilities,
     /// Negotiated bootstrap stream profile.
-    profile: BootstrapStreamProfile,
+    pub(crate) profile: BootstrapStreamProfile,
     /// Negotiated bootstrap bounds.
-    limits: BootstrapLimits,
+    pub(crate) limits: BootstrapLimits,
     /// How this pump names itself in the broadcast-lag warning.
-    lag_label: &'static str,
+    pub(crate) lag_label: &'static str,
+    /// Skip a slow consumer to a fresh checkpoint once a chunk is older than
+    /// [`pump::STALE_OUTPUT_BUDGET`].
+    pub(crate) stale_skip: bool,
+    /// Ends the pump between events (a ready event is still handled first).
+    pub(crate) cancel: Option<CancellationToken>,
+    /// Kept at the last forwarded sequence, so a replacement generation can
+    /// tombstone this one at the right point.
+    pub(crate) last_seq: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// Terminal facet used for native checkpoint capture and publication.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    terminal: crate::terminal_actor::TerminalHandle,
+    pub(crate) terminal: crate::terminal_actor::TerminalHandle,
 }
 
 impl OutputPumpContext {
+    /// Publish the generation's last forwarded sequence, when tracked.
+    fn publish_last_seq(&self, generation: &PumpGeneration) {
+        if let Some(last_seq) = &self.last_seq {
+            last_seq.store(
+                generation.last_forwarded_seq(),
+                std::sync::atomic::Ordering::Release,
+            );
+        }
+    }
+
     /// How a gap resync names this pump, and the generation it replaces, to
     /// the actor.
     const fn resync_target(&self, generation: &PumpGeneration) -> ResyncTarget {
@@ -729,6 +747,7 @@ impl OutputPumpContext {
                 crate::perf::PUMP_BYTES.add_len(bytes.len());
                 crate::perf::PUMP_FRAME_BYTES.record_len(bytes.len());
                 generation.note_forwarded(seq);
+                self.publish_last_seq(generation);
                 ControlFlow::Continue(())
             }
             pump::MailboxForward::Closed => ControlFlow::Break(Some(PumpFault::OutboundClosed)),
@@ -885,6 +904,7 @@ impl OutputPumpContext {
         *output_rx = publication.live;
         self.forward_gated_replay(generation, publication.replay)
             .await?;
+        self.publish_last_seq(generation);
         // Chunks queued behind the replay waited on it, not on the consumer.
         generation.restart_staleness_clock();
         Ok(())
@@ -917,6 +937,7 @@ impl OutputPumpContext {
             SnapshotQueue::Queued => {
                 generation.set_bootstrap_id(bootstrap_id);
                 generation.republished_at(resync.base_seq);
+                self.publish_last_seq(generation);
                 ControlFlow::Continue(())
             }
             // Still fenced; the exit snapshot is later on this broadcast.
@@ -1076,46 +1097,44 @@ impl std::fmt::Display for GapCause {
     }
 }
 
-/// What one turn of [`next_pump_event`] produced.
-enum PumpStep {
-    /// Dispatch this broadcast result.
-    Event(Result<PaneOutput, tokio::sync::broadcast::error::RecvError>),
-    /// The turn was spent re-asking for a stalled resync; take another.
-    Again,
-    /// The pump cannot continue.
-    Stop(Option<PumpFault>),
-}
-
-/// The next broadcast event for this pump, re-asking for a resync that a
-/// fenced pump has waited [`pump::GAP_RESYNC_RETRY`] without seeing.
-async fn next_pump_event(
+/// The next broadcast event, or `None` once [`OutputPumpContext::cancel`]
+/// fires. A ready event wins over cancellation: a reaped pane's fenced
+/// consumer is still owed its final screen.
+async fn next_wait(
     ctx: &OutputPumpContext,
-    generation: &mut PumpGeneration,
+    generation: &PumpGeneration,
     output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
-) -> PumpStep {
-    let outcome = match pump::next_event(generation, output_rx).await {
-        pump::PumpWait::Event(received) => return PumpStep::Event(received),
-        pump::PumpWait::RetryResync => ctx.retry_gap_resync(generation).await,
-        pump::PumpWait::GapUnrecoverable => ctx.abandon_unanswered_gap(generation).await,
+) -> Option<pump::PumpWait> {
+    let Some(cancel) = &ctx.cancel else {
+        return Some(pump::next_event(generation, output_rx).await);
     };
-    match outcome {
-        ControlFlow::Continue(()) => PumpStep::Again,
-        ControlFlow::Break(fault) => PumpStep::Stop(fault),
+    tokio::select! {
+        biased;
+        wait = pump::next_event(generation, output_rx) => Some(wait),
+        () = cancel.cancelled() => None,
     }
 }
 
 /// Drive one client's output subscription for a pane: park on the publication
-/// gate, replay the backlog behind the published cut, then forward live
-/// output, ordered control, and generation replacements until the pane or the
-/// client goes away. Returns the fault that ended it, `None` if orderly.
+/// gate, then run [`run_started_output_pump`]. Returns the fault that ended
+/// it, `None` if orderly.
 async fn run_output_pump(
     ctx: &OutputPumpContext,
     gate_rx: oneshot::Receiver<OutputPumpStart>,
+    output_rx: tokio::sync::broadcast::Receiver<PaneOutput>,
+) -> Option<PumpFault> {
+    let start = gate_rx.await.ok()?;
+    run_started_output_pump(ctx, start, output_rx).await
+}
+
+/// Replay the backlog behind the published cut, then forward live output,
+/// ordered control, and generation replacements until the pane or the client
+/// goes away.
+pub(crate) async fn run_started_output_pump(
+    ctx: &OutputPumpContext,
+    start: OutputPumpStart,
     mut output_rx: tokio::sync::broadcast::Receiver<PaneOutput>,
 ) -> Option<PumpFault> {
-    let Ok(start) = gate_rx.await else {
-        return None;
-    };
     let mut generation = PumpGeneration::opened_at(start.published_cut, ctx.initial_bootstrap_id);
     if let Some(live) = start.live {
         output_rx = live;
@@ -1126,59 +1145,107 @@ async fn run_output_pump(
     {
         return Some(fault);
     }
+    ctx.publish_last_seq(&generation);
     // The first live chunk waited behind the attach bootstrap and its replay.
     generation.restart_staleness_clock();
     loop {
-        let received = match next_pump_event(ctx, &mut generation, &mut output_rx).await {
-            PumpStep::Event(received) => received,
-            PumpStep::Again => continue,
-            PumpStep::Stop(fault) => return fault,
-        };
-        let step = match received {
-            Ok(PaneOutput::Live { seq, bytes, at }) => {
-                let age = generation.chunk_age(at);
-                if pump::is_stale(age) && generation.forwards(seq) {
-                    // Skip a slow consumer to a fresh checkpoint rather than
-                    // replay a backlog that only grows.
-                    ctx.request_gap_resync(&mut generation, GapCause::Stale(age))
-                        .await
-                } else {
-                    ctx.forward_live(&mut generation, seq, &bytes).await
+        let received = match next_wait(ctx, &generation, &mut output_rx).await? {
+            pump::PumpWait::Event(received) => received,
+            pump::PumpWait::RetryResync => {
+                if let ControlFlow::Break(fault) = ctx.retry_gap_resync(&mut generation).await {
+                    return fault;
                 }
+                continue;
             }
-            Ok(PaneOutput::Control { owner, frame }) => {
-                ctx.forward_control(&mut generation, owner, frame).await
+            pump::PumpWait::GapUnrecoverable => {
+                if let ControlFlow::Break(fault) = ctx.abandon_unanswered_gap(&generation).await {
+                    return fault;
+                }
+                continue;
             }
-            Ok(PaneOutput::Resync {
-                cols,
-                rows,
-                bytes,
-                reason,
-                audience,
-                base_seq,
-            }) => {
-                ctx.apply_resync(
-                    &mut generation,
-                    &mut output_rx,
-                    &audience,
-                    &PaneResync {
-                        cols,
-                        rows,
-                        bytes,
-                        reason,
-                        base_seq,
-                    },
-                )
-                .await
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                ctx.request_gap_resync(&mut generation, GapCause::Dropped(n))
-                    .await
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => ControlFlow::Break(None),
         };
-        if let ControlFlow::Break(fault) = step {
+        if let ControlFlow::Break(fault) =
+            dispatch_output(ctx, &mut generation, &mut output_rx, received).await
+        {
             return fault;
+        }
+    }
+}
+
+/// Handle one broadcast result for this pump's generation.
+async fn dispatch_output(
+    ctx: &OutputPumpContext,
+    generation: &mut PumpGeneration,
+    output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
+    received: Result<PaneOutput, tokio::sync::broadcast::error::RecvError>,
+) -> ControlFlow<Option<PumpFault>> {
+    match received {
+        Ok(PaneOutput::Live { seq, bytes, at }) => {
+            let age = generation.chunk_age(at);
+            if ctx.stale_skip && pump::is_stale(age) && generation.forwards(seq) {
+                // Skip a slow consumer to a fresh checkpoint rather than
+                // replay a backlog that only grows.
+                ctx.request_gap_resync(generation, GapCause::Stale(age))
+                    .await
+            } else {
+                ctx.forward_live(generation, seq, &bytes).await
+            }
+        }
+        Ok(PaneOutput::Control { owner, frame }) => {
+            ctx.forward_control(generation, owner, frame).await
+        }
+        Ok(PaneOutput::Resync {
+            cols,
+            rows,
+            bytes,
+            reason,
+            audience,
+            base_seq,
+        }) => {
+            ctx.apply_resync(
+                generation,
+                output_rx,
+                &audience,
+                &PaneResync {
+                    cols,
+                    rows,
+                    bytes,
+                    reason,
+                    base_seq,
+                },
+            )
+            .await
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+            ctx.request_gap_resync(generation, GapCause::Dropped(n))
+                .await
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => ControlFlow::Break(None),
+    }
+}
+
+/// Release a shared pane's consumer after its pump failed. The pane itself
+/// belongs to others: an unrecoverable generation detaches only this client
+/// and closes its connection.
+pub(crate) fn release_after_pump_fault(
+    fault: PumpFault,
+    state: &SharedState,
+    client_id: ClientId,
+    connection_token: &CancellationToken,
+) {
+    match fault {
+        PumpFault::OutboundClosed | PumpFault::ReplayAbandoned | PumpFault::PaneGone => {}
+        PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
+            warn!(?client_id, ?fault, "attach pump failed; closing the client");
+            crate::runtime::client::detach_and_release_consumer_state(state, client_id);
+            connection_token.cancel();
+        }
+        PumpFault::PublicationNotActivated => {
+            warn!(
+                ?client_id,
+                "attach pump publication not activated; closing the client"
+            );
+            connection_token.cancel();
         }
     }
 }
@@ -2366,6 +2433,9 @@ impl SpawnPublication<'_> {
                 profile: self.profile,
                 limits: self.limits,
                 lag_label: "SPAWN_RESOURCE output pump",
+                stale_skip: true,
+                cancel: None,
+                last_seq: None,
                 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
                 terminal: self.terminal.clone(),
             },
@@ -2837,6 +2907,9 @@ impl PaneCaptureContext<'_> {
             profile: self.profile,
             limits: self.limits,
             lag_label: "ResourceOutput pump",
+            stale_skip: true,
+            cancel: None,
+            last_seq: None,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: terminal.clone(),
         };
@@ -2863,30 +2936,7 @@ impl PaneCaptureContext<'_> {
                 let Some(fault) = run_output_pump(&ctx, gate_rx, output_rx).await else {
                     return;
                 };
-                match fault {
-                    PumpFault::OutboundClosed
-                    | PumpFault::ReplayAbandoned
-                    | PumpFault::PaneGone => {}
-                    PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
-                        warn!(
-                            ?terminal_id,
-                            ?fault,
-                            "attach pump failed; closing the client"
-                        );
-                        crate::runtime::client::detach_and_release_consumer_state(
-                            &pump_state,
-                            client_id,
-                        );
-                        pump_connection_token.cancel();
-                    }
-                    PumpFault::PublicationNotActivated => {
-                        warn!(
-                            ?terminal_id,
-                            "attach pump publication not activated; closing the client"
-                        );
-                        pump_connection_token.cancel();
-                    }
-                }
+                release_after_pump_fault(fault, &pump_state, client_id, &pump_connection_token);
             },
         );
     }
@@ -4010,6 +4060,9 @@ mod tests {
             profile: BootstrapStreamProfile::SynthesizedVtRaw,
             limits: BootstrapLimits::default(),
             lag_label: "two-pump test pump",
+            stale_skip: true,
+            cancel: None,
+            last_seq: None,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: native_attach_handle()
                 .0

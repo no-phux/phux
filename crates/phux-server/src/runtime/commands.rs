@@ -1,6 +1,5 @@
 //! Control-plane command handlers and pane spawning.
 
-use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::RolePolicy;
@@ -18,7 +17,7 @@ use super::input_lane::InputLaneHandle;
 use super::{AttachPrepared, spawn_agent_state_drain, spawn_terminal_exit_watcher};
 use crate::agent_asked::{AskedPayload, AskedSource};
 use crate::resource::{ResourceHandle, WrongResourceKind};
-use crate::runtime::pump::{self, PumpGeneration};
+use crate::runtime::pump;
 use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
@@ -1552,7 +1551,8 @@ impl AttachResourceSession<'_> {
         })
     }
 
-    /// Start the raw broadcast pump for one generation.
+    /// Start the raw broadcast pump for one generation. An unrecoverable
+    /// fault releases only this client's consumer state: the pane is shared.
     fn spawn_output_pump(
         &self,
         channels: AttachResourcePumpChannels,
@@ -1560,26 +1560,41 @@ impl AttachResourceSession<'_> {
         generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
         pump_done_guard: tokio_util::sync::DropGuard,
     ) {
-        let ctx = AttachResourcePumpCtx {
-            state: self.state.clone(),
+        let ctx = crate::runtime::attach::OutputPumpContext {
             out_tx: self.out_tx.clone(),
-            connection_token: self.connection_token.clone(),
             resize: self.terminal.resize.clone(),
-            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-            native_bootstrap: self.terminal.native_bootstrap.clone(),
+            wire_terminal_id: self.terminal_id.clone(),
+            stream_id: self.stream_id,
+            initial_bootstrap_id: bootstrap_id,
+            client_id: self.client_id,
+            client_caps: self.client_caps,
+            profile: self.stream_profile,
+            limits: self.bootstrap_limits,
+            lag_label: "ATTACH_RESOURCE output pump",
+            stale_skip: false,
+            cancel: Some(channels.token.clone()),
+            last_seq: Some(generation_last_seq),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             terminal: self.terminal.clone(),
-            wire_terminal_id: self.terminal_id.clone(),
-            client_id: self.client_id,
-            stream_id: self.stream_id,
-            client_caps: self.client_caps,
-            stream_profile: self.stream_profile,
-            bootstrap_limits: self.bootstrap_limits,
-            generation_last_seq,
         };
+        let state = self.state.clone();
+        let connection_token = self.connection_token.clone();
+        let client_id = self.client_id;
         pump::spawn_tracked(self.state, self.client_id, self.core, None, async move {
             let _done_guard = pump_done_guard;
-            ctx.run(channels, bootstrap_id).await;
+            let Some((start, output_rx)) = channels.published(ctx.profile).await else {
+                return;
+            };
+            if let Some(fault) =
+                crate::runtime::attach::run_started_output_pump(&ctx, start, output_rx).await
+            {
+                crate::runtime::attach::release_after_pump_fault(
+                    fault,
+                    &state,
+                    client_id,
+                    &connection_token,
+                );
+            }
         });
     }
 
@@ -1785,8 +1800,8 @@ impl AttachResourceSession<'_> {
     }
 }
 
-/// The one-shot channels one pump generation consumes on its way to steady
-/// state.
+/// The one-shot gates one `ATTACH_RESOURCE` pump generation waits on before
+/// it reaches steady state.
 struct AttachResourcePumpChannels {
     /// Cancels this generation when a replacement attach supersedes it.
     token: CancellationToken,
@@ -1799,555 +1814,37 @@ struct AttachResourcePumpChannels {
     native_publication_gate: oneshot::Receiver<crate::terminal_actor::NativePublicationReply>,
 }
 
-/// Fixed per-generation context for the `ATTACH_RESOURCE` output pump.
-struct AttachResourcePumpCtx {
-    state: SharedState,
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
-    connection_token: CancellationToken,
-    resize: tokio::sync::mpsc::Sender<ResizeRequest>,
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_bootstrap: tokio::sync::mpsc::Sender<crate::terminal_actor::NativeBootstrapRequest>,
-    /// Terminal facet, for the native publication fence.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    terminal: TerminalHandle,
-    wire_terminal_id: phux_protocol::ids::ResourceId,
-    client_id: ClientId,
-    stream_id: phux_protocol::ids::StreamId,
-    client_caps: ClientCapabilities,
-    stream_profile: phux_protocol::caps::BootstrapStreamProfile,
-    bootstrap_limits: BootstrapLimits,
-    generation_last_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
-}
-
-/// Where the pump sits in one terminal's output: the receiver it drains and
-/// the [`PumpGeneration`] rules it shares with the session ATTACH pump.
-struct AttachResourcePumpStream {
-    output_rx: tokio::sync::broadcast::Receiver<crate::terminal_actor::PaneOutput>,
-    generation: PumpGeneration,
-}
-
-/// Whether the pump keeps running after handling one output message.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PumpStep {
-    /// Take the next message.
-    Continue,
-    /// End this pump generation.
-    Stop,
-}
-
-/// The replacement cut a [`crate::terminal_actor::PaneOutput::Resync`]
-/// carries.
-struct PumpResync {
-    /// Post-reflow grid width the client mirror adopts.
-    cols: u16,
-    /// Post-reflow grid height the client mirror adopts.
-    rows: u16,
-    /// Why the prior generation cannot continue.
-    reason: crate::terminal_actor::ResyncReason,
-    /// Actor-global raw sequence included by the replacement cut.
-    base_seq: u64,
-    /// Synthesized grid replay for the compatibility bootstrap.
-    bytes: Bytes,
-}
-
-impl AttachResourcePumpCtx {
-    /// How a gap resync names this pump, and the generation it replaces, to
-    /// the actor.
-    const fn resync_target(
-        &self,
-        generation: &crate::runtime::pump::PumpGeneration,
-    ) -> crate::terminal_actor::ResyncTarget {
-        crate::terminal_actor::ResyncTarget {
-            owner: self.client_id.0,
-            stream_id: self.stream_id,
-            bootstrap_id: generation.bootstrap_id(),
-        }
-    }
-
-    /// Forward this pane's output to one `ATTACH_RESOURCE` consumer until the
-    /// generation is cancelled, replaced, or the consumer goes away.
-    async fn run(
+impl AttachResourcePumpChannels {
+    /// Wait for this generation's publication: the published cut, then (for
+    /// a native profile) the post-replay live receiver. `None` when the
+    /// generation was cancelled or abandoned first.
+    async fn published(
         self,
-        channels: AttachResourcePumpChannels,
-        bootstrap_id: phux_protocol::ids::BootstrapId,
-    ) {
-        let token = channels.token;
-        let output_rx = channels.output_rx;
-        let snapshot_gate = channels.snapshot_gate;
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        let native_publication_gate = channels.native_publication_gate;
-
+        #[cfg_attr(
+            not(all(feature = "native-engine", not(target_arch = "wasm32"))),
+            allow(unused_variables)
+        )]
+        profile: phux_protocol::caps::BootstrapStreamProfile,
+    ) -> Option<(
+        crate::runtime::attach::OutputPumpStart,
+        tokio::sync::broadcast::Receiver<crate::terminal_actor::PaneOutput>,
+    )> {
         let published_cut = tokio::select! {
-            () = token.cancelled() => return,
-            result = snapshot_gate => {
-                let Ok(cut) = result else { return };
-                cut
-            }
+            () = self.token.cancelled() => return None,
+            result = self.snapshot_gate => result.ok()?,
         };
-        let mut stream = AttachResourcePumpStream {
-            output_rx,
-            generation: PumpGeneration::opened_at(published_cut, bootstrap_id),
+        let mut start = crate::runtime::attach::OutputPumpStart {
+            published_cut,
+            replay: Vec::new(),
+            live: None,
         };
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        if native_checkpoint_profile(self.stream_profile) {
-            let Ok(publication) = native_publication_gate.await else {
-                return;
-            };
-            stream.output_rx = publication.live;
-            if self
-                .forward_native_replay(&mut stream, publication.replay)
-                .await
-                == PumpStep::Stop
-            {
-                return;
-            }
+        if native_checkpoint_profile(profile) {
+            let publication = self.native_publication_gate.await.ok()?;
+            start.live = Some(publication.live);
+            start.replay = publication.replay;
         }
-        self.generation_last_seq.store(
-            stream.generation.last_forwarded_seq(),
-            std::sync::atomic::Ordering::Release,
-        );
-        loop {
-            let next = tokio::select! {
-                biased;
-                // A ready resync beats cancel: reap cancels this token, and
-                // the fenced consumer is still owed the final screen.
-                next = pump::next_event(&stream.generation, &mut stream.output_rx) => next,
-                () = token.cancelled() => break,
-            };
-            let msg = match next {
-                pump::PumpWait::Event(msg) => msg,
-                pump::PumpWait::RetryResync => {
-                    if self.retry_resync_after_lag(&mut stream).await == PumpStep::Stop {
-                        break;
-                    }
-                    continue;
-                }
-                pump::PumpWait::GapUnrecoverable => {
-                    self.abandon_unanswered_gap(&stream).await;
-                    break;
-                }
-            };
-            if self.forward(&mut stream, msg).await == PumpStep::Stop {
-                break;
-            }
-        }
-    }
-
-    /// Dispatch one broadcast message to the stage that owns it.
-    async fn forward(
-        &self,
-        stream: &mut AttachResourcePumpStream,
-        msg: Result<crate::terminal_actor::PaneOutput, tokio::sync::broadcast::error::RecvError>,
-    ) -> PumpStep {
-        use crate::terminal_actor::PaneOutput;
-
-        match msg {
-            Ok(PaneOutput::Live { seq, bytes, .. }) => self.forward_live(stream, seq, &bytes).await,
-            Ok(PaneOutput::Control { owner, frame }) => {
-                self.forward_control(stream, owner, frame).await
-            }
-            Ok(PaneOutput::Resync {
-                cols,
-                rows,
-                bytes,
-                reason,
-                audience,
-                base_seq,
-            }) => {
-                // A gap resync another pump asked for is not ours.
-                if !stream
-                    .generation
-                    .takes_resync(&audience, self.resync_target(&stream.generation))
-                {
-                    return PumpStep::Continue;
-                }
-                let resync = PumpResync {
-                    cols,
-                    rows,
-                    reason,
-                    base_seq,
-                    bytes,
-                };
-                self.republish_generation(stream, &resync).await
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
-                self.resync_after_lag(stream, dropped).await
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => PumpStep::Stop,
-        }
-    }
-
-    /// Forward one post-bootstrap byte delta. A full mailbox fences rather
-    /// than parks, so the pump stays on the broadcast to see the resync.
-    async fn forward_live(
-        &self,
-        stream: &mut AttachResourcePumpStream,
-        seq: u64,
-        bytes: &Bytes,
-    ) -> PumpStep {
-        if !stream.generation.forwards(seq) {
-            return PumpStep::Continue;
-        }
-        let frame = FrameKind::ResourceOutput {
-            terminal_id: self.wire_terminal_id.clone(),
-            stream_id: self.stream_id,
-            bootstrap_id: stream.generation.bootstrap_id(),
-            seq,
-            bytes: crate::runtime::attach::live_bytes_for_profile(
-                bytes,
-                self.client_caps,
-                self.stream_profile,
-            ),
-        };
-        match crate::runtime::pump::try_send_frame(&self.out_tx, frame) {
-            crate::runtime::pump::MailboxForward::Sent => {
-                stream.generation.note_forwarded(seq);
-                self.generation_last_seq
-                    .store(seq, std::sync::atomic::Ordering::Release);
-                PumpStep::Continue
-            }
-            crate::runtime::pump::MailboxForward::Closed => PumpStep::Stop,
-            crate::runtime::pump::MailboxForward::Full => self.resync_after_lag(stream, 0).await,
-        }
-    }
-
-    /// Whether an ordered native control frame belongs to this pump, and
-    /// whether forwarding it retires the published generation.
-    fn classify_control(
-        &self,
-        frame: &FrameKind,
-        bootstrap_id: phux_protocol::ids::BootstrapId,
-    ) -> (bool, bool) {
-        match frame {
-            FrameKind::BootstrapTombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id: frame_bootstrap_id,
-                ..
-            } => (
-                terminal_id == &self.wire_terminal_id
-                    && *stream_id == self.stream_id
-                    && *frame_bootstrap_id == bootstrap_id,
-                true,
-            ),
-            FrameKind::HistoryTombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id: frame_bootstrap_id,
-                ..
-            } => (
-                terminal_id == &self.wire_terminal_id
-                    && *stream_id == self.stream_id
-                    && *frame_bootstrap_id == bootstrap_id,
-                false,
-            ),
-            _ => (false, false),
-        }
-    }
-
-    /// Forward one ordered native control frame addressed to this pump.
-    async fn forward_control(
-        &self,
-        stream: &mut AttachResourcePumpStream,
-        owner: u64,
-        frame: FrameKind,
-    ) -> PumpStep {
-        if owner != self.client_id.0 {
-            return PumpStep::Continue;
-        }
-        let (targets_pump, ends_generation) =
-            self.classify_control(&frame, stream.generation.bootstrap_id());
-        if !targets_pump {
-            return PumpStep::Continue;
-        }
-        if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return PumpStep::Stop;
-        }
-        if ends_generation {
-            stream.generation.retire();
-        }
-        PumpStep::Continue
-    }
-
-    /// Fence the generation, then ask the actor for an in-band resync after
-    /// deltas were dropped: forwarding across the gap would be a `seq` skip
-    /// the consumer rejects as a protocol error.
-    async fn resync_after_lag(
-        &self,
-        stream: &mut AttachResourcePumpStream,
-        dropped: u64,
-    ) -> PumpStep {
-        crate::perf::PUMP_LAGGED.incr();
-        if stream.generation.fence_for_gap() {
-            debug!(
-                terminal_id = ?self.wire_terminal_id,
-                dropped,
-                "ATTACH_RESOURCE output pump lagged again while a resync was \
-                 already in flight; waiting",
-            );
-            return PumpStep::Continue;
-        }
-        warn!(
-            terminal_id = ?self.wire_terminal_id,
-            dropped,
-            "ATTACH_RESOURCE output pump lagged; requesting in-band resync",
-        );
-        stream.generation.note_resync_requested();
-        self.request_resync(&stream.generation).await
-    }
-
-    /// The resync asked for at the last gap has not arrived within its
-    /// backoff: ask again (at debug; the first gap already warned).
-    async fn retry_resync_after_lag(&self, stream: &mut AttachResourcePumpStream) -> PumpStep {
-        debug!(
-            terminal_id = ?self.wire_terminal_id,
-            attempt = stream.generation.gap_attempts(),
-            "ATTACH_RESOURCE output pump is still waiting on its in-band resync; re-requesting",
-        );
-        stream.generation.note_resync_requested();
-        self.request_resync(&stream.generation).await
-    }
-
-    /// The gap spent its request budget unanswered: fail the consumer.
-    async fn abandon_unanswered_gap(&self, stream: &AttachResourcePumpStream) -> PumpStep {
-        warn!(
-            terminal_id = ?self.wire_terminal_id,
-            attempts = stream.generation.gap_attempts(),
-            "ATTACH_RESOURCE output pump never received the in-band resync it asked for; \
-             failing the generation",
-        );
-        self.fail_unrecoverable_gap().await
-    }
-
-    /// Queue the resync request, abandoning the connection if the actor will
-    /// not take it.
-    async fn request_resync(&self, generation: &crate::runtime::pump::PumpGeneration) -> PumpStep {
-        let pump = self.resync_target(generation);
-        if crate::runtime::attach::enqueue_output_resync(&self.resize, pump).await {
-            return PumpStep::Continue;
-        }
-        if self.resize.is_closed() {
-            return PumpStep::Stop;
-        }
-        self.fail_unrecoverable_gap().await
-    }
-
-    /// Send the terminal `ERROR` a consumer needs in order to know its stream
-    /// is over and reconnect, then end the pump.
-    async fn fail_unrecoverable_gap(&self) -> PumpStep {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            self.out_tx.send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: ErrorCode::InternalError,
-                message: "terminal output gap could not be resynchronized".to_owned(),
-            })),
-        )
-        .await;
-        self.abandon_connection()
-    }
-
-    /// Release this consumer's per-terminal state and tear the connection down
-    /// after an unrecoverable pump failure.
-    fn abandon_connection(&self) -> PumpStep {
-        crate::runtime::client::detach_and_release_consumer_state(&self.state, self.client_id);
-        self.connection_token.cancel();
-        PumpStep::Stop
-    }
-
-    /// Replace the published generation from an actor-generated resync.
-    async fn republish_generation(
-        &self,
-        stream: &mut AttachResourcePumpStream,
-        resync: &PumpResync,
-    ) -> PumpStep {
-        // Even an unchanged cut replaces the generation; the id advances only
-        // once the replacement frames are queued.
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        if native_checkpoint_profile(self.stream_profile) {
-            let prior_bootstrap_id = stream.generation.bootstrap_id();
-            return self
-                .republish_native_generation(stream, prior_bootstrap_id, resync)
-                .await;
-        }
-        self.republish_synthesized_generation(stream, resync).await
-    }
-
-    /// Republish the compatibility bootstrap synthesized by the actor.
-    async fn republish_synthesized_generation(
-        &self,
-        stream: &mut AttachResourcePumpStream,
-        resync: &PumpResync,
-    ) -> PumpStep {
-        let payload = crate::runtime::attach::downsample_for_caps(&resync.bytes, self.client_caps);
-        let bootstrap_id =
-            crate::runtime::attach::next_bootstrap_id(stream.generation.bootstrap_id());
-        let Ok(frames) = crate::runtime::attach::synthesized_bootstrap_frames(
-            self.wire_terminal_id.clone(),
-            self.stream_id,
-            bootstrap_id,
-            self.stream_profile,
-            self.bootstrap_limits,
-            resync.cols,
-            resync.rows,
-            resync.base_seq,
-            [payload],
-        ) else {
-            return PumpStep::Stop;
-        };
-        match crate::runtime::attach::queue_resync_bootstrap(
-            &self.out_tx,
-            resync.reason,
-            frames,
-            stream.generation.is_fenced(),
-        )
-        .await
-        {
-            crate::runtime::attach::SnapshotQueue::Deferred => return PumpStep::Continue,
-            crate::runtime::attach::SnapshotQueue::Closed => return PumpStep::Stop,
-            crate::runtime::attach::SnapshotQueue::Queued => {
-                stream.generation.set_bootstrap_id(bootstrap_id);
-            }
-        }
-        stream.generation.republished_at(resync.base_seq);
-        self.generation_last_seq
-            .store(resync.base_seq, std::sync::atomic::Ordering::Release);
-        PumpStep::Continue
-    }
-
-    /// Tombstone the outgoing generation, capture a fresh native checkpoint,
-    /// and cross the publication fence onto the replacement generation.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    async fn republish_native_generation(
-        &self,
-        stream: &mut AttachResourcePumpStream,
-        prior_bootstrap_id: phux_protocol::ids::BootstrapId,
-        resync: &PumpResync,
-    ) -> PumpStep {
-        if stream.generation.is_active()
-            && self
-                .out_tx
-                .send(Outbound::Frame(FrameKind::BootstrapTombstone {
-                    terminal_id: self.wire_terminal_id.clone(),
-                    stream_id: self.stream_id,
-                    bootstrap_id: prior_bootstrap_id,
-                    reason: tombstone_reason(resync.reason),
-                    last_valid_seq: stream.generation.last_forwarded_seq(),
-                }))
-                .await
-                .is_err()
-        {
-            return self.abandon_connection();
-        }
-        let bootstrap_id = crate::runtime::attach::next_bootstrap_id(prior_bootstrap_id);
-        let (reply, reply_rx) = oneshot::channel();
-        if self
-            .native_bootstrap
-            .send(crate::terminal_actor::NativeBootstrapRequest {
-                owner: self.client_id.0,
-                terminal_id: self.wire_terminal_id.clone(),
-                stream_id: self.stream_id,
-                bootstrap_id,
-                limits: self.bootstrap_limits,
-                max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
-                max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
-                reply,
-            })
-            .await
-            .is_err()
-        {
-            return self.abandon_connection();
-        }
-        let Ok(Ok(reply)) = reply_rx.await else {
-            let _ = self
-                .out_tx
-                .send(Outbound::Frame(FrameKind::Error {
-                    request_id: None,
-                    code: ErrorCode::CodecUnavailable,
-                    message: "native checkpoint resync failed".to_owned(),
-                }))
-                .await;
-            return self.abandon_connection();
-        };
-        let Ok((cut, cursor)) =
-            crate::runtime::attach::publish_native_bootstrap(&self.out_tx, reply).await
-        else {
-            return self.abandon_connection();
-        };
-        stream.generation.set_bootstrap_id(bootstrap_id);
-        let Ok(publication) = crate::runtime::attach::activate_native_publication(
-            &self.terminal,
-            self.client_id.0,
-            self.wire_terminal_id.clone(),
-            self.stream_id,
-            bootstrap_id,
-            cursor,
-        )
-        .await
-        else {
-            self.connection_token.cancel();
-            return PumpStep::Stop;
-        };
-        // Unfenced before the replay so its frames pass the `forwards` gate.
-        stream.generation.republished_at(cut);
-        stream.output_rx = publication.live;
-        if self.forward_native_replay(stream, publication.replay).await == PumpStep::Stop {
-            return PumpStep::Stop;
-        }
-        self.generation_last_seq.store(
-            stream.generation.last_forwarded_seq(),
-            std::sync::atomic::Ordering::Release,
-        );
-        PumpStep::Continue
-    }
-
-    /// Forward the deltas the actor buffered while the publication fence was
-    /// open, so the replacement generation resumes without a gap.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    async fn forward_native_replay(
-        &self,
-        stream: &mut AttachResourcePumpStream,
-        replay: Vec<(u64, Bytes)>,
-    ) -> PumpStep {
-        // An entry at or behind the cut is already in the checkpoint; resending
-        // it is a `DuplicateSequence` the client detaches on.
-        for (seq, bytes) in replay {
-            if !stream.generation.forwards(seq) {
-                continue;
-            }
-            if self
-                .out_tx
-                .send(Outbound::Frame(FrameKind::ResourceOutput {
-                    terminal_id: self.wire_terminal_id.clone(),
-                    stream_id: self.stream_id,
-                    bootstrap_id: stream.generation.bootstrap_id(),
-                    seq,
-                    bytes: crate::runtime::attach::downsample_for_caps(&bytes, self.client_caps),
-                }))
-                .await
-                .is_err()
-            {
-                return PumpStep::Stop;
-            }
-            stream.generation.note_forwarded(seq);
-        }
-        PumpStep::Continue
-    }
-}
-
-/// Map the actor's resync cause onto the wire tombstone reason.
-#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-const fn tombstone_reason(
-    reason: crate::terminal_actor::ResyncReason,
-) -> phux_protocol::wire::frame::TombstoneReason {
-    match reason {
-        crate::terminal_actor::ResyncReason::Resize => {
-            phux_protocol::wire::frame::TombstoneReason::Resize
-        }
-        crate::terminal_actor::ResyncReason::OutboundGap
-        | crate::terminal_actor::ResyncReason::Exit => {
-            phux_protocol::wire::frame::TombstoneReason::OutboundGap
-        }
+        Some((start, self.output_rx))
     }
 }
 
