@@ -1,12 +1,8 @@
-//! `phux tag` — read and write a Terminal's L3 tags (`phux-f8wi`, ADR-0027).
+//! `phux tag` — read and write a Terminal's L3 tags (ADR-0027).
 //!
-//! Tags are freeform strings stored as L3 metadata under the conventional
-//! key [`RESOURCE_TAGS_KEY`] (`phux.tags/v1`), scoped to a `ResourceId`. The
-//! value is a UTF-8 JSON array of tag strings; the server stores the bytes
-//! opaquely ([`docs/spec/L3.md`](../../../docs/spec/L3.md) §3.6).
-//!
-//! [`apply`] is the list/add/rm orchestration both `phux tag` and MCP
-//! `phux_tag` call.
+//! Tags are a JSON array of strings under [`RESOURCE_TAGS_KEY`], scoped to
+//! a `ResourceId` (`docs/spec/L3.md` §3.6). [`apply`] is the list/add/rm
+//! orchestration both `phux tag` and MCP `phux_tag` call.
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, RESOURCE_TAGS_KEY, Scope};
@@ -16,30 +12,19 @@ use crate::attach::connection::Connection;
 use crate::selector::{self, Selector, TagIndex};
 use crate::state::Degradation;
 
-/// Everything `phux tag` needs to act on `selector`: the resolved Terminals,
-/// their current tags (for `ls` and as the mutation base for `add`/`rm`),
-/// and the connection to write any edits back on.
+/// A selector resolved against a snapshot and the tag index, with the
+/// connection edits are written back on.
 #[derive(Debug)]
-pub struct TagSession {
-    /// The connection this session was resolved on; further writes go here.
-    pub conn: Connection,
-    /// The current server-wide snapshot the resolution used.
-    pub snapshot: phux_protocol::wire::info::SessionSnapshot,
-    /// What that snapshot and tag index could not see.
-    pub degradation: Degradation,
-    /// The full tag index fetched alongside the snapshot.
-    pub index: TagIndex,
-    /// `selector` resolved against `snapshot`/`index`.
-    pub targets: Vec<ResourceId>,
+struct TagSession {
+    conn: Connection,
+    /// What the snapshot and tag index could not see.
+    degradation: Degradation,
+    index: TagIndex,
+    targets: Vec<ResourceId>,
 }
 
-/// Connect, fetch a `GET_STATE` snapshot and the L3 tag index, and resolve
-/// `selector` against both.
-///
-/// # Errors
-///
-/// Transport failures connecting or fetching state.
-pub async fn prepare(
+/// Connect, fetch a snapshot and the tag index, and resolve `selector`.
+async fn prepare(
     socket_path: &std::path::Path,
     selector: &Selector,
 ) -> Result<TagSession, AttachError> {
@@ -49,7 +34,6 @@ pub async fn prepare(
     let targets = selector::resolve_with_tags(selector, &snapshot, &index);
     Ok(TagSession {
         conn,
-        snapshot,
         degradation,
         index,
         targets,
@@ -58,25 +42,17 @@ pub async fn prepare(
 
 /// What writing then confirming one Terminal's tag set answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TagWriteOutcome {
+enum TagWriteOutcome {
     /// The write was confirmed; these are the tags now on record.
     Confirmed(Vec<String>),
     /// The server refused the confirming read.
     Refused(String),
 }
 
-/// Replace `id`'s full tag set and confirm it landed.
-///
-/// `SET_METADATA` carries no reply frame, so the confirming
-/// `GET_METADATA` round-trip (consuming `request_id + 1`) is load-bearing,
-/// not cosmetic: frames are ordered on one connection, so its reply proves
-/// the write was applied before this returns — the same reason `phux new`
-/// GETs after its create SET.
-///
-/// # Errors
-///
-/// Transport failures from [`Connection::send`]/[`Connection::request_metadata`].
-pub async fn write_tags(
+/// Replace `id`'s full tag set and confirm it with a `GET_METADATA` at
+/// `request_id + 1`: `SET_METADATA` has no reply, and the ordered read proves
+/// the write applied.
+async fn write_tags(
     conn: &mut Connection,
     request_id: u32,
     id: &ResourceId,
@@ -112,8 +88,7 @@ pub async fn write_tags(
 
 /// Strip an optional leading `#` from each supplied tag and drop empties /
 /// duplicates, so `phux tag add x #x` and `phux tag add x` are equivalent.
-#[must_use]
-pub fn normalize(tags: &[String]) -> Vec<String> {
+fn normalize(tags: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for t in tags {
         let t = t.strip_prefix('#').unwrap_or(t).trim();
@@ -168,8 +143,8 @@ pub enum TagError {
 }
 
 /// `add` appends each missing tag; `rm` drops each named one. The result is
-/// sorted and de-duplicated, as `phux tag` writes it.
-pub fn merge(current: &mut Vec<String>, add: bool, tags: &[String]) {
+/// sorted and de-duplicated.
+fn merge(current: &mut Vec<String>, add: bool, tags: &[String]) {
     if add {
         for tag in tags {
             if !current.iter().any(|existing| existing == tag) {
@@ -289,15 +264,9 @@ mod tests {
 
     #[tokio::test]
     async fn write_tags_sets_then_confirms_from_the_servers_own_store() {
-        use crate::testkit::{ScriptSpec, ScriptedServer};
-
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server =
-            tokio::spawn(async move { ScriptedServer::accept(&listener, ScriptSpec::new()).await });
+        let (socket, server) =
+            crate::testkit::serve_one(dir.path(), crate::testkit::ScriptSpec::new());
 
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let id = ResourceId::local(7);
@@ -347,13 +316,8 @@ mod tests {
         target: &str,
         op: TagOp<'_>,
     ) -> Result<TagOutcome, TagError> {
-        use crate::testkit::ScriptedServer;
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = crate::testkit::serve_one(dir.path(), spec);
         let selector = crate::selector::parse(target).expect("selector");
         let result = apply(&socket, &selector, op).await;
         drop(server);
