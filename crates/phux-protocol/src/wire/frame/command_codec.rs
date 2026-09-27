@@ -1373,9 +1373,7 @@ fn decode_asked_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> 
                 question = utf8_value(value)?;
             }
             field::event_asked::SUGGESTION => {
-                suggestions.push(
-                    utf8_value(value)?,
-                );
+                suggestions.push(utf8_value(value)?);
             }
             field::event_asked::ELAPSED_SECONDS => {
                 elapsed_seconds = Some(Decoder::new(value).read_u64_be()?);

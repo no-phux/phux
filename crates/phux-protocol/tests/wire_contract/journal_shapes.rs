@@ -10,7 +10,6 @@
 
 #![allow(clippy::unwrap_used)]
 
-use bytes::BytesMut;
 use phux_protocol::ids::{
     ApprovalId, ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance,
     SessionId, WindowId,
@@ -23,23 +22,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionSnapshot};
 use phux_protocol::wire::{DecodeError, frame::TYPE_EVENT};
 
-use crate::common::{framed_tlv, tlv_field};
-
-fn encode(frame: &FrameKind) -> Vec<u8> {
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    buf.to_vec()
-}
-
-fn decode(bytes: &[u8]) -> Result<FrameKind, DecodeError> {
-    let (frame, tail) = FrameKind::decode(bytes)?;
-    assert!(tail.is_empty(), "decoder left {} bytes", tail.len());
-    Ok(frame)
-}
-
-fn assert_round_trip(frame: &FrameKind) {
-    assert_eq!(&decode(&encode(frame)).unwrap(), frame);
-}
+use crate::common::{assert_round_trip, decode, encode, framed_tlv, tlv_field};
 
 /// Split an encoded frame into its type byte and its top-level TLV fields.
 fn fields(bytes: &[u8]) -> (u8, Vec<(u32, Vec<u8>)>) {

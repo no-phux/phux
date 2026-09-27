@@ -597,25 +597,10 @@ mod tests {
     ];
 
     #[test]
-    fn every_error_code_round_trips_and_carries_a_scope() {
-        for &code in ALL_CODES {
-            assert_eq!(
-                ErrorCode::from_wire(code.as_wire()),
-                Some(code),
-                "{code:?} does not round-trip through the wire tables"
-            );
-            assert!(
-                matches!(
-                    code.scope(),
-                    ErrorScope::Terminal | ErrorScope::Request | ErrorScope::Connection
-                ),
-                "{code:?} has no scope"
-            );
-        }
-    }
-
-    #[test]
     fn the_decodable_wire_space_is_exactly_the_known_codes() {
+        for &code in ALL_CODES {
+            assert_eq!(ErrorCode::from_wire(code.as_wire()), Some(code), "{code:?}");
+        }
         let decoded: Vec<ErrorCode> = (0..=u16::MAX).filter_map(ErrorCode::from_wire).collect();
         assert_eq!(
             decoded, ALL_CODES,

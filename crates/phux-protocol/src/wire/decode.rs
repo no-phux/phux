@@ -443,9 +443,7 @@ impl<'a> Decoder<'a> {
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::hello::CLIENT_NAME => {
-                    client_name = Some(
-                        utf8_value(value)?,
-                    );
+                    client_name = Some(utf8_value(value)?);
                 }
                 field::hello::PROTOCOL_MAJOR => {
                     protocol_major = Some(sub!(value, Decoder::read_u16_be));
@@ -529,8 +527,7 @@ impl<'a> Decoder<'a> {
                     max_chunk_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::hello_ok::MAX_HISTORY_PAGE_BYTES => {
-                    max_history_page_bytes =
-                        Some(sub!(value, Decoder::read_u32_be));
+                    max_history_page_bytes = Some(sub!(value, Decoder::read_u32_be));
                 }
                 field::hello_ok::COMPRESSION => {
                     compression = Some(crate::caps::Compression::from_u8(sub!(
@@ -1346,9 +1343,7 @@ impl<'a> Decoder<'a> {
                     reason = DetachReason::from_wire(raw);
                 }
                 field::detached::MESSAGE => {
-                    message = Some(
-                        utf8_value(value)?,
-                    );
+                    message = Some(utf8_value(value)?);
                 }
                 _ => {}
             }
@@ -1393,9 +1388,7 @@ impl<'a> Decoder<'a> {
                     })?);
                 }
                 field::error::MESSAGE => {
-                    message = Some(
-                        utf8_value(value)?,
-                    );
+                    message = Some(utf8_value(value)?);
                 }
                 _ => {}
             }
@@ -1430,9 +1423,7 @@ impl<'a> Decoder<'a> {
                 }
                 field::set_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
                 field::set_metadata::KEY => {
-                    key = Some(
-                        utf8_value(value)?,
-                    );
+                    key = Some(utf8_value(value)?);
                 }
                 field::set_metadata::VALUE => value_bytes = value.to_vec(),
                 _ => {}
@@ -1483,9 +1474,7 @@ impl<'a> Decoder<'a> {
             match id {
                 field::subscribe_metadata::SCOPE => scope = Some(sub!(value, decode_scope)),
                 field::subscribe_metadata::KEY => {
-                    key = Some(
-                        utf8_value(value)?,
-                    );
+                    key = Some(utf8_value(value)?);
                 }
                 _ => {}
             }
@@ -1506,9 +1495,7 @@ impl<'a> Decoder<'a> {
             match id {
                 field::metadata_changed::SCOPE => scope = Some(sub!(value, decode_scope)),
                 field::metadata_changed::KEY => {
-                    key = Some(
-                        utf8_value(value)?,
-                    );
+                    key = Some(utf8_value(value)?);
                 }
                 field::metadata_changed::VALUE => value_bytes = Some(value.to_vec()),
                 field::metadata_changed::ACTOR => actor = Some(sub!(value, decode_actor_ref)),
@@ -1593,15 +1580,11 @@ impl<'a> Decoder<'a> {
                     command = Some(sub!(value, decode_string_list));
                 }
                 field::spawn_terminal::CWD => {
-                    cwd = Some(
-                        utf8_value(value)?,
-                    );
+                    cwd = Some(utf8_value(value)?);
                 }
                 field::spawn_terminal::ENV => env = Some(sub!(value, decode_env)),
                 field::spawn_terminal::TERM => {
-                    term = Some(
-                        utf8_value(value)?,
-                    );
+                    term = Some(utf8_value(value)?);
                 }
                 field::spawn_terminal::SATELLITE => {
                     satellite = Some(crate::ids::SatelliteHost::new(
@@ -1971,7 +1954,7 @@ fn decode_agent_facet_str(value: &[u8], max_bytes: usize) -> Result<String, Deco
     if value.is_empty() || value.len() > max_bytes {
         return Err(DecodeError::AgentFacetLimitExceeded);
     }
-    Ok(utf8_value(value)?)
+    utf8_value(value)
 }
 
 /// Enforce `SPAWN_RESOURCE`'s per-kind field rules (`docs/spec/L1.md` §3.1).

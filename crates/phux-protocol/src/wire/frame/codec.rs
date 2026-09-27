@@ -634,9 +634,7 @@ pub(in crate::wire) fn decode_metadata_scope_key(
                 scope = Some(decode_scope(&mut Decoder::new(value))?);
             }
             field::get_metadata::KEY => {
-                key = Some(
-                    utf8_value(value)?,
-                );
+                key = Some(utf8_value(value)?);
             }
             _ => {}
         }

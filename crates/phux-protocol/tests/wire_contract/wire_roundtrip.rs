@@ -46,7 +46,7 @@ use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
 use proptest::prelude::*;
 
 use crate::common;
-use common::{framed_tlv, tlv_field};
+use common::{assert_round_trip, framed_tlv, local_id_bytes, tlv_field};
 
 /// The shared body of every round-trip test in this file: encoding then
 /// decoding `frame` is the identity, and the decoder consumes the whole
@@ -173,14 +173,6 @@ fn host_inventory_overdeclared_count_is_malformed_not_allocated() {
     tlv_field(&mut fields, 2, &1u32.to_be_bytes());
     tlv_field(&mut fields, 3, &1u32.to_be_bytes());
     assert!(FrameKind::decode(&framed_tlv(0x81, &fields)).is_err());
-}
-
-fn assert_round_trip(frame: &FrameKind) {
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-    assert_eq!(&decoded, frame);
-    assert!(tail.is_empty());
 }
 
 // -----------------------------------------------------------------------------
@@ -1085,8 +1077,9 @@ fn hello_rejects_legacy_and_truncated_capabilities() {
 /// rather than coercing to a placeholder variant.
 #[test]
 fn unknown_nested_enum_tags_are_rejected() {
+    type Case<'a> = (u8, &'a [(u32, &'a [u8])], &'static str, u32);
     let local0 = [0x00u8, 0, 0, 0, 0];
-    let cases: [(u8, &[(u32, &[u8])], &str, u32); 6] = [
+    let cases: [Case<'_>; 6] = [
         (
             0x31,
             &[(1, &1u32.to_be_bytes()), (2, &[0x7F])],
@@ -1613,6 +1606,7 @@ proptest! {
 /// covers every variant `arb_frame_kind` does not, with Local and Satellite
 /// ids, empty/singleton/multi id lists, and every presence byte.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one flat table of command samples")]
 fn command_variants_round_trip() {
     let id_lists = || {
         [
@@ -2366,13 +2360,6 @@ fn spawn_terminal_frame(fields: &[(u32, &[u8])]) -> Vec<u8> {
         tlv_field(&mut body, *id, value);
     }
     framed_tlv(0x22, &body)
-}
-
-/// A local `ResourceId` as positional bytes: tag 0 + u32.
-fn local_id_bytes(raw: u32) -> Vec<u8> {
-    let mut out = vec![0u8];
-    out.extend_from_slice(&raw.to_be_bytes());
-    out
 }
 
 #[test]

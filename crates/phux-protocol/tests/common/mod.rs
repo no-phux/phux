@@ -43,6 +43,49 @@ pub fn framed_tlv(type_byte: u8, fields: &[u8]) -> Vec<u8> {
     frame
 }
 
+/// Encode `frame` to its framed wire bytes.
+pub fn encode(frame: &phux_protocol::wire::frame::FrameKind) -> Vec<u8> {
+    let mut buf = bytes::BytesMut::new();
+    frame.encode(&mut buf);
+    buf.to_vec()
+}
+
+/// Decode exactly one frame, asserting nothing trails it.
+pub fn decode(
+    bytes: &[u8],
+) -> Result<phux_protocol::wire::frame::FrameKind, phux_protocol::wire::DecodeError> {
+    let (frame, tail) = phux_protocol::wire::frame::FrameKind::decode(bytes)?;
+    assert!(tail.is_empty(), "decoder left {} bytes", tail.len());
+    Ok(frame)
+}
+
+/// Encoding then decoding `frame` is the identity.
+pub fn assert_round_trip(frame: &phux_protocol::wire::frame::FrameKind) {
+    assert_eq!(&decode(&encode(frame)).unwrap(), frame);
+}
+
+/// Read an unsigned LEB128 varint at `*offset`, advancing it.
+pub fn take_varint(input: &[u8], offset: &mut usize) -> u64 {
+    let mut value = 0u64;
+    let mut shift = 0;
+    loop {
+        let byte = input[*offset];
+        *offset += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return value;
+        }
+        shift += 7;
+    }
+}
+
+/// A local `ResourceId` as positional bytes: tag 0 + `u32`.
+pub fn local_id_bytes(raw: u32) -> Vec<u8> {
+    let mut out = vec![0u8];
+    out.extend_from_slice(&raw.to_be_bytes());
+    out
+}
+
 /// Hand-roll an ATTACHED frame whose single `WindowInfo` carries `layout` —
 /// the positional `LayoutNode` bytes, without the leading `Some` presence
 /// byte (this helper writes it). Under field-tagged TLV the message body is

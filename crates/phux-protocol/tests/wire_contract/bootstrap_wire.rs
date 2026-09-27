@@ -19,63 +19,17 @@ use phux_protocol::wire::frame::{
     TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TombstoneReason,
 };
 
+use crate::common::{
+    assert_round_trip, framed_tlv as framed, local_id_bytes as local_terminal, take_varint,
+    tlv_field,
+};
+
 const fn stream(raw: u64) -> StreamId {
     StreamId::new(raw).unwrap()
 }
 
 const fn bootstrap(raw: u64) -> BootstrapId {
     BootstrapId::new(raw).unwrap()
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn round_trip(frame: FrameKind) {
-    let mut encoded = BytesMut::new();
-    frame.encode(&mut encoded);
-    let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-    assert_eq!(decoded, frame);
-    assert!(tail.is_empty());
-}
-
-fn put_varint(out: &mut Vec<u8>, mut value: u64) {
-    loop {
-        let byte = (value & 0x7f) as u8;
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
-    }
-}
-
-fn tlv_field(out: &mut Vec<u8>, id: u32, value: &[u8]) {
-    put_varint(out, u64::from(id));
-    out.push(4);
-    put_varint(out, value.len() as u64);
-    out.extend_from_slice(value);
-}
-
-fn framed(type_byte: u8, fields: &[u8]) -> Vec<u8> {
-    let length = 1usize.checked_add(fields.len()).unwrap();
-    let mut out = Vec::with_capacity(length + 4);
-    out.extend_from_slice(&u32::try_from(length).unwrap().to_be_bytes());
-    out.push(type_byte);
-    out.extend_from_slice(fields);
-    out
-}
-
-fn take_varint(input: &[u8], offset: &mut usize) -> u64 {
-    let mut value = 0u64;
-    let mut shift = 0;
-    loop {
-        let byte = input[*offset];
-        *offset += 1;
-        value |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return value;
-        }
-        shift += 7;
-    }
 }
 
 fn encoded_field_ids(frame: &FrameKind) -> Vec<u64> {
@@ -114,12 +68,6 @@ fn encode_without_field(frame: &FrameKind, omitted_id: u64) -> Vec<u8> {
     framed(type_byte, &fields)
 }
 
-fn local_terminal(raw: u32) -> [u8; 5] {
-    let mut value = [0u8; 5];
-    value[1..].copy_from_slice(&raw.to_be_bytes());
-    value
-}
-
 #[test]
 fn protocol_07_discriminants_are_exact_and_snapshot_slot_is_retired() {
     assert_eq!(TYPE_HISTORY_REQUEST, 0x16);
@@ -142,106 +90,24 @@ fn protocol_07_discriminants_are_exact_and_snapshot_slot_is_retired() {
     );
 }
 
+/// BEGIN/CHUNK/READY/REQUEST/PAGE, `RESOURCE_OUTPUT`, and `FRAME_ACK` are drawn
+/// by the `wire_roundtrip` proptests; history status frames by the enum
+/// table below.
 #[test]
-fn every_bootstrap_history_and_generation_frame_round_trips() {
-    let terminal_id = ResourceId::local(42);
-    let stream_id = stream(7);
-    let bootstrap_id = bootstrap(9);
-
-    round_trip(FrameKind::BootstrapBegin {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        profile: BootstrapStreamProfile::NativeState {
-            codec: EngineCodec::LibghosttyCheckpointV2,
-        },
-        cols: 120,
-        rows: 40,
-        base_seq: 99,
-    });
-    round_trip(FrameKind::BootstrapChunk {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        chunk_seq: 0,
-        payload: Bytes::from_static(b"opaque-checkpoint-records"),
-    });
-    round_trip(FrameKind::BootstrapReady {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        history_cursor: Some(Bytes::from_static(b"engine-cursor-1")),
-    });
-    round_trip(FrameKind::HistoryRequest {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        cursor: Bytes::from_static(b"engine-cursor-1"),
-        max_bytes: 64 * 1024,
-        max_rows: 1024,
-    });
-    round_trip(FrameKind::HistoryPage {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        page_seq: 1,
-        cursor: Bytes::from_static(b"engine-cursor-1"),
-        next_cursor: Some(Bytes::from_static(b"engine-cursor-2")),
-        payload: Bytes::from_static(b"opaque-history-page"),
-        rows: 512,
-    });
-    round_trip(FrameKind::HistoryPage {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        page_seq: 1,
-        cursor: Bytes::from_static(b"engine-cursor-2"),
-        next_cursor: None,
-        payload: Bytes::from_static(b"opaque-finish-record"),
-        rows: 0,
-    });
-    round_trip(FrameKind::BootstrapTombstone {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
+fn bootstrap_tombstone_and_attach_ready_round_trip() {
+    assert_round_trip(&FrameKind::BootstrapTombstone {
+        terminal_id: ResourceId::local(42),
+        stream_id: stream(7),
+        bootstrap_id: bootstrap(9),
         reason: TombstoneReason::OutboundGap,
         last_valid_seq: 123,
     });
-    round_trip(FrameKind::HistoryTombstone {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        cursor: Bytes::from_static(b"stale-cursor"),
-        reason: HistoryTombstoneReason::Pruned,
-    });
-    round_trip(FrameKind::HistoryRejected {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        cursor: Bytes::from_static(b"retry-cursor"),
-        reason: HistoryRejectionReason::TooSmall,
-        required_bytes: 8192,
-        required_rows: 256,
-    });
-    round_trip(FrameKind::AttachReady { attach_id: 17 });
-    round_trip(FrameKind::ResourceOutput {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        seq: 100,
-        bytes: Bytes::from_static(b"\x1b[38;2;1;2;3mRAW\x1b[0m"),
-    });
-    round_trip(FrameKind::FrameAck {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        seq: 100,
-    });
+    assert_round_trip(&FrameKind::AttachReady { attach_id: 17 });
 }
 
 #[test]
 fn hello_and_all_three_selected_profiles_round_trip() {
-    round_trip(FrameKind::Hello {
+    assert_round_trip(&FrameKind::Hello {
         client_name: "phux-native-test".to_owned(),
         protocol_major: 0,
         protocol_minor: 7,
@@ -257,7 +123,7 @@ fn hello_and_all_three_selected_profiles_round_trip() {
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapProfile::SynthesizedVtStateSync,
     ] {
-        round_trip(FrameKind::HelloOk {
+        assert_round_trip(&FrameKind::HelloOk {
             protocol_major: 0,
             protocol_minor: 7,
             protocol_patch: 0,
@@ -525,7 +391,7 @@ fn history_page_sequence_and_row_count_are_required() {
 
 #[test]
 fn zero_history_request_limits_decode_for_retryable_rejection() {
-    round_trip(FrameKind::HistoryRequest {
+    assert_round_trip(&FrameKind::HistoryRequest {
         terminal_id: ResourceId::local(1),
         stream_id: stream(2),
         bootstrap_id: bootstrap(3),
@@ -548,7 +414,7 @@ fn history_status_enums_round_trip_and_unknown_tags_are_rejected() {
         (7, HistoryTombstoneReason::CodecFailure),
     ] {
         assert_eq!(reason.as_wire(), tag);
-        round_trip(FrameKind::HistoryTombstone {
+        assert_round_trip(&FrameKind::HistoryTombstone {
             terminal_id: ResourceId::local(1),
             stream_id: stream(2),
             bootstrap_id: bootstrap(3),
@@ -562,7 +428,7 @@ fn history_status_enums_round_trip_and_unknown_tags_are_rejected() {
         (2, HistoryRejectionReason::Busy),
     ] {
         assert_eq!(reason.as_wire(), tag);
-        round_trip(FrameKind::HistoryRejected {
+        assert_round_trip(&FrameKind::HistoryRejected {
             terminal_id: ResourceId::local(1),
             stream_id: stream(2),
             bootstrap_id: bootstrap(3),
@@ -706,7 +572,7 @@ fn hard_response_bounds_are_enforced_and_request_limits_reach_host_for_clamping(
         max_bytes: MAX_HISTORY_PAGE_BYTES + 1,
         max_rows: 1024,
     };
-    round_trip(over_bytes);
+    assert_round_trip(&over_bytes);
 
     let over_rows = FrameKind::HistoryRequest {
         terminal_id: ResourceId::local(1),
@@ -716,7 +582,7 @@ fn hard_response_bounds_are_enforced_and_request_limits_reach_host_for_clamping(
         max_bytes: 4096,
         max_rows: MAX_HISTORY_PAGE_ROWS + 1,
     };
-    round_trip(over_rows);
+    assert_round_trip(&over_rows);
 
     let over_page_rows = FrameKind::HistoryPage {
         terminal_id: ResourceId::local(1),

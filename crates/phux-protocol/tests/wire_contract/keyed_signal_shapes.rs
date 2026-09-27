@@ -11,7 +11,6 @@
 
 #![allow(clippy::unwrap_used, clippy::panic, reason = "tests")]
 
-use bytes::BytesMut;
 use phux_protocol::caps::{KEYED_SIGNAL, ServerFeature, ServerFeatureSet};
 use phux_protocol::ids::{IdempotencyKey, ResourceId};
 use phux_protocol::wire::DecodeError;
@@ -19,22 +18,10 @@ use phux_protocol::wire::frame::{
     Command, CommandResult, ErrorCode, FrameKind, KillPrecondition, TerminalSignal,
 };
 
-use crate::common::{framed_tlv, tlv_field};
+use crate::common::{decode, encode, framed_tlv, tlv_field};
 
 const TYPE_COMMAND: u8 = 0x31;
 const TYPE_COMMAND_RESULT: u8 = 0xC2;
-
-fn encode(frame: &FrameKind) -> Vec<u8> {
-    let mut buf = BytesMut::new();
-    frame.encode(&mut buf);
-    buf.to_vec()
-}
-
-fn decode(bytes: &[u8]) -> Result<FrameKind, DecodeError> {
-    let (frame, tail) = FrameKind::decode(bytes)?;
-    assert!(tail.is_empty(), "decoder left {} bytes", tail.len());
-    Ok(frame)
-}
 
 /// A `COMMAND` frame with `request_id` 9 around the positional `body`.
 fn command_frame(body: &[u8]) -> Vec<u8> {
