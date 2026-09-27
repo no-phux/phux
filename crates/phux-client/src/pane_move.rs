@@ -445,7 +445,7 @@ async fn delete_layout(
 
 /// The layout handle for `session`: the named projection `key`, else the
 /// default key.
-fn layout_ops(
+pub(crate) fn layout_ops(
     conn: &mut Connection,
     session: SessionId,
     key: Option<String>,
