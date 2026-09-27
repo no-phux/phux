@@ -46,6 +46,25 @@
       .phux-agent-badge[data-state="blocked"] {
         color: #e6b450;
       }
+      #phux-path-picker {
+        width: min(640px, 95vw);
+      }
+      #phux-path-picker button, #phux-path-picker input {
+        font: inherit;
+        background: #17171e;
+        color: #d7d7dd;
+        border: 1px solid #525260;
+        border-radius: 4px;
+        padding: 5px 8px;
+      }
+      #phux-path-picker button { cursor: pointer; }
+      #phux-path-picker button:disabled { opacity: .5; cursor: not-allowed; }
+      .phux-path-fallback { color: #a9a9b3; padding-left: 8px; }
+      .phux-path-panel { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; }
+      .phux-path-panel[hidden] { display: none; }
+      .phux-path-panel label { display: flex; flex-direction: column; gap: 4px; }
+      .phux-path-results { width: 100%; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; align-items: start; gap: 4px; }
+      .phux-path-status { width: 100%; color: #a9a9b3; }
     </style>
   </head>
   <body>

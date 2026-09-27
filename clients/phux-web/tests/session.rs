@@ -5,11 +5,11 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, EngineCodec, EngineFeatureSet,
-    ImageProtocolSet,
+    ImageProtocolSet, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet,
 };
-use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
+use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SatelliteHost, SessionId, StreamId, WindowId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::frame::{FrameKind, PathKind, PathResults, PathRow, PathStatus};
 use phux_protocol::wire::info::{AgentFacet, ResourceInfo, SessionSnapshot};
 use phux_vt_web::Vt;
 use phux_web::Session;
@@ -17,6 +17,201 @@ use wasm_bindgen_test::wasm_bindgen_test;
 
 fn stream(raw: u64) -> StreamId {
     StreamId::new(raw).expect("non-zero stream")
+}
+
+fn path_hello(supported: bool) -> FrameKind {
+    let mut frame = hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    );
+    if let FrameKind::HelloOk { server_caps, .. } = &mut frame {
+        *server_caps = if supported {
+            ServerCapabilities::new()
+                .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]))
+        } else {
+            ServerCapabilities::new()
+        };
+    }
+    frame
+}
+
+fn path_reply(request_id: u32, path: &str) -> FrameKind {
+    FrameKind::PathResults {
+        request_id,
+        result: Ok(PathResults {
+            root: "/work".to_owned(),
+            parent: Some("/".to_owned()),
+            rows: vec![PathRow {
+                path: path.to_owned(),
+                kind: PathKind::File,
+            }],
+            status: PathStatus::Complete,
+        }),
+    }
+}
+
+async fn path_session(supported: bool, second_pane: bool) -> Session {
+    let panes = if second_pane {
+        vec![ResourceId::local(101), ResourceId::local(102)]
+    } else {
+        vec![ResourceId::local(101)]
+    };
+    path_session_with_panes(supported, panes).await
+}
+
+async fn path_session_with_panes(supported: bool, panes: Vec<ResourceId>) -> Session {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 20, 3);
+    session.on_frame(path_hello(supported));
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), panes[0].clone())
+        .with_resources(
+            panes
+                .iter()
+                .cloned()
+                .map(|id| ResourceInfo::new(id, WindowId::new(1), 20, 3))
+                .collect(),
+        );
+    session.on_frame(FrameKind::Attached {
+        attach_id: 1,
+        snapshot,
+        initial_client_id: ClientId::new(1),
+    });
+    for (i, id) in panes.iter().enumerate() {
+        let stream_id = stream(i as u64 + 1);
+        let bootstrap_id = bootstrap(i as u64 + 1);
+        session.on_frame(begin(
+            id.clone(),
+            stream_id,
+            bootstrap_id,
+            phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+            20,
+            3,
+            0,
+        ));
+        session.on_frame(FrameKind::BootstrapReady {
+            terminal_id: id.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        });
+    }
+    session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    session
+}
+
+#[wasm_bindgen_test]
+async fn satellite_pane_queries_its_own_host_not_the_hub() {
+    let mut session = path_session_with_panes(
+        true,
+        vec![ResourceId::satellite(SatelliteHost::new("build"), 101)],
+    )
+    .await;
+    let request = session.path_query_frame("~", "src", true).expect("query");
+    let (frame, _) = FrameKind::decode(&request).expect("decode");
+    let FrameKind::PathQuery { host, .. } = frame else { panic!("not a query") };
+    assert_eq!(host, Some(SatelliteHost::new("build")));
+}
+
+#[wasm_bindgen_test]
+async fn path_query_negotiation_and_stale_replies() {
+    let mut old = path_session(false, false).await;
+    assert!(!old.path_query_supported());
+    assert!(old.path_query_frame("~", "src", true).is_none());
+    let mut session = path_session(true, false).await;
+    let first = session
+        .path_query_frame("~", "src", true)
+        .expect("negotiated query");
+    let (first, _) = FrameKind::decode(&first).unwrap();
+    let FrameKind::PathQuery {
+        request_id: old_id,
+        host: None,
+        recursive: true,
+        ..
+    } = first
+    else {
+        panic!("wrong query")
+    };
+    let second = session.path_query_frame("/work", "", false).unwrap();
+    let (second, _) = FrameKind::decode(&second).unwrap();
+    let FrameKind::PathQuery {
+        request_id: new_id,
+        host: None,
+        recursive: false,
+        ..
+    } = second
+    else {
+        panic!("wrong browse")
+    };
+    assert_ne!(old_id, new_id);
+    session.on_frame(path_reply(old_id, "/work/stale"));
+    assert!(session.path_pending());
+    assert!(session.path_results().is_none());
+    session.on_frame(path_reply(new_id, "/work/new"));
+    assert_eq!(session.path_results().unwrap().rows[0].path, "/work/new");
+    session.cancel_path_query();
+    session.on_frame(path_reply(new_id, "/work/new"));
+    assert!(session.path_results().is_none());
+}
+
+#[wasm_bindgen_test]
+async fn path_selection_keeps_pane_and_emits_only_editable_paste() {
+    let mut session = path_session(true, false).await;
+    let query = session.path_query_frame("/work", "a", true).unwrap();
+    let (FrameKind::PathQuery { request_id, .. }, _) = FrameKind::decode(&query).unwrap() else {
+        panic!("query")
+    };
+    session.on_frame(path_reply(request_id, "/work/a b'$(echo nope).txt"));
+    let paste = session.paste_path_row(0).expect("eligible paste");
+    let (frame, rest) = FrameKind::decode(&paste).unwrap();
+    assert!(rest.is_empty());
+    let FrameKind::InputPaste { terminal_id, event } = frame else {
+        panic!("paste only, never Enter")
+    };
+    assert_eq!(terminal_id, ResourceId::local(101));
+    assert_eq!(event.data, b"'/work/a b'\\''$(echo nope).txt'");
+    assert_eq!(
+        event.trust,
+        phux_protocol::input::paste::PasteTrust::Untrusted
+    );
+    assert!(
+        session.key_frame(key()).is_some(),
+        "selection retains input lease"
+    );
+    assert!(
+        session.paste_path_row(0).is_none(),
+        "selection cannot replay"
+    );
+    let query = session.path_query_frame("/work", "a", true).unwrap();
+    let (FrameKind::PathQuery { request_id, .. }, _) = FrameKind::decode(&query).unwrap() else {
+        panic!("query")
+    };
+    session.on_frame(path_reply(request_id, "/work/unsafe\ncommand"));
+    assert!(
+        session.paste_path_row(0).is_none(),
+        "control characters cannot become terminal input"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn focus_switch_discards_query_and_cannot_paste_into_next_pane() {
+    let mut session = path_session(true, true).await;
+    let query = session.path_query_frame("/work", "a", true).unwrap();
+    let (FrameKind::PathQuery { request_id, .. }, _) = FrameKind::decode(&query).unwrap() else {
+        panic!("query")
+    };
+    session.on_frame(FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(101),
+        exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+        signal: None,
+    });
+    session.on_frame(path_reply(request_id, "/work/a"));
+    assert!(session.path_results().is_none());
+    assert!(session.paste_path_row(0).is_none());
+    assert!(
+        session.key_frame(key()).is_some(),
+        "next pane remains usable"
+    );
 }
 
 fn bootstrap(raw: u64) -> BootstrapId {
