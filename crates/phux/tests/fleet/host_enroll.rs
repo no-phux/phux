@@ -94,13 +94,7 @@ impl EnrollHome {
                *) echo \"fake ssh: unexpected: $*\" >&2; exit 1 ;;\n\
              esac\n"
         );
-        std::fs::write(&path, script).expect("write fake ssh");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod fake ssh");
-        }
+        write_executable(&path, &script);
         path
     }
 
@@ -115,31 +109,16 @@ impl EnrollHome {
              echo '{stderr}' >&2\n\
              exit {code}\n"
         );
-        std::fs::write(&path, script).expect("write fake ssh");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod fake ssh");
-        }
+        write_executable(&path, &script);
         path
     }
 
-    /// Put no-op init-system clients first on `PATH` so a Linux CI runner can
-    /// prove the unit was armed without requiring a live user systemd session.
-    /// The test must never address the developer's real service manager.
+    /// No-op `launchctl`/`systemctl` first on `PATH`: never the real ones.
     fn isolated_path(&self) -> std::ffi::OsString {
         let bin = self.dir.path().join("fake-bin");
         std::fs::create_dir_all(&bin).expect("create fake init-tool dir");
         for tool in ["launchctl", "systemctl"] {
-            let path = bin.join(tool);
-            std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write fake init tool");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                    .expect("chmod fake init tool");
-            }
+            write_executable(&bin.join(tool), "#!/bin/sh\nexit 0\n");
         }
         let mut paths = vec![bin];
         if let Some(inherited) = std::env::var_os("PATH") {
@@ -148,19 +127,10 @@ impl EnrollHome {
         std::env::join_paths(paths).expect("construct isolated PATH")
     }
 
-    /// Run `phux <args...>` against this home's private config and state,
-    /// with `$PHUX_SSH` pointed at `ssh` (a missing path proves the run
-    /// never sshed). Returns `(exit_code, stdout, stderr)`.
-    ///
-    /// `PHUX_PROFILE=default` pins the *released* on-disk layout
-    /// (`state/phux`, not `state/phux-dev`). The binary under test is a debug
-    /// build, so it would otherwise resolve the `dev` profile and this file's
-    /// path assertions would be describing a layout no user ever sees
-    /// (ADR-0080).
-    ///
-    /// `HOME` is redirected too: `--role satellite` writes or patches this
-    /// machine's service unit, and without a sandbox that lands in the
-    /// developer's real `~/Library/LaunchAgents` (or systemd user dir).
+    /// Run `phux <args...>` against this home's private config, state, and
+    /// `HOME` (so a satellite's hub unit never lands in the real
+    /// `LaunchAgents`), in the released `default` layout, with `$PHUX_SSH` at
+    /// `ssh` (a missing path proves the run never sshed).
     fn run(&self, args: &[&str], ssh: &Path) -> (i32, String, String) {
         let out = crate::common::phux_cmd(PHUX)
             .env("HOME", self.dir.path())
@@ -175,18 +145,10 @@ impl EnrollHome {
             .args(args)
             .output()
             .expect("run phux binary");
-        let stderr = String::from_utf8_lossy(&out.stderr)
-            .lines()
-            .filter(|line| !line.starts_with("dhat: "))
-            .fold(String::new(), |mut acc, line| {
-                acc.push_str(line);
-                acc.push('\n');
-                acc
-            });
         (
             out.status.code().expect("phux exited via code, not signal"),
             String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr,
+            String::from_utf8_lossy(&out.stderr).into_owned(),
         )
     }
 
@@ -240,10 +202,6 @@ impl EnrollHome {
     }
 
     /// The per-user service unit `--role satellite` patches or writes.
-    ///
-    /// macOS reads `$HOME/Library/LaunchAgents`; Linux reads
-    /// `$XDG_CONFIG_HOME/systemd/user`. Both `HOME` and `XDG_CONFIG_HOME` are
-    /// the tempdir (see [`Self::run`]).
     fn hub_unit_path(&self) -> std::path::PathBuf {
         if cfg!(target_os = "macos") {
             self.dir
@@ -712,11 +670,21 @@ fn ssh_only_registers_ssh_endpoint_without_contacting_the_host() {
     );
 }
 
+/// `phux host enroll` still works as a hidden alias of the ssh form, and
 /// `phux machine` is a visible alias of `phux host` — the word people reach
 /// for.
 #[test]
-fn machine_alias_reaches_the_host_verb() {
+fn enroll_and_machine_spellings_reach_the_same_verb() {
     let never_ssh = Path::new("/nonexistent/phux-test-ssh");
+
+    let home = EnrollHome::new();
+    let (code, _stdout, stderr) = home.run(&["host", "enroll", "me@mini", "--ssh-only"], never_ssh);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stderr.contains("`phux host enroll` is deprecated") && stderr.contains("phux host add"),
+        "the alias warns toward its replacement: {stderr}"
+    );
+    assert!(home.config().contains("endpoint = \"ssh://me@mini\""));
 
     let home = EnrollHome::new();
     let (code, stdout, stderr) = home.run(&["machine", "add", "me@mini", "--ssh-only"], never_ssh);
@@ -882,4 +850,10 @@ fn satellite_add_leaves_a_hub_unit_alone() {
         before,
         "an already-hub unit must not be rewritten"
     );
+}
+
+fn write_executable(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::write(path, body).expect("write script");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod script");
 }

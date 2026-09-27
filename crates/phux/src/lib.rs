@@ -29,6 +29,7 @@ mod output;
 mod capabilities;
 mod commands;
 mod companion;
+mod deprecations;
 mod environment;
 mod exit_codes;
 mod feature_names;
@@ -2306,5 +2307,138 @@ mod tests {
             crate::parse_cli(["phux", "new", "-s", "work"]).is_ok(),
             "-s without --json stays valid"
         );
+    }
+
+    /// Every hidden subcommand or long flag outside the internal allowlist
+    /// must be a `deprecations::DEPRECATED` row, and every row must still be
+    /// hidden in the parser, so neither side can drift.
+    #[test]
+    fn deprecation_table_matches_the_clap_tree_bidirectionally() {
+        use std::collections::BTreeSet;
+
+        use crate::deprecations::DEPRECATED;
+
+        /// Hidden surfaces that are machine plumbing, not deprecations:
+        /// each is hidden because no human should type it, and none has a
+        /// replacement spelling to migrate to.
+        const INTERNAL: &[&str] = &[
+            // The refdocs generator (ADR-0069): machine-only since it
+            // shipped.
+            "phux gen-reference-docs",
+            // The SSH remoting shim (`ssh HOST phux stdio-bridge`): machine
+            // -invoked by `attach --host`, hidden from humans (phux-06nn),
+            // not deprecated.
+            "phux stdio-bridge",
+            // Far end of `phux attach --ssh` (ADR-0120): machine-invoked
+            // over ssh, same reasoning as stdio-bridge.
+            "phux bootstrap",
+            // Auto-spawn / upgrade plumbing on `phux server`.
+            "phux server --daemonize",
+            "phux server --seed-command",
+            "phux server --resume",
+            // `phux new --empty` starts its server unseeded (ADR-0105).
+            "phux server --no-seed",
+            // `phux play`'s in-pane writer half.
+            "phux play --pty-writer",
+            // The Claude shim's stdin JSON reader: invoked only by the
+            // generated wrapper, one line of shell-safe tokens out.
+            "phux agent hook-payload",
+        ];
+
+        /// Collect every hidden row of the tree under `path`: hidden long
+        /// flags as `<path> --<flag>`, hidden subcommands expanded to one
+        /// row per leaf action (matching the table's `old` spellings).
+        fn walk(meta: &usage::spec::CommandMeta<'_>, path: &str, rows: &mut BTreeSet<String>) {
+            for flag in meta.flags {
+                if flag.hide {
+                    for long in flag.flag.longs {
+                        rows.insert(format!("{path} --{long}"));
+                    }
+                }
+            }
+            for sub in meta.subcommands {
+                let sub_path = format!("{path} {}", sub.cmd.name);
+                if sub.hide {
+                    if sub.subcommands.is_empty() {
+                        rows.insert(sub_path);
+                    } else {
+                        for leaf in sub.subcommands {
+                            rows.insert(format!("{sub_path} {}", leaf.cmd.name));
+                        }
+                    }
+                } else {
+                    walk(sub, &sub_path, rows);
+                }
+            }
+        }
+
+        let mut tree_rows = BTreeSet::new();
+        walk(Cli::spec().root, "phux", &mut tree_rows);
+        for internal in INTERNAL {
+            assert!(
+                tree_rows.remove(*internal),
+                "{internal} is allowlisted as internal but no longer hidden \
+                 in the tree; prune the allowlist"
+            );
+        }
+
+        let table_rows: BTreeSet<String> =
+            DEPRECATED.iter().map(|row| row.old.to_owned()).collect();
+        assert_eq!(
+            table_rows.len(),
+            DEPRECATED.len(),
+            "duplicate `old` spellings in the deprecation table"
+        );
+        assert_eq!(
+            tree_rows, table_rows,
+            "hidden clap surface and the deprecation table must agree: a \
+             row only in the tree is an unregistered hidden alias (add it \
+             to deprecations::DEPRECATED); a row only in the table is \
+             stale (the alias is gone — delete the row and regenerate \
+             docs/reference/deprecations.md)"
+        );
+    }
+
+    /// Every verb row's stderr line is the alias table's exact rendering of
+    /// its own `old`/`new` columns, and every flag row's line names the
+    /// deprecated flag and its `--split` replacement — so the generated
+    /// deprecations page, the warning, and the audit test all say the same
+    /// thing.
+    #[test]
+    fn deprecation_rows_render_their_own_notes() {
+        use crate::deprecations::{DEPRECATED, DeprecatedSurface};
+
+        for row in DEPRECATED {
+            match row.surface {
+                DeprecatedSurface::Verb => assert_eq!(
+                    row.note,
+                    format!(
+                        "phux: `{}` is deprecated and will be removed; use `{}`",
+                        row.old, row.new
+                    ),
+                    "verb row {} must render its note from its own columns",
+                    row.old
+                ),
+                DeprecatedSurface::Flag => {
+                    let flag = row.old_flag().expect("flag rows end in a long flag");
+                    let axis = flag.trim_start_matches("--");
+                    assert_eq!(
+                        row.note,
+                        format!(
+                            "phux: {flag} is deprecated and will be removed; \
+                             use `--split {axis}` (or `--split {short}`)",
+                            short = &axis[..1]
+                        ),
+                        "flag row {} must warn toward its --split replacement",
+                        row.old
+                    );
+                    assert!(
+                        row.new.ends_with(&format!("--split {axis}")),
+                        "flag row {} must advertise the --split spelling",
+                        row.old
+                    );
+                }
+            }
+        }
     }
 }
