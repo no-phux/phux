@@ -1,1 +1,1 @@
-PLACEHOLDER
+@/workspace/dev-run.push.sh
