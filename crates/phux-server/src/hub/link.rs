@@ -1,76 +1,31 @@
-//! Hub outbound link supervisor (phux-v45.3/v45.9, ADR-0007/ADR-0038).
+//! Hub outbound link supervisor (ADR-0007, ADR-0038).
 //!
-//! Under `phux server --hub`, each enabled [`HubEntry`] gets one link
-//! supervisor task (`run_link`, crate-internal) that dials the satellite through the
-//! shared `phux-dial` stack and authenticates **exactly like a remote
-//! consumer** (ADR-0038): TLS 1.3 with the satellite's leaf certificate
-//! pinned by SHA-256 fingerprint, plus the pairing bearer token — a
-//! length-prefixed stream preamble on QUIC, an `Authorization: Bearer`
-//! header on WebSocket. The token is re-read from its file on every
-//! attempt, so rotating it never needs a hub restart.
+//! Under `phux server --hub` each enabled [`HubEntry`] gets one supervisor
+//! (`run_link`) that dials the satellite and authenticates like a remote
+//! consumer: TLS 1.3 pinned by fingerprint plus the pairing bearer token
+//! (QUIC preamble or WS `Authorization` header), re-read every attempt so
+//! rotation needs no restart.
 //!
-//! **SSH-stdio** (`ssh://`, phux-v45.9) is the third dial path: the hub
-//! spawns the system `ssh` binary (override with `$PHUX_SSH`) running
-//! the remote `phux stdio-bridge` verb, which splices its stdin/stdout
-//! to the satellite server's local Unix socket. SSH itself
-//! authenticates and encrypts the channel, and the remote bridge
-//! inherits the satellite UDS's local (owner-only) trust, so **no
-//! bearer preamble is sent** and a registry `token-file` /
-//! `cert-fingerprint` on an `ssh://` entry is ignored (there is no TLS
-//! channel to pin) — see the ADR-0038 addendum. The child is spawned
-//! with `BatchMode=yes` (never an interactive prompt) and argv built
-//! from charset-validated parts (no shell, `--` before the host);
-//! "connected" means the ssh child is running, and the bridged stream
-//! carries the same length-prefixed frames as every other link — the
-//! relay session pumps it exactly like QUIC/WS. The authoritative
-//! liveness signal is the child's exit (surfaced as a `recv_frame`
-//! EOF), which redials like a dropped connection; the child's stderr
-//! is drained into a bounded tail for the failure reason (never
-//! buffered without limit).
+//! `ssh://` spawns the system `ssh` (or `$PHUX_SSH`) running the remote
+//! `phux stdio-bridge`; SSH authenticates the channel, so no token or pin is
+//! used (ADR-0038 addendum). The child runs with `BatchMode=yes` and a
+//! shell-free argv; its exit is the drop signal and its stderr is drained
+//! into a bounded tail.
 //!
-//! **Fail closed.** [`plan_link`] refuses to dial a routable endpoint
-//! whose entry lacks a token file or fingerprint pin (and refuses
-//! plaintext `ws://` to routable hosts outright), mirroring
-//! `phux attach --quic/--ws`. Loopback endpoints keep the loopback dev
-//! carve-out. A refused link is never dialed and never retried — the
-//! refusal is a configuration error, surfaced as
-//! [`LinkStatus::Refused`] and fixed by `phux host add --role satellite`.
-//! Malformed
-//! `ssh://` endpoints fail earlier still, at hub-table validation.
+//! **Fail closed.** [`plan_link`] refuses a routable endpoint without both a
+//! token file and a pin, and plaintext `ws://` to routable hosts. A refusal
+//! is [`LinkStatus::Refused`] and is never retried.
 //!
-//! A lost or failed link is re-dialed with capped exponential backoff.
-//! The failure streak resets only after a connection has stayed up for
-//! `LINK_STABLE_AFTER` — a connection that dies young (an ssh child
-//! whose spawn succeeded but whose auth was refused) keeps growing the
-//! backoff exactly like a dial that never connected. Per-satellite
-//! state is published to [`HubLinkStatuses`], the shared handle a
-//! future `LIST` aggregation (phux-v45.5) reads.
+//! Lost links redial with capped exponential backoff; the streak resets only
+//! after `LINK_STABLE_AFTER` of uptime. While up, the supervisor drives the
+//! satellite's `RelaySession`; while down it fails queued requests fast with
+//! `SatelliteUnreachable`.
 //!
-//! While a link is up, the supervisor drives that satellite's
-//! `super::relay::RelaySession` (phux-v45.4): consumer requests arrive
-//! on the per-satellite relay mailbox and are framed onto the connection;
-//! inbound frames resolve relayed replies and fan re-tagged streams out
-//! to proxy-subscribed consumers. While the link is *down* (dialing,
-//! backoff, fail-closed refusal) the supervisor keeps draining the
-//! mailbox, failing every request fast with a typed
-//! `SatelliteUnreachable` — a consumer never hangs on a dead satellite.
-//!
-//! A dead satellite that *looks* up is handled too: every link enforces a
-//! keepalive / idle contract. QUIC gets it from the transport (`phux-dial`
-//! sets `keep_alive_interval` + `max_idle_timeout`; expiry surfaces as a
-//! read error). SSH-stdio gets it from the SSH layer: the hub dials with
-//! `ServerAliveInterval`/`ServerAliveCountMax` derived from the same two
-//! constants (see [`ssh_argv`]), so a partitioned peer makes the ssh
-//! child exit — the ordinary drop signal — and nothing rides the bridged
-//! stream. WebSocket has no transport-level idle detection, so the
-//! supervisor originates pings on `LINK_KEEPALIVE_INTERVAL` and tears
-//! the link down when nothing (not even a pong) has arrived within
-//! `LINK_IDLE_TIMEOUT` — a silent partition becomes an ordinary
-//! disconnect: session teardown, typed errors, redial. Wire writes are
-//! bounded by `LINK_SEND_TIMEOUT` so a peer with full socket buffers
-//! cannot wedge the supervisor loop (for ssh links the bound applies to
-//! the child's stdin pipe), and the keepalive tick doubles as the sweep
-//! that prunes relayed commands whose consumer stopped waiting.
+//! Liveness: QUIC has transport keepalive/idle, SSH uses
+//! `ServerAliveInterval`/`CountMax` derived from the same constants, and WS
+//! pings on `LINK_KEEPALIVE_INTERVAL` and drops after `LINK_IDLE_TIMEOUT` of
+//! silence. Writes are bounded by `LINK_SEND_TIMEOUT`; the keepalive tick
+//! also prunes abandoned relayed commands.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -98,55 +53,36 @@ const BACKOFF_BASE: Duration = Duration::from_millis(500);
 /// Ceiling for the exponential redial delay.
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 
-/// Period of the relay session's housekeeping tick: drive the transport
-/// keepalive ([`LinkConn::keepalive`]) and prune abandoned pending
-/// commands. Mirrors the QUIC dialer's `keep_alive_interval`
-/// (`phux-dial`), so both transports probe on the same cadence.
+/// Housekeeping tick (keepalive and pruning), matching the QUIC dialer's
+/// `keep_alive_interval`.
 const LINK_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Hub-side inbound-idle limit for WS links, mirroring the QUIC dialer's
-/// `max_idle_timeout` (`phux-dial`). A healthy but quiet link stays under
-/// it because every keepalive ping solicits a pong; only a partitioned or
-/// wedged satellite goes silent this long.
+/// Inbound-idle limit for WS links, matching QUIC's `max_idle_timeout`.
 const LINK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Stall bound on any single wire write toward the satellite (frames and
-/// keepalive pings). Against a partitioned peer with full socket buffers
-/// an unbounded write would pend forever and wedge the whole supervisor
-/// loop — inbound dispatch and the keepalive tick included.
+/// Stall bound on any single write toward the satellite, so a partitioned
+/// peer cannot wedge the supervisor loop.
 const LINK_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Capacity of the established link's independent ordered writer. Saturation
-/// closes the link explicitly rather than parking inbound dispatch or dropping
-/// a request whose correlation state was already registered.
+/// Capacity of the established link's ordered writer; saturation closes the
+/// link rather than dropping a registered request.
 const LINK_WRITE_QUEUE: usize = 64;
 const LINK_WRITE_QUEUE_BYTES: usize = 32 * 1024 * 1024;
 
-/// Delivery retry cadence for downstream subscribers with retained frames.
-/// This is independent of the ten-second transport housekeeping interval.
+/// Retry cadence for subscribers with retained frames.
 const RELAY_DELIVERY_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
-/// How long a connection must stay up before the failure streak is
-/// forgotten. SSH auth/connect failures surface *after* the spawn
-/// succeeds (the child exits in well under a second), so resetting the
-/// backoff on mere establishment would redial a persistently failing
-/// `ssh://` satellite at the base delay forever — hammering the remote
-/// sshd — instead of backing off toward the cap like a QUIC/WS dial
-/// that fails in `connect`.
+/// Uptime before the failure streak is forgotten. SSH auth failures surface
+/// just after spawn, so resetting on establishment would hammer the remote
+/// sshd at the base delay.
 const LINK_STABLE_AFTER: Duration = Duration::from_secs(30);
 
-/// Retained tail of the ssh child's stderr, in bytes. ssh forwards the
-/// *remote command's* stderr into this pipe for the life of the link,
-/// so the hub must drain it into a bounded buffer — an uncapped
-/// `read_to_end` would let one chatty (or hostile) satellite grow hub
-/// memory without bound.
+/// Retained tail of the ssh child's stderr, which carries the remote
+/// command's fd 2 for the link's life.
 const SSH_STDERR_TAIL_MAX: usize = 8 * 1024;
 
-/// What the planner decided to dial for one satellite, auth material
-/// resolved into the shared `phux-dial` vocabulary.
-///
-/// The pairing token stays a *path* here — the supervisor re-reads the
-/// file on every attempt (ADR-0038 rotation: update the file, reconnect).
+/// What the planner decided to dial. The token stays a path, re-read on
+/// every attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialSpec {
     /// Dial a QUIC listener (`quic://host:port`).
@@ -169,10 +105,8 @@ pub enum DialSpec {
         /// Pairing-token file, read per attempt.
         token_file: Option<PathBuf>,
     },
-    /// Spawn the system `ssh` binary bridging to the satellite's UDS via
-    /// the remote `phux stdio-bridge` verb (phux-v45.9). Carries no auth
-    /// material: SSH authenticates the channel, and the bridge inherits
-    /// the satellite UDS's local trust (ADR-0038 addendum).
+    /// Spawn `ssh` bridging to the satellite's UDS via `phux stdio-bridge`.
+    /// No auth material: SSH authenticates the channel.
     Ssh {
         /// Login user (`-l`), if configured.
         user: Option<String>,
@@ -184,8 +118,7 @@ pub enum DialSpec {
 }
 
 impl DialSpec {
-    /// The token file this spec dials with, if any. Always `None` for
-    /// SSH-stdio: the channel is SSH-authenticated, not token-bearing.
+    /// The token file this spec dials with (`None` for SSH).
     #[must_use]
     pub fn token_file(&self) -> Option<&Path> {
         match self {
@@ -219,33 +152,16 @@ impl core::fmt::Display for DialSpec {
     }
 }
 
-/// Build the argv (excluding the program itself) for one SSH-stdio dial.
+/// Build the argv (excluding the program) for one SSH-stdio dial.
 ///
-/// Pure and shell-free: the returned vector is handed to
-/// `tokio::process::Command::args`, never a shell, and the host/user
-/// parts were charset-allowlisted at endpoint parse time (no leading
-/// `-`, no whitespace or metacharacters). `--` still precedes the host
-/// as defense in depth against option injection. `BatchMode=yes` makes
-/// a missing/failed key a fast, non-interactive error; `-T` refuses a
-/// remote PTY (a PTY would translate the byte stream);
-/// `ClearAllForwardings=yes` keeps `ssh_config` forwardings from
-/// piggybacking on hub links.
-///
-/// **Keepalive / idle contract** (`docs/architecture/transport.md`): the
-/// link-level liveness the relay demands of every transport lives at the
-/// SSH layer for ssh links, mirroring how QUIC gets it from quinn rather
-/// than from hub pings. `ServerAliveInterval` probes on the
-/// `LINK_KEEPALIVE_INTERVAL` cadence and `ServerAliveCountMax` sizes
-/// the window to `LINK_IDLE_TIMEOUT`, so a silent partition makes ssh
-/// exit — and a child exit is the ordinary link-drop signal
-/// (`LinkConn::recv_frame` EOF). Nothing rides the bridged phux
-/// stream: the bridge stays byte-transparent, and
-/// `LinkConn::keepalive` is a no-op for ssh exactly as for QUIC.
+/// Shell-free, host/user charset-validated at parse time, and `--` before
+/// the host anyway. `BatchMode=yes` fails fast without a key, `-T` refuses a
+/// remote PTY, and `ClearAllForwardings=yes` ignores config forwardings.
+/// `ServerAliveInterval`/`ServerAliveCountMax` implement the link's
+/// keepalive/idle contract at the SSH layer.
 #[must_use]
 pub fn ssh_argv(user: Option<&str>, host: &str, port: Option<u16>) -> Vec<String> {
-    // Derived, not hardcoded, so the SSH-layer contract cannot drift
-    // from the WS/QUIC one: probe every LINK_KEEPALIVE_INTERVAL, declare
-    // the peer dead after LINK_IDLE_TIMEOUT of silence.
+    // Derived so the SSH liveness window matches the WS/QUIC one.
     let alive_interval = LINK_KEEPALIVE_INTERVAL.as_secs().max(1);
     let alive_count = (LINK_IDLE_TIMEOUT.as_secs() / alive_interval).max(1);
     let mut argv = vec![
@@ -275,14 +191,10 @@ pub fn ssh_argv(user: Option<&str>, host: &str, port: Option<u16>) -> Vec<String
 }
 
 /// Why the planner refused to dial a satellite (fail closed, ADR-0038).
-///
-/// A refusal is a *configuration* error: the supervisor publishes it as
-/// [`LinkStatus::Refused`] and never dials — no retry loop can fix a
-/// missing credential.
+/// A configuration error; never retried.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkRefusal {
-    /// Plaintext `ws://` to a routable host: no TLS means no fingerprint
-    /// pin is even possible. Mirrors the attach CLI's refusal.
+    /// Plaintext `ws://` to a routable host (no TLS, so no pin possible).
     PlaintextRoutable {
         /// The configured endpoint URL.
         url: String,
@@ -297,8 +209,7 @@ pub enum LinkRefusal {
         /// The configured endpoint.
         endpoint: String,
     },
-    /// The endpoint survived hub-table validation but not the dialer's
-    /// stricter URL parse.
+    /// The endpoint failed the dialer's stricter URL parse.
     Malformed {
         /// The configured endpoint.
         endpoint: String,
@@ -334,13 +245,9 @@ impl core::fmt::Display for LinkRefusal {
 }
 
 /// Per-satellite connection state, published by the link supervisor.
-///
-/// Held behind [`HubLinkStatuses`] so a future `LIST` aggregation
-/// (phux-v45.4+) can report every satellite's reachability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkStatus {
-    /// Fail-closed refusal ([`LinkRefusal`]); the link was never dialed
-    /// and will not be retried until the registry entry changes.
+    /// Fail-closed refusal; never dialed until the registry entry changes.
     Refused {
         /// Human-readable refusal, from [`LinkRefusal`]'s `Display`.
         reason: String,
@@ -352,8 +259,7 @@ pub enum LinkStatus {
     },
     /// The link is established and authenticated.
     Connected,
-    /// The last attempt failed (or an established link dropped); the
-    /// supervisor redials after `retry_in`.
+    /// The last attempt failed or the link dropped; redial after `retry_in`.
     Backoff {
         /// 1-based number of the attempt that just failed.
         attempt: u32,
@@ -383,12 +289,8 @@ impl core::fmt::Display for LinkStatus {
     }
 }
 
-/// Shared, cheaply-cloneable map of per-satellite [`LinkStatus`].
-///
-/// One handle lives in server shared state (set at hub startup); each
-/// link supervisor holds a clone and publishes its transitions. The
-/// `std::sync::Mutex` is held only for map reads/writes — never across
-/// an await point.
+/// Shared per-satellite [`LinkStatus`] map; the mutex is never held across
+/// an await.
 #[derive(Debug, Clone, Default)]
 pub struct HubLinkStatuses {
     inner: Arc<Mutex<BTreeMap<SatelliteHost, LinkStatus>>>,
@@ -413,8 +315,7 @@ impl HubLinkStatuses {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<SatelliteHost, LinkStatus>> {
-        // A poisoned map only means another supervisor panicked mid-insert;
-        // the map itself (Clone + insert) cannot be left inconsistent.
+        // Poison only means a panic mid-insert; the map stays consistent.
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -448,8 +349,7 @@ impl Backoff {
 
     /// Record a failure and return the delay before the next attempt.
     pub fn next_delay(&mut self) -> Duration {
-        // 2^32 * base overflows Duration long before `failures` wraps;
-        // clamp the exponent so the shift itself cannot overflow.
+        // Clamp the exponent so the shift cannot overflow.
         let exponent = self.failures.min(20);
         let delay = self
             .base
@@ -459,19 +359,14 @@ impl Backoff {
         delay
     }
 
-    /// Forget the failure streak after a connection that proved stable
-    /// (see `LINK_STABLE_AFTER`).
+    /// Forget the failure streak after a stable connection.
     pub const fn reset(&mut self) {
         self.failures = 0;
     }
 
     /// Settle the streak after a lost connection and return the 1-based
-    /// attempt number to report the loss as. Only a connection that
-    /// stayed up at least `LINK_STABLE_AFTER` clears the failure
-    /// streak; one that died young counts like a dial that never
-    /// connected (an ssh child whose spawn succeeded but whose auth was
-    /// refused exits fast — resetting on mere establishment would
-    /// redial it at the base delay forever, hammering the remote sshd).
+    /// attempt number. Only a connection up for `LINK_STABLE_AFTER` clears
+    /// the streak.
     pub fn settle_after_loss(&mut self, up_for: Duration) -> u32 {
         if up_for >= LINK_STABLE_AFTER {
             self.reset();
@@ -480,18 +375,11 @@ impl Backoff {
     }
 }
 
-/// Decide how (or whether) to dial one hub-table entry. Pure — no I/O.
+/// Decide how (or whether) to dial one hub-table entry. Pure.
 ///
-/// This is the fail-closed gate (ADR-0038): routable endpoints without
-/// both a token file and a fingerprint pin are refused, and plaintext
-/// `ws://` is loopback-only. Loopback endpoints keep the dev carve-out
-/// (skip-verify TLS, optional token), matching `phux attach --quic/--ws`.
-/// `ssh://` endpoints need no credential material — SSH authenticates
-/// the channel and the remote bridge inherits the satellite UDS's local
-/// trust (ADR-0038 addendum) — so any configured `token-file` /
-/// `cert-fingerprint` on such an entry is deliberately not carried into
-/// the spec.
-///
+/// The fail-closed gate (ADR-0038): routable endpoints need a token file and
+/// a pin; plaintext `ws://` is loopback-only; loopback keeps the dev
+/// carve-out. `ssh://` needs neither, and ignores any configured.
 /// # Errors
 ///
 /// A [`LinkRefusal`] naming the configuration gap.
@@ -518,8 +406,7 @@ pub fn plan_link(entry: &HubEntry) -> Result<DialSpec, LinkRefusal> {
             }
             Ok(DialSpec::Ws {
                 url: url.clone(),
-                // ws:// never performs a TLS handshake; the trust value is
-                // inert but kept honest (a pin would never be checked).
+                // No TLS handshake on ws://; the trust value is inert.
                 trust: CertTrust::SkipVerify,
                 token_file: entry.token_file.clone(),
             })
@@ -536,10 +423,8 @@ pub fn plan_link(entry: &HubEntry) -> Result<DialSpec, LinkRefusal> {
     }
 }
 
-/// The shared routable-vs-loopback trust rule for TLS transports
-/// (QUIC and `wss://`): routable requires pin **and** token; loopback
-/// pins when a fingerprint is configured and skips verification
-/// otherwise.
+/// Trust for TLS transports: routable requires pin and token; loopback pins
+/// when a fingerprint is configured and skips verification otherwise.
 fn plan_trust(loopback: bool, endpoint: &str, entry: &HubEntry) -> Result<CertTrust, LinkRefusal> {
     if loopback {
         return Ok(entry
@@ -567,8 +452,7 @@ fn parse_ws(url: &str) -> Result<WsTarget, LinkRefusal> {
     })
 }
 
-/// Whether a `quic://` host token names the loopback interface —
-/// `localhost`, a loopback IPv4, or a (possibly bracketed) loopback IPv6.
+/// Whether a host token names loopback (`localhost`, IPv4, or IPv6).
 fn host_is_loopback(host: &str) -> bool {
     let bare = host.trim_matches(['[', ']']);
     bare.eq_ignore_ascii_case("localhost")
@@ -577,19 +461,8 @@ fn host_is_loopback(host: &str) -> bool {
             .is_ok_and(|addr| addr.is_loopback())
 }
 
-/// Read and validate the pairing token for an attempt.
-///
-/// One hex token, line-oriented (ADR-0038: the same shape as the server's
-/// token store — the first non-empty line wins, trailing newline
-/// tolerated). Returns the *hex* string; the QUIC path decodes it into
-/// raw preamble bytes, the WebSocket path sends it verbatim in the
-/// `Authorization` header, matching the attach CLI.
-///
-/// # Errors
-///
-/// A human-readable reason (missing/unreadable file, empty file, or a
-/// token that is not valid hex). The supervisor treats this like a failed
-/// attempt — fixed token files are picked up on the next redial.
+/// Read and validate the pairing token: first non-empty line, hex. Errors
+/// count as a failed attempt, so a fixed file is picked up on redial.
 fn read_link_token(path: Option<&Path>) -> Result<Option<String>, String> {
     let Some(path) = path else {
         return Ok(None);
@@ -608,18 +481,13 @@ fn read_link_token(path: Option<&Path>) -> Result<Option<String>, String> {
     Ok(Some(token.to_owned()))
 }
 
-/// The transport seam the supervisor dials through.
-///
-/// Production is [`NetLinkTransport`] (the shared `phux-dial` stack);
-/// tests inject a scripted transport so backoff and status transitions
-/// are exercised without any network. Errors are plain strings — they
-/// only ever land in logs and [`LinkStatus::Backoff::last_error`].
+/// The transport seam the supervisor dials through ([`NetLinkTransport`]
+/// in production, scripted in tests). Errors are log strings.
 pub(crate) trait LinkTransport {
     /// The established-connection handle.
     type Conn: LinkConn;
 
-    /// Dial `spec`, authenticating with `token` (validated hex) when
-    /// present.
+    /// Dial `spec`, authenticating with `token` when present.
     async fn connect(&self, spec: &DialSpec, token: Option<String>) -> Result<Self::Conn, String>;
 }
 
@@ -627,16 +495,12 @@ pub(crate) trait LinkTransport {
 pub(crate) struct NegotiatedBootstrap {
     profile: BootstrapProfile,
     limits: BootstrapLimits,
-    /// Features the satellite advertised in `HELLO_OK`; the relay consults
-    /// them before relaying a frame an older satellite would drop.
+    /// Features the satellite advertised in `HELLO_OK`.
     server_features: phux_protocol::caps::ServerFeatureSet,
-    /// The satellite's incarnation, its `HELLO_OK.server_id`, which the
-    /// hub's incarnation fence compares a keyed retry against (L1 §9.1).
+    /// The satellite's `HELLO_OK.server_id`, for the incarnation fence.
     server_id: Option<[u8; 16]>,
 }
-/// An established hub link: a duplex of complete encoded phux frames
-/// (length prefix included, the `FrameKind::encode`/`decode` unit) the
-/// relay session (phux-v45.4) pumps in both directions.
+/// An established hub link: a duplex of complete encoded phux frames.
 pub(crate) trait LinkConn {
     type Reader: LinkReader;
     type Writer: LinkWriter + 'static;
@@ -652,8 +516,7 @@ pub(crate) trait LinkConn {
     /// Features the satellite advertised in its `HELLO_OK`.
     fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String>;
 
-    /// The satellite's incarnation, its `HELLO_OK.server_id` (L1 §9.1).
-    /// `None` when the transport cannot say, which fences as a single
+    /// The satellite's `HELLO_OK.server_id` (L1 §9.1); `None` fences as one
     /// incarnation.
     fn satellite_incarnation(&self) -> Option<[u8; 16]> {
         None
@@ -674,22 +537,15 @@ pub(crate) trait LinkWriter {
     /// Put one complete encoded frame on the wire.
     async fn send_frame(&mut self, frame: &[u8]) -> Result<(), String>;
 
-    /// Transport-level liveness probe, driven by the supervisor's
-    /// [`LINK_KEEPALIVE_INTERVAL`] tick while the link is up. WS links
-    /// originate a ping and enforce the hub-side inbound-idle limit
-    /// ([`LINK_IDLE_TIMEOUT`]), mirroring the idle contract the QUIC
-    /// dialer configures at the transport layer; QUIC links are a no-op
-    /// (quinn surfaces idle expiry as a [`Self::recv_frame`] error).
-    /// `Err` carries the reason the link must be torn down.
+    /// Liveness probe on the keepalive tick. WS pings and enforces
+    /// [`LINK_IDLE_TIMEOUT`]; QUIC and SSH are no-ops (their transports
+    /// surface idle as a read error). `Err` tears the link down.
     async fn keepalive(&mut self) -> Result<(), String>;
 }
 
-/// Supervise one satellite link: plan, dial, relay, redial.
-///
-/// Runs until `cancel` fires or every [`super::relay::RelayHandle`] for
-/// this satellite is dropped. Fail-closed refusals publish
-/// [`LinkStatus::Refused`] and never dial, but keep draining the relay
-/// mailbox so consumers get typed fail-fast errors instead of silence.
+/// Supervise one satellite link: plan, dial, relay, redial, until `cancel`
+/// or every relay handle is dropped. A refused link still drains its
+/// mailbox with typed errors.
 #[allow(
     clippy::future_not_send,
     reason = "ADR-0014: hub link supervisors run on the server's LocalSet; the transport seam is generic so tests can inject !Send scripted transports"
@@ -727,10 +583,8 @@ pub(crate) async fn run_link<T: LinkTransport>(
                     reason: refusal.to_string(),
                 },
             );
-            // Never dialed, never will be until the registry changes:
-            // fail every relay request fast until shutdown. Unsubscribes
-            // are drained and discarded — no session exists, so there is
-            // no registry to withdraw from.
+            // Never dialed: fail requests fast; unsubscribes have no
+            // registry to withdraw from.
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => return,
@@ -753,16 +607,12 @@ pub(crate) async fn run_link<T: LinkTransport>(
         let attempt = backoff.failures().saturating_add(1);
         statuses.set(&host, LinkStatus::Connecting { attempt });
         let connect = async {
-            // Re-read the token every attempt (ADR-0038 rotation: update
-            // the hub's token file, reconnect). The file is a one-line
-            // local read; blocking the current-thread runtime for it is
-            // deliberate simplicity, matching the config-load paths.
+            // Re-read the token every attempt (rotation).
             let token = read_link_token(spec.token_file())?;
             transport.connect(&spec, token).await
         };
         tokio::pin!(connect);
-        // Drain relay requests while the dial is in flight: a consumer
-        // targeting a not-yet-connected satellite fails fast, not late.
+        // Fail relay requests fast while the dial is in flight.
         let outcome = loop {
             tokio::select! {
                 () = cancel.cancelled() => return,
@@ -840,13 +690,9 @@ pub(crate) async fn run_link<T: LinkTransport>(
     }
 }
 
-/// Drive one established connection's relay session (phux-v45.4): pump
-/// consumer requests onto the wire and inbound frames back to consumers.
-///
-/// Returns `Some(reason)` when the connection was lost (redial), `None`
-/// when the supervisor should exit (cancellation, or every relay handle
-/// dropped). Session teardown — failing in-flight commands and notifying
-/// proxy subscribers with a typed error — runs on every exit path.
+/// Drive one established connection's relay session. `Some(reason)` means
+/// the connection was lost (redial); `None` means exit. Session teardown
+/// runs on every path.
 #[allow(
     clippy::future_not_send,
     reason = "ADR-0014: runs on the server's LocalSet inside run_link"
@@ -865,8 +711,7 @@ async fn run_relay_session<C: LinkConn>(
         Err(error) => return Some(error),
     };
     session.set_journal(journal.cloned());
-    // ADR-0127: the hub's satellite dispatch reads what this satellite
-    // advertised to decide whether the link can carry an attach's takeover.
+    // ADR-0127: publish what this satellite advertised for dispatch.
     if let Some(journal) = journal {
         let features = session.satellite_features();
         journal.with_mut(|s| s.set_satellite_features(host.clone(), features));
@@ -881,8 +726,7 @@ async fn run_relay_session<C: LinkConn>(
         write_rx,
         write_error_tx,
     )));
-    // Housekeeping tick: transport keepalive + pending-map pruning. First
-    // tick one interval out — the connection was live zero seconds ago.
+    // First housekeeping tick one interval out.
     let mut keepalive = tokio::time::interval_at(
         tokio::time::Instant::now() + LINK_KEEPALIVE_INTERVAL,
         LINK_KEEPALIVE_INTERVAL,
@@ -906,9 +750,8 @@ async fn run_relay_session<C: LinkConn>(
                 }
             }
             unsubscribe = unsub_rx.recv() => {
-                // Undroppable subscription teardown (phux-v45.11): apply
-                // the withdrawal and tell the satellite to stop streaming
-                // any terminal whose last proxy subscriber just left.
+                // Apply the withdrawal and detach upstream where the last
+                // proxy left.
                 let Some(unsubscribe) = unsubscribe else {
                     break (false, "relay handles dropped".to_owned());
                 };
@@ -1112,9 +955,7 @@ async fn drive_link_writer<W: LinkWriter>(
     errors: tokio::sync::mpsc::Sender<String>,
 ) {
     while let Some(mut queued) = rx.recv().await {
-        // Keep `queued` alive until the active transport write completes so
-        // its bytes remain charged against the same aggregate bound as the
-        // channel backlog.
+        // Hold `queued` until the write completes so its bytes stay charged.
         let Some(write) = queued.take_write() else {
             continue;
         };
@@ -1152,9 +993,7 @@ async fn drive_link_writer<W: LinkWriter>(
     }
 }
 
-/// Put one frame on the wire with [`LINK_SEND_TIMEOUT`] as the stall
-/// bound: a partitioned peer whose socket buffers filled up would
-/// otherwise pend the write forever and wedge the supervisor loop.
+/// Put one frame on the wire, bounded by [`LINK_SEND_TIMEOUT`].
 #[allow(
     clippy::future_not_send,
     reason = "ADR-0014: runs on the server's LocalSet inside run_relay_session"
@@ -1234,11 +1073,8 @@ async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
     }
 }
 
-/// What the hub offers a satellite: the default capability set plus L3, so
-/// the satellite answers the relayed `LIST_DIRECTORY` (`docs/spec/L3.md`
-/// §4.1), which a server drops from a consumer that never negotiated L3
-/// (§1.2). The hub also subscribes the two agent-metadata keys it mirrors
-/// (ADR-0136). It sends no other metadata frames on the link.
+/// What the hub offers a satellite: defaults plus L3 (for the relayed
+/// `LIST_DIRECTORY`) and the two mirrored agent-metadata keys (ADR-0136).
 fn hub_link_capabilities() -> ClientCapabilities {
     ClientCapabilities::default().with_layers(phux_protocol::caps::LayerSet::with(&[
         phux_protocol::caps::Layer::L3,
@@ -1299,14 +1135,9 @@ fn validate_link_hello_ok(
     Ok(())
 }
 
-/// Spawn one [`run_link`] supervisor per hub-table entry onto the current
-/// `LocalSet`, all children of `cancel`, registering each satellite's
-/// [`super::relay::RelayHandle`] in `relays`.
-///
-/// Called from the server runtime's hub bring-up; `statuses` and `relays`
-/// are the same handles mirrored into shared state for command routing
-/// and future `LIST` aggregation. `journal` is that shared state, whose
-/// event journal re-stamps every event the links relay (ADR-0123).
+/// Spawn one [`run_link`] per hub-table entry on the current `LocalSet`,
+/// registering each satellite's relay handle in `relays`. `journal`
+/// re-stamps relayed events (ADR-0123).
 pub(crate) fn spawn_links(
     table: &HubTable,
     statuses: &HubLinkStatuses,
@@ -1330,14 +1161,10 @@ pub(crate) fn spawn_links(
     }
 }
 
-/// The production [`LinkTransport`]: the shared `phux-dial` QUIC/WS stack
-/// authenticating exactly like a remote consumer (ADR-0038), plus the
-/// SSH-stdio child-process path for `ssh://` endpoints (phux-v45.9).
+/// The production [`LinkTransport`]: `phux-dial` QUIC/WS plus SSH-stdio.
 #[derive(Debug, Clone)]
 pub(crate) struct NetLinkTransport {
-    /// Program spawned for [`DialSpec::Ssh`] dials. `ssh` on `$PATH` by
-    /// default; `$PHUX_SSH` overrides it (an OpenSSH-compatible wrapper,
-    /// or a stub in tests).
+    /// Program for SSH dials: `ssh`, or `$PHUX_SSH`.
     ssh_program: std::ffi::OsString,
 }
 
@@ -1350,13 +1177,10 @@ impl NetLinkTransport {
     }
 }
 
-/// An established production link, framed in both directions for the
-/// relay session (phux-v45.4).
+/// An established production link.
 #[derive(Debug)]
 pub(crate) enum NetLinkConn {
-    /// QUIC connection with its endpoint driver and the opened bidi
-    /// stream halves. Frames are length-prefixed on the byte stream,
-    /// byte-for-byte the framing the UDS path uses (`docs/spec/proto.md` §5).
+    /// QUIC connection plus bidi stream, length-prefixed like UDS.
     Quic {
         /// Owns the UDP socket + I/O driver; must outlive the connection.
         _endpoint: quinn::Endpoint,
@@ -1366,8 +1190,7 @@ pub(crate) enum NetLinkConn {
         send: quinn::SendStream,
         /// Opened bidi recv half.
         recv: quinn::RecvStream,
-        /// Reassembly buffer: reads land here (cancel-safely) and complete
-        /// length-prefixed frames are peeled off the front.
+        /// Cancel-safe reassembly buffer.
         buf: bytes::BytesMut,
         /// Exact selection installed once before `connect` returns.
         negotiated: Option<NegotiatedBootstrap>,
@@ -1376,21 +1199,13 @@ pub(crate) enum NetLinkConn {
     Ws {
         /// The established stream.
         ws: Box<phux_dial::ws::Ws>,
-        /// When the satellite last sent *anything* — data or control
-        /// frames. WS has no transport-level idle detection (unlike the
-        /// QUIC path), so this feeds the hub-side idle limit in
-        /// [`LinkConn::keepalive`]; without it a silent partition would
-        /// leave the link `Connected` forever.
+        /// Last inbound activity, feeding the WS idle limit.
         last_inbound: std::time::Instant,
         /// Exact selection installed once before `connect` returns.
         negotiated: Option<NegotiatedBootstrap>,
     },
-    /// SSH-stdio child (phux-v45.9): the running `ssh` process whose
-    /// stdin/stdout carry the bridged, length-prefixed frame stream —
-    /// byte-for-byte the UDS framing, because the remote
-    /// `phux stdio-bridge` is byte-transparent. The child is
-    /// `kill_on_drop`, so tearing down the link (cancellation, redial)
-    /// reaps the ssh process instead of orphaning it.
+    /// SSH-stdio child whose stdin/stdout carry the UDS framing verbatim;
+    /// `kill_on_drop` reaps it on teardown.
     Ssh {
         /// The spawned ssh process; its exit is the link-loss signal.
         child: tokio::process::Child,
@@ -1398,18 +1213,11 @@ pub(crate) enum NetLinkConn {
         stdin: tokio::process::ChildStdin,
         /// Bridged read half — the satellite's frames, length-prefixed.
         stdout: tokio::process::ChildStdout,
-        /// Background drainer of ssh's own diagnostics plus the remote
-        /// command's stderr. It reads fd 2 *continuously* for the life of
-        /// the link (not just at EOF): a stderr pipe left unread fills its
-        /// ~64KiB OS buffer, blocks the remote's writes, and — because
-        /// stdout rides the same ssh channel window — stalls inbound frame
-        /// delivery with no loss signal (phux-v45.9). The task retains only
-        /// a bounded tail (`SSH_STDERR_TAIL_MAX`) and yields it at EOF so
-        /// `ssh_exit_reason` can compose the failure reason; it is aborted
-        /// on drop when the link is torn down before EOF.
+        /// Continuous stderr drainer. An unread fd 2 would fill its pipe and
+        /// stall stdout on the shared SSH channel; keeps a bounded tail for
+        /// the loss reason.
         stderr_reader: AbortOnDrop<Vec<u8>>,
-        /// Reassembly buffer: same cancel-safe frame peeling as the
-        /// QUIC path.
+        /// Cancel-safe reassembly buffer.
         buf: bytes::BytesMut,
         /// Exact selection installed once before `connect` returns.
         negotiated: Option<NegotiatedBootstrap>,
@@ -1532,35 +1340,23 @@ impl LinkTransport for NetLinkTransport {
                 })
             }
             DialSpec::Ssh { user, host, port } => {
-                // No token: SSH authenticates the channel and the remote
-                // bridge inherits the satellite UDS's local trust
-                // (ADR-0038 addendum). `token` is None here by
-                // construction (plan_link never carries a token file into
-                // an Ssh spec).
+                // SSH authenticates the channel; there is no token.
                 debug_assert!(token.is_none(), "ssh dials carry no bearer token");
                 let mut child = tokio::process::Command::new(&self.ssh_program)
                     .args(ssh_argv(user.as_deref(), host, *port))
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
-                    // Reap the ssh process when the link is torn down
-                    // (cancellation, redial) rather than orphaning it.
                     .kill_on_drop(true)
                     .spawn()
                     .map_err(|err| {
                         format!("spawn {}: {err}", self.ssh_program.to_string_lossy())
                     })?;
-                // The three pipes exist because we just asked for them;
-                // treat their absence as a failed dial, not a panic.
+                // Missing pipes are a failed dial, not a panic.
                 let stdin = child.stdin.take().ok_or("ssh child has no stdin pipe")?;
                 let stdout = child.stdout.take().ok_or("ssh child has no stdout pipe")?;
                 let mut stderr = child.stderr.take().ok_or("ssh child has no stderr pipe")?;
-                // Drain fd 2 for the whole life of the link so it can never
-                // fill its pipe buffer and back-pressure the shared ssh
-                // channel (phux-v45.9). `read_tail` keeps only the bounded
-                // tail and returns it at EOF; `ssh_exit_reason` joins this
-                // task to fold that tail into the loss reason. Spawned on
-                // the supervisor's LocalSet (see `run_link`).
+                // Drain fd 2 for the link's life (see `stderr_reader`).
                 let stderr_reader = AbortOnDrop(tokio::task::spawn_local(async move {
                     read_tail(&mut stderr, SSH_STDERR_TAIL_MAX).await
                 }));
@@ -1576,9 +1372,8 @@ impl LinkTransport for NetLinkTransport {
         };
         let mut conn = result?;
 
-        // HELLO/profile negotiation is mandatory over QUIC, WebSocket, and
-        // SSH-stdio alike. The remote UDS reached through the byte-transparent
-        // SSH bridge has no same-uid protocol exemption.
+        // HELLO/profile negotiation is mandatory on every transport,
+        // including the SSH bridge.
         let selection = negotiate_link(&mut conn).await?;
         conn.install_negotiated(selection)?;
         Ok(conn)
@@ -1676,10 +1471,7 @@ impl LinkWriter for NetLinkConn {
             )
             .await
             .map_err(|err| format!("write to satellite: {err}")),
-            // The child stdin pipe is the wire: the caller's
-            // `LINK_SEND_TIMEOUT` bound (send_bounded) applies here like
-            // any other transport, so a wedged ssh child with a full pipe
-            // cannot pend the supervisor forever.
+            // The child's stdin is the wire, bounded like any other.
             Self::Ssh { stdin, .. } => tokio::io::AsyncWriteExt::write_all(stdin, frame)
                 .await
                 .map_err(|err| format!("write to ssh transport: {err}")),
@@ -1708,20 +1500,13 @@ impl LinkWriter for NetLinkConn {
 
 impl LinkReader for NetLinkConn {
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
-        // A SPEC §5 framing violation is answered *after* this match rather
-        // than inside it: every arm holds `self` destructured into its
-        // transport's halves, so `Self::send_frame` is unreachable while
-        // those borrows live. Carrying the violation out instead of handling
-        // it in place leaves one send path for every transport
-        // (`send_bounded` -> `send_frame`), so a transport added later
-        // inherits the goodbye by construction instead of silently skipping
-        // it while `send_frame` fails to compile.
+        // A framing violation is carried out of the match (whose arms
+        // borrow `self`) so the goodbye has one send path for every
+        // transport.
         let violation = 'framing: {
             match self {
                 Self::Quic { recv, buf, .. } => {
-                    // Cancel-safe reassembly: `read_buf` lands bytes in the
-                    // persistent buffer even if this future is dropped between
-                    // polls; complete frames are peeled off the front.
+                    // Cancel-safe: bytes land in the persistent buffer.
                     loop {
                         match phux_protocol::wire::framing::split_frame(buf) {
                             Ok(Some(framed)) => return Ok(Some(framed.to_vec())),
@@ -1745,18 +1530,14 @@ impl LinkReader for NetLinkConn {
                     match futures_util::StreamExt::next(ws.as_mut()).await {
                         None => return Ok(None),
                         Some(Ok(message)) => {
-                            // Anything the satellite sends — data or control —
-                            // is liveness for the idle limit.
+                            // Any inbound message counts as liveness.
                             *last_inbound = std::time::Instant::now();
                             match message {
                                 tokio_tungstenite::tungstenite::Message::Close(_) => {
                                     return Ok(None);
                                 }
                                 tokio_tungstenite::tungstenite::Message::Binary(data) => {
-                                    // One binary message is exactly one frame,
-                                    // as on every other message-oriented phux
-                                    // transport (SPEC §5 defines no second
-                                    // framing layer).
+                                    // One binary message is one frame (SPEC §5).
                                     if let Err(violation) =
                                         phux_protocol::wire::framing::check_frame(&data)
                                     {
@@ -1764,8 +1545,7 @@ impl LinkReader for NetLinkConn {
                                     }
                                     return Ok(Some(data.to_vec()));
                                 }
-                                // Control frames (ping/pong): reading them is
-                                // what answers pings; skip and keep reading.
+                                // Ping/pong: reading answers pings.
                                 _ => {}
                             }
                         }
@@ -1779,14 +1559,8 @@ impl LinkReader for NetLinkConn {
                     buf,
                     ..
                 } => {
-                    // Same cancel-safe reassembly as the QUIC path: the
-                    // bridged stream carries the identical length-prefixed
-                    // framing (the remote bridge splices the satellite's UDS
-                    // byte-for-byte). stdout EOF means the link is gone —
-                    // remote bridge ended, satellite server closed the UDS,
-                    // network died, or the key was refused — and the child's
-                    // exit status plus a bounded tail of its stderr become
-                    // the loss reason.
+                    // Same reassembly as QUIC. stdout EOF means the link is
+                    // gone; the exit status and stderr tail are the reason.
                     loop {
                         match phux_protocol::wire::framing::split_frame(buf) {
                             Ok(Some(framed)) => return Ok(Some(framed.to_vec())),
@@ -1807,10 +1581,7 @@ impl LinkReader for NetLinkConn {
                 }
             }
         };
-        // SPEC §5 goodbye, best-effort: the satellite may already be gone,
-        // and a failed goodbye must never mask the real loss reason — hence
-        // the discarded result. `send_bounded` keeps it under
-        // `LINK_SEND_TIMEOUT` like every other link write.
+        // Best-effort SPEC §5 goodbye; never masks the real loss reason.
         let _ = send_bounded(self, &encode_frame_too_large(violation)).await;
         Err(framing_loss_reason(violation))
     }
@@ -1954,8 +1725,8 @@ async fn read_length_prefixed<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-/// The teardown reason once a WS link has been inbound-idle for
-/// [`LINK_IDLE_TIMEOUT`] or longer, or `None` while it is live.
+/// The teardown reason once a WS link has been idle for
+/// [`LINK_IDLE_TIMEOUT`].
 fn ws_idle_error(idle_for: Duration) -> Option<String> {
     (idle_for >= LINK_IDLE_TIMEOUT).then(|| {
         format!(
@@ -1966,17 +1737,11 @@ fn ws_idle_error(idle_for: Duration) -> Option<String> {
     })
 }
 
-/// How long an ssh child gets to exit after closing its bridged stdout
-/// before the hub kills it. ssh normally exits immediately once the
-/// remote command ends; a child that lingers past this (a wrapper
-/// holding the process open) would otherwise pin the supervisor between
-/// "stream is gone" and "redial".
+/// How long an ssh child gets to exit after its stdout closes before the
+/// hub kills it.
 const SSH_EXIT_GRACE: Duration = Duration::from_secs(5);
 
-/// A local task handle that aborts its task on drop, so tearing down an
-/// ssh link (cancellation, redial, connection drop before stdout EOF)
-/// stops the background stderr drainer instead of leaking it past the
-/// child's death.
+/// A local task handle that aborts on drop (the stderr drainer).
 #[derive(Debug)]
 pub(crate) struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
 
@@ -1986,26 +1751,16 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
-/// Compose the loss reason for an ssh link whose bridged stdout hit EOF:
-/// the child's exit status plus a bounded tail of its stderr.
-///
-/// stderr has been drained the whole time by the `stderr_reader` task
-/// (so a chatty fd 2 never back-pressured the shared ssh channel); that
-/// task's `read_tail` returns the bounded tail ([`SSH_STDERR_TAIL_MAX`])
-/// once the pipe hits EOF at the child's death, and joining it here folds
-/// that tail into the reason. Both the wait and the join are bounded by
-/// [`SSH_EXIT_GRACE`]; a child that will not exit is killed (the redial
-/// loop owns recovery, and the pipes are dropped with the connection
-/// either way).
+/// The loss reason for an ssh link at stdout EOF: exit status plus the
+/// bounded stderr tail. Wait and join are bounded by [`SSH_EXIT_GRACE`];
+/// a lingering child is killed.
 async fn ssh_exit_reason(
     child: &mut tokio::process::Child,
     stderr_reader: &mut AbortOnDrop<Vec<u8>>,
 ) -> String {
     let gathered = tokio::time::timeout(SSH_EXIT_GRACE, async {
-        // The child's exit is the authoritative loss signal; the drainer
-        // finishes as fd 2 hits EOF at process death, so joining it yields
-        // the complete bounded tail — not just what was drained before
-        // stdout closed. `Pin::new` is sound: `JoinHandle` is `Unpin`.
+        // The drainer finishes at process death, so joining yields the
+        // complete tail. `Pin::new` is sound: `JoinHandle` is `Unpin`.
         tokio::join!(child.wait(), std::pin::Pin::new(&mut stderr_reader.0))
     })
     .await;
@@ -2035,26 +1790,15 @@ fn framing_loss_reason(violation: FramingError) -> String {
     format!("satellite sent a malformed frame: {violation}")
 }
 
-/// Encode the `ERROR { code: FRAME_TOO_LARGE }` frame SPEC §5 obliges the
-/// receiving peer to send before closing a transport whose peer broke
-/// framing. The hub is that peer on its satellite links; the frame itself
-/// is [`phux_protocol::wire::framing::frame_too_large_error`], shared with
-/// the server's per-client loop so the two peer roles cannot drift.
+/// The SPEC §5 `ERROR { FRAME_TOO_LARGE }` goodbye, shared with the
+/// server's client loop.
 fn encode_frame_too_large(violation: FramingError) -> Vec<u8> {
     let mut encoded = bytes::BytesMut::new();
     phux_protocol::wire::framing::frame_too_large_error(violation).encode(&mut encoded);
     encoded.to_vec()
 }
 
-/// Drain `reader` to EOF (or error), retaining only the last `max`
-/// bytes.
-///
-/// The bounded sibling of `read_to_end` for pipes that may carry an
-/// unbounded stream (an ssh child's stderr forwards the remote
-/// command's fd 2 for the whole life of the link). A read error ends
-/// the drain and returns whatever tail was collected — the caller only
-/// wants diagnostics, and the authoritative exit signal is
-/// `child.wait()`, joined alongside.
+/// Drain `reader` to EOF (or error), keeping only the last `max` bytes.
 async fn read_tail<R>(reader: &mut R, max: usize) -> Vec<u8>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -2084,11 +1828,8 @@ mod tests {
 
     use super::*;
 
-    /// A hub link is a bearer-admitted consumer on its satellite, so
-    /// revoking the link's token there ends the link live
-    /// (`docs/spec/workload-auth.md` §7; ADR-0116 supersedes ADR-0031's
-    /// survive-until-drop), and the redial is refused. Every hub consumer's
-    /// attach through the link goes with it. Real sockets, real time.
+    /// Revoking the link's token on the satellite ends the link live and
+    /// refuses the redial (`docs/spec/workload-auth.md` §7).
     #[tokio::test(flavor = "current_thread")]
     async fn revoking_the_links_token_on_the_satellite_drops_the_link() {
         let local = tokio::task::LocalSet::new();
@@ -2265,8 +2006,7 @@ mod tests {
 
     #[test]
     fn ssh_plan_needs_no_credentials_and_carries_none() {
-        // Bare entry: dialable with zero auth material (SSH authenticates
-        // the channel; ADR-0038 addendum).
+        // Dialable with no auth material.
         let spec = plan_link(&entry("ssh://me@devbox:2222", None, None)).expect("dialable");
         assert_eq!(
             spec,
@@ -2278,8 +2018,7 @@ mod tests {
         );
         assert_eq!(spec.token_file(), None);
 
-        // Configured token/pin on an ssh entry is ignored, not carried:
-        // there is no TLS channel to pin and no preamble to send.
+        // A configured token/pin on an ssh entry is ignored.
         let spec =
             plan_link(&entry("ssh://devbox", Some("/t"), Some("AB"))).expect("still dialable");
         assert_eq!(spec.token_file(), None, "{spec:?}");
@@ -2327,16 +2066,13 @@ mod tests {
                 "stdio-bridge",
             ]
         );
-        // The SSH-layer liveness window mirrors the WS idle contract:
-        // interval * count == LINK_IDLE_TIMEOUT (see ssh_argv).
+        // interval * count == LINK_IDLE_TIMEOUT.
         assert_eq!(
             LINK_KEEPALIVE_INTERVAL * 3,
             LINK_IDLE_TIMEOUT,
             "keepalive constants drifted; re-derive ServerAlive* expectations"
         );
-        // The host always sits after `--`, so even a hostile host token
-        // (which endpoint parsing already rejects) could not be read as
-        // an option — defense in depth.
+        // The host always follows `--`.
         let argv = ssh_argv(Some("me"), "devbox", Some(22));
         let dashdash = argv.iter().position(|a| a == "--").expect("has --");
         assert_eq!(argv[dashdash + 1], "devbox");
@@ -2390,8 +2126,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_tail_is_bounded_and_keeps_the_end() {
-        // A megabyte of remote stderr chatter must not accumulate on the
-        // hub: only the final `max` bytes survive.
+        // Only the final `max` bytes survive.
         let mut input = vec![b'x'; 1024 * 1024];
         input.extend_from_slice(b"END-MARKER");
         let mut reader = input.as_slice();
@@ -2470,8 +2205,7 @@ mod tests {
         }
     }
 
-    /// A scripted connection: drops with the reason sent on `closed`
-    /// (an mpsc so `recv_frame` stays cancel-safe), or never.
+    /// A scripted connection that drops with the reason sent on `closed`.
     struct ScriptConn {
         closed: Option<tokio::sync::mpsc::Receiver<String>>,
         keepalive_error: Option<String>,
@@ -2523,8 +2257,7 @@ mod tests {
             )
         }
 
-        /// A connection that never closes on its own but whose keepalive
-        /// probe reports the link dead (the WS idle-limit shape).
+        /// Never closes, but its keepalive reports the link dead.
         fn keepalive_fails(reason: &str) -> Self {
             Self {
                 closed: None,
@@ -2847,9 +2580,8 @@ mod tests {
             .await;
     }
 
-    /// A live relay handle + mailbox pair for driving [`run_link`]; the
-    /// handle must stay alive or the supervisor treats the relay as
-    /// abandoned and exits.
+    /// A live relay handle and mailbox; the handle must stay alive or the
+    /// supervisor exits.
     fn relay_pair(
         host: &SatelliteHost,
     ) -> (
@@ -2867,9 +2599,7 @@ mod tests {
         SatelliteHost::new("devbox")
     }
 
-    /// Poll `statuses` (under paused time) until `want` matches. The
-    /// window is 60s of virtual time — comfortably past the keepalive
-    /// interval and idle limit, which paused-time tests must outlast.
+    /// Poll `statuses` under paused time until `want` matches.
     async fn wait_for_status(
         statuses: &HubLinkStatuses,
         host: &SatelliteHost,
@@ -2958,10 +2688,7 @@ mod tests {
 
                 wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
 
-                // Let the connection prove stability (paused time makes
-                // this instant), then drop the link: the redial must
-                // start from the base delay again (the stable connection
-                // reset the failure streak).
+                // A connection that proved stable resets the streak.
                 tokio::time::sleep(LINK_STABLE_AFTER).await;
                 close_tx
                     .send("satellite went away".to_owned())
@@ -2988,12 +2715,8 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                // Models an ssh dial whose spawn succeeds but whose auth
-                // is refused: the "connection" is established, then dies
-                // immediately (dropped sender => recv_frame resolves at
-                // once with a clean close). The failure streak must keep
-                // growing — a fast death is a failed attempt, not a
-                // success that resets the backoff to its base.
+                // An established connection that dies at once (a refused
+                // ssh auth) still grows the backoff.
                 let dead = || {
                     let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
                     drop(tx);
@@ -3051,9 +2774,7 @@ mod tests {
                 let transport = ScriptTransport::new(vec![Ok(ScriptConn::open_forever())]);
                 let statuses = HubLinkStatuses::default();
                 let host = host();
-                // Routable QUIC endpoint with no auth material: refused.
-                // Dropping the relay handle up front lets the supervisor's
-                // fail-fast drain loop observe an abandoned relay and exit.
+                // Routable QUIC with no auth material: refused.
                 let (relay, relay_rx) = relay_pair(&host);
                 drop(relay);
                 run_link(
@@ -3095,8 +2816,7 @@ mod tests {
                     cancel.child_token(),
                 ));
 
-                // A command through the refused link resolves with a typed
-                // error — no dial, no hang.
+                // Commands through a refused link fail typed, no dial.
                 let result =
                     tokio::time::timeout(Duration::from_secs(5), relay.command(Command::Upgrade))
                         .await
@@ -3145,10 +2865,8 @@ mod tests {
 
                 wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
 
-                // Rotate the token, drop the link: the redial must present
-                // the new token without a hub restart (ADR-0038). Wait for
-                // the drop to be observed (Backoff) before waiting for the
-                // reconnect, or the first Connected status matches again.
+                // Rotate the token and drop the link: the redial uses the new
+                // token. Wait for Backoff first so Connected is the new one.
                 std::fs::write(&token_path, "c0ffee\n").expect("rotate");
                 close_tx.send("rotated".to_owned()).await.expect("send");
                 wait_for_status(&statuses, &host, |s| {
@@ -3172,11 +2890,8 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                // First connection stays readable forever but its liveness
-                // probe reports the link dead (a silent partition on a WS
-                // link: no FIN/RST, no inbound traffic, idle limit trips).
-                // The supervisor must tear it down and redial rather than
-                // trust `Connected` forever.
+                // A silent WS partition: readable forever, but keepalive
+                // fails, so the link must be torn down and redialed.
                 let transport = ScriptTransport::new(vec![
                     Ok(ScriptConn::keepalive_fails("satellite sent nothing")),
                     Ok(ScriptConn::open_forever()),
@@ -3292,8 +3007,6 @@ mod tests {
                     )
                     .await
                     .expect("send HELLO_OK");
-                    // Hold the connection until the test asks us to drop it,
-                    // then close listener + connection so the redial fails.
                     let _ = drop_rx.await;
                     drop(ws);
                     drop(listener);
@@ -3326,17 +3039,9 @@ mod tests {
             .await;
     }
 
-    // --- ssh-stdio integration: the real transport over a stub program ---
-    //
-    // The environment cannot be assumed to have non-interactive `ssh
-    // localhost` (keys, host trust, sshd), so these tests exercise the
-    // REAL `NetLinkTransport` ssh path against a stub program — the same
-    // `$PHUX_SSH` seam an operator uses for an OpenSSH wrapper. The stub
-    // records the argv it was spawned with (proving the shell-free,
-    // `--`-guarded command line end to end) and its exit is the drop
-    // signal, exactly as an exiting ssh would be. The stdio *bridge* half
-    // (bytes actually splicing to a UDS) is exercised in
-    // `crates/phux/tests/fleet/stdio_bridge_e2e.rs` against the real binary.
+    // --- ssh-stdio through the real transport against a stub `$PHUX_SSH`,
+    // which records its argv; its exit is the drop signal. The bridge half
+    // is covered by `crates/phux/tests/fleet/stdio_bridge_e2e.rs`.
 
     fn synthesized_hello_ok() -> Vec<u8> {
         let mut encoded = bytes::BytesMut::new();
@@ -3418,8 +3123,7 @@ mod tests {
                 .await;
                 cancel.cancel();
 
-                // The stub saw exactly the argv the planner built — one
-                // argument per line, host after `--`, no shell expansion.
+                // The stub saw exactly the planner's argv, host after `--`.
                 let recorded = std::fs::read_to_string(&argv_file).expect("argv recorded");
                 let expected: Vec<String> = ssh_argv(Some("me"), "devbox", Some(2222));
                 assert_eq!(
@@ -3432,20 +3136,13 @@ mod tests {
 
     #[tokio::test]
     async fn ssh_transport_drains_stderr_past_the_pipe_buffer_without_stalling() {
-        // Regression (phux-v45.9): a remote that emits more than the OS
-        // pipe buffer (~64KiB) to fd 2 must not wedge the link. If the hub
-        // only drained stderr at stdout EOF, this child would block on its
-        // stderr write at ~64KiB and never exit — stdout would never close,
-        // recv_frame would block forever, and the link would sit
-        // `Connected` with no loss signal. The background drainer keeps fd 2
-        // flowing, so the child runs to completion and the bounded tail
-        // still keeps the *end* of the stream (the marker + exit code).
+        // A remote writing more than a pipe buffer to fd 2 must not wedge
+        // the link, and the tail keeps the end of the stream.
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
                 let dir = tempfile::tempdir().expect("tempdir");
-                // ~200KiB of fd-2 chatter (well past one pipe buffer), then
-                // a marker and a nonzero exit. No stdout: it closes on exit.
+                // ~200 KiB of stderr, a marker, and a nonzero exit.
                 let stub = write_stub(
                     dir.path(),
                     "i=0\n\
@@ -3469,8 +3166,6 @@ mod tests {
                     cancel.child_token(),
                 ));
 
-                // Reaching Backoff at all proves no stall; the tail keeping
-                // the end proves stderr was drained the whole way to EOF.
                 wait_for_real_status(&statuses, &host, |s| {
                     matches!(
                         s,
@@ -3491,10 +3186,7 @@ mod tests {
         local
             .run_until(async {
                 let dir = tempfile::tempdir().expect("tempdir");
-                // The stub bridges nothing but honestly models a live ssh:
-                // it stays up reading stdin (which the hub holds open) and
-                // exits only when the pipe closes or it is killed
-                // (kill_on_drop at cancellation).
+                // Stays up reading stdin until the pipe closes or it is killed.
                 let reply = shell_octal(&synthesized_hello_ok());
                 let stub = write_stub(
                     dir.path(),
