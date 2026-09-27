@@ -165,7 +165,7 @@ measure_first_frame() {
     if (( latency > budget || useful_glass > budget )); then
         printf 'first-frame: useful frame missed %s ns to glass (sdk=%s, schedulable=%s, to_glass=%s)\n' \
             "$budget" "$latency" "$useful_schedule" "$useful_glass" >&2
-        return 1
+            return 1
     fi
 }
 
