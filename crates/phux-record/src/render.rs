@@ -1,36 +1,15 @@
 //! The two-pass render driver: cast events in, animation out.
 //!
-//! [`render_cast`] replays the event list **twice**. Pass 1 builds the color
-//! histogram that becomes GIF's global color table and counts the frames that
-//! APNG's `acTL` needs up front; pass 2 replays from scratch and encodes.
-//! Replay is deterministic, so the two passes agree by construction, and
-//! memory stays O(one surface) rather than O(all frames) — which is the whole
-//! reason it is two passes and not one buffered one.
+//! [`render_cast`] replays the events twice. Pass 1 collects the colour set
+//! for GIF's global table and the frame count APNG's `acTL` needs up front;
+//! pass 2 replays from scratch and encodes. Both passes drive one
+//! `SampleWalk` over deterministic replay, so they agree on frame count by
+//! construction, and memory stays O(one surface).
 //!
-//! Both passes drive the same `SampleWalk`. That is not a tidiness
-//! preference: if the two passes ever disagreed about how many frames a
-//! recording produces, APNG's `acTL` would promise a count the file does not
-//! contain, and the only honest way to guarantee they agree is for there to
-//! be exactly one implementation of the walk.
-//!
-//! # Sampling
-//!
-//! Fixed-period, never per-event. `period_ms = 1000 / fps` with `fps`
-//! normalized to one of `{5, 10, 20, 25, 50}` so the period divides 1000
-//! exactly: exact integer periods mean zero accumulated drift and, for GIF,
-//! exact centisecond delays. The driver maintains `next_sample = k *
-//! period_ms` on the cast timeline, feeds every event at or before it, then
-//! samples once. A sample that reports clean emits **no frame at all** — the
-//! period folds into the previous frame's pending delay, so an idle terminal
-//! costs nothing.
-//!
-//! # Why a frame is emitted one sample late
-//!
-//! A frame's delay is how long it stays on screen, which is not known until
-//! the *next* frame arrives. The walk therefore holds one sampled frame back,
-//! accumulating its delay, and hands it to the caller when the following
-//! frame displaces it. Exactly one frame is buffered, so this costs one grid
-//! of cells and not a film.
+//! Sampling is fixed-period (`1000 / fps` ms, normalized so the period divides
+//! 1000 exactly). A clean sample emits no frame; its period folds into the
+//! previous frame's delay, so idle time is free. A frame's delay is only
+//! known when the next one arrives, so the walk holds one frame back.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -39,34 +18,26 @@ use std::time::Duration;
 use crate::cast::{CastEvent, CastHeader, CastVersion, CastWriter, EventCode};
 use crate::encode::{AnimEncoder, CountingWriter, Palette, Rect};
 use crate::error::RecordError;
-use crate::raster::{Rasterizer, Surface, Theme};
+use crate::raster::{Rasterizer, Surface};
 use crate::replay::{Replayer, Sampled};
 use crate::timeline::clamp_idle;
 
-/// Longest single accumulated delay, in milliseconds.
-///
-/// A pause longer than this reads as a stall rather than a pause, and GIF
-/// cannot express more than 500 cs anyway.
+/// Longest single accumulated delay, in milliseconds (GIF caps at 500 cs).
 const MAX_DELAY_MS: u32 = 5_000;
 
-/// Force a whole-canvas frame this often.
-///
-/// Sub-rectangle frames are differential: a file truncated partway through
-/// decodes to whatever the last keyframe plus the surviving deltas describe.
-/// A periodic keyframe bounds how stale that can get when `--max-bytes` cuts
-/// a render short.
+/// Force a whole-canvas frame this often, bounding how stale a `--max-bytes`
+/// truncated file can get.
 const KEYFRAME_INTERVAL: u32 = 100;
 
 /// What a recording is exported as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
-    /// Re-serialize as an asciicast. This is the archival artifact and the
-    /// `--from a.cast -o b.cast` transcode path.
+    /// Re-serialize as an asciicast (v2).
     Cast,
-    /// Animated `GIF89a`: the shareable, embeddable default.
+    /// Animated `GIF89a`: the shareable default.
     #[default]
     Gif,
-    /// Animated PNG: truecolor, no quantization, 1 ms timing resolution.
+    /// Animated PNG: truecolor, 1 ms timing resolution.
     Apng,
 }
 
@@ -90,12 +61,9 @@ pub struct RenderOptions {
     /// Collapse any pause longer than this many seconds down to it.
     pub idle_limit: Option<f64>,
     /// Stop encoding and report `truncated` once the output reaches this
-    /// many bytes. Never fill the user's disk, and never panic.
+    /// many bytes.
     pub max_bytes: u64,
-    /// Override the theme instead of reading it from the replayed terminal.
-    pub theme: Option<Theme>,
-    /// Hold the final frame this long so viewers see the end state before
-    /// the loop wraps.
+    /// Hold the final frame this long before the loop wraps.
     pub tail_hold_ms: u32,
 }
 
@@ -105,7 +73,6 @@ impl Default for RenderOptions {
             fps: 10,
             idle_limit: Some(2.0),
             max_bytes: 8 * 1024 * 1024,
-            theme: None,
             tail_hold_ms: 2000,
         }
     }
@@ -114,14 +81,13 @@ impl Default for RenderOptions {
 /// What a render produced, for the CLI's one-liner and `--json` object.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RenderStats {
-    /// Frames actually emitted.
+    /// Frames (or, for cast output, events) emitted.
     pub frames: u32,
     /// Bytes written to the sink.
     pub bytes: u64,
-    /// Wall duration of the rendered timeline, after idle clamping.
+    /// Duration of the rendered timeline, after idle clamping.
     pub duration_ms: u64,
-    /// Distinct colors seen, which is how one tells the lossless palette
-    /// path from the nearest-fit fallback.
+    /// Distinct colours seen; above 256 the GIF palette is nearest-fit.
     pub colors: u32,
     /// Whether `max_bytes` cut the render short.
     pub truncated: bool,
@@ -129,12 +95,8 @@ pub struct RenderStats {
 
 /// Render `events` into `sink` as `format`.
 ///
-/// # Errors
-///
-/// Propagates replay, encode, and I/O failures. A `max_bytes` overrun is not
-/// an error: the container is closed cleanly and `RenderStats::truncated` is
-/// set, because a short animation the user can still open beats a failed
-/// command and a half-written file.
+/// A `max_bytes` overrun is not an error: the container is closed cleanly and
+/// [`RenderStats::truncated`] is set.
 pub fn render_cast<W: Write>(
     header: &CastHeader,
     events: &[CastEvent],
@@ -142,9 +104,6 @@ pub fn render_cast<W: Write>(
     format: OutputFormat,
     opts: &RenderOptions,
 ) -> Result<RenderStats, RecordError> {
-    // The idle clamp is applied to the shared event list before anything is
-    // written, so a `.cast` and a GIF rendered from the same options can never
-    // disagree about when something happened.
     let mut events = events.to_vec();
     clamp_idle(&mut events, opts.idle_limit);
     let duration_ms = events.last().map_or(0, |event| event.time_ms);
@@ -152,18 +111,12 @@ pub fn render_cast<W: Write>(
     if format == OutputFormat::Cast {
         return transcode(header, &events, sink, duration_ms);
     }
-
     let pass1 = survey(header, &events, opts)?;
     encode(header, &events, sink, format, opts, &pass1, duration_ms)
 }
 
-/// Re-serialize a header and event list as an asciicast.
-///
-/// Version 2 by design and not by omission: upstream states v3 is *not*
-/// backward compatible with v1/v2, and there is no consumer that reads v3 but
-/// not v2 (ADR-0060). A caller that wants v3 drives [`CastWriter`] directly
-/// with [`CastVersion::V3`], which is what the CLI does when the user asks
-/// for it explicitly.
+/// Re-serialize as asciicast v2, the version every consumer reads
+/// (ADR-0060). Input events are never re-emitted.
 fn transcode<W: Write>(
     header: &CastHeader,
     events: &[CastEvent],
@@ -191,15 +144,8 @@ fn transcode<W: Write>(
                 writer.resize(at, cols, rows)?;
             }
             EventCode::Marker => writer.marker(at, &event.data)?,
-            EventCode::Exit => {
-                // A non-numeric status is not worth failing a transcode over;
-                // 0 is the only defensible substitute and the recording is
-                // still complete without it.
-                writer.exit(at, event.data.trim().parse::<i32>().unwrap_or(0))?;
-            }
-            // Input is never re-emitted. Both spec versions tell recorders not
-            // to capture it, and a transcode that resurrected it from a
-            // hand-edited file would put keystrokes back on disk.
+            // A non-numeric status is not worth failing a transcode over.
+            EventCode::Exit => writer.exit(at, event.data.trim().parse::<i32>().unwrap_or(0))?,
             EventCode::Input => continue,
         }
         written = written.saturating_add(1);
@@ -215,59 +161,42 @@ fn transcode<W: Write>(
 }
 
 /// What pass 1 learned about the recording.
-#[derive(Debug)]
 struct Survey {
     frames: u32,
     colors: HashSet<[u8; 3]>,
-    theme: Theme,
+    rasterizer: Rasterizer,
     cols: u16,
     rows: u16,
 }
 
-/// Pass 1: count frames, collect colors, and find the largest grid.
+/// Pass 1: count frames, collect colours, and find the largest grid.
 fn survey(
     header: &CastHeader,
     events: &[CastEvent],
     opts: &RenderOptions,
 ) -> Result<Survey, RecordError> {
-    let mut walk = SampleWalk::new(
-        header,
-        events,
-        normalize_period_ms(opts.fps),
-        opts.tail_hold_ms,
-    )?;
+    let mut walk = SampleWalk::new(header, events, opts)?;
     let mut colors = HashSet::new();
     let mut frames = 0_u32;
     let mut rasterizer: Option<Rasterizer> = None;
 
     while let Some((sampled, _delay)) = walk.next_frame()? {
-        // The theme is read immediately after the first sample, which is the
-        // point `Replayer::theme` documents as the cheap one: the answer has
-        // settled and the render state is about to be drained anyway.
-        let raster = match rasterizer.as_ref() {
-            Some(existing) => existing,
-            None => rasterizer.insert(Rasterizer::new(match opts.theme.clone() {
-                Some(theme) => theme,
-                None => walk.theme()?,
-            })),
+        // The theme is read right after the first sample, once it has settled.
+        let raster = match rasterizer {
+            Some(ref existing) => existing,
+            None => rasterizer.insert(Rasterizer::new(walk.replayer.theme()?)),
         };
         raster.colors_of(&sampled.frame, &mut colors);
         frames = frames.saturating_add(1);
     }
 
-    let theme = rasterizer.map_or_else(
-        // No frames at all means an empty recording; the caller's theme, or
-        // the default table, is still the right answer for the canvas fill.
-        || opts.theme.clone().unwrap_or_default(),
-        |raster| raster.theme().clone(),
-    );
-    // Even an empty recording gets a background: the canvas has to exist for
-    // the container header to be writable at all.
-    colors.insert(theme.bg);
+    let rasterizer = rasterizer.unwrap_or_else(|| Rasterizer::new(crate::raster::Theme::default()));
+    // Even an empty recording needs a background for the canvas.
+    colors.insert(rasterizer.theme().bg);
     Ok(Survey {
         frames,
         colors,
-        theme,
+        rasterizer,
         cols: walk.max_cols.max(1),
         rows: walk.max_rows.max(1),
     })
@@ -283,35 +212,18 @@ fn encode<W: Write>(
     pass1: &Survey,
     duration_ms: u64,
 ) -> Result<RenderStats, RecordError> {
-    let rasterizer = Rasterizer::new(pass1.theme.clone());
+    let rasterizer = &pass1.rasterizer;
     let mut surface = rasterizer.surface_for(pass1.cols, pass1.rows);
     let (_cell_w, cell_h) = rasterizer.cell_size();
 
-    let mut encoder = match format {
-        OutputFormat::Gif => AnimEncoder::gif(
-            sink,
-            surface.width,
-            surface.height,
-            Palette::build(&pass1.colors, &pass1.theme),
-        )?,
-        // `acTL` needs the count before the header goes out; that requirement
-        // is the reason pass 1 exists.
-        OutputFormat::Apng => {
-            AnimEncoder::apng(sink, surface.width, surface.height, pass1.frames.max(1))?
-        }
-        OutputFormat::Cast => {
-            return Err(RecordError::Unsupported(
-                "cast output does not go through the animation encoder".into(),
-            ));
-        }
+    let mut encoder = if format == OutputFormat::Apng {
+        AnimEncoder::apng(sink, surface.width, surface.height, pass1.frames.max(1))?
+    } else {
+        let palette = Palette::build(&pass1.colors, rasterizer.theme());
+        AnimEncoder::gif(sink, surface.width, surface.height, palette)?
     };
 
-    let mut walk = SampleWalk::new(
-        header,
-        events,
-        normalize_period_ms(opts.fps),
-        opts.tail_hold_ms,
-    )?;
+    let mut walk = SampleWalk::new(header, events, opts)?;
     let mut frames = 0_u32;
     let mut truncated = false;
 
@@ -321,9 +233,6 @@ fn encode<W: Write>(
         let bytes = encoder.add_frame(&surface, rect, delay_ms)?;
         frames = frames.saturating_add(1);
         if bytes >= opts.max_bytes {
-            // Stop adding frames but still close the container: a truncated
-            // animation the user can open beats a half-written file and a
-            // failed command.
             truncated = true;
             break;
         }
@@ -339,20 +248,15 @@ fn encode<W: Write>(
     })
 }
 
-/// The rectangle a sampled frame should be encoded as.
-///
-/// Full-width rows only. Per-row column bounds would shave a little more off
-/// a single blinking cursor, and would add a second dimension of off-by-one
-/// to every wide-glyph and decoration case for it.
+/// The rectangle a sampled frame is encoded as: the dirty band of full-width
+/// rows, or the whole canvas on keyframes and whole-canvas samples.
 fn frame_rect(sampled: &Sampled, surface: &Surface, cell_h: u32, emitted: u32) -> Rect {
-    let keyframe = emitted.is_multiple_of(KEYFRAME_INTERVAL);
     match sampled.dirty_rows {
-        Some((first, last)) if !keyframe => {
-            let y = u32::from(first).saturating_mul(cell_h);
+        Some((first, last)) if !emitted.is_multiple_of(KEYFRAME_INTERVAL) => {
             let span = u32::from(last.saturating_sub(first).saturating_add(1));
             Rect {
                 x: 0,
-                y,
+                y: u32::from(first).saturating_mul(cell_h),
                 w: surface.width,
                 h: span.saturating_mul(cell_h),
             }
@@ -362,17 +266,12 @@ fn frame_rect(sampled: &Sampled, surface: &Surface, cell_h: u32, emitted: u32) -
 }
 
 /// Drives the replayer on the export's fixed sample clock.
-///
-/// Both passes construct one of these over the same inputs. Replay is
-/// deterministic, so two walks over one event list produce the same frames in
-/// the same order with the same delays — which is what lets pass 1's count be
-/// handed to APNG's `acTL` as a promise.
 struct SampleWalk<'a> {
     events: &'a [CastEvent],
     replayer: Replayer,
     /// Index of the next event to feed.
     idx: usize,
-    /// The sample instant, on the cast's own millisecond timeline.
+    /// The sample instant, on the cast's millisecond timeline.
     next_ms: u64,
     period_ms: u32,
     tail_hold_ms: u32,
@@ -381,34 +280,19 @@ struct SampleWalk<'a> {
     pending_delay_ms: u32,
     /// Set once the event list is exhausted; the next call flushes `pending`.
     done: bool,
-    /// Largest grid seen, so the canvas never has to grow mid-animation.
+    /// Largest grid seen, so the canvas never grows mid-animation.
     max_cols: u16,
     max_rows: u16,
-}
-
-impl std::fmt::Debug for SampleWalk<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SampleWalk")
-            .field("events", &self.events.len())
-            .field("idx", &self.idx)
-            .field("next_ms", &self.next_ms)
-            .field("period_ms", &self.period_ms)
-            .field("max_cols", &self.max_cols)
-            .field("max_rows", &self.max_rows)
-            .finish_non_exhaustive()
-    }
 }
 
 impl<'a> SampleWalk<'a> {
     fn new(
         header: &CastHeader,
         events: &'a [CastEvent],
-        period_ms: u32,
-        tail_hold_ms: u32,
+        opts: &RenderOptions,
     ) -> Result<Self, RecordError> {
-        // A header claiming a zero dimension is malformed, but refusing to
-        // export it helps nobody: 80x24 is the universal fallback and the
-        // recording's own resize events will correct it within one frame.
+        // A zero-dimension header is malformed; 80x24 is the universal
+        // fallback and the recording's own resize events will correct it.
         let cols = if header.cols == 0 { 80 } else { header.cols };
         let rows = if header.rows == 0 { 24 } else { header.rows };
         Ok(Self {
@@ -416,8 +300,8 @@ impl<'a> SampleWalk<'a> {
             replayer: Replayer::new(cols, rows)?,
             idx: 0,
             next_ms: 0,
-            period_ms: period_ms.max(1),
-            tail_hold_ms,
+            period_ms: normalize_period_ms(opts.fps),
+            tail_hold_ms: opts.tail_hold_ms,
             pending: None,
             pending_delay_ms: 0,
             done: false,
@@ -426,18 +310,10 @@ impl<'a> SampleWalk<'a> {
         })
     }
 
-    /// The replayed terminal's own color table.
-    fn theme(&mut self) -> Result<Theme, RecordError> {
-        self.replayer.theme()
-    }
-
     /// The next frame whose delay is now known, or `None` at the end.
     fn next_frame(&mut self) -> Result<Option<(Sampled, u32)>, RecordError> {
         loop {
             if self.done {
-                // The final frame is held for `tail_hold_ms` on top of
-                // whatever idle time it already accumulated, so a viewer sees
-                // the end state before the loop wraps back to a blank screen.
                 let hold = self
                     .pending_delay_ms
                     .min(MAX_DELAY_MS)
@@ -446,10 +322,7 @@ impl<'a> SampleWalk<'a> {
             }
 
             self.feed_due_events()?;
-            let sampled = self.replayer.sample()?;
-            let exhausted = self.idx >= self.events.len();
-
-            let ready = if let Some(sampled) = sampled {
+            let ready = if let Some(sampled) = self.replayer.sample()? {
                 self.max_cols = self.max_cols.max(sampled.frame.cols);
                 self.max_rows = self.max_rows.max(sampled.frame.rows);
                 let previous = self.pending.replace(sampled);
@@ -457,14 +330,11 @@ impl<'a> SampleWalk<'a> {
                 self.pending_delay_ms = self.period_ms;
                 previous.map(|frame| (frame, delay))
             } else {
-                // Clean: no frame at all. The period folds into the delay of
-                // the frame already on screen, which is what makes an idle
-                // recording cost nothing.
                 self.pending_delay_ms = self.pending_delay_ms.saturating_add(self.period_ms);
                 None
             };
 
-            if exhausted {
+            if self.idx >= self.events.len() {
                 self.done = true;
             } else {
                 self.next_ms = self.next_ms.saturating_add(u64::from(self.period_ms));
@@ -475,7 +345,8 @@ impl<'a> SampleWalk<'a> {
         }
     }
 
-    /// Feed every event at or before the current sample instant.
+    /// Feed every event at or before the current sample instant. Malformed
+    /// resizes are skipped rather than fatal.
     fn feed_due_events(&mut self) -> Result<(), RecordError> {
         while let Some(event) = self.events.get(self.idx) {
             if event.time_ms > self.next_ms {
@@ -493,10 +364,6 @@ impl<'a> SampleWalk<'a> {
                         self.max_rows = self.max_rows.max(rows);
                     }
                 }
-                // Markers, exits, and input carry no pixels. A malformed
-                // resize is skipped rather than fatal, matching the codec's
-                // unknown-code tolerance: a recording is not worth losing over
-                // one bad line.
                 EventCode::Marker | EventCode::Exit | EventCode::Input => {}
             }
             self.idx = self.idx.saturating_add(1);
@@ -511,37 +378,20 @@ fn parse_resize(data: &str) -> Option<(u16, u16)> {
     Some((cols.parse().ok()?, rows.parse().ok()?))
 }
 
-/// Normalize an arbitrary fps to one whose period divides 1000 ms exactly.
-///
-/// `{5, 10, 20, 25, 50}` fps map to `{200, 100, 50, 40, 20}` ms. Exact
-/// integer periods mean the sample clock cannot drift and GIF's centisecond
-/// delays come out exact rather than rounded.
-#[must_use]
-pub fn normalize_period_ms(fps: u8) -> u32 {
+/// Normalize an fps to the nearest of `{5, 10, 20, 25, 50}`, whose periods
+/// divide 1000 ms exactly: no clock drift, exact GIF centisecond delays.
+fn normalize_period_ms(fps: u8) -> u32 {
     const ALLOWED: [(u8, u32); 5] = [(5, 200), (10, 100), (20, 50), (25, 40), (50, 20)];
-    let target = i32::from(fps.max(1));
-    let mut best_period = 100_u32;
-    let mut best_distance = i32::MAX;
-    for (candidate, period) in ALLOWED {
-        let distance = (i32::from(candidate) - target).abs();
-        if distance < best_distance {
-            best_distance = distance;
-            best_period = period;
-        }
-    }
-    best_period
+    let target = fps.max(1);
+    ALLOWED
+        .iter()
+        .min_by_key(|(candidate, _)| candidate.abs_diff(target))
+        .map_or(100, |(_, period)| *period)
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests"
-)]
+#[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use std::io::BufReader;
-
     use phux_core::screen::RenderedFrame;
 
     use super::*;
@@ -555,28 +405,24 @@ mod tests {
         }
     }
 
-    fn output(time_ms: u64, data: &str) -> CastEvent {
+    fn event(time_ms: u64, code: EventCode, data: &str) -> CastEvent {
         CastEvent {
             time_ms,
-            code: EventCode::Output,
+            code,
             data: data.to_owned(),
         }
     }
 
-    fn resize(time_ms: u64, cols: u16, rows: u16) -> CastEvent {
-        CastEvent {
-            time_ms,
-            code: EventCode::Resize,
-            data: format!("{cols}x{rows}"),
-        }
-    }
-
-    fn walk_of<'a>(header: &CastHeader, events: &'a [CastEvent]) -> SampleWalk<'a> {
-        SampleWalk::new(header, events, 100, 0).expect("walk builds")
+    fn output(time_ms: u64, data: &str) -> CastEvent {
+        event(time_ms, EventCode::Output, data)
     }
 
     fn frames_of(header: &CastHeader, events: &[CastEvent]) -> Vec<(Sampled, u32)> {
-        let mut walk = walk_of(header, events);
+        let opts = RenderOptions {
+            tail_hold_ms: 0,
+            ..RenderOptions::default()
+        };
+        let mut walk = SampleWalk::new(header, events, &opts).expect("walk builds");
         let mut out = Vec::new();
         while let Some(frame) = walk.next_frame().expect("walk advances") {
             out.push(frame);
@@ -597,110 +443,75 @@ mod tests {
 
     #[test]
     fn fps_is_normalized_to_a_period_dividing_one_thousand() {
-        for fps in 1..=50_u8 {
+        for fps in 0..=u8::MAX {
             let period = normalize_period_ms(fps);
             assert_eq!(1000 % period, 0, "fps {fps} gave period {period}");
         }
-        assert_eq!(normalize_period_ms(10), 100);
-        assert_eq!(normalize_period_ms(12), 100);
-        assert_eq!(normalize_period_ms(24), 40);
-        assert_eq!(normalize_period_ms(50), 20);
-        assert_eq!(normalize_period_ms(1), 200);
-    }
-
-    #[test]
-    fn default_options_match_the_documented_cli_defaults() {
-        let opts = RenderOptions::default();
-        assert_eq!(opts.fps, 10);
-        assert_eq!(opts.idle_limit, Some(2.0));
-        assert_eq!(opts.max_bytes, 8 * 1024 * 1024);
-        assert_eq!(opts.tail_hold_ms, 2000);
-        assert!(opts.theme.is_none());
-    }
-
-    #[test]
-    fn two_output_events_render_at_least_two_frames() {
-        let head = header(20, 4);
-        let events = vec![output(0, "hello"), output(500, "\r\nworld")];
-        let frames = frames_of(&head, &events);
-        assert!(frames.len() >= 2, "got {} frames", frames.len());
+        for (fps, period) in [(1, 200), (10, 100), (12, 100), (24, 40), (50, 20)] {
+            assert_eq!(normalize_period_ms(fps), period, "fps {fps}");
+        }
     }
 
     #[test]
     fn clean_samples_extend_the_previous_delay_instead_of_emitting_a_frame() {
-        let head = header(20, 4);
-        // One paint, then a full second of nothing, then one more paint. At a
-        // 100 ms period the quiet second is ten clean samples.
-        let events = vec![output(0, "a"), output(1000, "b")];
-        let frames = frames_of(&head, &events);
+        // At a 100 ms period the quiet second is ten clean samples.
+        let frames = frames_of(&header(20, 4), &[output(0, "a"), output(1000, "b")]);
         assert_eq!(frames.len(), 2, "idle time must not cost frames");
-        assert!(
-            frames[0].1 >= 900,
-            "the first frame should hold for the idle gap, got {} ms",
-            frames[0].1
-        );
+        assert!(frames[0].1 >= 900, "first frame held {} ms", frames[0].1);
     }
 
     #[test]
-    fn idle_gap_longer_than_the_limit_is_collapsed() {
-        let head = header(20, 4);
-        let events = vec![output(0, "a"), output(30_000, "b")];
+    fn apng_and_gif_agree_with_the_walk_and_clamp_idle() {
+        let head = header(40, 10);
+        let events = vec![
+            output(0, "\x1b[32mgreen\x1b[0m"),
+            output(200, "\r\n\x1b[1;31mred\x1b[0m"),
+            output(30_000, "\r\ndone"),
+        ];
         let mut clamped = events.clone();
         clamp_idle(&mut clamped, Some(2.0));
-        assert_eq!(clamped.last().expect("two events").time_ms, 2000);
-        let long = frames_of(&head, &events);
-        let short = frames_of(&head, &clamped);
-        assert!(
-            long.len() >= short.len(),
-            "clamping must not make the walk longer"
-        );
-        // And the clamp is what `render_cast` applies before sampling.
-        let (_bytes, stats) = render_to_vec(
-            &head,
-            &events,
-            OutputFormat::Apng,
-            &RenderOptions::default(),
-        );
-        assert_eq!(stats.duration_ms, 2000);
-    }
-
-    #[test]
-    fn both_passes_produce_the_same_frame_count() {
-        let head = header(20, 4);
-        let events = vec![
-            output(0, "one"),
-            output(150, "\r\ntwo"),
-            output(600, "\r\nthree"),
-            output(1400, "\r\nfour"),
-        ];
-        let first = frames_of(&head, &events).len();
-        let second = frames_of(&head, &events).len();
-        assert_eq!(first, second, "the walk must be deterministic");
-
+        let walked = frames_of(&head, &clamped).len();
         let opts = RenderOptions {
             tail_hold_ms: 0,
             ..RenderOptions::default()
         };
-        let (_bytes, stats) = render_to_vec(&head, &events, OutputFormat::Apng, &opts);
+
+        let (apng, apng_stats) = render_to_vec(&head, &events, OutputFormat::Apng, &opts);
         assert_eq!(
-            stats.frames as usize, first,
-            "pass 2 emitted a different count than the walk pass 1 counted"
+            apng.get(..8),
+            Some(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a][..])
         );
+        assert!(apng.windows(4).any(|window| window == b"acTL"));
+        assert_eq!(apng_stats.frames as usize, walked, "pass 2 != pass 1 count");
+        assert_eq!(apng_stats.duration_ms, 2200, "the idle clamp applies");
+
+        let (gif, gif_stats) = render_to_vec(&head, &events, OutputFormat::Gif, &opts);
+        assert_eq!(gif.get(..6), Some(&b"GIF89a"[..]));
+        assert_eq!(gif.last(), Some(&0x3b));
+        assert_eq!(gif_stats.frames, apng_stats.frames);
+        assert!(gif_stats.colors > 2, "SGR colours must reach the palette");
+        assert!(!gif_stats.truncated && !apng_stats.truncated);
     }
 
     #[test]
-    fn resize_event_grows_the_canvas_and_letterboxes_smaller_frames() {
-        let head = header(10, 3);
-        let events = vec![output(0, "small"), resize(300, 20, 5), output(400, "big")];
-        let opts = RenderOptions::default();
-        let (bytes, stats) = render_to_vec(&head, &events, OutputFormat::Apng, &opts);
-        // IHDR is the first chunk: 8 signature bytes, 4 length, 4 type, then
-        // width and height as big-endian u32s.
+    fn resize_event_grows_the_canvas_and_malformed_resizes_are_skipped() {
+        let events = vec![
+            output(0, "small"),
+            event(100, EventCode::Resize, "not-a-size"),
+            event(300, EventCode::Resize, "20x5"),
+            output(400, "big"),
+        ];
+        let (bytes, stats) = render_to_vec(
+            &header(10, 3),
+            &events,
+            OutputFormat::Apng,
+            &RenderOptions::default(),
+        );
+        // IHDR width and height follow the 8-byte signature and chunk header.
         let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
         let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-        assert_eq!(width, 20 * 8, "canvas must take the largest columns seen");
-        assert_eq!(height, 5 * 16, "canvas must take the largest rows seen");
-        assert!(stats.frames > 0);
+        assert_eq!((width, height), (20 * 8, 5 * 16));
+        assert!(stats.frames >= 2);
     }
 
     #[test]
@@ -714,174 +525,77 @@ mod tests {
             frame: RenderedFrame::blank(8, 20),
             dirty_rows: Some((3, 3)),
         };
-        // Frame 0 and frame 100 are keyframes; frame 1 honours the band.
         assert_eq!(frame_rect(&sampled, &surface, 16, 0), Rect::whole(&surface));
         assert_eq!(
             frame_rect(&sampled, &surface, 16, 100),
             Rect::whole(&surface)
         );
-        assert_eq!(
-            frame_rect(&sampled, &surface, 16, 1),
-            Rect {
-                x: 0,
-                y: 48,
-                w: 64,
-                h: 16
-            }
-        );
+        let band = Rect {
+            x: 0,
+            y: 48,
+            w: 64,
+            h: 16,
+        };
+        assert_eq!(frame_rect(&sampled, &surface, 16, 1), band);
     }
 
     #[test]
     fn max_bytes_stops_encoding_and_reports_truncated() {
-        let head = header(80, 24);
-        let mut events = Vec::new();
-        for i in 0..40_u64 {
-            events.push(output(i * 100, &format!("line {i}\r\n")));
-        }
+        let events: Vec<CastEvent> = (0..40_u64)
+            .map(|i| output(i * 100, &format!("line {i}\r\n")))
+            .collect();
         let opts = RenderOptions {
             max_bytes: 512,
             tail_hold_ms: 0,
             ..RenderOptions::default()
         };
-        let (bytes, stats) = render_to_vec(&head, &events, OutputFormat::Apng, &opts);
+        let (bytes, stats) = render_to_vec(&header(80, 24), &events, OutputFormat::Apng, &opts);
         assert!(stats.truncated, "a 512-byte cap must truncate this render");
-        assert!(!bytes.is_empty(), "the container must still be closed");
-        assert_eq!(bytes.get(..4), Some(&[0x89, b'P', b'N', b'G'][..]));
-    }
-
-    #[test]
-    fn gif_render_has_the_gif89a_signature_and_a_plausible_size() {
-        let head = header(40, 10);
-        let events = vec![
-            output(0, "\x1b[32mgreen\x1b[0m"),
-            output(200, "\r\n\x1b[1;31mred\x1b[0m"),
-            output(700, "\r\ndone"),
-        ];
-        let (bytes, stats) =
-            render_to_vec(&head, &events, OutputFormat::Gif, &RenderOptions::default());
-        assert_eq!(bytes.get(..6), Some(&b"GIF89a"[..]));
-        assert_eq!(bytes.last(), Some(&0x3b));
-        assert!(stats.frames >= 3, "got {} frames", stats.frames);
-        assert!(!stats.truncated);
-        assert!(bytes.len() > 100, "suspiciously small GIF");
         assert!(
-            stats.colors > 1,
-            "an SGR-colored recording must see more than one color"
+            bytes.windows(4).any(|window| window == b"IEND"),
+            "not closed"
         );
-    }
-
-    #[test]
-    fn apng_render_has_the_png_signature_and_an_actl_chunk() {
-        let head = header(40, 10);
-        let events = vec![output(0, "hello"), output(300, "\r\nworld")];
-        let (bytes, stats) = render_to_vec(
-            &head,
-            &events,
-            OutputFormat::Apng,
-            &RenderOptions::default(),
-        );
-        assert_eq!(
-            bytes.get(..8),
-            Some(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a][..])
-        );
-        assert!(
-            bytes.windows(4).any(|window| window == b"acTL"),
-            "an APNG without acTL is a still image"
-        );
-        assert!(stats.frames >= 2);
-        assert!(!stats.truncated);
-    }
-
-    #[test]
-    fn cast_to_cast_transcodes_v2_to_v3_and_back() {
-        let head = CastHeader {
-            cols: 80,
-            rows: 24,
-            title: Some("round trip".to_owned()),
-            ..CastHeader::default()
-        };
-        let events = vec![
-            output(0, "hello"),
-            resize(400, 100, 30),
-            output(900, "world"),
-            CastEvent {
-                time_ms: 1500,
-                code: EventCode::Exit,
-                data: "0".to_owned(),
-            },
-        ];
-        // v2 comes out of `render_cast`; it is the documented default.
-        let (v2_bytes, stats) = render_to_vec(
-            &head,
-            &events,
-            OutputFormat::Cast,
-            &RenderOptions::default(),
-        );
-        assert_eq!(stats.frames, 4);
-        assert_eq!(stats.bytes, v2_bytes.len() as u64);
-        let (v2_header, v2_events) =
-            read_cast(BufReader::new(v2_bytes.as_slice())).expect("v2 parses");
-        assert_eq!(v2_header.cols, 80);
-        assert_eq!(v2_events, events);
-
-        // v3 is the explicit opt-in, and the absolute timeline must survive
-        // the trip through relative intervals unchanged.
-        let mut v3_bytes: Vec<u8> = Vec::new();
-        {
-            let mut writer =
-                CastWriter::new(&mut v3_bytes, &v2_header, CastVersion::V3).expect("v3 opens");
-            for event in &v2_events {
-                let at = Duration::from_millis(event.time_ms);
-                match event.code {
-                    EventCode::Output => writer.output(at, event.data.as_bytes()),
-                    EventCode::Resize => {
-                        let (cols, rows) = parse_resize(&event.data).expect("resize parses");
-                        writer.resize(at, cols, rows)
-                    }
-                    EventCode::Exit => writer.exit(at, 0),
-                    EventCode::Marker => writer.marker(at, &event.data),
-                    EventCode::Input => Ok(()),
-                }
-                .expect("event writes");
-            }
-            writer.finish().expect("v3 finishes");
-        }
-        let (v3_header, v3_events) =
-            read_cast(BufReader::new(v3_bytes.as_slice())).expect("v3 parses");
-        assert_eq!(v3_header.cols, 80);
-        assert_eq!(v3_events, events);
     }
 
     #[test]
     fn an_empty_event_list_still_produces_one_frame() {
-        // The replayer's first sample never reports clean, so even a recording
-        // with nothing in it exports an opening frame rather than a
-        // zero-frame container that no viewer will open.
-        let head = header(20, 4);
-        let (bytes, stats) =
-            render_to_vec(&head, &[], OutputFormat::Gif, &RenderOptions::default());
+        let (bytes, stats) = render_to_vec(
+            &header(20, 4),
+            &[],
+            OutputFormat::Gif,
+            &RenderOptions::default(),
+        );
         assert_eq!(stats.frames, 1);
         assert_eq!(bytes.get(..6), Some(&b"GIF89a"[..]));
     }
 
     #[test]
-    fn a_malformed_resize_event_is_skipped_not_fatal() {
-        let head = header(20, 4);
+    fn cast_output_transcodes_to_v2_and_drops_input() {
+        let head = CastHeader {
+            title: Some("round trip".to_owned()),
+            ..header(80, 24)
+        };
         let events = vec![
-            output(0, "a"),
-            CastEvent {
-                time_ms: 200,
-                code: EventCode::Resize,
-                data: "not-a-size".to_owned(),
-            },
-            output(400, "b"),
+            output(0, "hello"),
+            event(100, EventCode::Input, "secret"),
+            event(400, EventCode::Resize, "100x30"),
+            event(600, EventCode::Marker, "chapter"),
+            output(900, "world"),
+            event(1500, EventCode::Exit, "0"),
         ];
-        let (_bytes, stats) = render_to_vec(
+        let (bytes, stats) = render_to_vec(
             &head,
             &events,
-            OutputFormat::Apng,
+            OutputFormat::Cast,
             &RenderOptions::default(),
         );
-        assert!(stats.frames >= 2);
+        assert_eq!(stats.frames, 5);
+        assert_eq!(stats.bytes, bytes.len() as u64);
+        assert!(bytes.starts_with(br#"{"version":2,"#));
+        let (parsed_header, parsed) = read_cast(bytes.as_slice()).expect("v2 parses");
+        assert_eq!(parsed_header, head);
+        let mut want = events;
+        want.remove(1);
+        assert_eq!(parsed, want);
     }
 }

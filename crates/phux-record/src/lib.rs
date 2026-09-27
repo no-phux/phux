@@ -1,55 +1,34 @@
-//! Offline session-recording codec and exporter for phux.
+//! Offline session-recording codec and exporter for phux (ADR-0060).
 //!
-//! This crate is the *export* half of built-in session recording (ADR-0060).
-//! It is deliberately pure, offline, and synchronous: no tokio and no
-//! `phux-client`. The codec-only build (`default-features = false`) also
-//! has no `phux-protocol`. The `render` feature takes `phux-protocol`'s
-//! `render-pool` (the shared libghostty render trio, ADR-0086) and not the
-//! `server` surface. Every entry point takes an
-//! `impl std::io::Write` or an `impl std::io::BufRead`, so the same code
-//! serves the live `--rec` tee (which streams into a file as the session
-//! runs), the headless `phux rec` capture, and a pure `--from cast -o gif`
-//! re-render with no server anywhere in the picture.
-//!
-//! The pipeline is one-way, and no stage knows about the stage above it:
+//! Pure and synchronous: no tokio, no `phux-client`. Every entry point takes
+//! an `impl Write` or `impl BufRead`, so the same code serves the live `--rec`
+//! tee, headless `phux rec`, and an offline `--from cast -o gif` re-render.
 //!
 //! ```text
-//!   captured bytes ──▶ [`cast`]   asciicast v2/v3 read + write
-//!                        │
-//!                        ├──────▶ [`timeline`] idle clamping on a ms timebase
-//!                        │
-//!                        ├──────▶ [`playback`] ms timebase -> wall-clock
-//!                        │                     deadlines (ADR-0064)
-//!                        │
-//!                        └──────▶ [`replay`]   bytes  -> RenderedFrame
-//!                                    │
-//!                                    ├───────▶ [`raster`] frame -> RGB surface
-//!                                    │
-//!                                    └───────▶ [`encode`] surface -> GIF / APNG
-//!                                                 driven by [`render`]
+//!   bytes ─▶ cast (asciicast v2/v3) ─▶ timeline (idle clamp)
+//!                                   ├▶ playback (wall-clock deadlines)
+//!                                   └▶ replay ─▶ raster ─▶ encode (GIF/APNG)
+//!                                       driven by render
 //! ```
 //!
 //! # Features
 //!
-//! * `render` (default) — the whole export pipeline: [`replay`], [`raster`],
-//!   [`encode`], [`render`], [`font`]. Pulls `libghostty-vt`, `png`, `gif`,
-//!   and `phux-protocol` with only the `render-pool` feature.
-//! * default off — only [`cast`], [`timeline`], and [`error`]. This is the
-//!   shape `phux-client` takes (`default-features = false`): the TUI needs to
-//!   *write* a cast while a session runs and must not compile image encoders
-//!   or a second terminal emulator to do it.
+//! * `render` (default): the export pipeline. Pulls `libghostty-vt`, `png`,
+//!   `gif`, and `phux-protocol` with only `render-pool` (ADR-0086).
+//! * without it: only [`cast`], [`timeline`], [`playback`], and [`error`].
+//!   `phux-client` takes this shape so the TUI compiles no image encoders or
+//!   second terminal emulator.
 //!
-//! # Timebase
-//!
-//! Everything internal is **integer milliseconds, absolute from session
-//! start** ([`cast::CastEvent::time_ms`]). Serialization converts on the way
-//! out — v2 writes absolute seconds, v3 writes relative intervals — so
-//! neither format can accumulate float drift, and the `.cast` and the GIF
-//! rendered from it can never disagree about when something happened.
+//! Everything internal is integer milliseconds from session start
+//! ([`cast::CastEvent::time_ms`]), so no stage accumulates float drift.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "pub(crate) in private modules keeps unreachable_pub quiet"
+)]
 
 pub mod cast;
 pub mod error;
@@ -57,23 +36,21 @@ pub mod playback;
 pub mod timeline;
 
 #[cfg(feature = "render")]
-pub mod encode;
+mod encode;
 #[cfg(feature = "render")]
-pub mod font;
+mod font;
 #[cfg(feature = "render")]
-pub mod raster;
+mod raster;
 #[cfg(feature = "render")]
 pub mod render;
 #[cfg(feature = "render")]
-pub mod replay;
+mod replay;
 
 pub use cast::{CastEvent, CastHeader, CastTheme, CastVersion, CastWriter, EventCode, read_cast};
 pub use error::RecordError;
 pub use playback::{Speed, due_at, pass_duration};
 pub use timeline::clamp_idle;
 
-#[cfg(feature = "render")]
-pub use raster::{Rasterizer, Surface, Theme};
 #[cfg(feature = "render")]
 pub use render::{OutputFormat, RenderOptions, RenderStats, render_cast};
 #[cfg(feature = "render")]
