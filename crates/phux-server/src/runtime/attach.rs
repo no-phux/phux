@@ -2386,62 +2386,14 @@ impl SpawnPublication<'_> {
             self.core_terminal_id,
             output_pumps,
         );
-        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        if publishes_native_checkpoints(self.profile) {
-            self.publish_native_spawn(gate_tx).await;
-            return;
-        }
-        self.publish_synthesized_spawn(gate_tx).await;
-    }
-
-    /// Publish the native checkpoint generation: reply, queue the staged
-    /// frames, activate the publication, then release the parked output pump.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    async fn publish_native_spawn(&self, gate_tx: oneshot::Sender<OutputPumpStart>) {
-        let Some(reply) = self.capture_native_checkpoint().await else {
-            self.reap();
-            refuse_spawn(
-                self.out_tx,
-                self.request_id,
-                SpawnError::SpawnFailed("native checkpoint preflight failed".to_owned()),
-            )
-            .await;
-            return;
-        };
-        if !self.queue_spawned_ok().await {
-            self.reap();
-            return;
-        }
-        let Ok((cut, cursor)) = publish_native_bootstrap(self.out_tx, reply).await else {
-            self.reap();
-            return;
-        };
-        let Ok(publication) = activate_native_publication(
-            &self.terminal,
-            self.client_id.0,
-            self.wire_terminal_id.clone(),
-            self.stream_id,
-            initial_bootstrap_id(),
-            cursor,
-        )
-        .await
-        else {
-            self.reap();
-            return;
-        };
-        let _ = gate_tx.send(OutputPumpStart {
-            published_cut: cut,
-            replay: publication.replay,
-            live: Some(publication.live),
-        });
+        self.publish_first_generation(gate_tx).await;
     }
 
     /// Capture the pane's first synthesized snapshot and the actor cut it was
     /// taken at. `None` once the actor is gone or refuses.
     async fn capture_snapshot(&self) -> Option<(crate::grid::SnapshotBytes, u64)> {
         let (snapshot_tx, snapshot_rx) = oneshot::channel();
-        if self
-            .terminal
+        self.terminal
             .snapshot
             .send(SnapshotRequest {
                 scrollback: None,
@@ -2451,28 +2403,30 @@ impl SpawnPublication<'_> {
                 reply: snapshot_tx,
             })
             .await
-            .is_err()
-        {
-            return None;
-        }
+            .ok()?;
         snapshot_rx.await.ok()?.ok()
     }
 
-    /// Publish the synthesized-VT generation: reply, queue BEGIN/CHUNK/READY,
-    /// then release the parked output pump.
-    async fn publish_synthesized_spawn(&self, gate_tx: oneshot::Sender<OutputPumpStart>) {
-        let Some((snapshot, cut)) = self.capture_snapshot().await else {
-            self.reap();
-            refuse_spawn(
-                self.out_tx,
-                self.request_id,
-                SpawnError::SpawnFailed("snapshot preflight failed".to_owned()),
-            )
-            .await;
-            return;
-        };
+    /// Capture and frame the first generation for the negotiated profile.
+    async fn stage_first_generation(&self) -> Result<FirstGeneration, &'static str> {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if publishes_native_checkpoints(self.profile) {
+            let reply = self
+                .capture_native_checkpoint()
+                .await
+                .ok_or("native checkpoint preflight failed")?;
+            return Ok(FirstGeneration {
+                cut: reply.base_seq,
+                cursor: Some(reply.publication_cursor),
+                frames: reply.frames,
+            });
+        }
+        let (snapshot, cut) = self
+            .capture_snapshot()
+            .await
+            .ok_or("snapshot preflight failed")?;
         let replay = downsample_for_caps(&bytes::Bytes::from(snapshot.bytes), self.client_caps);
-        let Ok(frames) = synthesized_bootstrap_frames(
+        let frames = synthesized_bootstrap_frames(
             self.wire_terminal_id.clone(),
             self.stream_id,
             initial_bootstrap_id(),
@@ -2482,32 +2436,80 @@ impl SpawnPublication<'_> {
             snapshot.rows,
             cut,
             [replay],
-        ) else {
-            self.reap();
-            refuse_spawn(
-                self.out_tx,
-                self.request_id,
-                SpawnError::SpawnFailed("bootstrap limits rejected snapshot".to_owned()),
-            )
-            .await;
-            return;
+        )
+        .map_err(|()| "bootstrap limits rejected snapshot")?;
+        Ok(FirstGeneration {
+            frames,
+            cut,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            cursor: None,
+        })
+    }
+
+    /// Reply, queue the first generation, activate a native publication, then
+    /// release the parked output pump. Any failure reaps the pane.
+    async fn publish_first_generation(&self, gate_tx: oneshot::Sender<OutputPumpStart>) {
+        let generation = match self.stage_first_generation().await {
+            Ok(generation) => generation,
+            Err(reason) => {
+                self.reap();
+                refuse_spawn(
+                    self.out_tx,
+                    self.request_id,
+                    SpawnError::SpawnFailed(reason.to_owned()),
+                )
+                .await;
+                return;
+            }
         };
         if !self.queue_spawned_ok().await {
             self.reap();
             return;
         }
-        for frame in frames {
+        for frame in generation.frames {
             if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
                 self.reap();
                 return;
             }
         }
-        let _ = gate_tx.send(OutputPumpStart {
-            published_cut: cut,
+        #[cfg_attr(
+            not(all(feature = "native-engine", not(target_arch = "wasm32"))),
+            allow(unused_mut)
+        )]
+        let mut start = OutputPumpStart {
+            published_cut: generation.cut,
             replay: Vec::new(),
             live: None,
-        });
+        };
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        if let Some(cursor) = generation.cursor {
+            let Ok(publication) = activate_native_publication(
+                &self.terminal,
+                self.client_id.0,
+                self.wire_terminal_id.clone(),
+                self.stream_id,
+                initial_bootstrap_id(),
+                cursor,
+            )
+            .await
+            else {
+                self.reap();
+                return;
+            };
+            start.replay = publication.replay;
+            start.live = Some(publication.live);
+        }
+        let _ = gate_tx.send(start);
     }
+}
+
+/// A spawn's first generation, staged before anything is published.
+struct FirstGeneration {
+    frames: Vec<FrameKind>,
+    cut: u64,
+    /// The native publication to activate once the frames are queued.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    cursor: Option<crate::native_state::OpaqueHistoryCursor>,
 }
 
 /// Is this ATTACH a replacement for the same client's existing attachment to

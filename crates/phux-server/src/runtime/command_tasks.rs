@@ -232,13 +232,22 @@ mod tests {
                 assert_eq!(Rc::strong_count(&payload), 1);
                 assert_eq!(budget.jobs.available_permits(), 4);
                 assert_eq!(budget.bytes.available_permits(), 100);
+
+                // A byte refusal rolls back the job admission it took.
+                let tasks = CommandTasks::with_budget(budget.clone(), CancellationToken::new());
+                assert!(
+                    tasks
+                        .try_submit(101, async { panic!("refused work ran") })
+                        .is_err()
+                );
+                assert_eq!(budget.jobs.available_permits(), 4);
+                assert_eq!(tasks.connection.jobs.available_permits(), CONNECTION_JOBS);
             })
             .await;
     }
 
-    /// workload-auth §7 step 2: once the connection token fires (live
-    /// revocation cancels it), a queued `PUT_FILE` or `TRANSCRIBE` never
-    /// starts, even when the job ahead of it would have finished.
+    /// workload-auth §7 step 2: after revocation cancels the connection, a
+    /// queued bulk command never starts.
     #[tokio::test]
     async fn cancellation_stops_queued_work_before_it_runs() {
         tokio::task::LocalSet::new()
@@ -267,27 +276,6 @@ mod tests {
                 assert!(!ran.get(), "a job queued behind cancellation never runs");
                 tasks.shutdown().await;
                 drop(tasks);
-            })
-            .await;
-    }
-
-    #[tokio::test]
-    async fn byte_refusal_rolls_back_job_admission_without_polling() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let budget = Budget::new(4, 100);
-                let mut tasks = CommandTasks::with_budget(budget.clone(), CancellationToken::new());
-                assert!(
-                    tasks
-                        .try_submit(101, async { panic!("refused work ran") })
-                        .is_err()
-                );
-                assert_eq!(budget.jobs.available_permits(), 4);
-                assert_eq!(tasks.connection.jobs.available_permits(), CONNECTION_JOBS);
-                tasks.try_submit(100, async {}).unwrap();
-                tasks.shutdown().await;
-                drop(tasks);
-                assert_eq!(budget.bytes.available_permits(), 100);
             })
             .await;
     }
