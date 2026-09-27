@@ -30,6 +30,7 @@ server and one terminal model.
 | Use the native macOS app | [Cockpit](./cockpit.md) |
 | Understand the accepted GPUIX Solid desktop contract | [Desktop](./desktop.md) (not yet release-verified) |
 | Record a pane or an attached session | [Recording](./recording.md) |
+| Understand the in-tree Rust client library | [`phux-client`](./sdk.md) |
 | Use phux on [iOS](./ios.md) or [Android](./android.md) | Coming soon |
 
 Every interface here is a peer of the others; the TUI has no protocol-level
@@ -37,25 +38,4 @@ standing ([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)).
 
 Gaps: [`../CONCEPTS.md`](../CONCEPTS.md#status).
 
-## Files
-
-| File | Owns |
-|---|---|
-| [tui.md](./tui.md) | Reference TUI: prefix keys, layout, chrome, copy-mode, fleet overlay. |
-| [cockpit.md](./cockpit.md) | Native macOS client over `phux-client-ffi`. |
-| [desktop.md](./desktop.md) | Accepted terminal-first Solid desktop product contract and implementation gaps. |
-| [web.md](./web.md) | Browser client that carries its own engine over the WebSocket wire codec. |
-| [ios.md](./ios.md) | Coming soon. |
-| [android.md](./android.md) | Coming soon. |
-| [agents.md](./agents.md) | Agent surface: CLI verbs, JSON contracts, asks, workspace save/restore. |
-| [harness.md](./harness.md) | Producer contract: open an AgentSession, emit, never write detector state. |
-| [build-a-client.md](./build-a-client.md) | Third-party client paths: CLI, MCP, phux-protocol, FFI. |
-| [opencode-v2.md](./opencode-v2.md) | OpenCode plugin: phux owns the PTY, OpenCode owns the session. |
-| [pi.md](./pi.md) | Pi package: tools, fleet context, target persistence, safety. |
-| [claude.md](./claude.md) | Claude Code plugin: MCP tools plus lifecycle identity. |
-| [mcp.md](./mcp.md) | MCP adapter over the agent verbs. |
-| [sdk.md](./sdk.md) | Workspace-internal `phux-client` free-function surface. |
-| [recording.md](./recording.md) | Session recording: observer capture, interactive tee, playback as a pane. |
-
-Each file's frontmatter declares its own `stability`. A shipped surface is
-`stable`; a surface still settling is `evolving`.
+Each file's frontmatter declares its own `stability`.

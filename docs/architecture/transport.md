@@ -73,97 +73,39 @@ seam changes.
   path for a server and the clients attached to it on the same host.
   `$XDG_RUNTIME_DIR/phux/phux.sock`, owner-only directory (see
   [process-model.md](./process-model.md)).
-- **WebSocket** — carries the same frames to browser consumers. `phux-web`
-  ([the web consumer](../consumers/web.md), per ADR-0025) speaks the exact
-  framing over WebSocket and projects engine state locally; one binary
-  message carries exactly one encoded frame, and a message whose size
-  disagrees with its declared length is a framing violation. Native attach
-  can also use this lane with `phux attach --ws`, the TCP fallback when
-  UDP/QUIC is blocked. **Keepalive / idle:** TCP has no transport-level idle
-  detection, so this lane carries the contract itself — the native consumer
-  originates an RFC 6455 ping after `WS_PING_INTERVAL` (10s) of silence and
-  treats `WS_LIVENESS_TIMEOUT` (30s) with nothing inbound as a disconnect
-  (`phux_dial::ws::WsKeepalive`), the same interval/timeout pair the QUIC
-  lane gets from quinn and the hub link applies to its own WS satellites.
-  Client-originated because every RFC 6455 peer must answer a ping, so it
-  needs nothing of the server.
+- **WebSocket** — the same frames for browser consumers
+  ([`phux-web`](../consumers/web.md)) and for `phux attach --ws`, the TCP
+  fallback when UDP is blocked. One binary message is exactly one frame.
+  The client pings after 10s of silence and disconnects after 30s with
+  nothing inbound (`phux_dial::ws::WsKeepalive`), matching QUIC's idle pair.
 - **QUIC** (via `quinn`, ADR-0007) — for remote clients. Every connection
-  starts with one control stream carrying the identical codec. A client whose
-  installed adapter explicitly offers `HELLO.quic_streams` may negotiate one
-  additional bidi stream per attached Terminal; without that bilateral opt-in,
-  one stream is the complete connection shape.
-  Control carries HELLO, COMMAND, attach, lifecycle, keepalive, and the bearer
-  preamble where required. The client opens every Terminal stream and writes
-  `STREAM_BIND` first; the server never opens one. Each bound stream carries
-  that Terminal's `RESOURCE_OUTPUT`, `BOOTSTRAP_*`, `HISTORY_*`, `FRAME_ACK`,
-  and `INPUT_*`. Relay/connector consumers and hub satellite links currently
-  retain one stream; they do not negotiate per-Terminal streams. Normative
-  mapping: [proto.md](../spec/proto.md) §4.2
-  and [L1.md](../spec/L1.md) §4.9; design history:
-  [ADR-0115](../adr/0115-quic-stream-per-terminal.md).
-  TLS 1.3 is intrinsic; a routable listener authenticates each attachment
-  with a bearer-token preamble (ADR-0031 parity with the `wss://` path),
-  reusing the same persisted self-signed cert and token store. Opt-in via
-  `phux server --quic <HOST:PORT>`; connection migration and 0-RTT
-  resumption are inherent to the stack, with a roaming-aware client the
-  follow-up. **Backpressure:** every QUIC writer whose output can outrun its
-  path — the server's QUIC and WebTransport writers, and `phux-relay`'s
-  consumer-facing leg — holds quinn's send window to the congestion window
-  plus 16 KiB of unsent slack (TCP's `NOTSENT_LOWAT` rule) rather than
-  quinn's 10 MB default, re-reading the window before every partial write.
-  That policy lives once, in `phux_dial::window` (`SendWindow`, one per
-  connection and shared by every stream on it, and the `TrackedSend`
-  writer). A link slower than a pane's output therefore blocks the writer
-  within about a round trip. The stall backs up into the attach pump, which
-  measures lag in time rather than in broadcast slots: a live chunk older
-  than 250ms when the pump dequeues it (`runtime::pump::STALE_OUTPUT_BUDGET`,
-  measured from the later of the PTY read and the current generation's
-  publication, so a chunk that merely waited behind a draining bootstrap is
-  not counted as late) fences the generation and requests an in-band resync
-  to a fresh checkpoint — the same path a dropped broadcast window takes. A
-  slow remote consumer skips frames instead of queueing seconds of output in
-  front of its own keystroke echoes. That resync is addressed to the one
-  pump that fell behind (`ResyncAudience::Only`, keyed by client and
-  stream): every other consumer of the pane skips it and keeps its
-  generation, so a slow remote attach never re-bootstraps the local TUI, a
-  recorder, or a cockpit beside it. Only a reflow is still broadcast to
-  every consumer. **Through a relay**, the same stall has to cross the
-  relay: when the relay-to-consumer hop is the slow one, the relay's splice
-  blocks on its tracked consumer send and stops reading its tunnel stream,
-  and because each tunnel stream gets only 64 KiB of receive credit
-  (`TUNNEL_STREAM_RECEIVE_WINDOW`, against quinn's 1.25 MB default) the
-  server's writer blocks behind it and the pump goes stale just as it would
-  on a direct link. Only tunnels are bounded. quinn fixes a connection's
-  per-stream window when it is accepted, before the ALPN that tells a tunnel
-  from a consumer is known, so the connector's dialer tags its tunnel's
-  initial destination connection ID (`phux_dial::quic::TUNNEL_CID_PREFIX`:
-  `phxT` followed by 16 random bytes) and the relay, reading that ID off the
-  first packet, accepts a tagged connection with the bounded config and
-  everything else with quinn's defaults, so a large paste still crosses in
-  about a round trip. The tag selects a config, never a role: admission
-  stays with the ALPN, and a consumer that copies the tag only shrinks its
-  own window. The bound is per stream, but congestion control, connection
-  credit, CPU, and application queues are shared, so stream flow control alone
-  does not prove that one consumer can never delay another. A tunnel from a
-  connector that predates the tag gets quinn's
-  defaults, unbounded as before the bound existed, and the relay logs it
-  when admitted. Lag through a relay is
-  therefore bounded. The current relay route intentionally negotiates only the
-  single-stream fallback because its tunnel has no authenticated consumer-group
-  envelope; a consumer dispatcher must never accept tunnel-global streams.
-  A relayed consumer still sits behind up to that
-  window more backlog than a direct one (on a 300 kbit/s consumer, roughly
-  3 s of on-screen lag against 1.5 s direct). **Throughput ceiling:** each
-  bridged consumer moves at most 64 KiB per round trip on the
-  server-to-relay hop — about 5.2 Mbit/s at a 100 ms RTT and 1.75 Mbit/s at
-  300 ms, less in practice — and output faster than that makes the server
-  resync even a healthy consumer. Of 16, 32 and 64 KiB, only 64 KiB carried
-  a ~3.5 Mbit/s flood over a 50 ms server-to-relay hop without resyncs.
-  With a healthy consumer and a 100 ms server-to-relay RTT, floods of ~0.7
-  and ~2.8 Mbit/s ran with no resyncs and near quinn's defaults (p50 71 and
-  86 ms against 71 and 72 ms); at 300 ms the faster flood hit the ceiling
-  (about 1.4 Mbit/s delivered, one resync a second, p50 lag 350 ms against
-  212 ms).
+  starts with one control stream carrying the identical codec. A client that
+  offers `HELLO.quic_streams` may negotiate one extra client-opened bidi
+  stream per attached Terminal, bound with `STREAM_BIND`, carrying that
+  Terminal's output, bootstrap, history, acks, and input; relay/connector
+  consumers and hub links stay single-stream (normative:
+  [proto.md](../spec/proto.md) §4.2, [L1.md](../spec/L1.md) §4.9;
+  [ADR-0115](../adr/0115-quic-stream-per-terminal.md)). TLS 1.3 plus a
+  bearer-token preamble on routable listeners (ADR-0031), sharing the cert
+  and token store. Opt-in via `phux server --quic <HOST:PORT>`.
+  **Backpressure:** every QUIC writer that can outrun its path (server QUIC
+  and WebTransport writers, `phux-relay`'s consumer leg) holds quinn's send
+  window to the congestion window plus 16 KiB (`phux_dial::window`), so a
+  slow link blocks the writer within about a round trip. The attach pump
+  measures lag in time: a live chunk older than 250ms
+  (`runtime::pump::STALE_OUTPUT_BUDGET`) fences the generation and resyncs
+  that one pump to a fresh checkpoint (`ResyncAudience::Only`), so a slow
+  remote consumer skips frames instead of queueing seconds of output, and no
+  other consumer of the pane re-bootstraps. **Through a relay**, each tunnel
+  stream gets only 64 KiB of receive credit
+  (`TUNNEL_STREAM_RECEIVE_WINDOW`), so a slow consumer hop back-pressures the
+  server writer the same way. The connector tags its tunnel's initial
+  connection ID (`phux_dial::quic::TUNNEL_CID_PREFIX`) so the relay can pick
+  the bounded config before ALPN is known; the tag selects a config, never a
+  role. Untagged tunnels from older connectors get quinn's defaults. The
+  64 KiB bound caps each bridged consumer at about 5 Mbit/s at 100 ms RTT;
+  faster output resyncs even a healthy consumer. The relay route negotiates
+  only the single-stream fallback.
 - **WebTransport** (HTTP/3 CONNECT over QUIC) — QUIC-class transport for
   browsers, which cannot open raw QUIC connections. An HTTP/3 `CONNECT`
   session whose single bidirectional stream carries the identical
@@ -248,14 +190,7 @@ the SSH layer's `ServerAliveInterval` / `ServerAliveCountMax` on the dial
 argv — so a partition without FIN/RST is torn down like an ordinary
 disconnect. Normative routing semantics: `docs/spec/L1.md` §9.1.
 
-Every transport ADR-0007 designed exists. See ADR-0007 for the
-forward-compat constraints that still govern them (URI-shaped session IDs,
-hub-and-spoke satellite topology, per-pane encoder isolation).
-
 ## Status
-
-All five byte streams exist: UDS, WebSocket, QUIC, WebTransport, and
-SSH-stdio. Relay and WebTransport writers share the QUIC send-window cap.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|

@@ -13,10 +13,9 @@ work.
 
 ---
 
-Twenty-one crates make up the workspace; the sections below cover them
-roughly in dependency order (wire, domain, daemon, clients, config,
-binary, then the smaller special-purpose crates). The render-layering
-split between `phux-tui` and `phux-client-core` is
+Twenty crates, roughly in dependency order. Directory-level entries only;
+the crate's own `lib.rs` and module docs own the file-level detail. The
+`phux-tui` / `phux-client-core` split is
 [`render-layering.md`](./render-layering.md); crate edges are
 [`crate-graph.md`](./crate-graph.md).
 
@@ -24,789 +23,218 @@ split between `phux-tui` and `phux-client-core` is
 
 ```
 src/
-  lib.rs              — re-exports, top-level docs, PROTOCOL_VERSION
-  ids.rs              — SessionId, WindowId, ResourceId (the wire resource
-                        id: Local / Satellite), ClientId, StreamId,
-                        BootstrapId
-  caps.rs             — HELLO/HELLO_OK capability negotiation (features,
-                        bootstrap profiles and codecs, ADR-0070)
-  policy.rs           — shared ALPN / transport-policy constants
-  kinds.rs            — the kind catalog and the closed verb
-                        classification of every client frame (ADR-0125)
-  scope.rs            — workload scope grants: selectors, the canonical
-                        TerminalScopeSet / effective-set bytes, and the
-                        registry grammar (workload-auth.md §5)
-  sgr.rs              — SGR color/style wire atoms
-  kitty_replay.rs      — kitty-keyboard-protocol replay helpers
-  input/              — INPUT_* event types (docs/spec/input.md)
-    key.rs, mouse.rs, focus.rs, paste.rs, mod.rs
-  wire/               — TLV codec (docs/spec/proto.md Appendix A)
-    frame/            — FrameKind + discriminants + length-prefix framing
-    encode.rs, decode.rs, field.rs, info.rs, error.rs
+  lib.rs          — re-exports, PROTOCOL_VERSION
+  ids.rs          — SessionId, WindowId, ResourceId (Local / Satellite), ClientId
+  caps.rs         — HELLO/HELLO_OK features, bootstrap profiles and codecs
+  kinds.rs        — kind catalog and verb classification of every frame (ADR-0125)
+  scope.rs        — workload scope grants and their canonical bytes
+  policy.rs, sgr.rs, kitty_replay.rs
+  input/          — INPUT_* event types (docs/spec/input.md)
+  wire/           — TLV codec and framing (docs/spec/proto.md Appendix A)
 ```
 
-The `input` and `wire` modules are gated behind the `server` cargo feature
-so the no-feature shell compiles without `libghostty-vt`; see `lib.rs` for
-the docs.rs / crates.io rationale. Attach content is `BOOTSTRAP_BEGIN` /
-bounded opaque `BOOTSTRAP_CHUNK`s / `BOOTSTRAP_READY`, with retained
-history pulled afterward
-([ADR-0070](../adr/0070-native-engine-state-bootstrap.md)).
-Native checkpoint, history, cursor, and raw PTY payloads are engine-owned
-bytes and are never scanned or rewritten by phux; synthesized VT remains an
-explicit compatibility profile. The substrate names are `ResourceId`,
-`RESOURCE_OUTPUT`, and `SPAWN_RESOURCE`.
-
-The mutual references among `wire/frame/`, `wire/decode.rs`, and
-`wire/info.rs` are deliberate. `frame` and `info` define one recursive wire
-vocabulary, while `decode` owns the bounds-checked parser that constructs that
-vocabulary. Splitting the parser helpers or recursive types into artificial
-leaf modules would move the same codec recursion without creating a clearer
-layer boundary, so this sibling cycle is accepted (phux-4fbs.5).
+`input` and `wire` sit behind the `server` feature so the no-feature build
+compiles without `libghostty-vt`. `wire/frame/`, `wire/decode.rs`, and
+`wire/info.rs` reference each other deliberately: one recursive vocabulary
+and its parser, not separable layers.
 
 ## `phux-core`
 
 ```
 src/
-  lib.rs              — re-exports
-  ids.rs              — typed slotmap keys; `ResourceId` is the domain name
-                        for the `ResourceId` key
-  registry.rs         — Registry: SlotMaps + cascading deletes (a parent
-                        resource takes its children with it)
-  session.rs          — Session
-  window.rs           — Window (Terminal-kind slots) + binary split-tree
-                        LayoutNode
-  resource.rs         — ResourceKind, ResourceDescriptor (kind + parent +
-                        window + the kind's facet), AgentFacet
-  terminal.rs         — TerminalFacet: dims/cwd/title (no PTY, no
-                        libghostty state)
-  screen.rs           — ScreenState: the GET_SCREEN / snapshot projection of
-                        the Terminal facet
-  session_list.rs     — SessionListJson: the `phux ls --json` projection
-  process.rs          — TerminalProcessState: the typed `process` object of
-                        `GET_TERMINAL_STATE` (child pid/start, foreground
-                        pgid/name, cwd, OSC-133 prompt state, exit), and the
-                        Terminal engine's exit-outcome shape; shared by the
-                        server (producer) and any consumer (deserializer)
+  ids.rs          — typed slotmap keys
+  registry.rs     — Registry: SlotMaps, the only constructor, cascading deletes
+  session.rs, window.rs (slots + binary split-tree LayoutNode)
+  resource.rs     — ResourceKind, ResourceDescriptor, AgentFacet
+  terminal.rs     — TerminalFacet (dims/cwd/title; no PTY, no libghostty)
+  screen.rs, session_list.rs, process.rs
+                  — the GET_SCREEN, `phux ls --json`, and GET_TERMINAL_STATE
+                    documents, shared by producer and consumers
 ```
 
-One descriptor struct serves every kind; `kind` decides which facet is
-populated, and the `Registry` is the only constructor. `Registry::
-new_terminal` places a Terminal in a window slot; `Registry::
-new_agent_session` binds an AgentSession to a live Terminal parent and
-refuses any other parent kind. `screen.rs` is unchanged by the kind split
-because it projects the Terminal facet only.
-
-Selectors and config still live outside this crate — selector resolution is
-client-side (`phux-client::selector`, per ADR-0021), and config is its own
-crate (`phux-config`).
+One descriptor serves every kind; `kind` decides which facet is populated.
+`Registry::new_agent_session` refuses any parent that is not a live
+Terminal. Selector resolution is client-side (`phux-client::selector`).
 
 ## `phux-agent-rules`
 
-The agent-manifest evaluator (ADR-0046, phux-w7z2.24). Region extraction,
-TOML rule compilation, the built-in manifests under `rules/`, and the
-offline explanation behind `phux agent explain`. `phux-server`'s detector
-depends on it; the CLI does too, so `phux agent explain --file` evaluates a
-capture without going through the daemon crate.
-
-```
-src/
-  lib.rs              — DetectedState and the crate root
-  regions.rs          — structural sub-slices of a live viewport
-  rules.rs            — manifest load, compile, and evaluation
-  explain.rs          — owned, serializable explanation for the CLI
-  fixtures/           — captured screens the rule tests pin against
-rules/                — built-in *.toml manifests, compiled in via include_str!
-```
+The agent-manifest evaluator (ADR-0046): `regions.rs` (viewport
+sub-slices), `rules.rs` (manifest load, compile, evaluate), `explain.rs`
+(the offline `phux agent explain` document), `fixtures/`, and the built-in
+`rules/*.toml`. Both the server's detector and the CLI depend on it.
 
 ## `phux-server`
 
-The daemon. One `ServerRuntime` per user, a single-threaded tokio runtime,
-UDS listener plus optional remote listeners (ADR-0003, ADR-0007). What it
-serves are resources: a `ResourceCore` per served thing with one kind engine
-behind it.
+The daemon: one `ServerRuntime` per user on a current-thread tokio runtime
+(ADR-0003, ADR-0007), serving a `ResourceCore` plus one kind engine per
+resource.
 
 ```
 src/
-  lib.rs              — re-exports (ServerRuntime, ServerState, the
-                        resource types, ...)
-  runtime/            — tokio current-thread executor + accept loops;
-                        spawns per-client tasks on a LocalSet (ADR-0014)
-    mod.rs, attach.rs, client.rs, commands.rs, resource_commands.rs
-    (AgentSession spawn and `APPEND_RESOURCE_OUTPUT`), directory.rs (the
-    LIST_DIRECTORY host query), pump.rs, resume.rs, upgrade.rs, upload.rs,
-    voice.rs, whoami.rs (the read-only phux.whoami/v1 key),
-    ephemeral_listener.rs (OPEN_LISTENER: a QUIC listener for one attach),
-    operation_dedupe.rs (the one bounded dedupe record shared by
-    APPLY_INPUT ids, spawn keys, and session-create tokens; ADR-0126),
-    idempotent_create.rs (keyed SPAWN_RESOURCE and session create on it),
-    revocation.rs (the live-authority watcher: re-judges every connection
-    a workload grant or pairing-store bearer admitted, on registry/store
-    change and at expiry; workload-auth.md §7, ADR-0116),
-    dispatch_guard.rs (turns a `policy::enforce` denial into the reply
-    each of the three call sites sends: correlated `PERMISSION_DENIED`,
-    a rate-limited uncorrelated `ERROR`, or a dropped frame),
-    keyed_ops.rs (KILL_RESOURCE(S)/KILL_RESOURCE_IF/SIGNAL_TERMINAL with a
-    trailing `operation_id` on the shared dedupe record: the first
-    admission runs the command, a repeat replays its result; ADR-0126,
-    L1.md §5.1.1),
-    approvals.rs (the held-command waiter on the requester's own
-    connection: runs, once approved, exactly as the requester's dispatch
-    would have; ADR-0128, workload-auth.md §6.1)
-    input_lane/       — the dedicated input-encoding thread (ADR-0044) and
-                        the acknowledged-input journal (ADR-0053)
-  state/              — ServerState: sessions, windows, resources, leases,
-                        metadata, hub table, agent tracking, config —
-                        one module per concern rather than one large file
-    mod.rs, sessions.rs, terminals.rs, session_table.rs, resource_table.rs
-    (ResourceTable: ResourceHandle per live resource, its cancel token,
-    subscribers, output pumps, and the engine JoinSet), resolve.rs
-    (`resolve_resource`: local handle, satellite relay, or unknown),
-    bindings.rs (parent cascade and `CloseReason`), client.rs,
-    client_table.rs, metadata.rs, leases.rs, lease_table.rs, hub.rs,
-    hub_state.rs, agent.rs, agent_tracking.rs, cwd.rs, events.rs,
-    hook_dispatch.rs, lifecycle.rs, reap.rs, snapshot.rs, viewport.rs,
-    conditional_kill.rs (KILL_RESOURCE_IF: instance token and spawn
-    provenance checked and applied in one borrow, ADR-0109),
-    satellite_spawns.rs (the hub's bounded record of which consumer
-    asked for each satellite resource, ADR-0109),
-    journal.rs (the server-wide bounded ring of stamped, sequenced
-    events every emission site records into under the state lock;
-    `after_seq` replay and the `journal_gap`/`source_gap` accounting,
-    ADR-0123),
-    retained.rs (the exit-facet timer wheel and count bound behind
-    `retain_secs`: purges an exited-but-retained Terminal on TTL or
-    when the retained set overflows, ADR-0124),
-    approvals.rs (the pending-approval table, its server-owned
-    `phux.approval/v1/<id>` records, and the two journaled events;
-    ADR-0128, workload-auth.md §6.1 — opening, deciding, expiring, and
-    withdrawing each run in one critical section so the table, record,
-    and event always agree),
-    roles.rs (declared attach-role intent projected onto the input
-    lease: which subscriptions are observe-only, and turning a declared
-    takeover into the lease change it stands for; ADR-0127, L1.md §8.1), ...
-  resource/           — the generic resource core and the engines behind it
-    mod.rs            — ResourceCore (engine-side: kind, parent, wire id,
-                        checked u64 output sequence, output broadcast,
-                        event-subscriber registry + fan-out, cancel token +
-                        exit notify, control mailbox), ResourceHandle (the
-                        Send + Clone channel set the runtime holds: kind,
-                        parent, output, consumer attach/detach/ack, event
-                        subscribe/unsubscribe, upgrade, control, plus
-                        `facet`), ResourceFacetHandle (Terminal and
-                        AgentSession variants), WrongResourceKind
-    event_sink.rs     — the engine-to-runtime bounded event channel
-                        (`try_send`, never blocks an engine) and the loss
-                        counter behind it; the runtime drains it into the
-                        journal and turns a full sink into a `source_gap`
-                        instead of a silent drop (ADR-0123)
-    agent_session/    — the AgentSession engine: record ring, append
-                        validation, seq/time stamp, bootstrap from
-                        retained `AgentEventsJsonlV1` records, derived
-                        state (ADR-0103); record.rs, ring.rs
-    terminal/         — the Terminal engine: TerminalActor owns one pane's
-                        libghostty `Terminal` (!Send, in a RefCell on the
-                        LocalSet), its input encoders, PTY reader/writer
-                        threads, and coherent bootstrap capture cuts
-                        (ADR-0070); embeds a ResourceCore and serves the
-                        TerminalHandle facet (input, snapshot, screen,
-                        resize, cwd, palette, native checkpoints, cols/rows)
-      mod.rs, construct.rs, run_loop.rs, io.rs, native.rs, consumers.rs,
-      events.rs, osc133.rs (OSC-133 command-boundary scanner, phux-foz.4;
-      also tracks the `A`/`B`/`C`/`D` prompt-state machine, PHA-406 D5),
-      requests.rs, spawn.rs, sync.rs, tick.rs,
-      process_facet.rs (the `process` object of `GET_TERMINAL_STATE`:
-      child pid/start-time, foreground pgid/basename, cwd, prompt state,
-      exit — kernel- and mark-sourced, `None` rather than a guess when a
-      query fails; PHA-406 D5)
-  terminal_actor      — `pub use resource::terminal as terminal_actor`: the
-                        path every existing `terminal_actor::` import
-                        resolves through
-  mailbox.rs          — Outbound (per-client) and TerminalInput (per-engine)
-                        message shapes; a crate-root leaf so `state` and
-                        `resource` never import each other
-  grid/               — synthesized-VT compatibility bootstrap/StateSync
-                        emitter (never used to construct native records)
-    mod.rs, reference.rs, synthesizer.rs
-  native_state.rs     — native checkpoint bootstrap plumbing (ADR-0070)
-  downsample.rs       — compatibility-profile rewrite of outbound VT bytes
-                        (truecolor -> 256/16, OSC 8 / image / KIP gating);
-                        native checkpoint/history/raw live bytes bypass it
-  input/              — server-side encoders bridging wire input -> PTY
-                        bytes; each Terminal owns its own PerTerminal{Key,
-                        Mouse,Focus,Paste} encoder, refreshed from
-                        Terminal state
-    key.rs, mouse.rs, focus.rs, paste.rs, mod.rs
-  agent_detect/       — level-triggered per-terminal agent-state detector
-                        (ADR-0046): mod.rs is the state machine (adaptive
-                        tick, hysteresis, edge-filtered publish);
-                        identify.rs names the agent from the PTY's
-                        foreground process; record.rs is the phux.agent/v1
-                        JSON shape; live_session.rs is the live
-                        AgentSession-child probe so stream evidence
-                        outranks screen inference. Region slicing and
-                        manifest evaluation live in `phux-agent-rules`;
-                        this module re-exports them.
-  agent_state.rs      — arbitration between an explicit SET_METADATA and
-                        the detector's writes (ADR-0046); evidence ladder
-                        is Stream > Hook > Process > Screen
-  agent_asked.rs      — the `phux ask` / `asked` event ingress (ADR-0036);
-                        the AskedSource ladder is Scrape < Sentinel < Hook
-                        < Stream
-  hooks.rs            — server-side event-hook dispatcher (config
-                        `[[hooks.<name>]]` plus plugin `[[events]]`),
-                        argv-only execution, no in-process host
-  hub/                — federation hub: satellite registry, outbound
-                        dialer/link supervisor, byte relay/splice
-                        (phux-v45, ADR-0007)
-    mod.rs, link.rs, relay.rs, operation_fence.rs (the incarnation fence
-    and actor correlation for keyed operations forwarded to one
-    satellite: records, per operation id, the incarnation forwarded to,
-    and answers a cross-restart retry with `INCARNATION_CHANGED` instead
-    of forwarding it; L1.md §9.1, ADR-0053 item 5)
-  transport.rs, transport/
-                      — per-transport listeners and frame reader/writer
-                        pairs: UDS and WebSocket in transport.rs, quic.rs,
-                        tls.rs, webtransport.rs (ADR-0007, ADR-0031); see
-                        transport.md
-  upgrade/            — graceful server re-exec / PTY handoff (ADR-0032)
-    mod.rs, blob.rs
-  health.rs, perf.rs, history_merge.rs
-                      — start-history crash-loop reporting, the ADR-0096
-                        metric statics, and the (unwired) ADR-0078
-                        viewport-alignment core
-  policy.rs, policy/enforce.rs
-                      — the per-connection grant minted at HELLO and the
-                        dispatch guard every frame, command, and QUIC
-                        stream bind passes (workload-auth.md §6-§8)
-  policy/hold.rs      — the guard's third outcome, Hold, and the subject a
-                        decision is judged on: asks, for a request
-                        `enforce` already admitted, whether a `SIGNAL` it
-                        needs reaches its subject only through a clause
-                        that holds it (ADR-0128, workload-auth.md §6.1)
+  runtime/        — accept loops, per-client tasks, command dispatch, attach,
+                    upgrade, approvals, keyed/idempotent operations,
+                    revocation watcher; input_lane/ (ADR-0044, ADR-0053)
+  state/          — ServerState, one module per concern: sessions, the
+                    ResourceTable, resolve, bindings, clients, metadata,
+                    leases, hub, agent tracking, event journal (ADR-0123),
+                    retained exits (ADR-0124), approvals (ADR-0128), roles
+  resource/       — ResourceCore, ResourceHandle and its facets, event sink
+    agent_session/  — record ring, append validation, derived state (ADR-0103)
+    terminal/       — TerminalActor: libghostty Terminal, PTY threads,
+                      bootstrap cuts (ADR-0070), OSC-133, process facet
+  grid/           — synthesized-VT compatibility bootstrap / StateSync
+  native_state.rs, downsample.rs
+                  — native checkpoint plumbing; compatibility-profile rewrite
+  input/          — per-Terminal key/mouse/focus/paste encoders
+  agent_detect/, agent_state.rs, agent_asked.rs
+                  — detector (ADR-0046), SET_METADATA arbitration, ask ingress
+  hooks.rs        — event-hook dispatcher, argv-only
+  hub/            — federation: satellite links, relay, operation fence
+  transport.rs, transport/ — UDS, WebSocket, QUIC, TLS, WebTransport
+  upgrade/        — graceful re-exec and PTY handoff (ADR-0032)
+  policy.rs, policy/ — per-connection grant and the dispatch guard
+  workload.rs, workload/ — mTLS workload authority and registry (ADR-0116)
   auth.rs, connector.rs, cwd_query.rs, proc_query.rs, id_bridge.rs,
-  search.rs, extract.rs, telemetry.rs
-    — auth token checks, outbound connector dialing, kernel cwd/process
-      introspection, core<->wire id translation, tracing setup
-  workload.rs, workload/
-    — mTLS workload authority material and registry (ADR-0116): the CA
-      separate from the server leaf so clients pin one fingerprint across
-      leaf renewals; split into material.rs (the public enrollment shapes
-      `phux workload add-key` accepts, never echoing key material),
-      store.rs (owner-only, no-follow, lock-and-rename persistence), and
-      reload.rs (stat-generation hot reload so a running server observes a
-      new registry generation without a restart)
+  search.rs, extract.rs, telemetry.rs, health.rs, perf.rs, history_merge.rs,
+  mailbox.rs
 ```
 
-**The facet rule.** Runtime code holds a `ResourceHandle` and reaches a
-kind-only channel through `ResourceHandle::terminal()` or
-`ResourceHandle::agent_session()`, the two producers of
-`WrongResourceKind`. Each caller maps that error into its own reply
-shape (`runtime/commands.rs` has the one `CommandResult` mapping);
-nothing else in the crate matches on the facet enum, so a further engine
-adds a variant and a constructor, not a sweep of the runtime.
-
-**`ResourceTable`.** `state/resource_table.rs` holds every map keyed on a
-live resource — `ResourceHandle`s, cancellation tokens, the `JoinSet` that
-owns the engine futures, per-resource client subscriptions, and the
-`ATTACH_RESOURCE` and session-attach output pumps — and never looks inside a
-facet. `ServerState::spawn_resource_actor` mints the wire id, registers the
-handle, and spawns the engine future in one call under the state lock;
-`ServerState::reap_terminal` removes the domain entity (cascading to the
-window and session when they empty) and calls `ResourceTable::
-forget_resource` in the same acquisition.
-
-**Satellite routing.** `ServerState::resolve_resource` is the one seam
-that classifies a wire id as local handle, satellite relay, or unknown.
-Command handlers in `runtime/commands.rs` route through it (ADR-0007).
-
-PTY supervision lives inside `resource/terminal/` (two `std::thread`s
-bridging blocking `portable_pty` I/O — via `portable-pty-adopt` for
-re-adoption on upgrade — to the async actor over `mpsc` channels), not a
-separate `pty/` module.
+Runtime code holds a `ResourceHandle` and reaches kind-only channels through
+`terminal()` or `agent_session()`, the two producers of `WrongResourceKind`;
+nothing else matches on the facet enum. `ResourceTable` holds every map
+keyed on a live resource and never looks inside a facet.
+`ServerState::resolve_resource` is the one seam classifying a wire id as
+local, satellite, or unknown. PTY I/O runs on two `std::thread`s inside
+`resource/terminal/`, bridged to the actor over `mpsc`.
 
 ## `phux-client`
 
-The headless client library (ADR-0100): everything a consumer needs to
-reach a phux server and speak the wire, and nothing that needs a screen.
-Every `phux` agent verb and the `phux-mcp` adapter are thin projections
-over the free functions here (`docs/consumers/sdk.md`). No `ratatui`, no
-`rustix`, no controlling terminal; the crate never enables tokio's
-`io-std`.
+The headless client library (ADR-0100): no `ratatui`, no controlling
+terminal. Every agent verb and the `phux-mcp` adapter are thin projections
+over its functions ([`../consumers/sdk.md`](../consumers/sdk.md)).
 
 ```
 src/
-  lib.rs              — module list + re-exports of the client-core substrate
-  approvals.rs        — list and decide server-held approvals (`phux
-                        approve`/`deny`/`approvals`, ADR-0128): the pending
-                        set is read from the `phux.approval/v1/<id>`
-                        records; a decision is a `SET_METADATA` of
-                        `phux.approval.decide/v1/<id>` the server
-                        intercepts, confirmed by reading the record back
-  attach/             — the headless half of attaching
-    mod.rs            — re-exports: Dial vocabulary, InputReplayJournal,
-                        AttachError / AttachEnd
-    connection.rs     — Dial (Uds / Quic / Ws), the FrameReader and
-                        FrameWriter enums, HELLO negotiation,
-                        length-prefixed frame I/O; test seams
-                        (`from_stream`, `negotiate`) under the `testkit`
-                        feature
-    quic.rs, ws.rs    — remote transports over phux-dial
-    input.rs          — StdinParser: bytes -> libghostty input atoms
-                        (shared by the TUI and the keystroke verbs)
-    input_replay.rs   — the ADR-0053 acknowledged-input replay journal
-    outcome.rs        — AttachError / AttachEnd, the exit vocabulary every
-                        verb reports through
-  conditional_kill.rs — bind a spawn to the server's instance token and
-                        build, send, and classify KILL_RESOURCE_IF (ADR-0109)
-  selector.rs         — client-side TARGET selector resolution (ADR-0021)
-  snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs,
-  layout_ops.rs, ask.rs, agent_meta.rs, agent_prompt.rs, agent_wait.rs,
-  agent_session.rs (`phux agent session` / `emit` / `log`),
-  vcs.rs, explain.rs, perf.rs, record.rs, upgrade.rs
-                      — one module per agent-CLI verb's library half
-                        (docs/consumers/agents.md); layout_ops, agent_meta,
-                        vcs, and perf are also read by the TUI chrome;
-                        upgrade.rs is UPGRADE (`phux upgrade`, ADR-0032)
-  agent_record.rs     — phux.agent/v1 read/write/index (`phux agent
-                        set`/`clear`/`ls`, ADR-0040); the record type and
-                        its encode/parse convention live in agent_meta.rs
-  agent_session_record.rs
-                      — phux.agent-session/v1 provider-native provenance:
-                        the AgentSessionRecord type, its persist/fetch-index
-                        round trips, and spawn_with_agent_session (SPAWN_RESOURCE
-                        plus the optional provenance write and its
-                        KILL_RESOURCE rollback), shared by `phux spawn` /
-                        `phux launch`. Distinct from both agent_record.rs
-                        (a different, human-declared record) and
-                        agent_session.rs below (a different, server-tracked
-                        resource kind) despite the similar names.
-  detach.rs           — DETACH_CLIENTS classification (`phux detach`)
-  kill.rs             — SHUTDOWN / KILL_RESOURCES / KILL_RESOURCE, the
-                        keep-empty clear, and `selected` (selector
-                        resolution and the whole-session-vs-per-pane
-                        choice), shared by `phux kill` and MCP `phux_kill`
-  session.rs          — session-identity L3 writes: `rename_checked` (`phux
-                        rename` and MCP `phux_rename`) runs the shared
-                        `phux_client::rename` policy (pre-check, write,
-                        `GET_STATE` barrier) on a dedicated connection, and
-                        create-without-attach (`phux new`/`phux new
-                        --json`/`--empty`), including the
-                        atomic-agent-session-restore capability preflight;
-                        duplicate-name rejection for `phux new` stays in
-                        `crates/phux/src/commands/new.rs`
-  session_list.rs     — the `phux ls --json` document (SessionListJson)
-                        built from one GET_STATE view; `phux ls` prints it
-                        and MCP `phux_ls` returns it
-  signal.rs           — ACQUIRE_INPUT / RELEASE_INPUT command builders,
-                        SIGNAL_TERMINAL, and `deliver` (resolve-and-send),
-                        shared by `phux signal` and MCP `phux_signal`
-                        (`phux take` / `phux give` / `phux signal`, ADR-0033)
-  spatial.rs          — insert-pane / move-pane / swap-pane: selector
-                        resolution, the plan, execution (LayoutOps or the
-                        cross-session pane_move), the result document, and
-                        the refusal codes, shared by the CLI verbs and the
-                        MCP spatial tools
-  spawn.rs            — SPAWN_RESOURCE, and the ownership-verify +
-                        KILL_RESOURCE rollback dance behind explicit
-                        placement (`phux spawn`, `phux launch`); the
-                        `--json` result document and the SpawnError
-                        sentences both surfaces print
-  tags.rs             — phux.tags/v1 read/write and `apply` (list/add/rm),
-                        shared by `phux tag` and MCP `phux_tag` (ADR-0027)
-  resource.rs, resource/
-                      — the `phux resource` noun (PHA-406): resource.rs
-                        picks Terminal-kind panes out of a snapshot and
-                        spells the shared JSON vocabulary (lifecycle, exit
-                        facet, close reason, control action); cursor.rs is
-                        the `server_id:seq` cursor type `--after` parses
-                        and prints; wait.rs is the D2 algorithm (subscribe
-                        with `after_seq`, then a level `GET_STATE` read —
-                        race-free and idempotent; its reconnect pause is
-                        `phux-client-runtime`'s agent-verb `Ladder`, the
-                        shared ADR-0133 policy, not a local constant);
-                        show.rs is one
-                        resource's inspection record (kind, lifecycle,
-                        exit, process, input holder, tags, agent); methods.rs
-                        intersects the `phux-protocol::kinds` catalog with
-                        what the server negotiated and the resource's kind
-                        (D4)
-  state.rs            — GET_STATE / GET_PERF reads and the degradation notices
-  testkit.rs          — the one scripted server every client-side test
-                        speaks to (feature `testkit`; phux-tui, phux-mcp,
-                        and the binary opt in from dev-dependencies)
+  attach/         — Dial (UDS / QUIC / WS), frame I/O, HELLO, stdin parser,
+                    acknowledged-input replay journal, AttachError / AttachEnd
+  selector.rs     — TARGET resolution (ADR-0021)
+  snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs, ask.rs,
+  spatial.rs, layout_ops.rs, spawn.rs, kill.rs, signal.rs, detach.rs,
+  session.rs, session_list.rs, tags.rs, approvals.rs, conditional_kill.rs,
+  agent_*.rs, vcs.rs, explain.rs, perf.rs, record.rs, upgrade.rs, state.rs
+                  — the library half of each CLI verb, shared with MCP
+  resource.rs, resource/ — `phux resource show|wait|methods` and cursors
+  testkit.rs      — the scripted server client-side tests speak to
 ```
+
+`agent_record.rs` (`phux.agent/v1`), `agent_session_record.rs`
+(`phux.agent-session/v1` provenance), and `agent_session.rs` (the
+AgentSession resource verbs) are three distinct things despite the names.
 
 ## `phux-tui`
 
-The reference TUI (ADR-0100): the interactive front end over `phux-client`.
-Under ADR-0013 it owns a `libghostty_vt::Terminal` per attached pane and
-uses `RenderState` to drive redraw; under
-[ADR-0070](../adr/0070-native-engine-state-bootstrap.md) it can instead
-bootstrap from an exact native checkpoint. `ratatui` is fenced to this
-crate; pane-interior substrate lives in `phux-client-core` (below) and the
-headless control plane in `phux-client` (above). `phux_tui::attach`
-re-exports the headless attach vocabulary so the driver keeps one set of
-paths.
+The reference TUI (ADR-0100). Owns a libghostty replica per attached pane
+and is the only crate that links `ratatui`.
 
 ```
 src/
-  lib.rs              — attach + render + settings, re-exports of the
-                        client-core substrate
-  settings.rs         — TuiSettings: every value derived from the config,
-                        built once per attach (tolerant) and swapped whole
-                        on reload (strict); see docs/consumers/tui.md 4.3
-  attach/             — the attach loop: driver, rendering, input dispatch,
-                        fleet/multi-pane orchestration
-    mod.rs            — re-exports (phux_client::attach::*, driver entry
-                        points, RenderSink, status_bar); the
-                        RenderError -> AttachError conversion
-    driver/           — tokio::select! lifecycle, RawModeGuard RAII. A
-                        one-way orchestrator: it owns no shared vocabulary,
-                        so no sibling imports from it (phux-4fbs.4, guarded
-                        by tests/rendering/attach_layering.rs)
-      entry.rs, main_loop.rs, loop_state.rs, chrome.rs, config_ui.rs,
-      headless.rs, overlay_paint.rs, session_io.rs, subscriptions.rs,
-      terminal.rs, viewport.rs
-    pane_state.rs     — PaneSlot, the session-kernel alias, and the
-                        client-local VCS / attention indices over them
-    server_frame/     — decodes server frames into client-side effects
-    render.rs, paint.rs, repaint.rs, reflow.rs, rendered.rs
-                      — TerminalRenderer: feeds RESOURCE_OUTPUT bytes into
-                        the local Terminal and paints the changed cells of
-                        dirty rows (diffed against a per-pane front buffer,
-                        phux-esge) + chrome
-    input_dispatch/, action_registry.rs, actions.rs
-                      — the configurable keybinding-to-action pipeline
-    fleet.rs, focus.rs — multi-session/pane fleet view and focus tracking
-    directory_picker.rs — rows for the go-to-directory picker over a
-                        LIST_DIRECTORY reply (L3.md §4)
-    context_menu.rs, onboarding.rs, plugin_actions.rs, plugin_panes.rs,
-    record.rs, terminal_probe.rs, tty_input.rs, copy.rs,
-    sidebar_zones.rs, stdout_writer.rs, render_prof.rs
-  render/             — the ratatui chrome layer (status bar, dividers,
-                        sidebar, overlays); see render-layering.md
-    chrome/           — status_bar.rs, sidebar.rs, dividers.rs
-    overlay/          — copy_mode.rs, menu.rs, prompt.rs, select_list.rs,
-                        selection.rs, settings.rs (the settings page,
-                        ADR-0101), toast.rs, which_key.rs, widgets.rs
-    theme.rs, breakpoints.rs, sgr.rs
+  settings.rs     — TuiSettings derived from config, swapped whole on reload
+  attach/
+    driver/       — the tokio::select! lifecycle; nothing imports from it
+    server_frame/ — server frames to client-side effects
+    input_dispatch/, action_registry.rs, actions.rs — keybinding pipeline
+    render.rs, paint.rs, repaint.rs, reflow.rs — TerminalRenderer
+    pane_state.rs, fleet.rs, focus.rs, copy.rs, directory_picker.rs, ...
+  render/         — ratatui chrome
+    chrome/       — status bar, sidebar, dividers
+    overlay/      — copy mode, menus, prompts, settings page, toasts, which-key
 ```
-
-SIGWINCH ships `VIEWPORT_RESIZE` through `attach/driver`. See
-[`predictive-echo.md`](./predictive-echo.md) for the predictive-local-echo
-design layered on top of the mirror Terminal (implemented in
-`phux-client-core::predict`, wired here).
 
 ## `phux-client-core`
 
-Frontend-neutral session and pane-interior substrate, extracted from
-`phux-client` under ADR-0020/phux-0fv so the `ratatui` boundary is
-compiler-enforced: this crate has no `ratatui`, `crossterm`, `tokio`, or
-`web-sys` dependency, so it can compile for a native or a wasm frontend
-unchanged.
+The frontend-neutral session kernel and pane-interior substrate. No
+`ratatui`, `crossterm`, `tokio`, or `web-sys`, so it compiles for native and
+wasm unchanged.
 
 ```
 src/
-  lib.rs              — re-exports
-  engine.rs, engine/ghostty.rs — the generic terminal adapter trait plus
-                        its libghostty implementation (feature
-                        `native-engine`)
-  grid.rs, grid/      — the one plain-old-data cell layout (`Cell`,
-                        `CellMetadata`, the `CELL_*` flags, `Cursor`) and
-                        the `GridProjector` that flattens a libghostty
-                        viewport into a dense `GridBuffer` + UTF-8 arena
-                        (ADR-0133 decision 3; feature `native-engine`)
-    flatten.rs, tests.rs
-  handshake.rs        — shared HELLO_OK acceptance (exact protocol triple,
-                        advertised profile, native feature intersection,
-                        payload limits)
-  rename.rs           — the one session-rename policy (pre-check against
-                        the session list, `SET_METADATA` write, `GET_STATE`
-                        barrier). Tokio-free. `phux-client` re-exports it as
-                        `phux_client::rename` and `rename_checked` runs it;
-                        the TUI uses that re-export, and the FFI bridge
-                        calls this module directly.
-  session.rs, session/  — the synchronous session kernel
-                        (agent_stream.rs, kernel_rig.rs, property_tests.rs,
-                        tests.rs)
-  history.rs          — client-owned scrollback cache (ADR-0070)
-  layout/             — pane-geometry layout tree + split math + the CBOR
-                        metadata envelope persisted server-side
-    mod.rs, serialize.rs
-  multi_pane/         — layout tree -> per-pane rectangles + divider cells
-                        (pure compute; chrome rasterizes the result)
-    mod.rs, layout.rs, mouse.rs, rasterize.rs
-  predict/            — Mosh-class predictive local echo over the pane
-                        mirror
-    mod.rs, overlay.rs, reconcile.rs, state.rs
-  perf.rs             — the crate's ADR-0096 metric statics
+  engine.rs, engine/ — terminal adapter trait + libghostty impl (`native-engine`)
+  grid.rs, grid/  — the one POD cell layout and the GridProjector
+  session.rs, session/ — the synchronous session kernel
+  handshake.rs, rename.rs, history.rs, perf.rs
+  layout/         — layout tree, split math, persisted CBOR envelope
+  multi_pane/     — layout tree to pane rectangles and divider cells
+  predict/        — predictive local echo
 ```
 
-The session kernel is keyed by the wire `ResourceId` and records
-`ResourceKind` per id. A Terminal-kind resource gets one replica generation
-(`ReplicaKey`: terminal, stream, bootstrap, profile), staged through
-`BootstrapBegin` / `BootstrapChunk` / `BootstrapReady` and published
-atomically. An AgentSession-kind resource has no replica; `agent_stream.rs`
-parses `AgentEventsJsonlV1` records and derives session state. Input aimed
-at a non-Terminal is `NotATerminal`.
-
-`phux-client` and `phux-tui` both depend on this crate and re-export its
-modules so consumers keep stable `phux_client::{layout, multi_pane, predict}`
-paths. Why the
-split exists and how the boundary is enforced is owned by
-[`render-layering.md`](./render-layering.md); crate edges are in
-[`crate-graph.md`](./crate-graph.md).
+The kernel is keyed by wire `ResourceId`. A Terminal gets one replica
+generation staged through `BootstrapBegin` / `Chunk` / `Ready`; an
+AgentSession has no replica and derives state from its records.
+`phux-client` and `phux-tui` re-export these modules under stable paths.
 
 ## `phux-config`
 
 ```
 src/
-  lib.rs              — parse_str + re-exports
-  schema.rs           — typed TOML schema (Config, KeybindingsCfg, ...)
-  loader.rs           — XDG resolution + agent round-trip
-  layer.rs            — config layering/merge (defaults + user + env)
-  keybind.rs          — keybind parser + trie resolver
-  check.rs            — `phux config check` validation
-  connector.rs, remote.rs, satellite.rs — the `[[remote]]`/`[[satellites]]`
-                        machine-registry schema and validation
-  plugin.rs, plugin/  — plugin manifest schema, loading, linking, version
-                        and workspace resolution
-    link.rs, loader.rs, source.rs, validate.rs, version.rs, workspace.rs
-  integration.rs      — configured `[[agents]]` / launch-integration schema
-  distro.rs           — first-run scaffolding/distro detection
-  scaffold.rs         — default config file generation
-  vocab.rs, error.rs, socket.rs — shared enums, ConfigError with line:col
-                        spans, socket-path resolution
-  settings/           — the scalar-settings catalogue pinned to the schema,
-                        the provenance snapshot, and the comment-preserving
-                        writer behind the TUI settings page (ADR-0101)
-    mod.rs, write.rs
-  widget/             — StatusWidget trait + registry
-    mod.rs, status_bar.rs
-    widgets/          — cwd.rs, exec.rs, exit_status.rs, help_hints.rs,
-                        session_name.rs, time.rs, windows.rs
+  schema.rs, loader.rs, layer.rs, check.rs, error.rs, vocab.rs, socket.rs
+  keybind.rs      — keybind parser and trie resolver
+  connector.rs, remote.rs, satellite.rs — machine-registry schema
+  plugin.rs, plugin/ — plugin manifests: load, link, validate, version
+  integration.rs, distro.rs, scaffold.rs
+  settings/       — scalar-settings catalogue and comment-preserving writer (ADR-0101)
+  widget/         — StatusWidget trait, registry, built-in widgets
 ```
 
 ## `phux` (binary)
 
 ```
 src/
-  main.rs             — usage-rs subcommand dispatch and entry point
-  commands/           — one module (or submodule tree) per verb
-    ls.rs, new.rs, attach.rs, detach.rs, kill.rs, rename.rs, resize.rs,
-    spatial.rs (insert-pane/move-pane/swap-pane), spawn.rs, launch.rs,
-    send_keys.rs, paste.rs, run.rs, wait.rs, watch.rs, snapshot.rs, ask.rs,
-    tag.rs, play.rs, rec/, workspace.rs + workspace/archive/, host.rs,
-    remote.rs, satellite.rs + satellite/, plugin.rs + plugin/,
-    agent/ (list/show/explain/set/clear/install-claude/config,
-    session open|close, emit, log, the `--phux-hook` shim),
-    server.rs, service.rs, supervise.rs, upgrade.rs, doctor.rs, logs.rs,
-    config.rs + config/, config_action.rs, enroll.rs, pair.rs, relay.rs,
-    stdio_bridge.rs, worktree.rs, status.rs, whoami.rs, completion.rs,
-    bootstrap.rs + ssh_bootstrap.rs (the two ends of `attach --ssh`),
-    resource.rs (`phux resource show|wait|methods`, PHA-406: a thin
-    projection over `phux_client::resource` — TARGET resolution, the
-    exit-code mapping, and the human text; the `--json` documents are the
-    library's), workload.rs (`phux workload add-key|list|revoke|...`,
-    ADR-0116)
-  refdocs/            — generators for docs/reference/ (cli.rs, config.rs,
-                        actions.rs, widgets.rs, hooks.rs, exit_codes.rs,
-                        deprecations.rs, files.rs, kinds.rs — the
-                        `docs/reference/kinds.md` render of the
-                        `phux-protocol::kinds` catalog, ADR-0125; parity.rs
-                        — the `docs/reference/parity.md` render of the MCP
-                        tool table) — see CONVENTIONS.md "Generated
-                        reference docs"
-  selector.rs         — CLI-side TARGET parsing entry point
-  exit_codes.rs, json_err.rs, output.rs, deprecations.rs,
-  help_inventory.rs   — shared exit-code table, the `--json` error
-                        contract, stdout-safe printing, deprecated-verb
-                        shims, and the help-text inventory the refdocs
-                        generator walks
-  feature_names.rs    — `phux status --json .features` and
-                        `phux --capabilities --json` kind-catalog gates;
-                        names come from `ServerFeature::snake_name` in
-                        `phux-protocol` (caps.rs is the single list)
+  main.rs         — usage-rs dispatch
+  commands/       — one module or tree per verb
+  refdocs/        — generators for docs/reference/ (see CONVENTIONS.md)
+  selector.rs, exit_codes.rs, json_err.rs, output.rs, deprecations.rs,
+  help_inventory.rs, feature_names.rs
 ```
 
-The CLI's subcommand surface is wide and wired: session/window/pane
-lifecycle, spatial edits, agent introspection (`phux agent ...`),
-recording/playback, workspace save/restore, and host/satellite/plugin
-management are all live verbs, not aspirational ones. The authoritative
-catalog is generated, not hand-maintained here — see
-[`docs/reference/`](../reference/) (from `just docs-gen`) and
-[`docs/consumers/tui.md`](../consumers/tui.md) /
-[`docs/consumers/agents.md`](../consumers/agents.md) for the narrated
-per-verb contract. Opt-in cargo features: `dhat-heap` (this binary) and
-`tokio-console` (via `phux-server`).
+The verb catalog is generated: [`docs/reference/`](../reference/). Opt-in
+features: `dhat-heap` here, `tokio-console` via `phux-server`.
 
 ## The smaller crates
 
-These round out the workspace; each is a narrow, single-purpose surface
-rather than a layer with its own internal architecture worth diagramming:
-
-- **`phux-dial`** — the shared outbound TLS/QUIC/WebSocket establishment
-  layer: fingerprint-pinned TLS 1.3 plus an ADR-0031 bearer token. Both
-  `phux-client`'s attach loop and the server's federation hub dial through
-  it, so the security-sensitive connection path exists once. Under the
-  `provision` feature it also owns the *other* end of that trust story
-  (`cert.rs`): minting the persisted self-signed pair whose fingerprint the
-  dialer pins, and reading it back. `phux-server` and `phux-relay` both
-  terminate TLS on identical terms; ADR-0051 forbids the relay depending on
-  `phux-server`, so the one implementation lives here, in the crate both
-  already sit on. Each caller keeps its own error vocabulary and maps
-  `cert::CertError` into it. It also owns the one piece of QUIC *sending*
-  policy (`window.rs`): the congestion-tracked send window — quinn's window
-  held to the congestion window plus 16 KiB, re-read before every partial
-  write — that the server's QUIC and WebTransport writers and `phux-relay`'s
-  consumer-facing leg all write through (see
-  [`transport.md`](./transport.md)).
-- **`phux-client-runtime`** — the one client orchestration layer between
-  the sans-IO session kernel and a language binding (ADR-0133; see
-  [`client-runtime.md`](./client-runtime.md)). `target.rs`
-  resolves `[USER@]HOST[:PORT]` against the CLI's `[[remote]]` registry
-  through `phux-config`'s own loader (rung 1 of the ADR-0093 ladder);
-  `dial.rs` turns a resolved entry into a `phux-dial` plan under the CLI's
-  trust rules (pin off loopback, `wss://` plus a token when routable), owns
-  the operator-facing wording of every dial failure, and cuts SPEC §5
-  frames for the WebSocket lane; `reconnect.rs` is the backoff `Ladder`
-  (one preset per lane: interactive for the phux binary's remote attach
-  dials and the mobile bridge, agent-verb for `phux resource wait`, the flat
-  local-upgrade poll for the UDS graceful-upgrade blink) and the
-  fatal-refusal rule (401/403 upgrade, QUIC `AUTH_FAILED`, stated over a
-  `DialError` and over the rendered detail a consumer kept instead); the
-  `phux` binary's attach loop and `phux-client`'s wait verb walk it today
-  — a reconnect the host refuses ends on that first probe with the refusal
-  itself rather than the deadline's timeout — and the mobile bridge moves
-  onto it at its next pin; `tunnel.rs` is the byte-relay tunnel a
-  socket-owning embedder hands one end of a Unix-domain socket pair, with
-  its dedicated thread, cancellation, and panic containment. `control.rs`
-  is the sans-IO `ControlPlane` over `SessionKernel`: decoded frames in,
-  encoded frames and owned `Event`s out; it owns the
-  `HELLO`/`ATTACH`/`DETACH` lifecycle, the topology, the per-terminal
-  verbs, raw and acknowledged input, the event subscription, and the
-  reconnect-safe upload/transcription/directory extension queues consumed by
-  native bindings. `engine.rs` is the owner thread that hosts the kernel and every Ghostty
-  replica (a bounded byte adapter without the `engine` feature);
-  `publication.rs` the double-buffered grid a consumer acquires from any
-  thread as an immutable `GridFrame` with a generation counter and dirty
-  rows; `connection.rs` the async driver (UDS, WebSocket, QUIC; framing,
-  keepalive, the ladder); `runtime.rs` the `Runtime::connect` entry point
-  and the synchronous, thread-safe `Client`. It exposes a Rust API and no
-  FFI; `phux-client-ffi` and phux-mobile's bridge are shims over it and
-  hold no connected-client state machine of their own.
-- **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): splices an
-  inbound consumer connection onto an outbound connector tunnel. Never
-  parses phux frames — only the connector's auth preamble.
-- **`phux-record`** — the offline session-recording codec and exporter
-  (ADR-0060): pure and synchronous (no tokio). The codec-only build has no
-  `phux-protocol`; the `render` feature takes only `render-pool` (ADR-0086).
-  The same code serves the live recording tee, headless `phux rec`, and an
-  offline `--from cast -o gif` re-render.
-- **`phux-mcp`** — a minimal hand-rolled JSON-RPC/stdio MCP adapter
-  (ADR-0022 §5) wrapping `phux-client`'s agent surface tool-for-tool; no
-  separate core. `resource_tools.rs` is the `phux_resource_show|wait|methods`
-  trio (PHA-406), in-process over `phux_client::resource` so its documents
-  cannot drift from the CLI's; `annotations.rs` derives every tool's
-  `readOnlyHint`/`destructiveHint` from the `phux-protocol::kinds` catalog
-  instead of a hand-set flag per tool (ADR-0125), through
-  `src/tool_table.rs`. That file is the adapter's one table of tools: the
-  CLI verb each mirrors, whether it runs in-process or through the bounded
-  CLI residue (`cli_adapter.rs`, which refuses any tool not marked
-  residue), and what it touches. The parity gate (`tests/parity.rs`) holds
-  that table to the live catalog, the CLI grammar, and the kind table;
-  `phux`'s refdocs compile the same file to render
-  `docs/reference/parity.md`. `phux_spawn`, `phux_kill`, `phux_signal`,
-  `phux_tag`, `phux_rename`, the three spatial edits (in `pane_tools.rs`)
-  and `approval_tools.rs` (`phux_approvals`/`phux_approve` over
-  `phux_client::approvals`, ADR-0128, with `phux_approve` gated by the
-  same `annotations::require_confirmation` check as any other destructive
-  tool) run in-process through the same `phux-client` builders the CLI
-  calls, so those surfaces cannot drift. `phux_kill` prints the CLI's
-  partial-fleet-view warning on stderr, the adapter's out-of-band
-  diagnostic channel.
-- **`phux-plugin`** — the shared plugin-runtime surface (argv execution,
-  timeouts, env injection) used by both the CLI's `config run` and the
-  server's `hooks.rs` dispatcher.
-- **`phux-client-ffi`** — the binding crate: one projection of the client
-  runtime, one encoder per foreign language behind a Cargo feature
-  (ADR-0135); compile-time excluded on wasm.
-  `src/projection/` is the single derivation from `phux-client-runtime`
-  values — the terminal-signal and lifecycle event families, the flattened
-  session graph, the connection status, the delivery/upload/transcribe/
-  listing outcomes, the `phux.agent/v1` badge and the one reading of a
-  `GridFrame` — in binding-neutral Rust with no `#[repr(C)]` and no
-  `uniffi` derive, and with unit tests that pin every mapping.
-  `src/c/` (feature `c-abi`, on by default) is the stable native C bridge
-  that `include/phux/client.h` declares, for non-Rust native embedders and
-  Cockpit's staticlib. `src/uniffi/` (feature `uniffi`, off by default) is
-  the Swift/Kotlin surface phux-mobile consumes: `RemoteClient` over one
-  runtime session, the standalone `TerminalEngine` owner for local
-  playground and test terminals with no connection, the keymap and the
-  predictor. `scripts/build-mobile-ffi-xcframework.sh` and
-  `-android.sh` package that lane's slices and generated bindings from one
-  revision, with provenance and digests consumers install atomically;
-  Cockpit's `ffi-release` archive links no UniFFI.
-  The C lane holds a
-  `phux_client_runtime::Client` and reaches the control plane through that
-  handle's guard, never a plane of its own. Two lanes: `phux_client_new`
-  builds the embedded one, where the embedder owns the socket and pumps
-  frames with `feed_frame`/`outgoing_*`; `phux_client_connect` builds the
-  connected one over `Runtime::connect`, where the runtime dials, walks the
-  ladder and owns the socket, and `phux_client_poll` feeds what it read.
-  The lanes are mutually exclusive at runtime and the `connect` module owns
-  that boundary (ADR-0133 decisions 2 and 6). Cockpit runs the connected
-  lane; the embedded one is how a harness stages synthetic frames. The cell layout is core's:
-  `PhuxTerminalCell`, `PhuxGridCellMetadata` and the `PHUX_CLIENT_CELL_*` flags
-  in `include/phux/client.h` match `phux_client_core::grid` (pinned by core's
-  layout tests), and the grid
-  view lends a pointer into the `GridProjector`'s buffer rather than
-  flattening cells of its own (ADR-0133 decision 3). Its `remote` module is the C
-  handle over `phux-client-runtime`'s relay tunnel (ADR-0133): the runtime
-  resolves the host in the CLI's `[[remote]]` registry and relays frames
-  between an embedder-owned Unix-domain socket pair and a QUIC/WSS dial;
-  the module owns only the `phux_remote_tunnel_*` exports, their
-  `#[repr(C)]` structs, and the machine-registry snapshot.
-  `scripts/build-ffi-xcframework.sh` packages the crate as
-  `PhuxFFI.xcframework` (iOS device, arm64 simulator, macOS; `phux/client.h`
-  under a `PhuxFFI` module map) for Swift consumers; see
-  `docs/RELEASING.md`.
-  Its `directory` module carries the `LIST_DIRECTORY` host query for a
-  go-to-directory picker, retaining one correlated listing per client
-  (`phux_client_list_directory_on`, `phux_client_directory_*`). Its `log`
-  module installs the bridge's one `tracing` subscriber on standard error
-  (`phux_client_log_init`), so an embedder that redirects descriptor 2 to a
-  file gets the tunnel's lifecycle beside its own lines. Named projections
-  (ADR-0129) are L3 metadata key ops on keys shaped
-  `<prefix>.layout/v1/<session-id>` (`phux_client_projection_get` /
-  `_set` / `_delete`), not a new resource kind. The bridge
-  subscribes to the connection-wide `AgentEvent` stream on every
-  `ATTACH_READY` (as a `KernelSend::SubscribeEvents` effect the kernel
-  itself emits, `phux-client-core` having no transport of its own to send
-  one from) and folds cwd/command-boundary/process-exit events into
-  `PHUX_CLIENT_STATUS_CWD` / `_COMMAND_STARTED` / `_COMMAND_FINISHED` /
-  `_EXITED` effects (PHA-406/PHA-284; `include/phux/client.h`).
-- **`phux-crash`** — vendored fatal-signal handler (see its NOTICE; the one
-  Apache-2.0-only crate in the workspace). SIGSEGV/SIGBUS/SIGABRT do not
-  unwind, so neither `RawModeGuard::drop` nor the panic hook runs; this
-  handler writes the DECSET resets and restores the saved termios from an
-  alternate signal stack before re-raising, so a crash does not strand the
-  user in raw mode inside the alt screen.
-- **`phux-perf`** — in-process performance telemetry primitives
-  (ADR-0096): a lock-free log-linear histogram, counters, gauges, a
-  rate-limited warning throttle, `getrusage` process statistics, and the
-  `PerfReport` that `GET_PERF` carries as JSON and `phux perf` renders.
-  Every hot-path crate declares its metrics as `static`s in a `perf`
-  module and lists them in a table; recording is one relaxed atomic add.
-  Depends on nothing in the workspace, so it sits under server, client,
-  and CLI alike.
-- **`phux-server-testkit`** — shared scaffolding for `phux-server`'s wire
-  integration tests, factored out of a `tests/common` module so it is
-  compiled once rather than once per test binary.
-- **`portable-pty-adopt`** — re-adopts an already-running PTY (bare master
-  fd + child pid) into `portable-pty`'s trait objects; fills the gap where
-  `portable-pty` can only *create* a PTY, needed for the server's
-  re-exec/upgrade PTY handoff (ADR-0032).
+- **`phux-dial`** — the shared outbound TLS/QUIC/WebSocket dialer
+  (fingerprint-pinned TLS 1.3 plus bearer token). Under `provision` it also
+  mints and reads the self-signed pair (`cert.rs`) that both `phux-server`
+  and `phux-relay` terminate with, and `window.rs` owns the congestion-tracked
+  QUIC send window ([`transport.md`](./transport.md)).
+- **`phux-client-runtime`** — the one client orchestration layer (ADR-0133;
+  [`client-runtime.md`](./client-runtime.md)): registry target resolution,
+  dial plans, the reconnect `Ladder`, the relay tunnel, the sans-IO
+  `ControlPlane`, the engine owner thread, grid publication, and
+  `Runtime::connect`. Rust API only.
+- **`phux-client-ffi`** — the one binding crate (ADR-0135). `projection/`
+  derives the product vocabulary from the runtime once; `c/` (feature
+  `c-abi`, default) is the C ABI in `include/phux/client.h` that Cockpit
+  links; `uniffi/` (feature `uniffi`) is the Swift/Kotlin surface
+  phux-mobile consumes. Packaging lives in `scripts/build-*ffi*.sh`
+  ([`../RELEASING.md`](../RELEASING.md)).
+- **`phux-relay`** — the reference relay (ADR-0051, ADR-0052); never parses
+  phux frames.
+- **`phux-record`** — offline recording codec and exporter (ADR-0060), pure
+  and synchronous.
+- **`phux-mcp`** — hand-rolled JSON-RPC/stdio MCP adapter over
+  `phux-client`. `tool_table.rs` is its one tool table, held to the CLI and
+  kind catalog by `tests/parity.rs` and rendered into
+  `docs/reference/parity.md`.
+- **`phux-plugin`** — argv plugin execution shared by `config run` and the
+  server's hook dispatcher.
+- **`phux-crash`** — vendored fatal-signal handler (Apache-2.0 only) that
+  restores the terminal from an alternate signal stack before re-raising.
+- **`phux-perf`** — lock-free telemetry primitives and the `PerfReport`
+  behind `GET_PERF` (ADR-0096); no workspace dependencies.
+- **`phux-server-testkit`** — shared scaffolding for the server's wire
+  integration tests.
+- **`portable-pty-adopt`** — re-adopts a running PTY into `portable-pty`
+  for the upgrade handoff (ADR-0032).
 
 ## Status
 

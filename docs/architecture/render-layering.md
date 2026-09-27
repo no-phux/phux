@@ -15,28 +15,13 @@ compiler-enforced: ratatui lives only in phux-tui.
 
 ---
 
-Per [ADR-0020](../adr/0020-layered-render.md), the TUI uses two
-renderers for disjoint screen regions. libghostty paints pane interiors
-on the hot path — kitty graphics, sixel, OSC 8 hyperlinks, and the
-Kitty key protocol all pass through unchanged. `ratatui` paints the
-chrome: status bar, pane dividers, borders, modals, future tab bar.
-The layers composite rather than interleave; chrome carves skip-cell
-rectangles for pane rects so libghostty owns those cells exclusively.
-
-The `ratatui` dependency is scoped to a single crate, `phux-tui`
-(under `src/render/`, submodules `chrome` and `overlay`). The
-pane-interior substrate — pane mirror, predict layer, layout math, and
-multi-pane composition — lives in a separate crate, `phux-client-core`,
-which carries **no `ratatui` dependency**; the headless control-plane
-client — connection, transports, the agent verbs — lives in
-`phux-client`, which carries none either
-([ADR-0100](../adr/0100-the-tui-is-its-own-crate.md)). Both
-boundaries are therefore enforced by the compiler: a `use ratatui` in
-the substrate or in the headless library fails to build because the
-crate cannot name it. This replaced the original
-`scripts/check-ratatui-boundary.sh` grep guard. The attach loop lives
-in `phux-tui` (it composites chrome over panes, so it legitimately
-depends on the chrome, the substrate, and the headless client).
+The decision is [ADR-0020](../adr/0020-layered-render.md). Chrome carves
+skip-cell rectangles for pane rects so libghostty owns those cells
+exclusively. `ratatui` lives under `phux-tui/src/render/` (`chrome`,
+`overlay`); `phux-client-core` (pane mirror, predict, layout, multi-pane)
+and `phux-client` (connection, agent verbs) cannot name it
+([ADR-0100](../adr/0100-the-tui-is-its-own-crate.md)). The attach loop lives
+in `phux-tui` because it composites chrome over panes.
 
 ## Pane interiors are cell-diffed
 
@@ -47,7 +32,7 @@ outer terminal. A dirty row is compared against it and only the changed
 spans are emitted, each positioned with a `CUP` (or bridged by
 rewriting a short unchanged gap when that is fewer bytes). A full-screen
 animation that dirties every row every frame therefore costs about what
-actually changed, not a full-screen repaint (`phux-esge`).
+actually changed, not a full-screen repaint.
 
 The front buffer is a claim about the outer terminal, so it holds only
 while nothing else writes over pane cells. The disjointness invariant
@@ -72,9 +57,7 @@ costs bytes.
 
 ## Status
 
-No remaining target-versus-shipped gaps in the render split this document
-owns. `ratatui` is fenced to `phux-tui`; pane interiors live in
-`phux-client-core`; cell-diff painting is the hot path.
+No remaining target-versus-shipped gaps.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|

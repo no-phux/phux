@@ -74,43 +74,24 @@ The approved package layout is `clients/desktop/` with:
 | `toolchain` | Immutable source/artifact provenance and bounded GPUIX patches. |
 | `scripts`, `packaging` | Reproducible build, checks, and package preparation. |
 
-Use one package-local manifest and lockfile. Avoid empty abstraction layers or
-speculative services. UI modules import native operations through `src/bridge`;
-they cannot import native internals, own a socket, parse VT, or implement a
-second retry ladder. Solid owns reactive lifetime. Effect v4 owns only real
-TypeScript async resources, cancellation, or external-data schemas. Rust keeps
-engine, transport, reconnect, and acknowledged-delivery authority.
-
-The optional NAPI encoder belongs in `phux-client-ffi`, alongside C and UniFFI,
-with feature-scoped build/tests. Its values derive from `projection/`. The
-desktop painter stays application-specific. Statically linking a registry into
-two addons does not share it: commands and painter must resolve handles in the
-same loaded host instance. Assert that identity in integration tests.
+UI modules reach native operations only through `src/bridge`: they never own
+a socket, parse VT, or add a retry ladder. Rust keeps engine, transport,
+reconnect, and acknowledged-delivery authority. The optional NAPI encoder
+belongs in `phux-client-ffi` beside C and UniFFI, deriving from
+`projection/`. Commands and painter must resolve handles in the same loaded
+host instance (a registry linked into two addons is two registries).
 
 ## Framework feasibility
 
-The inspected [GPUIX source](https://github.com/remorses/gpuix) has a Solid 1
-universal adapter and native `CustomElement`, `CustomElementFactory`, and
-`CustomElementRegistry` traits/types. Its `custom_elements` module is private;
-there is no built-in terminal factory. A bounded source patch must expose or
-integrate registration in the one host, using the same GPUI types as GPUIX.
-It must not bolt on an unrelated second renderer.
-
-The inspected `renderer.rs` explicitly calls its scroll-handle state singleton
-single-window-only. Window/root ownership must cover retained tree identity,
-focus, scrolling, selection, automation, callbacks, menus, and element teardown.
-A second blank window is not multi-window proof. Solid's native test renderer
-does not establish Linux graphics coverage.
-
-Use a matched source build until a complete published Solid/native combination
-is verified. Registry reinspection on 2026-09-23 found both `@gpuix/solid` and
-`@gpuix/native` 0.10.0 published, superseding the earlier unavailable-Solid /
-native-0.9.0 observation. Solid declares native `^0.10.0`, and native lists an
-exact 0.10.0 Darwin arm64 optional package. Availability alone does not prove
-source provenance, the required host patch, or a working matched build. Exact
-source pins, digests, Zed gitlink, licenses, and build commands belong in
-`toolchain/`; environment installation belongs in [SETUP](../SETUP.md), not
-this page.
+[GPUIX](https://github.com/remorses/gpuix) has a Solid universal adapter and
+native custom-element traits, but its `custom_elements` module is private and
+there is no terminal factory, so a bounded source patch must register one in
+the single host using GPUIX's own GPUI types. Its scroll-handle state is
+single-window-only; multi-window proof must cover tree identity, focus,
+scrolling, selection, automation, callbacks, menus, and teardown. Build from
+matched pinned source until a published Solid/native pair is verified; pins,
+digests, and licenses live in `clients/desktop/toolchain/`, environment setup
+in [SETUP](../SETUP.md).
 
 ## Identity and independent views
 
@@ -138,25 +119,14 @@ viewports without a JS-side replica. Whether projection uses serially restored
 engine viewport state or additional native replicas is an implementation
 choice requiring measured costs and isolation proof; neither allows a new PTY.
 
-Do not treat repeated engine dirty reads as independent damage histories.
-Publication and damage are per view; the engine owner must fan out valid
-updates even when the first projection consumes engine dirty flags. Rebootstrap,
-resource removal, history eviction, and view disposal invalidate or explicitly
-rebase affected handles. Search cursor and selection in one view cannot mutate
-a sibling. Closing the last view releases view-owned state and the no-longer-
-needed subscription, respecting existing session-level attachment ownership.
-
-Shared history loading, cache budgets, and prefetch remain terminal-owned.
-The kernel's current singleton history viewport is not multi-view authority.
-Pruning one view's pinned anchor must not erase another view's still-valid
-selection or search anchors. True replica replacement and terminal-wide history
-invalidation remain explicitly terminal-wide; preserve legacy default-view behavior.
-
-Move transfers ownership without detach/restart. Duplicate creates a new view
-on the same qualified terminal. Closing one view never releases a sibling's
-attachment. Pending operations retain original destination and incarnation;
-late replies cannot act on a recycled placement. Temporary single-placement
-guards require issue-linked comments and cannot pass the first-release gate.
+Publication and damage are per view: engine dirty flags consumed by one
+projection must still fan out to the others. Rebootstrap, removal, eviction,
+and disposal invalidate or rebase affected handles; one view's search and
+selection never mutate a sibling, and pruning one view's pinned history anchor
+must not erase another's. History loading and cache budgets stay
+terminal-owned. Move transfers a view without detach; duplicate creates a
+view on the same terminal; closing one view never releases a sibling's
+attachment; late replies cannot act on a recycled placement.
 
 ## Geometry
 
@@ -225,45 +195,25 @@ root; no blocking driver join or daemon bootstrap belongs on the paint path.
 
 ## Persistence and external authority
 
-Persist bounded, versioned, atomic local placement snapshots in a namespace
-distinct from Cockpit and development/release siblings. Store host references,
-qualified execution identity, layout, and view preferences; never credentials,
-native pointers, live document anchors, or purported process checkpoints.
-Resolve against authoritative inventory before reattachment. Keep offline
-tombstones and original corrupt/newer snapshots recoverable. Serialize saves
-and migration so concurrent window closure cannot lose newer state.
-
-Use existing configuration catalogue/writer and registry/dialer authority.
-Project organization does not rewrite another consumer's session layout. Agent
-interpretation belongs in shared projection when it has shared meaning; UI
-sorting and focus are local. Gaps and open vocabularies stay explicit. No
-desktop-only coordinator or execution durability claim is introduced.
+Placement snapshots are bounded, versioned, atomic, serialized, and
+namespaced apart from Cockpit; they hold host references, qualified identity,
+layout, and view preferences, never credentials, pointers, live anchors, or
+process checkpoints, and resolve against live inventory before reattach.
+Configuration and registry/dialer authority are the existing shared ones;
+project organization never rewrites another consumer's layout, and shared
+agent meaning belongs in the shared projection.
 
 ## Tooling contract
 
-Use the repository Bun pin and compatible Node environment. Native TypeScript
-7 typechecks with no emit; it does not replace GPUIX's Solid universal Babel
-preload/build transform. Exact installed versions and commands must be recorded
-by the toolchain lane. Registry metadata inspected for this design identified
-native `typescript` 7.0.2 (`tsc`), Oxlint 1.85.0, Oxfmt 0.70.0,
-`oxlint-tsgolint` 7.0.2002, `eslint-plugin-solid` 0.18.0, and Effect
-4.0.0-rc.117 as candidates, not a tested combination. `tsgo` is the older
-native-preview package binary; do not select it merely because of the name.
-
-Match `@oxlint/plugins` exactly to Oxlint. Enable type-aware lint with its
-separate `oxlint-tsgolint` installation and nearest-tsconfig discovery. Use
-Solid reactivity rules through the JS plugin with GPUIX `moduleSources`
-recognition; DOM-only rules and browser element assumptions do not apply to
-native custom tags. Vendor reviewed generic
-[anti-slop](https://github.com/dmmulroy/anti-slop) rules with upstream provenance
-and all license notices. Document selected rules and exemptions; keep honest
-unknown/schema parsing at external seams rather than forcing unsafe casts.
-
-Strict native typechecking, warning-free lint, unused-suppression detection,
-formatting convergence, generated-type freshness, architectural import checks,
-and negative rule fixtures are required. Exact-pin Effect v4 when a real
-service needs it; its installed release types/source, not v3 examples or
-unmatched main-branch migration snippets, govern cancellation and API use.
+Bun per the repository pin; native TypeScript 7 typechecks with no emit and
+does not replace GPUIX's Solid Babel transform. Oxlint runs type-aware with
+`@oxlint/plugins` matched exactly, Solid reactivity rules via GPUIX
+`moduleSources`, and vendored [anti-slop](https://github.com/dmmulroy/anti-slop)
+rules with provenance and licenses. Required: strict typecheck, warning-free
+lint, unused-suppression detection, format convergence, generated-type
+freshness, import-boundary checks, and negative fixtures. Effect v4 is
+exact-pinned only when a real service needs it. Exact versions live in
+`clients/desktop/package.json`.
 
 ## Status
 

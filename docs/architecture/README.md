@@ -33,8 +33,6 @@ consumer docs are). What you read to understand how phux is built.
 | [verification.md](./verification.md) | The test and performance quality bar: unit, integration, golden snapshots, hot-path discipline, allocation budget |
 | [module-structure.md](./module-structure.md) | Per-crate module layout as it exists in tree today |
 
-The former `l2-server-design.md` lives in
-[`research/archive/`](../../research/archive/2026-06-06-l2-server-design.md).
 There is no L2 collection tier; see [`../spec/L2.md`](../spec/L2.md).
 
 ## What's not here
@@ -45,12 +43,6 @@ There is no L2 collection tier; see [`../spec/L2.md`](../spec/L2.md).
   describe what the code is; ADRs explain why it's that shape.
 - What phux is — that's [`../CONCEPTS.md`](../CONCEPTS.md).
 
-## When this directory is wrong
-
-Code is the implementation; these documents describe it. Where the code
-and the target shape differ, each document says so in its single `Status`
-table, pointing at the owning ADR and the tracked bead
-([`../CONVENTIONS.md`](../CONVENTIONS.md)). Product-wide gaps live in
-[`../CONCEPTS.md`](../CONCEPTS.md). If a document and the code disagree
-without such a row, file an issue: either the code drifted or the doc did,
-and the response is to reconcile, not to let either rot.
+Where code and target shape differ, each document says so in its single
+`Status` table ([`../CONVENTIONS.md`](../CONVENTIONS.md)); product-wide gaps
+live in [`../CONCEPTS.md`](../CONCEPTS.md).

@@ -61,15 +61,10 @@ The reusable MCP skill is also published as `using-phux-mcp`. Install it
 with `npx skills add no-phux/skills`. `phux mcp --skill` remains the
 version-matched copy compiled into this binary.
 
-`--skill` is the compiled operating guide. `--schema` is the exact MCP
-Tool descriptor array returned by live `tools/list`, including each
-`inputSchema`; it is not a catalog of tool *output* schemas. These are
-standalone modes and do not belong in the host's normal server command.
-`phux --capabilities --json` reports whether this companion is
-discoverable beside phux or on `PATH`.
-
-The launcher replaces itself with `phux-mcp`, preserving stdio, signals,
-and exit status. Direct `phux-mcp` registrations remain valid.
+`--schema` is the exact `tools/list` descriptor array (input schemas, not
+output schemas). These are standalone modes, not part of the host's server
+command. `phux mcp` execs the `phux-mcp` companion; registering `phux-mcp`
+directly also works.
 
 ## What this is
 
@@ -128,18 +123,7 @@ the daemon default (`$XDG_RUNTIME_DIR/phux/phux.sock`, falling back to
 
 ## Catalog
 
-`phux mcp --schema` prints the same array `tools/list` returns, as a
-standalone pretty-printed JSON document, and exits. It needs neither a
-running phux server nor a JSON-RPC handshake: the catalog is compiled
-into the binary.
-
-```sh
-phux mcp --schema | jq -r '.[].name'
-```
-
-The flag lives on the MCP companion rather than `phux api schema` so
-the schemas cannot drift and the main binary does not link the MCP
-stack.
+`phux mcp --schema | jq -r '.[].name'` lists the compiled catalog.
 
 Name-for-name mapping onto the CLI, checked by an automated parity gate:
 [`../reference/parity.md`](../reference/parity.md) (generated) lists every

@@ -25,44 +25,11 @@ minimum compatible binary is `phux 0.16.0`; check it before loading the package:
 phux --version
 ```
 
-A trusted checkout of this repository loads its local package automatically
-through [`.pi/settings.json`](../../.pi/settings.json), so a fresh clone has the
-integration without a separate install step. If `@phux/pi` is already configured
-in the user's global Pi settings, the checkout yields to the first global copy
-instead of registering duplicate tools. This lets contributors keep a preferred
-or in-development global checkout while preserving the out-of-box project
-integration for everyone else.
-
-Install the independently versioned public package:
-
-```sh
-pi install npm:@phux/pi
-```
-
-For package development, install the package directory from a trusted checkout:
-
-```sh
-pi install ./integrations/pi
-```
-
-The repository root is not a Pi package, so a git source that resolves to that
-root is not an installation method for this integration.
-
-A packed artifact can be tested or moved to another machine without implying
-registry publication:
-
-```sh
-cd integrations/pi
-npm ci
-npm pack
-mkdir -p phux-pi-packed
-tar -xzf phux-pi-0.1.0.tgz -C phux-pi-packed
-pi install ./phux-pi-packed/package
-```
-
-`npm pack` runs the package build. Pi installs the extracted package directory;
-it does not load the `.tgz` file as an extension. The artifact remains dependent
-on a compatible external `phux` binary on the destination machine.
+Install the independently versioned package with
+`pi install npm:@phux/pi`, or `pi install ./integrations/pi` from a trusted
+checkout (the repository root is not a Pi package). A trusted checkout of this
+repository also loads it through [`.pi/settings.json`](../../.pi/settings.json)
+unless a global copy is already configured.
 
 The extension inherits `PHUX_SOCKET`; set it before starting Pi when the server
 uses a non-default local Unix socket. It also reads `PHUX_TERMINAL_ID`, which
@@ -110,11 +77,8 @@ The headless phux CLI owns argument syntax, selector rules, JSON, and exit
 codes. Use the [agent CLI guide](./agents.md) for that canonical contract rather
 than treating this adapter as a second CLI definition.
 
-Input-authority control is an upstream blocker rather than a Pi tool. The
-`take` lease is scoped to a live CLI connection, and a one-shot CLI invocation
-disconnects immediately and releases it; `give` consequently cannot represent
-a durable paired action either. These tools must remain absent until phux
-provides a persistent transport/lifetime that Pi can safely own.
+There is no `take` / `give`: a one-shot CLI connection cannot hold an input
+lease.
 
 Tool output sent to the model is bounded to 200 lines and 12 KiB. CLI stdout
 and stderr capture are independently bounded, every subprocess accepts Pi
@@ -204,12 +168,9 @@ explicit target to a tool only when intentionally overriding the selection.
    attach. Copy the argv into a separate real terminal. The extension does not
    execute it and does not open a nested terminal inside Pi.
 
-A human attach joins the same terminal state. It is not a read-only monitor:
-agent input and human input can interleave at the PTY. The package does not
-serialize independent writers, reserve a prompt, or provide a transaction
-around `snapshot` followed by `send_keys`. Coordinate before typing into a pane
-that the other participant is actively driving, and use explicit targets when
-several panes are live.
+A human attach is not a read-only monitor: agent and human input can
+interleave at the PTY, and the package serializes nothing. Coordinate before
+typing into a pane the other participant is driving.
 
 ## Lifecycle metadata
 
@@ -217,12 +178,8 @@ When a target is ownership-validated as available, the extension reports a
 `phux.agent/v1` record with `name=pi`, `kind=pi`, and a Pi-session owner in the
 `session` field — **identity only, never a `state`**. A declared `state`
 outranks the server's own derivation for the record's whole lifetime
-([`../spec/L3.md`](../spec/L3.md) §3.7,
-[ADR-0046](../adr/0046-server-side-agent-state-detection.md) point 8), so
-reporting one would stand the shipped `rules/pi.toml` detector down on every
-pane running this extension. Identity is written once per owner and target.
-A per-turn identity rewrite would clobber derivation, because a whole-record
-write carries `state: "unknown"`.
+([`../spec/L3.md`](../spec/L3.md) §3.7), so reporting one would stand the
+`rules/pi.toml` detector down. Identity is written once per owner and target.
 
 On a server that advertises `RESOURCE_KINDS`, the extension also opens one
 AgentSession per pane and emits closed record types from Pi's lifecycle bus:
@@ -233,15 +190,9 @@ shutdown. Working, blocked, and done then come from the stream, not a regex.
 If `phux agent session open` is missing or refused with `unsupported_server`,
 emit fails closed; identity-only writes and the detector still run.
 
-Only a change of owner or target writes the identity record. Writes are
-serialized, debounced, locally bounded, and best-effort, so a missing server
-does not break Pi startup or shutdown.
-
-A target switch clears the old declaration only after reading it back and
-confirming that Pi still owns it. Normal shutdown applies the same ownership
-check. Extension reload preserves the declaration for the replacement
-instance, avoiding a clear/set flicker. This is status metadata, not an input
-lock; it does not prevent the interleaved-input case above.
+Writes are serialized, debounced, and best-effort. A target switch or
+shutdown clears the old declaration only after confirming Pi still owns it;
+a reload keeps it. This is status metadata, not an input lock.
 
 ## Current boundaries and security
 
@@ -265,12 +216,9 @@ lock; it does not prevent the interleaved-input case above.
 - Remote phux attach, pairing, and token transport are not supported. The
   adapter accepts a local Unix socket path, not `--quic`, `--ws`, bearer-token,
   or certificate arguments.
-- Pairing tokens and certificate material are secrets. Never place them in a
-  Pi prompt, tool argument, saved target, lifecycle record, attach handoff, or
-  smoke-test output. Configure remote access outside this package and expose a
-  suitable local phux endpoint only if its trust boundary is understood.
-- `/phux-attach` deliberately emits only local attach argv plus session/pane
-  navigation. It neither reads nor prints remote credentials.
+- Pairing tokens and certificate material are secrets: never place them in a
+  prompt, tool argument, saved target, lifecycle record, or handoff.
+  `/phux-attach` neither reads nor prints remote credentials.
 
 A checked-in [live-fleet recording](../pi-live-fleet-proof.md) shows Pi using
 this surface to place, drive, verify, and spatially rearrange real Claude Code

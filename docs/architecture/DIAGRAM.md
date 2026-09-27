@@ -133,24 +133,10 @@ consumer speaks L1 plus whatever L3 keys it chooses.
 
 ---
 
-## Cold-read digest
-
-1. **Start top-left**: the PTY emits VT bytes; a harness shim emits records.
-2. **Into the server**: one engine per resource owns canonical state.
-3. **Across the seam**: one codec, five streams; bytes one way, structured
-   events the other.
-4. **Client side**: a libghostty replica per Terminal-kind resource mirrors
-   the server for rendering.
-5. **Chrome**: ratatui decorates the grid with layout, status bar, sidebar.
-
----
-
 ## Status
 
-No remaining target-versus-shipped gaps in the sketched shape. The
-AgentSession engine, `APPEND_RESOURCE_OUTPUT`, and parent-cascade
-`CloseReason::ParentClosed` all run in this tree. Product-wide gaps live
-in [`../CONCEPTS.md`](../CONCEPTS.md).
+No remaining target-versus-shipped gaps; product-wide gaps live in
+[`../CONCEPTS.md`](../CONCEPTS.md).
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
