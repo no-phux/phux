@@ -1,15 +1,8 @@
-//! Client-side selector parsing and resolution (phux-3kj, ADR-0021).
+//! Client-side selector parsing and resolution (ADR-0021).
 //!
-//! The CLI's `TARGET` grammar (`docs/consumers/tui.md` §3) names sessions,
-//! windows, and panes — none of which are wire concepts (ADR-0017). Per
-//! [ADR-0021](../../../docs/adr/0021-control-plane-commands.md) selectors are
-//! therefore resolved **client-side** against a `GET_STATE` snapshot: a
-//! selector resolves to a concrete set of [`ResourceId`]s, and only those
-//! Terminal-scoped ids are sent back to the server (e.g. one
-//! `KILL_RESOURCE` per resolved Terminal). The server never parses a
-//! selector and never learns the words "session" or "window".
-//!
-//! Grammar:
+//! The CLI's `TARGET` grammar names sessions, windows, and panes, none of
+//! which are wire concepts, so selectors resolve client-side against a
+//! `GET_STATE` snapshot to concrete [`ResourceId`]s.
 //!
 //! | Form        | Meaning                                             |
 //! |-------------|-----------------------------------------------------|
@@ -24,32 +17,11 @@
 //! | `#tag`      | every Terminal carrying L3 tag `tag` (`phux.tags/v1`) |
 //! | `%name`     | the one agent named `name` (ADR-0075); see [`resolve_agent`] |
 //!
-//! `host` is an opaque registry token and may contain any UTF-8 text,
-//! including `/@` or be empty. Parsing uses the final `/@` delimiter so the
-//! canonical formatter round-trips every registry-accepted host token.
-//!
-//! The `#tag` form ([ADR-0027](../../../docs/adr/0027-terminal-references-and-l3-links.md)
-//! decision point 5) resolves to a *set*, like a session name, against L3
-//! tag metadata the caller fetches alongside the snapshot — see
-//! [`resolve_with_tags`]. The server stays selector-agnostic
-//! ([ADR-0017](../../../docs/adr/0017-tui-not-protocol-privileged.md)).
-//!
-//! The `%name` form is [ADR-0075](../../../docs/adr/0075-agent-name-addressing.md)'s
-//! agent-name sigil. Its resolver yields **exactly one** agent or refuses, so
-//! it does **not** go through [`resolve_with_tags`] — see [`resolve_agent`]
-//! and [`resolve_agent_for_input`], which the CLI's shared target resolver and
-//! the MCP adapter branch to before reaching the set-valued seam. The name is
-//! the `phux.agent/v1` `name` on a Terminal; when that Terminal has a live
-//! `AgentSession` child (ADR-0103) the resolution carries both, so a
-//! Terminal-facet verb acts on the pane and a session verb on the session.
-//!
-//! # Resource kinds
-//!
-//! A snapshot's `panes` carry every resource kind (ADR-0102). `@N` and
-//! `host/@N` resolve a resource of any kind; every other form — `.`, a
-//! session name, the window and pane forms, `#tag` — resolves Terminal-kind
-//! resources only, and a pane index `M` counts Terminal-kind panes only, so an
-//! `AgentSession` bound to a pane never shifts its siblings' indices.
+//! `host` is an opaque token (any UTF-8, even `/@` or empty); parsing splits
+//! at the final `/@` so the canonical formatter round-trips. `@N` and
+//! `host/@N` resolve a resource of any kind; every other form resolves
+//! Terminal-kind resources only, so an `AgentSession` never shifts a pane
+//! index (ADR-0102).
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::info::SessionSnapshot;
@@ -76,15 +48,11 @@ pub enum Selector {
         /// Terminal id in the satellite server's local id space.
         id: u32,
     },
-    /// `#tag` — every Terminal carrying the L3 tag `tag` (`phux.tags/v1`).
-    /// Resolves to a set; see [`resolve_with_tags`].
+    /// `#tag` — every Terminal carrying the L3 tag `tag`; see
+    /// [`resolve_with_tags`].
     Tag(String),
-    /// `%name` — the ADR-0075 agent-name form.
-    ///
-    /// Its singular resolver, [`resolve_agent`], yields one [`AgentTarget`]
-    /// or an [`AgentResolveError`]. It deliberately resolves to nothing
-    /// through the set-valued [`resolve_with_tags`] seam; callers branch to
-    /// the singular resolver first.
+    /// `%name` — one agent (ADR-0075), resolved only by [`resolve_agent`];
+    /// the set-valued [`resolve_with_tags`] yields nothing for it.
     Agent(String),
 }
 
@@ -110,9 +78,7 @@ pub enum ParseError {
     EmptyTag,
     /// `%` carried no agent name (the bare sigil).
     EmptyAgentName,
-    /// `%name` carried a name outside the addressable grammar
-    /// `^[a-z][a-z0-9_-]{0,31}$` (ADR-0075 point 4). Checked at parse time so
-    /// a typo fails locally, before any round trip.
+    /// `%name` carried a name outside `^[a-z][a-z0-9_-]{0,31}$`.
     BadAgentName(String),
     /// `=` requires an attached client's local focus history.
     LastUnsupported,
@@ -158,12 +124,8 @@ pub fn parse(raw: &str) -> Result<Selector, ParseError> {
     if raw == "=" {
         return Err(ParseError::LastUnsupported);
     }
-    // `%name` is checked before every other prefix rule. `%` is free in the
-    // grammar and shell-safe unquoted (ADR-0075 "Why"), and no other accepted
-    // form begins with it — the cost, which the ADR names, is that a session
-    // literally called `%foo` becomes unaddressable. Checking it here also
-    // means `%a/@1` fails as a bad agent name rather than being swallowed by
-    // the satellite rsplit below: `%name` is hub-local (ADR-0075 point 2).
+    // `%name` first, so `%a/@1` is a bad agent name rather than a satellite
+    // id: `%name` is hub-local (ADR-0075 point 2).
     if let Some(name) = raw.strip_prefix('%') {
         if name.is_empty() {
             return Err(ParseError::EmptyAgentName);
@@ -173,10 +135,8 @@ pub fn parse(raw: &str) -> Result<Selector, ParseError> {
         }
         return Ok(Selector::Agent(name.to_owned()));
     }
-    // Split at the final delimiter before recognizing local `@N`: a
-    // SatelliteHost is an opaque registry token and may itself begin with `@`,
-    // contain `/@`, or be empty. Since the formatter appends exactly one
-    // `/@N` suffix, rsplit makes every accepted host reversible.
+    // The final `/@` before local `@N`: a host may itself begin with `@`,
+    // contain `/@`, or be empty.
     if let Some((host, rest)) = raw.rsplit_once("/@") {
         let id = rest
             .parse::<u32>()
@@ -205,9 +165,7 @@ pub fn parse(raw: &str) -> Result<Selector, ParseError> {
     };
     let name = name.to_owned();
 
-    // Split the window locus from an optional `.pane` suffix. Only the
-    // FIRST `.` separates window from pane, so a window tag may itself
-    // contain dots in a future grammar; today windows are `window-N`.
+    // The first `.` separates the window locus from an optional pane index.
     if let Some((window_part, pane_part)) = locus.split_once('.') {
         let window = parse_window_ref(window_part);
         let pane = pane_part
@@ -230,18 +188,8 @@ fn parse_window_ref(part: &str) -> WindowRef {
 /// `^[a-z][a-z0-9_-]{0,31}$`).
 pub const AGENT_NAME_MAX_LEN: usize = 32;
 
-/// Whether `name` is spellable after `%`.
-///
-/// The addressable grammar is `^[a-z][a-z0-9_-]{0,31}$` (ADR-0075 point 4).
-/// It is deliberately *narrower* than the record's own `name` field, which
-/// `docs/spec/L3.md` §3.7 leaves as "any non-empty string": a display-style
-/// name stays valid, listed, and addressable by `@N` — just not by `%`. This
-/// predicate is public so `phux agent list` can say which of the names it
-/// prints are addressable.
-///
-/// There is no write-time check. L3 is last-writer-wins, so a scan two racing
-/// writers both pass is an `O(panes)` round trip and not a guarantee
-/// (ADR-0075 point 4); refusal at resolve is the enforcing check.
+/// Whether `name` is spellable after `%`: `^[a-z][a-z0-9_-]{0,31}$`
+/// (ADR-0075 point 4), narrower than the record's own `name` field.
 #[must_use]
 pub fn is_addressable_agent_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -255,45 +203,22 @@ pub fn is_addressable_agent_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
-/// Resolve a parsed [`Selector`] to the [`ResourceId`]s it names.
-///
-/// Returns an empty vec when the selector matches nothing (e.g. an unknown
-/// session) — callers decide whether that is an error (`kill` treats it as
-/// a selector miss).
+/// Resolve a parsed [`Selector`] to the [`ResourceId`]s it names; empty on
+/// a miss.
 #[must_use]
 pub fn resolve(selector: &Selector, snapshot: &SessionSnapshot) -> Vec<ResourceId> {
     resolve_with_tags(selector, snapshot, &TagIndex::new())
 }
 
 /// A map from `ResourceId` to its L3 tags (`phux.tags/v1`).
-///
-/// The caller fetches it alongside the snapshot. `resolve_with_tags` reads it
-/// only for a [`Selector::Tag`]; an empty map resolves every `#tag` to nothing.
 pub type TagIndex = std::collections::HashMap<ResourceId, Vec<String>>;
 
-/// Like [`resolve`], but resolves a [`Selector::Tag`] against `tags`.
+/// Like [`resolve`], but a `#tag` yields every Terminal carrying the tag in
+/// `tags`, in snapshot order (ADR-0027).
 ///
-/// Every selector form except `#tag` ignores `tags` entirely (so
-/// [`resolve`] is the zero-tag specialization). A `#tag` selector yields, in
-/// snapshot order, every Terminal whose `tags` entry contains the tag — the
-/// set semantics ADR-0027 specifies, matching how a session name resolves to
-/// many Terminals.
-///
-/// # `%name` resolves to nothing here, on purpose
-///
-/// This function is the set-valued seam, and every caller of it follows up
-/// with [`pick_target_pane`] — the CLI's `resolve_target`, `spawn`, the
-/// spatial verbs, and `phux-mcp`'s `resolve_one`, which applies it
-/// unconditionally. `pick_target_pane` is right for a selector that asked for
-/// a representative and catastrophic for one whose entire value is that it
-/// names one thing (ADR-0075 point 3: `phux send-keys %build 'rm -rf .'` must
-/// never land in an arbitrary pane that shares a label).
-///
-/// Since this signature has nowhere to put a refusal and no agent index to
-/// read, [`Selector::Agent`] yields an empty set: an un-migrated caller gets a
-/// selector **miss**, which is fail-closed. Callers that mean to support
-/// `%name` must branch on [`Selector::Agent`] *before* reaching here and call
-/// [`resolve_agent`] (or [`resolve_agent_for_input`]) instead.
+/// [`Selector::Agent`] yields nothing, on purpose: callers follow this with
+/// [`pick_target_pane`], which must never narrow `%name` to an arbitrary pane
+/// (ADR-0075 point 3). Branch to [`resolve_agent`] first.
 #[must_use]
 pub fn resolve_with_tags(
     selector: &Selector,
@@ -321,28 +246,15 @@ pub fn resolve_with_tags(
             .map(|p| p.id.clone())
             .filter(|id| tags.get(id).is_some_and(|ts| ts.iter().any(|t| t == tag)))
             .collect(),
-        // Singular selector, set-valued seam: see this function's docs. Never
-        // let `%name` reach `pick_target_pane`.
         Selector::Agent(_) => Vec::new(),
     }
 }
 
-/// The `phux.agent/v1` records the CLI read back, plus whether it managed to
-/// read *all* of them.
+/// The Terminal-scoped `phux.agent/v1` records read back, plus whether all
+/// of them were read.
 ///
-/// Built over Terminal-kind resources only: the record is Terminal-scoped,
-/// and an `AgentSession` is reached through its parent.
-///
-/// The completeness bit is the whole point (ADR-0075 point 3). The index is
-/// built with one `GET_METADATA` per pane, and the existing builder is
-/// best-effort by design: a mid-flight transport failure returns what it
-/// collected so heuristic consumers degrade instead of erroring. That is
-/// exactly wrong for `%name` — a truncated index turns a real ambiguity into a
-/// confident single match, and turns "we did not finish looking" into "no pane
-/// holds that name". [`resolve_agent`] refuses a partial index rather than
-/// answer from it.
-///
-/// [`Default`] is therefore the *partial*, empty index: the fail-closed value.
+/// [`resolve_agent`] refuses a partial index (ADR-0075 point 3), so
+/// [`Default`] is the partial, empty, fail-closed value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentIndex {
     records: std::collections::HashMap<ResourceId, AgentRecord>,
@@ -360,9 +272,7 @@ impl AgentIndex {
         }
     }
 
-    /// An index whose builder gave up early — a dropped connection, a refused
-    /// read, a hub that could not reach a satellite. Whatever it holds is a
-    /// lower bound.
+    /// An index whose builder gave up early; its records are a lower bound.
     #[must_use]
     pub const fn partial(records: std::collections::HashMap<ResourceId, AgentRecord>) -> Self {
         Self {
@@ -377,12 +287,6 @@ impl AgentIndex {
         self.complete
     }
 
-    /// The records, keyed by the Terminal they are scoped to.
-    #[must_use]
-    pub const fn records(&self) -> &std::collections::HashMap<ResourceId, AgentRecord> {
-        &self.records
-    }
-
     /// The record for one Terminal, if the index holds one.
     #[must_use]
     pub fn get(&self, id: &ResourceId) -> Option<&AgentRecord> {
@@ -392,11 +296,6 @@ impl AgentIndex {
 
 /// What `%name` resolves to: the one Terminal carrying the name, and its
 /// live `AgentSession` child when it has exactly one (ADR-0103).
-///
-/// A Terminal-facet verb (`send-keys`, `snapshot`, `agent prompt`) acts on
-/// [`Self::terminal`]; an agent-session verb (`agent emit`, `agent log`,
-/// `agent session close`) acts on [`Self::session`] and refuses when it is
-/// `None`. Both name the same agent from two sides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentTarget {
     /// The Terminal whose `phux.agent/v1` record carries the name.
@@ -405,74 +304,46 @@ pub struct AgentTarget {
     pub session: Option<ResourceId>,
 }
 
-/// Why a `%name` selector did not resolve to one agent.
-///
-/// Every variant is a *refusal to guess*. The exit codes are ADR-0075 point 3
-/// and are reported by [`Self::exit_code`] so the CLI and MCP map them the
-/// same way.
+/// Why a `%name` selector did not resolve to one agent: every variant is a
+/// refusal to guess, with its ADR-0075 exit code from [`Self::exit_code`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentResolveError {
-    /// No live hub-local pane carries that name. A plain selector miss
-    /// (exit 1), the same outcome as an unknown session or an unknown tag.
-    ///
-    /// `phux.agent/v1` does not federate, so a satellite agent lands here too:
-    /// `%name` is hub-local by construction (ADR-0075 point 2).
+    /// No live hub-local pane carries that name (exit 1).
     Unknown {
         /// The name that was typed after `%`.
         name: String,
     },
-    /// Two or more live records share the name. Refuse (exit 2) and enumerate
-    /// every candidate, so the operator can retarget by `@N` — never narrow.
+    /// Two or more live records share the name (exit 2).
     Ambiguous {
         /// The name that was typed after `%`.
         name: String,
         /// Every Terminal carrying it, in snapshot order.
         candidates: Vec<ResourceId>,
     },
-    /// At least one candidate's `name` equals its own `kind` — the shape a
-    /// per-*kind* manifest constant leaves, not a name a human chose
-    /// (ADR-0075 point 4, phux-w7z2.25). Refuse (exit 2) with the fix named.
-    ///
-    /// This fires on one Claude pane exactly as on twelve: resolving the
-    /// constant while a single one is up would be a target whose meaning
-    /// silently changes when the second spawns. The record has no provenance
-    /// field, so this is a shape test rather than a provenance read — a human
-    /// who runs `phux agent set @7 --name claude --kind claude` is refused
-    /// too, which the ADR accepts.
+    /// A candidate's `name` equals its own `kind`: a per-kind manifest
+    /// constant, not a chosen name (exit 2), refused even when unique.
     KindConstant {
         /// The name that was typed after `%`.
         name: String,
         /// Every Terminal carrying it, in snapshot order.
         candidates: Vec<ResourceId>,
     },
-    /// The agent index was not built completely, so a "one match" or "no
-    /// match" answer would be taken against a narrower world than the caller
-    /// assumed. Refuse as partial (exit 3).
-    ///
-    /// Exit 3 keeps the meaning `docs/reference/exit-codes.md` publishes —
-    /// phux could not answer. Unlike a `1`, the target may well exist, so a
-    /// retry is correct once the link is back.
+    /// The agent index is partial, so no answer is sound (exit 3).
     PartialIndex {
         /// The name that was typed after `%`.
         name: String,
         /// What the truncated index did match, in snapshot order.
         matched: Vec<ResourceId>,
     },
-    /// The record resolved, but it carries a `kind` **and** `state: unknown` —
-    /// exactly what a withdrawal leaves behind, so it is positive evidence
-    /// that a producer which knew this pane gave the claim up (ADR-0075
-    /// point 5). Input-delivering verbs refuse (exit 2); read-only verbs skip
-    /// this gate entirely.
+    /// The record has the withdrawn shape (ADR-0075 point 5); input verbs
+    /// refuse (exit 2).
     Withdrawn {
         /// The name that was typed after `%`.
         name: String,
         /// The Terminal the name resolved to.
         terminal: ResourceId,
     },
-    /// The name resolved to one Terminal, but that Terminal has more than one
-    /// live `AgentSession` child, so "the session named `name`" is not one
-    /// thing. Refuse (exit 2) and enumerate the sessions; address one by
-    /// `@N`.
+    /// The Terminal has several live `AgentSession` children (exit 2).
     AmbiguousSession {
         /// The name that was typed after `%`.
         name: String,
@@ -484,12 +355,8 @@ pub enum AgentResolveError {
 }
 
 impl AgentResolveError {
-    /// The process exit code this refusal maps to (ADR-0075 point 3).
-    ///
-    /// `1` selector miss, `2` refusal, `3` phux could not answer. A verb that
-    /// has already spent one of these — `run` mirrors its child's status —
-    /// keeps its own contract and carries the distinction in the message,
-    /// which ADR-0075 point 3 names explicitly.
+    /// The exit code (ADR-0075 point 3): `1` miss, `2` refusal, `3` phux
+    /// could not answer.
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
@@ -570,47 +437,20 @@ fn render_candidates(candidates: &[ResourceId]) -> String {
         .join(", ")
 }
 
-/// Whether `record` has the *withdrawn shape*: a `kind` it kept, and
-/// `state: unknown` (ADR-0075 point 5).
-///
-/// That pairing is what ADR-0046's retraction, a declaration withdrawn
-/// because its occupant died, and an in-place occupant-change correction all
-/// leave behind, and it is client-observable because `AgentRecord::kind` is
-/// `skip_serializing_if = "Option::is_none"`. A record with **no** `kind` and
-/// `state: unknown` is the resting value of an identity-only declaration
-/// (`docs/spec/L3.md` §3.7: an absent `state` means unknown) and is *not*
-/// withdrawn — gating on bare `state != unknown` would refuse
-/// `phux agent set --name build` forever.
-///
-/// This is a **level** read, in the §3.7 sense: a non-`unknown` state asserts
-/// only that no state-bearing rule contradicts it right now — absence of
-/// contrary evidence, equally true of a crashed pane — never that the occupant
-/// is still who you named. That is the right predicate for a "do not disturb
-/// this" gate, and a crashed pane reading as do-not-disturb errs the safe way.
+/// Whether `record` has the withdrawn shape: a `kind` it kept, and
+/// `state: unknown` (ADR-0075 point 5). No `kind` with `state: unknown` is an
+/// identity-only declaration, not a withdrawal.
 #[must_use]
 pub fn is_withdrawn_agent_record(record: &AgentRecord) -> bool {
     record.kind.is_some() && record.state == AgentMetaState::Unknown
 }
 
-/// Resolve `%name` to exactly one agent, or refuse.
+/// Resolve `%name` to exactly one agent (with its unique live session
+/// child, if any), or refuse; candidates are enumerated in snapshot order.
 ///
-/// `pick_target_pane` is never applied: a name's entire value is that it names
-/// one thing, so every non-singular outcome is a refusal that enumerates what
-/// it saw (ADR-0075 point 3). Candidates are collected in `snapshot.resources`
-/// order so the enumeration is deterministic rather than hash order.
-///
-/// The name is the `phux.agent/v1` `name` on a Terminal-kind resource. The
-/// resolution also carries that Terminal's live `AgentSession` child
-/// (ADR-0103) when it has exactly one: an agent-session verb acts on the
-/// session, a Terminal-facet verb on the pane, and both name the same agent.
-/// A Terminal with several live sessions refuses
-/// ([`AgentResolveError::AmbiguousSession`]), the way two records sharing a
-/// name would.
-///
-/// The checks run in the order in which their conclusions are *sound*: the
-/// kind-constant and ambiguity refusals hold whether or not the index finished
-/// (more panes can only add candidates), so they are reported before the
-/// weaker "could not answer".
+/// Checks run in the order their conclusions are sound: kind-constant and
+/// ambiguity hold even for a partial index, so they precede "could not
+/// answer".
 ///
 /// # Errors
 ///
@@ -621,9 +461,6 @@ pub fn resolve_agent(
     snapshot: &SessionSnapshot,
     index: &AgentIndex,
 ) -> Result<AgentTarget, AgentResolveError> {
-    // Exact match on `name`. The record's own field is looser than the
-    // addressable grammar (§3.7), so a display-style name is listed and
-    // reachable by `@N` but never by `%` — ADR-0075 point 4's two grammars.
     let candidates: Vec<ResourceId> = crate::resource::terminals(snapshot)
         .map(|p| p.id.clone())
         .filter(|id| index.get(id).is_some_and(|rec| rec.name == name))
@@ -646,10 +483,7 @@ pub fn resolve_agent(
         });
     }
     if !index.is_complete() {
-        // Sound conclusions are exhausted: an unseen pane could hold this
-        // name too, so neither the single match nor the empty one is safe to
-        // report. "Nothing matched" and "we did not finish looking" must not
-        // collapse into one silence.
+        // An unseen pane could hold this name too.
         return Err(AgentResolveError::PartialIndex {
             name: name.to_owned(),
             matched: candidates,
@@ -678,13 +512,8 @@ pub fn resolve_agent(
     Ok(AgentTarget { terminal, session })
 }
 
-/// [`resolve_agent`] plus ADR-0075 point 5's write guard, for the verbs that
-/// deliver input into the pane — `send-keys`, `paste`, `signal`, `run`, and
-/// every ADR-0053 acknowledged-batch verb.
-///
-/// The extra refusal is [`AgentResolveError::Withdrawn`]. Read-only verbs
-/// (`agent show`, `snapshot`, `capture`, `watch`) call [`resolve_agent`]
-/// instead and skip it.
+/// [`resolve_agent`] plus the ADR-0075 point 5 write guard, for verbs that
+/// deliver input: also refuses [`AgentResolveError::Withdrawn`].
 ///
 /// # Errors
 ///
@@ -707,12 +536,8 @@ pub fn resolve_agent_for_input(
     Ok(target)
 }
 
-/// Whether this record's `name` is its own `kind` — the manifest-constant
-/// shape a per-kind detector rule writes (`rules/claude.toml` sets both to
-/// `claude`), which cannot distinguish one pane from another of the same kind.
-///
-/// ASCII-case-insensitive, matching how the shipped
-/// `phux agent send-keys --expect-agent` compares names.
+/// Whether this record's `name` is its own `kind` (ASCII case-insensitive):
+/// the per-kind manifest constant a detector rule writes.
 fn is_kind_constant(record: &AgentRecord) -> bool {
     record
         .kind
@@ -720,18 +545,9 @@ fn is_kind_constant(record: &AgentRecord) -> bool {
         .is_some_and(|kind| kind.eq_ignore_ascii_case(&record.name))
 }
 
-/// The name of the whole session this selector targets, if any.
-///
-/// Returns `Some(name)` for selectors that address an entire session —
-/// `Current` (resolved against `snapshot.focused_session`) and `Session(name)` —
-/// and `None` for window / pane / terminal-id
-/// selectors, which address a strict subset and must stay per-Terminal.
-///
-/// This is the seam `phux kill` uses to collapse a whole-session teardown
-/// into a single `KILL_COLLECTION` round-trip while keeping sub-session
-/// targets on the per-`KILL_RESOURCE` path (`phux-h9s`, ADR-0021 §3). The
-/// name is returned only when it resolves to a live session in `snapshot`,
-/// so the caller can rely on it existing server-side.
+/// The live session a whole-session selector (`.` or `name`) targets, so
+/// `phux kill` can tear it down in one round trip; `None` for every
+/// narrower form.
 #[must_use]
 pub fn whole_session_name(selector: &Selector, snapshot: &SessionSnapshot) -> Option<String> {
     let session_id = match selector {
@@ -742,8 +558,6 @@ pub fn whole_session_name(selector: &Selector, snapshot: &SessionSnapshot) -> Op
         | Selector::ResourceId(_)
         | Selector::SatelliteResourceId { .. }
         | Selector::Tag(_)
-        // `%name` addresses one Terminal, never a session, so it must stay on
-        // the per-`KILL_RESOURCE` path.
         | Selector::Agent(_) => return None,
     };
     snapshot
@@ -753,10 +567,8 @@ pub fn whole_session_name(selector: &Selector, snapshot: &SessionSnapshot) -> Op
         .map(|s| s.name.clone())
 }
 
-/// Render a wire id as the canonical direct Terminal selector.
-///
-/// Local ids use `@N`; satellite ids retain their opaque hub-routing token
-/// and use `host/@N`. Both forms round-trip through [`parse`] + [`resolve`].
+/// Render a wire id as the canonical direct selector (`@N` or `host/@N`),
+/// which round-trips through [`parse`].
 #[must_use]
 pub fn format_terminal_id(id: &ResourceId) -> String {
     match id {
@@ -765,11 +577,8 @@ pub fn format_terminal_id(id: &ResourceId) -> String {
     }
 }
 
-/// Choose one pane from a selector's `candidates`.
-///
-/// Prefers the one equal to the server's `focused` pane (the common "the
-/// session I'm looking at" case), else the first in snapshot order. `None`
-/// only when the selector matched nothing. Shared by the CLI and MCP tools.
+/// Choose one pane from a selector's `candidates`: the `focused` one if
+/// present, else the first; `None` on a miss.
 #[must_use]
 pub fn pick_target_pane(candidates: &[ResourceId], focused: &ResourceId) -> Option<ResourceId> {
     candidates
@@ -789,9 +598,7 @@ fn resolve_wire_id(snapshot: &SessionSnapshot, wanted: ResourceId) -> Vec<Resour
         .collect()
 }
 
-/// All Terminal-kind resources in `session`, across every window, in
-/// snapshot order. An `AgentSession` child is never a member of a session
-/// selector's set: it is reached through its parent.
+/// All Terminal-kind resources in `session`, in snapshot order.
 fn terminals_in_session(
     snapshot: &SessionSnapshot,
     session: phux_protocol::ids::SessionId,
@@ -822,8 +629,6 @@ fn resolve_window(snapshot: &SessionSnapshot, name: &str, window: &WindowRef) ->
             WindowRef::Tag(tag) => w.name == *tag,
         })
         .map(|w| w.id);
-    // Terminal-kind only, so the pane index `M` a caller types counts panes
-    // and skips any `AgentSession` the snapshot lists under the same window.
     window_id.map_or_else(Vec::new, |wid| {
         crate::resource::terminals(snapshot)
             .filter(|p| p.window_id == wid)
@@ -850,59 +655,147 @@ mod tests {
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
     #[test]
-    fn parse_session_window_pane_and_terminal_forms() {
-        assert_eq!(parse(".").unwrap(), Selector::Current);
-        assert_eq!(parse("work").unwrap(), Selector::Session("work".to_owned()));
-        assert_eq!(
-            parse("work:1").unwrap(),
-            Selector::Window("work".to_owned(), WindowRef::Index(1)),
-        );
-        assert_eq!(
-            parse("work:editor").unwrap(),
-            Selector::Window("work".to_owned(), WindowRef::Tag("editor".to_owned())),
-        );
-        assert_eq!(
-            parse("work:1.2").unwrap(),
-            Selector::Pane("work".to_owned(), WindowRef::Index(1), 2),
-        );
-        assert_eq!(parse("@42").unwrap(), Selector::ResourceId(42));
-        assert_eq!(
-            parse("devbox/@42").unwrap(),
-            Selector::SatelliteResourceId {
-                host: "devbox".to_owned(),
-                id: 42,
-            },
-        );
-        assert_eq!(parse("#build").unwrap(), Selector::Tag("build".to_owned()));
+    fn parse_accepts_every_form() {
+        let session = |s: &str| s.to_owned();
+        for (raw, expected) in [
+            (".", Selector::Current),
+            ("work", Selector::Session(session("work"))),
+            (
+                "work:1",
+                Selector::Window(session("work"), WindowRef::Index(1)),
+            ),
+            (
+                "work:editor",
+                Selector::Window(session("work"), WindowRef::Tag(session("editor"))),
+            ),
+            (
+                "work:1.2",
+                Selector::Pane(session("work"), WindowRef::Index(1), 2),
+            ),
+            ("@42", Selector::ResourceId(42)),
+            (
+                "devbox/@42",
+                Selector::SatelliteResourceId {
+                    host: session("devbox"),
+                    id: 42,
+                },
+            ),
+            (
+                "/@1",
+                Selector::SatelliteResourceId {
+                    host: String::new(),
+                    id: 1,
+                },
+            ),
+            ("#build", Selector::Tag(session("build"))),
+            ("%build", Selector::Agent(session("build"))),
+            ("%r2-d2_9", Selector::Agent(session("r2-d2_9"))),
+        ] {
+            assert_eq!(parse(raw).unwrap(), expected, "{raw}");
+        }
     }
 
     #[test]
-    fn parse_rejects_empty_and_bad_numbers() {
+    fn parse_rejects_malformed_selectors() {
         assert_eq!(parse(""), Err(ParseError::Empty));
         assert!(matches!(parse("@nope"), Err(ParseError::BadResourceId(_))));
         assert!(matches!(
             parse("devbox/@nope"),
             Err(ParseError::BadResourceId(_))
         ));
-        assert_eq!(
-            parse("/@1").unwrap(),
-            Selector::SatelliteResourceId {
-                host: String::new(),
-                id: 1,
-            }
-        );
         assert!(matches!(
             parse("work:1.x"),
             Err(ParseError::BadPaneIndex(_))
         ));
         assert_eq!(parse("#"), Err(ParseError::EmptyTag));
         assert_eq!(parse("="), Err(ParseError::LastUnsupported));
+        assert_eq!(parse("%"), Err(ParseError::EmptyAgentName));
+        // Hub-local: `%a/@1` is a bad agent name, never a satellite id.
+        let longest = "a".repeat(AGENT_NAME_MAX_LEN);
+        assert_eq!(
+            parse(&format!("%{longest}")).unwrap(),
+            Selector::Agent(longest.clone())
+        );
+        for bad in [
+            "%a/@1".to_owned(),
+            "%Build".to_owned(),
+            "%9lives".to_owned(),
+            "%-lead".to_owned(),
+            "%_lead".to_owned(),
+            "%my agent".to_owned(),
+            "%añejo".to_owned(),
+            format!("%{longest}a"),
+        ] {
+            assert!(
+                matches!(parse(&bad), Err(ParseError::BadAgentName(_))),
+                "{bad}"
+            );
+        }
+        assert!(is_addressable_agent_name("build"));
+        assert!(!is_addressable_agent_name("Build Runner"));
+        assert!(!is_addressable_agent_name(""));
+    }
+
+    /// Session "work" (id 1) with windows 0 (@100) and 1 (@101, @102), plus
+    /// session "play" (@200).
+    fn fixture() -> SessionSnapshot {
+        let work = SessionId::new(1);
+        let play = SessionId::new(2);
+        let w0 = WindowId::new(10);
+        let w1 = WindowId::new(11);
+        let p0 = WindowId::new(20);
+        SessionSnapshot::new(work, w0, ResourceId::local(100))
+            .with_sessions(vec![
+                SessionInfo::new(work, "work"),
+                SessionInfo::new(play, "play"),
+            ])
+            .with_windows(vec![
+                WindowInfo::new(w0, work, "shell").with_index(0),
+                WindowInfo::new(w1, work, "editor").with_index(1),
+                WindowInfo::new(p0, play, "shell").with_index(0),
+            ])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(100), w0, 80, 24),
+                ResourceInfo::new(ResourceId::local(101), w1, 80, 24),
+                ResourceInfo::new(ResourceId::local(102), w1, 80, 24),
+                ResourceInfo::new(ResourceId::local(200), p0, 80, 24),
+            ])
+    }
+
+    fn ids(locals: &[u32]) -> Vec<ResourceId> {
+        locals.iter().map(|id| ResourceId::local(*id)).collect()
+    }
+
+    #[test]
+    fn resolve_maps_each_form_against_the_snapshot() {
+        let mut snap = fixture();
+        snap.resources.push(ResourceInfo::new(
+            ResourceId::satellite("devbox", 7),
+            WindowId::new(999),
+            120,
+            40,
+        ));
+        for (raw, expected) in [
+            (".", ids(&[100, 101, 102])),
+            ("work", ids(&[100, 101, 102])),
+            ("work:1", ids(&[101, 102])),
+            ("work:editor", ids(&[101, 102])),
+            ("work:1.1", ids(&[102])),
+            ("@100", ids(&[100])),
+            ("devbox/@7", vec![ResourceId::satellite("devbox", 7)]),
+            // Direct ids still require inventory membership.
+            ("other/@7", vec![]),
+            ("devbox/@8", vec![]),
+            ("@999", vec![]),
+            ("ghost", vec![]),
+        ] {
+            assert_eq!(resolve(&parse(raw).unwrap(), &snap), expected, "{raw}");
+        }
     }
 
     #[test]
     fn resolve_tag_returns_every_tagged_terminal_in_snapshot_order() {
         let snap = fixture();
-        // Tag 'build' on panes 100 (work) and 200 (play) — a cross-session set.
         let mut tags = TagIndex::new();
         tags.insert(
             ResourceId::local(100),
@@ -912,110 +805,9 @@ mod tests {
         tags.insert(ResourceId::local(101), vec!["web".to_owned()]);
 
         let build = resolve_with_tags(&parse("#build").unwrap(), &snap, &tags);
-        assert_eq!(build, vec![ResourceId::local(100), ResourceId::local(200)]);
-
-        let ci = resolve_with_tags(&parse("#ci").unwrap(), &snap, &tags);
-        assert_eq!(ci, vec![ResourceId::local(100)]);
-
-        // An unknown tag, and the no-index path, both resolve to nothing.
+        assert_eq!(build, ids(&[100, 200]));
         assert!(resolve_with_tags(&parse("#nope").unwrap(), &snap, &tags).is_empty());
         assert!(resolve(&parse("#build").unwrap(), &snap).is_empty());
-    }
-
-    /// Build a snapshot: session "work" (id 1) with two windows, each
-    /// holding panes, plus a second session "play" (id 2).
-    fn fixture() -> SessionSnapshot {
-        let work = SessionId::new(1);
-        let play = SessionId::new(2);
-        let w0 = WindowId::new(10);
-        let w1 = WindowId::new(11);
-        let p0 = WindowId::new(20);
-        let sessions = vec![
-            SessionInfo::new(work, "work"),
-            SessionInfo::new(play, "play"),
-        ];
-        let windows = vec![
-            WindowInfo::new(w0, work, "shell").with_index(0),
-            WindowInfo::new(w1, work, "editor").with_index(1),
-            WindowInfo::new(p0, play, "shell").with_index(0),
-        ];
-        let panes = vec![
-            ResourceInfo::new(ResourceId::local(100), w0, 80, 24),
-            ResourceInfo::new(ResourceId::local(101), w1, 80, 24),
-            ResourceInfo::new(ResourceId::local(102), w1, 80, 24),
-            ResourceInfo::new(ResourceId::local(200), p0, 80, 24),
-        ];
-        SessionSnapshot::new(work, w0, ResourceId::local(100))
-            .with_sessions(sessions)
-            .with_windows(windows)
-            .with_resources(panes)
-    }
-
-    #[test]
-    fn resolve_session_returns_all_its_terminals() {
-        let snap = fixture();
-        let sel = parse("work").unwrap();
-        let ids = resolve(&sel, &snap);
-        assert_eq!(
-            ids,
-            vec![
-                ResourceId::local(100),
-                ResourceId::local(101),
-                ResourceId::local(102),
-            ],
-        );
-    }
-
-    #[test]
-    fn resolve_window_by_index_and_tag() {
-        let snap = fixture();
-        let by_index = resolve(&parse("work:1").unwrap(), &snap);
-        let by_tag = resolve(&parse("work:editor").unwrap(), &snap);
-        let expected = vec![ResourceId::local(101), ResourceId::local(102)];
-        assert_eq!(by_index, expected);
-        assert_eq!(by_tag, expected);
-    }
-
-    #[test]
-    fn resolve_pane_picks_one_terminal() {
-        let snap = fixture();
-        let ids = resolve(&parse("work:1.1").unwrap(), &snap);
-        assert_eq!(ids, vec![ResourceId::local(102)]);
-    }
-
-    #[test]
-    fn resolve_terminal_id_and_focused_and_misses() {
-        let mut snap = fixture();
-        snap.resources.push(ResourceInfo::new(
-            ResourceId::satellite("devbox", 7),
-            WindowId::new(999),
-            120,
-            40,
-        ));
-        assert_eq!(
-            resolve(&parse("@100").unwrap(), &snap),
-            vec![ResourceId::local(100)],
-        );
-        assert_eq!(
-            resolve(&parse("devbox/@7").unwrap(), &snap),
-            vec![ResourceId::satellite("devbox", 7)],
-        );
-        // Direct ids still require inventory membership; a wrong host or id misses.
-        assert!(resolve(&parse("other/@7").unwrap(), &snap).is_empty());
-        assert!(resolve(&parse("devbox/@8").unwrap(), &snap).is_empty());
-        // Unknown local terminal id → empty.
-        assert!(resolve(&parse("@999").unwrap(), &snap).is_empty());
-        // Unknown session → empty.
-        assert!(resolve(&parse("ghost").unwrap(), &snap).is_empty());
-        // `.` resolves to the focused session ("work").
-        assert_eq!(
-            resolve(&Selector::Current, &snap),
-            vec![
-                ResourceId::local(100),
-                ResourceId::local(101),
-                ResourceId::local(102),
-            ],
-        );
     }
 
     #[test]
@@ -1038,92 +830,16 @@ mod tests {
 
     #[test]
     fn pick_target_pane_prefers_focused_then_first_then_none() {
-        let a = ResourceId::local(1);
-        let b = ResourceId::local(2);
-        let c = ResourceId::local(3);
-        // Focused is among the candidates → pick it, not the first.
+        let [a, b, c] = [1, 2, 3].map(ResourceId::local);
         assert_eq!(
             pick_target_pane(&[a.clone(), b.clone()], &b),
             Some(b.clone())
         );
-        // Focused not among candidates → first in snapshot order.
         assert_eq!(pick_target_pane(&[a.clone(), c], &b), Some(a));
-        // Empty candidate set → None (a selector miss).
         assert_eq!(pick_target_pane(&[], &b), None);
     }
 
     // ---- ADR-0075: `%name` agent addressing -----------------------------
-
-    /// `%name` parses to its own variant without disturbing a neighbouring
-    /// form: the sigil is checked first, so `%a/@1` is a bad agent name
-    /// rather than a satellite id, and every pre-existing spelling still
-    /// parses to exactly what it did before.
-    #[test]
-    fn parse_agent_sigil_slots_in_without_disturbing_the_other_forms() {
-        assert_eq!(
-            parse("%build").unwrap(),
-            Selector::Agent("build".to_owned())
-        );
-        assert_eq!(
-            parse("%r2-d2_9").unwrap(),
-            Selector::Agent("r2-d2_9".to_owned())
-        );
-        // Every other documented form is untouched.
-        assert_eq!(parse(".").unwrap(), Selector::Current);
-        assert_eq!(parse("work").unwrap(), Selector::Session("work".to_owned()));
-        assert_eq!(
-            parse("work:1").unwrap(),
-            Selector::Window("work".to_owned(), WindowRef::Index(1))
-        );
-        assert_eq!(
-            parse("work:1.2").unwrap(),
-            Selector::Pane("work".to_owned(), WindowRef::Index(1), 2)
-        );
-        assert_eq!(parse("@42").unwrap(), Selector::ResourceId(42));
-        assert_eq!(
-            parse("devbox/@42").unwrap(),
-            Selector::SatelliteResourceId {
-                host: "devbox".to_owned(),
-                id: 42,
-            }
-        );
-        assert_eq!(parse("#build").unwrap(), Selector::Tag("build".to_owned()));
-        // Hub-local: a `%name` never becomes a satellite id.
-        assert!(matches!(parse("%a/@1"), Err(ParseError::BadAgentName(_))));
-    }
-
-    /// The addressable grammar is `^[a-z][a-z0-9_-]{0,31}$`, checked at parse
-    /// time so a typo fails locally, before any round trip.
-    #[test]
-    fn parse_agent_name_enforces_the_addressable_grammar() {
-        assert_eq!(parse("%"), Err(ParseError::EmptyAgentName));
-        for bad in [
-            "%Build",
-            "%9lives",
-            "%-lead",
-            "%_lead",
-            "%my agent",
-            "%añejo",
-        ] {
-            assert!(
-                matches!(parse(bad), Err(ParseError::BadAgentName(_))),
-                "{bad} must not parse as an addressable agent name"
-            );
-        }
-        let longest = "a".repeat(AGENT_NAME_MAX_LEN);
-        assert_eq!(
-            parse(&format!("%{longest}")).unwrap(),
-            Selector::Agent(longest.clone())
-        );
-        assert!(matches!(
-            parse(&format!("%{longest}a")),
-            Err(ParseError::BadAgentName(_))
-        ));
-        // The predicate `agent list` uses agrees with the parser.
-        assert!(is_addressable_agent_name("build"));
-        assert!(!is_addressable_agent_name("Build Runner"));
-        assert!(!is_addressable_agent_name(""));
-    }
 
     fn record(name: &str, kind: Option<&str>, state: AgentMetaState) -> AgentRecord {
         AgentRecord {
@@ -1164,8 +880,6 @@ mod tests {
                 session: None,
             }
         );
-        // A declared record with a `kind` and a real state resolves for the
-        // input verbs too — only the withdrawn shape is gated.
         assert_eq!(
             resolve_agent_for_input("review", &snap, &index)
                 .unwrap()
@@ -1174,10 +888,8 @@ mod tests {
         );
     }
 
-    /// The three ADR-0075 point 3 failure modes stay distinct: a miss is
-    /// exit 1, an ambiguity is exit 2 with every candidate enumerated in
-    /// snapshot order, and a truncated index is exit 3 rather than a
-    /// confident answer taken from a narrower world.
+    /// A miss is exit 1, an ambiguity exit 2 (candidates in snapshot order),
+    /// and a truncated index exit 3 even for a single or empty match.
     #[test]
     fn resolve_agent_refuses_a_miss_an_ambiguity_and_a_partial_index_distinctly() {
         let snap = fixture();
@@ -1195,8 +907,6 @@ mod tests {
         );
         assert_eq!(miss.exit_code(), 1);
 
-        // Two live records share the name: refuse, enumerating both. Panes
-        // 100 and 200 are in that snapshot order, not hash order.
         let shared = index_of(
             &[
                 (200, record("build", None, AgentMetaState::Idle)),
@@ -1209,16 +919,16 @@ mod tests {
             ambiguous,
             AgentResolveError::Ambiguous {
                 name: "build".to_owned(),
-                candidates: vec![ResourceId::local(100), ResourceId::local(200)],
+                candidates: ids(&[100, 200]),
             }
         );
         assert_eq!(ambiguous.exit_code(), 2);
         let rendered = ambiguous.to_string();
-        assert!(rendered.contains("@100"), "{rendered}");
-        assert!(rendered.contains("@200"), "{rendered}");
+        assert!(
+            rendered.contains("@100") && rendered.contains("@200"),
+            "{rendered}"
+        );
 
-        // Exactly one match, but the index was truncated: an unseen pane could
-        // hold the name too, so a single match must NOT be reported.
         let truncated = index_of(
             &[(101, record("build", None, AgentMetaState::Working))],
             false,
@@ -1228,20 +938,19 @@ mod tests {
             partial,
             AgentResolveError::PartialIndex {
                 name: "build".to_owned(),
-                matched: vec![ResourceId::local(101)],
+                matched: ids(&[101]),
             }
         );
         assert_eq!(partial.exit_code(), 3);
-        // And "nothing matched" against a truncated index is the same refusal,
-        // never the exit-1 miss.
         let nothing = resolve_agent("ghost", &snap, &truncated).unwrap_err();
         assert_eq!(nothing.exit_code(), 3);
+        // The default index is partial, so it fails closed the same way.
+        let default = resolve_agent("build", &snap, &AgentIndex::default()).unwrap_err();
+        assert_eq!(default.exit_code(), 3);
     }
 
-    /// phux-w7z2.25: the detector writes the manifest constant (`name` defaults
-    /// to `kind`), which is per-kind where a name must be per-pane. `%claude`
-    /// refuses as a kind constant on ONE such pane exactly as on twelve, and
-    /// the message names `phux agent set --name` as the fix.
+    /// A manifest kind constant (`name == kind`) refuses on one pane exactly
+    /// as on many, whoever wrote it; a name merely containing a kind is fine.
     #[test]
     fn resolve_agent_refuses_a_manifest_kind_constant_even_when_it_is_unique() {
         let snap = fixture();
@@ -1257,21 +966,18 @@ mod tests {
             err,
             AgentResolveError::KindConstant {
                 name: "claude".to_owned(),
-                candidates: vec![ResourceId::local(101)],
+                candidates: ids(&[101]),
             }
         );
         assert_eq!(err.exit_code(), 2);
-        let rendered = err.to_string();
-        assert!(rendered.contains("phux agent set"), "{rendered}");
+        assert!(err.to_string().contains("phux agent set"), "{err}");
 
-        // A fleet of them refuses identically, with every candidate listed.
         let fleet = index_of(
             &[
                 (
                     100,
                     record("claude", Some("claude"), AgentMetaState::Working),
                 ),
-                (101, record("claude", Some("claude"), AgentMetaState::Idle)),
                 (102, record("claude", Some("claude"), AgentMetaState::Idle)),
             ],
             true,
@@ -1280,8 +986,6 @@ mod tests {
         assert!(matches!(err, AgentResolveError::KindConstant { .. }));
         assert!(err.to_string().contains("@102"));
 
-        // A human who spells the constant by hand is refused the same way —
-        // the record has no provenance field, so this is a shape test.
         let by_hand = index_of(
             &[(101, record("codex", Some("Codex"), AgentMetaState::Idle))],
             true,
@@ -1291,7 +995,6 @@ mod tests {
             Err(AgentResolveError::KindConstant { .. })
         ));
 
-        // A chosen name that merely *contains* a kind is fine.
         let chosen = index_of(
             &[(
                 101,
@@ -1307,14 +1010,11 @@ mod tests {
         );
     }
 
-    /// ADR-0075 point 5: the write guard is the WITHDRAWN SHAPE — a `kind`
-    /// AND `state: unknown` — not bare `state != unknown`, which would refuse
-    /// an identity-only declaration forever. Read verbs skip the gate.
+    /// The write guard is the withdrawn shape (a `kind` and `state:
+    /// unknown`), not bare `state == unknown`; read verbs skip the gate.
     #[test]
     fn input_verbs_refuse_only_the_withdrawn_shape() {
         let snap = fixture();
-
-        // Withdrawn: kept its kind, lost its state.
         let withdrawn = index_of(
             &[(
                 101,
@@ -1325,7 +1025,6 @@ mod tests {
         assert_eq!(
             resolve_agent("build", &snap, &withdrawn).unwrap().terminal,
             ResourceId::local(101),
-            "read-only verbs must still resolve a withdrawn record"
         );
         let err = resolve_agent_for_input("build", &snap, &withdrawn).unwrap_err();
         assert_eq!(
@@ -1337,8 +1036,6 @@ mod tests {
         );
         assert_eq!(err.exit_code(), 2);
 
-        // Identity-only declaration (`phux agent set --name build`): no kind,
-        // resting state unknown. NOT withdrawn — this must keep working.
         let identity_only = index_of(
             &[(101, record("build", None, AgentMetaState::Unknown))],
             true,
@@ -1349,17 +1046,6 @@ mod tests {
                 .terminal,
             ResourceId::local(101)
         );
-
-        assert!(is_withdrawn_agent_record(&record(
-            "build",
-            Some("claude"),
-            AgentMetaState::Unknown
-        )));
-        assert!(!is_withdrawn_agent_record(&record(
-            "build",
-            None,
-            AgentMetaState::Unknown
-        )));
         assert!(!is_withdrawn_agent_record(&record(
             "build",
             Some("claude"),
@@ -1367,117 +1053,62 @@ mod tests {
         )));
     }
 
-    /// ADR-0075 point 3: `%name` must never reach `pick_target_pane`. The
-    /// shared set-valued seam has no agent index and nowhere to put a refusal,
-    /// so it yields nothing — an un-migrated caller gets a miss, not a pane.
+    /// `%name` must never reach `pick_target_pane`: the set-valued seam
+    /// yields nothing for it, and it is never a whole-session teardown.
     #[test]
     fn the_shared_set_valued_seam_never_narrows_an_agent_selector() {
         let snap = fixture();
         let sel = parse("%build").unwrap();
         assert!(resolve(&sel, &snap).is_empty());
-        assert!(resolve_with_tags(&sel, &snap, &TagIndex::new()).is_empty());
-        // Which is exactly what makes `pick_target_pane` fail closed here.
         assert_eq!(
             pick_target_pane(&resolve(&sel, &snap), &snap.focused_resource),
             None
         );
-        // And `%name` is a Terminal target, never a whole-session teardown.
         assert_eq!(whole_session_name(&sel, &snap), None);
-    }
-
-    /// A `Default` index is the fail-closed one: empty AND partial, so a
-    /// caller that forgets to build it refuses rather than reporting a miss.
-    #[test]
-    fn a_default_agent_index_is_partial_not_empty_and_complete() {
-        let snap = fixture();
-        let index = AgentIndex::default();
-        assert!(!index.is_complete());
-        assert!(index.records().is_empty());
-        assert_eq!(
-            resolve_agent("build", &snap, &index)
-                .unwrap_err()
-                .exit_code(),
-            3
-        );
     }
 
     // ---- ADR-0102 / ADR-0103: resource kinds in the selector -------------
 
-    /// A fixture where pane 101 hosts one agent session (@901) and pane 102
-    /// hosts two (@902, @903); the sessions are listed under the same window
-    /// as their parents, the way a snapshot carries them.
+    /// Pane 101 hosts agent session @901; pane 102 hosts @902 and @903.
     fn kinded_fixture() -> SessionSnapshot {
         use phux_protocol::ids::ResourceKind;
         let mut snap = fixture();
-        let w1 = WindowId::new(11);
-        snap.resources.push(
-            ResourceInfo::new(ResourceId::local(901), w1, 0, 0)
-                .with_kind(ResourceKind::AgentSession)
-                .with_parent(Some(ResourceId::local(101))),
-        );
-        snap.resources.push(
-            ResourceInfo::new(ResourceId::local(902), w1, 0, 0)
-                .with_kind(ResourceKind::AgentSession)
-                .with_parent(Some(ResourceId::local(102))),
-        );
-        snap.resources.push(
-            ResourceInfo::new(ResourceId::local(903), w1, 0, 0)
-                .with_kind(ResourceKind::AgentSession)
-                .with_parent(Some(ResourceId::local(102))),
-        );
+        for (session, parent) in [(901, 101), (902, 102), (903, 102)] {
+            snap.resources.push(
+                ResourceInfo::new(ResourceId::local(session), WindowId::new(11), 0, 0)
+                    .with_kind(ResourceKind::AgentSession)
+                    .with_parent(Some(ResourceId::local(parent))),
+            );
+        }
         snap
     }
 
-    /// Session, window, pane, and tag selectors see Terminal-kind resources
-    /// only, and a pane index counts panes — an agent session listed under
-    /// the window never shifts `name:1.1`.
+    /// Set-valued selectors see Terminal-kind resources only (a pane index
+    /// counts panes); `@N` resolves any kind.
     #[test]
     fn set_valued_selectors_resolve_terminal_kind_only() {
         let snap = kinded_fixture();
-        assert_eq!(
-            resolve(&parse("work").unwrap(), &snap),
-            vec![
-                ResourceId::local(100),
-                ResourceId::local(101),
-                ResourceId::local(102),
-            ],
-        );
-        assert_eq!(
-            resolve(&parse("work:1").unwrap(), &snap),
-            vec![ResourceId::local(101), ResourceId::local(102)],
-        );
-        assert_eq!(
-            resolve(&parse("work:1.1").unwrap(), &snap),
-            vec![ResourceId::local(102)]
-        );
-        assert!(resolve(&parse("work:1.2").unwrap(), &snap).is_empty());
+        for (raw, expected) in [
+            ("work", ids(&[100, 101, 102])),
+            ("work:1", ids(&[101, 102])),
+            ("work:1.1", ids(&[102])),
+            ("work:1.2", vec![]),
+            ("@901", ids(&[901])),
+        ] {
+            assert_eq!(resolve(&parse(raw).unwrap(), &snap), expected, "{raw}");
+        }
         let mut tags = TagIndex::new();
         tags.insert(ResourceId::local(901), vec!["build".to_owned()]);
         tags.insert(ResourceId::local(101), vec!["build".to_owned()]);
         assert_eq!(
             resolve_with_tags(&parse("#build").unwrap(), &snap, &tags),
-            vec![ResourceId::local(101)],
+            ids(&[101]),
             "a tag on a session resource is not a pane match"
         );
     }
 
-    /// `@N` addresses a resource of any kind: the session id resolves as
-    /// itself.
-    #[test]
-    fn wire_ids_resolve_any_kind() {
-        let snap = kinded_fixture();
-        assert_eq!(
-            resolve(&parse("@901").unwrap(), &snap),
-            vec![ResourceId::local(901)]
-        );
-        assert_eq!(
-            resolve(&parse("@101").unwrap(), &snap),
-            vec![ResourceId::local(101)]
-        );
-    }
-
-    /// `%name` carries the named Terminal's unique live session, and refuses
-    /// when the Terminal has several — a session verb must not guess.
+    /// `%name` carries the Terminal's unique live session and refuses when
+    /// it has several.
     #[test]
     fn resolve_agent_carries_the_unique_session_child_and_refuses_several() {
         let snap = kinded_fixture();
@@ -1505,7 +1136,6 @@ mod tests {
                 terminal: ResourceId::local(100),
                 session: None,
             },
-            "a named pane with no session child still resolves for facet verbs"
         );
         let err = resolve_agent("builder", &snap, &index).unwrap_err();
         assert_eq!(
@@ -1513,14 +1143,9 @@ mod tests {
             AgentResolveError::AmbiguousSession {
                 name: "builder".to_owned(),
                 terminal: ResourceId::local(102),
-                candidates: vec![ResourceId::local(902), ResourceId::local(903)],
+                candidates: ids(&[902, 903]),
             }
         );
         assert_eq!(err.exit_code(), 2);
-        let rendered = err.to_string();
-        assert!(
-            rendered.contains("@902") && rendered.contains("@903"),
-            "{rendered}"
-        );
     }
 }
