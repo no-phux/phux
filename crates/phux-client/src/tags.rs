@@ -116,7 +116,7 @@ pub enum TagOp<'a> {
 pub struct TagOutcome {
     /// One row per resolved Terminal: the id and its (confirmed) tags.
     pub rows: Vec<(ResourceId, Vec<String>)>,
-    /// Snapshot/index degradation from [`prepare`].
+    /// Snapshot/index degradation from `prepare`.
     pub view: Degradation,
     /// Interleaved notices from confirming writes.
     pub interleaved: Vec<String>,

@@ -13,7 +13,7 @@ use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
 /// Overall ceiling for `phux server --ensure`.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Test-only override for [`TIMEOUT`], in whole seconds.
+/// Test-only override for `TIMEOUT`, in whole seconds.
 ///
 /// Lets the deadline tests run at 1s. A missing, unparseable, or zero value
 /// falls back to `TIMEOUT`: a harness typo must not uncap the wait.

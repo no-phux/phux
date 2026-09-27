@@ -250,7 +250,7 @@ pub fn classify(result: &CommandResult) -> ApplyVerdict {
     }
 }
 
-/// The backoff schedule for `operation_id`, jittered by [`JITTER_PERMILLE`]
+/// The backoff schedule for `operation_id`, jittered by `JITTER_PERMILLE`
 /// from the id's own random bytes: colliding callers decorrelate, and a
 /// schedule is reproducible from the id.
 #[must_use]

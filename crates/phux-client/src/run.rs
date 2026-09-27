@@ -51,7 +51,7 @@ pub struct RunResult {
     pub truncated: bool,
 }
 
-/// Why [`run`] returned.
+/// Why [`run_in_with_deadline`] returned.
 #[derive(Debug, Clone)]
 pub enum RunOutcome {
     /// The sentinel was seen; the command finished.

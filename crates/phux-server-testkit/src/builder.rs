@@ -708,8 +708,7 @@ impl ClientHandle {
     /// Send `text` as an `INPUT_PASTE`. The bulk path: a single frame
     /// carries the whole string, which the server feeds to the PTY via
     /// `paste::encode` (bracketing decided by the pane's DEC 2004 state).
-    /// Use this for typing strings and command lines; use
-    /// [`Self::send_keys`] for keys that have no text (arrows, Ctrl-*).
+    /// Use this for typing strings and command lines.
     pub async fn send_text(&mut self, text: &str) {
         send_frame(
             &mut self.stream,
@@ -854,7 +853,7 @@ impl ClientHandle {
     /// [`WIRE_RECV_TIMEOUT`] ceiling.
     ///
     /// Idle-only settle is the wrong oracle for a burst that can pause
-    /// between rows. Use [`Self::converge_until`] when completion has a
+    /// between rows. Use `converge_until` when completion has a
     /// marker.
     pub async fn converge(&mut self, idle_ms: u64) -> Duration {
         self.converge_until(idle_ms, |_| true).await
@@ -877,7 +876,7 @@ impl ClientHandle {
             .await
     }
 
-    /// [`converge_until`](Self::converge_until) with a caller-supplied hard
+    /// `converge_until` with a caller-supplied hard
     /// deadline instead of [`WIRE_RECV_TIMEOUT`].
     ///
     /// Use this when the legitimate drain can outlast the standard 15s
