@@ -5,134 +5,28 @@
 //! Terminal stream (L1 §4.9), so the spawned pane's content must wait for the
 //! client's `STREAM_BIND` rather than leak onto control, and once bound the
 //! pane must take the resize and input the TUI sends it straight away.
-//! Before the fix the server published the first generation on control and
-//! the client, holding no binding, failed the whole attach on the first
-//! `RESIZE_TERMINAL` for the new pane.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 #![allow(clippy::future_not_send, reason = "ServerRuntime owns LocalSet actors")]
 
-use std::net::{SocketAddr, UdpSocket};
-use std::path::{Path, PathBuf};
+mod support;
+
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
-use phux_client::attach::{CertTrust, QuicDial};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
-use phux_server::{DEFAULT_GROUP_ID, ServerConfig, ServerRuntime};
+use phux_server::DEFAULT_GROUP_ID;
+use support::{EnvGuard, STEP_DEADLINE, Server, dial, free_udp_addr, seeded_config};
 use tempfile::TempDir;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{Instant, timeout};
 
-const STEP_DEADLINE: Duration = Duration::from_secs(15);
 const SESSION: &str = "quic-spawn";
 const SPAWN_REQUEST: u32 = 7;
 const FENCE_NONCE: u64 = 0x5eed_f00d;
-
-struct EnvGuard {
-    previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl EnvGuard {
-    fn install(cert: &Path, key: &Path) -> Self {
-        phux_server::transport::tls::ensure_self_signed(cert, key).expect("provision QUIC cert");
-        let previous = ["PHUX_WS_TLS_CERT", "PHUX_WS_TLS_KEY", "PHUX_WS_SECURE"]
-            .into_iter()
-            .map(|name| (name, std::env::var_os(name)))
-            .collect();
-        // SAFETY: this test binary is single-threaded at this point; no other
-        // thread reads the environment while it is written.
-        unsafe {
-            std::env::set_var("PHUX_WS_TLS_CERT", cert);
-            std::env::set_var("PHUX_WS_TLS_KEY", key);
-            std::env::remove_var("PHUX_WS_SECURE");
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for (name, value) in &self.previous {
-            // SAFETY: as in `install`.
-            unsafe {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
-    }
-}
-
-struct Server {
-    shutdown: Option<oneshot::Sender<()>>,
-    handle: Option<JoinHandle<Result<(), phux_server::ServerError>>>,
-}
-
-impl Server {
-    async fn stop(mut self) {
-        self.shutdown.take().unwrap().send(()).ok();
-        timeout(STEP_DEADLINE, self.handle.take().unwrap())
-            .await
-            .expect("server shutdown timed out")
-            .expect("server task panicked")
-            .expect("server shutdown failed");
-    }
-}
-
-fn free_udp_addr() -> SocketAddr {
-    let socket = UdpSocket::bind("127.0.0.1:0").expect("reserve UDP port");
-    socket.local_addr().expect("read UDP port")
-}
-
-fn spawn_server(socket: PathBuf, quic_addr: SocketAddr) -> Server {
-    let (shutdown, stopped) = oneshot::channel();
-    let config = ServerConfig {
-        socket_path: socket,
-        pre_seeded_session: Some(SESSION.to_owned()),
-        seed_with_pty: true,
-        seed_command: None,
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(config)
-            .listen_quic(quic_addr)
-            .run_async(async move {
-                let _ = stopped.await;
-            })
-            .await
-    });
-    Server {
-        shutdown: Some(shutdown),
-        handle: Some(handle),
-    }
-}
-
-async fn dial(addr: SocketAddr) -> Connection {
-    let dial = QuicDial {
-        addr,
-        server_name: "localhost".to_owned(),
-        token: None,
-        trust: CertTrust::SkipVerify,
-    };
-    let deadline = Instant::now() + STEP_DEADLINE;
-    loop {
-        match Connection::connect_quic(&dial).await {
-            Ok(connection) => return connection,
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
-                sleep(Duration::from_millis(25)).await;
-            }
-            Err(error) => panic!("QUIC server did not become ready: {error}"),
-        }
-    }
-}
 
 async fn recv_step(connection: &mut Connection) -> FrameKind {
     timeout(STEP_DEADLINE, connection.recv())
@@ -267,9 +161,12 @@ async fn prove_spawned_pane_binds() {
     let tmp = TempDir::new().unwrap();
     let cert = tmp.path().join("cert.pem");
     let key = tmp.path().join("key.pem");
-    let _env = EnvGuard::install(&cert, &key);
+    let _env = EnvGuard::install(&cert, &key, None);
     let quic_addr = free_udp_addr();
-    let server = spawn_server(tmp.path().join("phux.sock"), quic_addr);
+    let server = Server::start(
+        seeded_config(tmp.path().join("phux.sock"), SESSION),
+        quic_addr,
+    );
     let mut connection = dial(quic_addr).await;
     assert!(
         connection.multistream_enabled(),
