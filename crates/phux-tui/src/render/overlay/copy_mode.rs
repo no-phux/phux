@@ -303,7 +303,7 @@ impl RenderOverlay for CopyModeOverlay {
     /// otherwise untouched. So this `render` is intentionally empty.
     fn render(&self, _area: Rect, _buf: &mut Buffer) {}
 
-    /// phux-d26y: adopt the focused pane's new size and pull the selection
+    /// Adopt the focused pane's new size and pull the selection
     /// back inside it.
     ///
     /// Copy-mode is not a pinned box — it is a selection over the live pane,
@@ -403,7 +403,7 @@ impl RenderOverlay for CopyModeOverlay {
             PhysicalKey::PageDown | PhysicalKey::NumpadPageDown => {
                 OverlayCommand::ScrollViewport(self.page_scroll_delta())
             }
-            // Engine-derived one-shot grabs (phux-7143). These copy-and-exit
+            // Engine-derived one-shot grabs. These copy-and-exit
             // immediately (tmux-style): the dispatcher resolves the grab at the
             // overlay cursor against the focused pane's own libghostty engine
             // (`select_word`/`select_line`/`select_all`/`select_output`) and

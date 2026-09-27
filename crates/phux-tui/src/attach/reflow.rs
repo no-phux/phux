@@ -50,10 +50,10 @@
 //! pane's PTY is told to be (`RESIZE_TERMINAL`) is exactly the rect it is
 //! drawn into, so a nested split can never leave the gap/overlap dead space
 //! that arose when reflow subtracted dividers globally and paint subtracted
-//! them per-node (phux-islu). Divider accounting lives inside the walk. The
+//! them per-node. Divider accounting lives inside the walk. The
 //! caller passes the residual **content** rect — the pane area after the
 //! status bar and (when enabled) the sidebar are folded off — so reflow sizes
-//! each PTY to the same inset rect it is painted into (phux-4h5a). With a
+//! each PTY to the same inset rect it is painted into. With a
 //! full-viewport content rect this is the pre-sidebar behaviour.
 //! See [ADR-0019] decision 4 for the cell-budget rationale.
 //!
@@ -81,8 +81,8 @@ pub struct ReflowDiff {
     pub changed: Vec<(ResourceId, Rect)>,
     /// Some leaf in `new_rects` renders with `w < 2` or `h < 1`: the
     /// viewport is below the layout's aggregate minimums, so §6.2
-    /// min-size freezing disengaged and proportional tiling resumed
-    /// (phux-foz.3). The caller logs a warning and renders garbage; we
+    /// min-size freezing disengaged and proportional tiling resumed.
+    /// The caller logs a warning and renders garbage; we
     /// do not panic. Above that threshold freezing holds every leaf at
     /// its floor and this stays `false`.
     pub too_small: bool,

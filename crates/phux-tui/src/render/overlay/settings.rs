@@ -1,4 +1,4 @@
-//! Settings page (phux-u1tq.4): browse, search, edit, and reset every
+//! Settings page: browse, search, edit, and reset every
 //! setting without leaving the terminal.
 //!
 //! The page is a file editor with a schema, not a runtime knob panel

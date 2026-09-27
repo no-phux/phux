@@ -1,4 +1,4 @@
-//! Plugin pane host in the TUI (phux-r82.7).
+//! Plugin pane host in the TUI.
 //!
 //! Plugin manifest `[[panes]]` declare a command plus a `placement`
 //! (`overlay | split | tab | zoomed`) but were previously inert metadata —
@@ -148,7 +148,7 @@ impl PluginPaneEntry {
             satellite: None,
             owner_terminal: None,
             agent_session: None,
-            // phux-a5xj: geometry depends on the placement the caller
+            // Geometry depends on the placement the caller
             // chooses, which this entry does not decide. `run_action` fills
             // it in from the tile it is about to park.
             initial_size: None,

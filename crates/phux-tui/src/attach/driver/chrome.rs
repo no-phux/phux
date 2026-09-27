@@ -32,7 +32,7 @@ fn supervisory_badge(
     if let Some(mark) = slot.exited {
         return Some(format!("[ {} ]", mark.label()));
     }
-    // phux-lxov.1: a down satellite is the whole story until it returns.
+    // A down satellite is the whole story until it returns.
     if slot.satellite_down {
         let name = id
             .host()
@@ -80,7 +80,7 @@ fn format_supervisory_badge(
     }
 }
 
-/// phux-foz.1: compose the status-bar attention hint, or `None` when no pane
+/// Compose the status-bar attention hint, or `None` when no pane
 /// is waiting on a human answer. Counts every pane with the ADR-0035 asked
 /// flag set (across ALL windows, not just the active one — the hint's job is
 /// to surface a question the user cannot currently see).
@@ -151,16 +151,16 @@ pub(super) fn refresh_window_chrome(
     // leaf carries one is labelled from it instead of the OSC title. The whole
     // index (not just `records`) is shared with agent-entry projection.
     agent_meta: &AgentMetaIndex,
-    // phux-p4vp: pane cwd + branch memo; each window's branch line derives
+    // Pane cwd + branch memo; each window's branch line derives
     // from its focused leaf's working directory.
     vcs: &mut VcsIndex,
     // AgentSession resources under each pane, projected from the kernel's
     // record streams. A pane with one outranks its metadata record for state.
     agent_sessions: &AgentSessionRows,
-    // phux-k0cw: the peer-wide state zones 1 and 3 are projected from. One
+    // The peer-wide state zones 1 and 3 are projected from. One
     // struct rather than five more positional parameters — this function
     // already carried a `too_many_arguments` allow, and growing that list is
-    // how a 22-argument function happens (phux-jx39).
+    // how a 22-argument function happens.
     peers: crate::attach::sidebar_zones::PeerInputs<'_>,
 ) -> bool {
     let mut windows = window_infos(workspace, panes, zoomed, &agent_meta.records, vcs);
@@ -171,7 +171,7 @@ pub(super) fn refresh_window_chrome(
         changed |= sb.set_windows(windows.clone());
         changed |= sb.set_supervisory(supervisory_badge(panes, focused_resource, own_client_id));
         changed |= sb.set_attention(attention_hint(panes));
-        // phux-foz.4: project the focused pane's data feeds into the bar so
+        // Project the focused pane's data feeds into the bar so
         // the `cwd` / `exit` widgets track focus changes and inbound
         // `cwd_changed` / `command_finished` events through this same
         // chokepoint. Unfocused (or unknown) folds to None => the widgets
@@ -248,14 +248,14 @@ pub(super) fn badge_windows(
 pub(super) fn window_infos(
     workspace: &Workspace,
     panes: &HashMap<ResourceId, PaneSlot>,
-    // phux-x2hm: the driver's pane-zoom state. The active window's tab gets a
+    // The driver's pane-zoom state. The active window's tab gets a
     // `Z` marker (`WindowInfo.zoomed`) when a pane is zoomed; non-active tabs
     // never show it (zoom is per the active window).
     zoomed: Option<&ResourceId>,
     // ADR-0040: Terminal → decoded `phux.agent/v1` record, kept live by the
     // driver's per-pane metadata subscriptions.
     agent_meta: &HashMap<ResourceId, AgentRecord>,
-    // phux-p4vp: pane-cwd index + branch memo. The window's branch line is
+    // Pane-cwd index + branch memo. The window's branch line is
     // its focused leaf's VCS branch (mut only for the memo).
     vcs: &mut VcsIndex,
 ) -> Vec<phux_config::widget::WindowInfo> {
@@ -280,13 +280,13 @@ pub(super) fn window_infos(
                 .as_ref()
                 .map(crate::layout::leaves)
                 .unwrap_or_default();
-            // phux-foz.1: a window carries attention when ANY of its leaves
+            // A window carries attention when ANY of its leaves
             // has the ADR-0035 asked flag set — not just the focused leaf —
             // so a question in a background split still marks the tab.
             let attention = leaves
                 .iter()
                 .any(|id| panes.get(id).is_some_and(|slot| slot.attention));
-            // phux-p4vp: the branch line under the label — the focused
+            // The branch line under the label — the focused
             // leaf's cwd resolved to its VCS branch (cached file read).
             let branch = focus.and_then(|fid| vcs.branch_for_pane(fid));
             let place = focus
@@ -367,7 +367,7 @@ fn window_exited_mark(
         .map(ExitMark::compact)
 }
 
-/// phux-foz.9: build the sidebar's agents-section entries — one per
+/// Build the sidebar's agents-section entries — one per
 /// agent-running pane, every window's leaves in display order.
 ///
 /// Identity + state per pane come from the server-owned sources:
@@ -554,7 +554,7 @@ mod tests {
             format_supervisory_badge(false, Some(me), None, None).as_deref(),
             Some(" wheel:c7 ")
         );
-        // phux-lxov.1: a satellite pane badges its host on the status bar,
+        // A satellite pane badges its host on the status bar,
         // beside any lease or brake already shown.
         assert_eq!(
             format_supervisory_badge(false, None, Some(me), Some("devbox")).as_deref(),
@@ -566,7 +566,7 @@ mod tests {
         );
     }
 
-    /// phux-lxov.1: the status bar names a down satellite, and the layout
+    /// The status bar names a down satellite, and the layout
     /// leaf that owns the slot is not this function's to remove.
     #[test]
     fn a_down_satellite_pane_badges_its_host_on_the_status_bar() {
@@ -580,7 +580,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.1: the status-bar attention hint. Nothing asking shows
+    /// The status-bar attention hint. Nothing asking shows
     /// nothing; one asking pane shows the plain chip; several asking panes
     /// carry the count.
     #[test]
@@ -590,7 +590,7 @@ mod tests {
         assert_eq!(format_attention_hint(3).as_deref(), Some(" ask·3 "));
     }
 
-    /// phux-foz.1: `window_infos` marks a window when ANY of its leaves has
+    /// `window_infos` marks a window when ANY of its leaves has
     /// the asked flag — including a non-focused leaf — and only that window.
     #[test]
     fn window_infos_flags_attention_on_the_asking_window() {
@@ -633,7 +633,7 @@ mod tests {
         assert!(!infos[1].attention);
     }
 
-    /// phux-fpgl.33: `window_infos` marks a window when ANY of its leaves is
+    /// `window_infos` marks a window when ANY of its leaves is
     /// retained after exit — including a non-focused leaf — and only that window.
     #[test]
     fn window_infos_flags_exited_on_the_retained_window() {
@@ -670,7 +670,7 @@ mod tests {
         );
     }
 
-    /// phux-fpgl.33: a split whose unfocused leaf is retained still marks
+    /// A split whose unfocused leaf is retained still marks
     /// the window, so the tab/sidebar show it without focusing that pane.
     #[test]
     fn window_infos_marks_a_split_when_the_unfocused_leaf_exited() {
@@ -1033,7 +1033,7 @@ mod tests {
         assert_eq!(names, vec!["old", "fresh", "never"]);
     }
 
-    /// phux-foz.9: a declared `phux.agent/v1` record produces an agents-row
+    /// A declared `phux.agent/v1` record produces an agents-row
     /// entry with the record's name + state; the pane's OSC title (set to a
     /// conflicting agent name here) is never consulted when a record exists.
     #[test]
@@ -1072,7 +1072,7 @@ mod tests {
         assert!(!entries[0].attention);
     }
 
-    /// phux-foz.9: agent rows require server-owned structured identity.
+    /// Agent rows require server-owned structured identity.
     /// Titles and attention flags alone must never turn a shell into an
     /// agent; the manifest-backed detector supplies the record.
     #[test]
@@ -1099,7 +1099,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.9: a record declaring (or deriving) high attention marks
+    /// A record declaring (or deriving) high attention marks
     /// the entry even without the asked flag.
     #[test]
     fn agent_entries_carry_record_attention() {
@@ -1226,7 +1226,7 @@ mod tests {
 
     #[test]
     fn window_infos_flags_zoom_only_on_the_active_window() {
-        // phux-x2hm: the active window's `zoomed` reflects the zoom state;
+        // The active window's `zoomed` reflects the zoom state;
         // a non-active window is never marked zoomed.
         let active = ResourceId::local(1);
         let mut workspace = Workspace::single(active.clone());

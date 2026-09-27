@@ -20,7 +20,7 @@
 //! future refactor that swallows the connect error and loops). It is a hang
 //! guard and nothing more — the assertions are on the returned error and on
 //! the bytes written, never on latency — so it is sized to be unreachable
-//! under load rather than hand-picked (phux-br1f).
+//! under load rather than hand-picked.
 
 use std::path::PathBuf;
 use std::time::Duration;

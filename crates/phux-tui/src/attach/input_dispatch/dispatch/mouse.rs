@@ -60,8 +60,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // so it focuses/forwards to the wrong pane. Clicks in the reserved
         // chrome miss every pane rect and become a Miss (dropped).
         let content = content_rect(self.ctx.viewport, self.ctx.bar, self.ctx.sidebar);
-        // phux-jow6: hit-test against the RENDER layout, not the real
-        // tiled tree. When a pane is zoomed (phux-x2hm) the render layout
+        // Hit-test against the RENDER layout, not the real
+        // tiled tree. When a pane is zoomed the render layout
         // is a single full-content leaf, so any click lands on the
         // visible zoomed pane instead of whichever hidden tiled pane sits
         // under the cursor. Compute the decision in a scope that drops the
@@ -186,13 +186,13 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(())
     }
 
-    /// phux-fce4: the sidebar strip claims every pointer event over
+    /// The sidebar strip claims every pointer event over
     /// its own cells BEFORE pane routing — its rows are hit targets,
     /// not pane content. A left press resolves against the strip's
     /// row model (`sidebar::hit_test`) and dispatches the mapped
     /// action through the same `run_action` path a keybinding or
     /// palette row uses: a window block commits `select-window`, an
-    /// agents-section row (phux-foz.9) `select-window` for the
+    /// agents-section row `select-window` for the
     /// window holding that agent's pane, the `+ new` affordance
     /// `new-window`, `= menu` the command palette (the
     /// session/plugin menu), and the bottom-corner collapse chevron
@@ -221,7 +221,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 .sidebar_left_press(strip, hit, (cell_x, cell_y))
                 .await?;
         } else if is_right_press(mouse) {
-            // phux-wrnm: a right press on a window block (or an
+            // A right press on a window block (or an
             // agents-section row, which resolves to the window
             // holding that agent) selects that window first —
             // acting on what you pointed at is the whole promise
@@ -264,7 +264,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(layout_changed)
     }
 
-    /// phux-foz.12: the status-bar row is chrome, not pane content —
+    /// The status-bar row is chrome, not pane content —
     /// `content_rect` already excludes it, so every pointer event
     /// here used to fall through to a Miss and get dropped. Claim
     /// the row explicitly instead: a left press on a window tab
@@ -309,7 +309,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 chrome_drag::begin_window_drag(self.ctx, index, WindowStrip::Tabs);
             }
         } else if is_right_press(mouse) {
-            // phux-wrnm: right press on a tab selects that window
+            // Right press on a tab selects that window
             // (same as a left click) and opens its window menu;
             // elsewhere on the bar — the session name, the
             // widgets, the blank padding — the session menu. The
@@ -320,7 +320,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(Some(StageOutcome::consumed(layout_changed)))
     }
 
-    /// phux-wrnm: commit `window_row` (when the right press landed on a
+    /// Commit `window_row` (when the right press landed on a
     /// window target) and open the matching context menu at `anchor` —
     /// the window menu when it did, the session menu otherwise. Shared
     /// by the sidebar strip and the status-bar row.
@@ -364,7 +364,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if focus_changed {
             self.focus_pane_from_click(&target);
         }
-        // phux-npb3: a pane opted out via `set-pane mouse off`
+        // A pane opted out via `set-pane mouse off`
         // receives no client-synthesized mouse at all — no
         // INPUT_MOUSE forward, no local wheel viewport scroll.
         // Click-to-focus above still applies: it is chrome-level
@@ -420,7 +420,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // old pane's queue AND reset the cursor + viewport
         // to the new pane, so a keystroke before the next
         // reconcile echoes at the right place rather than
-        // the old pane's (mid-screen) coordinates (phux-7ry0).
+        // the old pane's (mid-screen) coordinates.
         reanchor_predict_to_pane(self.predict, self.panes, target);
     }
 
@@ -442,13 +442,13 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return Ok(None);
         }
         // Alt-screen panes have no client-local scrollback. Never
-        // local-scroll them (phux-2vnl): a missed mouse-mode bit
+        // local-scroll them: a missed mouse-mode bit
         // used to feed `scroll_viewport` and either smear primary
         // history over the app or eat a silent no-op. Translate to
         // arrows when DECSET 1007 is on (libghostty default, same
         // as tmux/ghostty); otherwise forward the wheel so the
         // inner app can handle it. Apps opt out of arrows with
-        // `?1007l` (phux-yyex).
+        // `?1007l`.
         if modes.alt_screen {
             if modes.alt_scroll {
                 self.send_wheel_as_arrows(target, delta).await?;
@@ -491,7 +491,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// viewport actually moved (the caller repaints). A successful
     /// `scroll_viewport` call is not enough: libghostty reports `Ok` at
     /// the live tail, on an empty history, and on the alt screen, and
-    /// consuming those no-ops ate the wheel (phux-2vnl).
+    /// consuming those no-ops ate the wheel.
     fn scroll_pane_viewport(&mut self, target: &ResourceId, delta: isize) -> bool {
         let scrolled = self
             .ctx
@@ -696,7 +696,7 @@ pub(in crate::attach::input_dispatch) fn drag_resize(
     }
 }
 
-/// phux-fce4: whether an outer-viewport cell lies within the sidebar
+/// Whether an outer-viewport cell lies within the sidebar
 /// strip's rect (separator column included — the strip consumes it even
 /// though it is not a hit target).
 const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
@@ -706,7 +706,7 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
         && y < rect.y.saturating_add(rect.h)
 }
 
-/// phux-fce4: map a left press on the sidebar strip to the action it
+/// Map a left press on the sidebar strip to the action it
 /// commits, or `None` when it lands on a header, blank row, or the
 /// separator.
 ///
@@ -726,7 +726,7 @@ const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) -> bool {
 /// * `+ new` commits `new-window` (the strip lists windows, so its create
 ///   affordance creates one);
 /// * the Agents / Sessions headings open their complete management views;
-/// * the collapse chevron in the bottom corner (phux-foz.9) commits
+/// * the collapse chevron in the bottom corner commits
 ///   `toggle-sidebar`.
 pub(in crate::attach::input_dispatch) fn sidebar_click_action(
     strip: crate::layout::Rect,
@@ -790,7 +790,7 @@ fn sidebar_agent_action(
         );
     }
     // Layout-backed rows may also name window/pane. Graph-only rows omit
-    // both so a click cannot fabricate a TUI index (phux-ah84).
+    // both so a click cannot fabricate a TUI index.
     if let Some(window) = *window {
         args.insert(
             "window".to_owned(),
@@ -833,7 +833,7 @@ fn sidebar_session_action(
     }
 }
 
-/// phux-foz.12: map a left press on the status-bar row to the action it
+/// Map a left press on the status-bar row to the action it
 /// commits, or `None` when it lands on a non-tab cell (separator, another
 /// widget, blank padding) or no painter/strip is available. Named navigation
 /// cells dispatch their argument-free action through this same path.
@@ -880,7 +880,7 @@ pub(in crate::attach::input_dispatch) fn bar_click_action(
     }
 }
 
-/// phux-wrnm: push `spec` as a context menu anchored at the viewport cell
+/// Push `spec` as a context menu anchored at the viewport cell
 /// `anchor` (ADR-0058).
 ///
 /// The menu is clamped inside the pane content rect — the same rect the

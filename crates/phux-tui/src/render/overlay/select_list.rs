@@ -1,4 +1,4 @@
-//! Reusable selectable-list overlay (phux-ahv.8 / phux-4li.19).
+//! Reusable selectable-list overlay.
 //!
 //! A themed [`Modal`] wrapping a one-line query input and a filtered,
 //! scrollable list of items. Each item carries a display label, an
@@ -31,7 +31,7 @@
 //! overflows its box paints a scrollbar in the right border column
 //! ([`paint_scrollbar`]) — without one, navigating past the last visible
 //! row walked the selection off the bottom edge with no way to tell where
-//! you were, which is the bug this viewport exists to fix (phux-ep9s).
+//! you were, which is the bug this viewport exists to fix.
 //!
 //! ## Filtering and ranking
 //!
@@ -108,7 +108,7 @@ pub struct SelectItem {
     /// Indent the label one level (two spaces) so selectable rows nest
     /// visually under the [`SelectKind::Header`] above them.
     pub indented: bool,
-    /// phux-foz.7: paint this row's label in the theme's `attention` slot
+    /// Paint this row's label in the theme's `attention` slot
     /// (the same amber the sidebar tab marker and status-bar asked hint
     /// use), so a row that needs the user reads hot at a glance. The
     /// selected row keeps plain reverse-video regardless.
@@ -208,7 +208,7 @@ pub struct SelectList {
     /// Color slots snapshotted from the active [`Theme`] at construction
     /// (captured, not borrowed, so the overlay stays `'static`).
     theme: Theme,
-    /// phux-foz.7: when `Some`, this list is a *live* projection of shared
+    /// When `Some`, this list is a *live* projection of shared
     /// client state and accepts in-place row refreshes tagged with the same
     /// key via [`RenderOverlay::refresh_items`] (the agent-fleet dashboard
     /// re-rendering as agent events land while it is open). `None` (the
@@ -229,7 +229,7 @@ pub struct SelectList {
     /// `PageUp`/`PageDown` can move by a real screenful. Zero until the
     /// first render (page keys then fall back to a single row).
     page: Cell<usize>,
-    /// phux-huhi: `[chrome]` thresholds, stamped by `OverlayState::push`.
+    /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
 
@@ -257,7 +257,7 @@ impl SelectList {
         list
     }
 
-    /// Opt this list into live row refreshes tagged `key` (phux-foz.7).
+    /// Opt this list into live row refreshes tagged `key`.
     ///
     /// See [`RenderOverlay::refresh_items`]: the driver rebuilds the rows
     /// from fresh client state when a relevant server frame lands and hands
@@ -599,7 +599,7 @@ impl SelectList {
                     .bg(self.theme.selection_bg),
             ))
         } else {
-            // phux-foz.7: an attention row's label paints in the theme's
+            // An attention row's label paints in the theme's
             // `attention` slot (bold) — the same semantic amber the sidebar
             // marker and status-bar asked hint use — so "needs you" rows
             // stand out inside the fleet dashboard without a new slot.
@@ -1212,7 +1212,7 @@ mod tests {
 
     #[test]
     fn selection_stays_on_screen_when_navigating_past_the_viewport() {
-        // The reported bug (phux-ep9s): the palette painted every filtered row
+        // The reported bug: the palette painted every filtered row
         // into a Paragraph that clipped at the modal's bottom edge, so walking
         // the cursor down a long list marched it off-screen — no highlighted
         // row anywhere, no way to tell where you were.
@@ -1415,7 +1415,7 @@ mod tests {
         assert_eq!(sl.items[0].label, "fresh-row");
     }
 
-    /// phux-c2td.3: a refresh that inserts rows above the cursor (a host
+    /// A refresh that inserts rows above the cursor (a host
     /// header landing in the session picker) keeps the highlighted target,
     /// so Enter still commits what the user saw.
     #[test]
@@ -1544,7 +1544,7 @@ mod tests {
         assert_eq!(selected.spans[0].style.bg, Some(theme.selection_bg));
     }
 
-    /// phux-foz.7: pin the painted fleet-shaped layout (session header,
+    /// Pin the painted fleet-shaped layout (session header,
     /// glyphed rows, attention row present) so layout churn is caught —
     /// the same snapshot pattern as `render_byte_output_is_stable`.
     #[test]

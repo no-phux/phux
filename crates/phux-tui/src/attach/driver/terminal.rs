@@ -267,7 +267,7 @@ fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> 
 /// matches; otherwise emits the ADR-0048 enter pair (`?1002h?1006h`) or
 /// its reverse-order leave (`?1006l?1002l`).
 /// Whether the client's outer-terminal mouse capture should currently be
-/// on (phux-npb3): the global `mouse` config gate must be on AND the
+/// on: the global `mouse` config gate must be on AND the
 /// focused pane must not have opted out via `set-pane mouse off`. With no
 /// focused pane yet (pre-ATTACHED) the global gate alone decides.
 pub(super) fn desired_mouse_capture(
@@ -297,7 +297,7 @@ pub(super) fn sync_mouse_capture<W: Write>(out: &mut W, want: bool) -> io::Resul
 }
 
 /// Whether the client upgraded the outer terminal to any-motion reporting
-/// (`?1003h`) on top of its button-event capture (phux-wrnm).
+/// (`?1003h`) on top of its button-event capture.
 ///
 /// ADR-0048 deliberately enables only `?1002h`: hover traffic the client
 /// discards is wasted bytes on every pointer move. A context menu is the
@@ -308,7 +308,7 @@ pub(super) fn sync_mouse_capture<W: Write>(out: &mut W, want: bool) -> io::Resul
 /// reconcile and the reset path each restore exactly what they set.
 static HOVER_TRACKING_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Reconcile any-motion reporting with `want` (phux-wrnm).
+/// Reconcile any-motion reporting with `want`.
 ///
 /// A no-op unless the state changed, like [`sync_mouse_capture`]. Never
 /// raises `?1003h` while capture is off: with no capture the client has no
@@ -345,7 +345,7 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     out.write_all(b"\x1b[?2004l")?;
     out.write_all(b"\x1b[?1004l")?;
     out.flush()?;
-    // phux-wrnm: a context menu open at detach (or at SIGINT) left the
+    // A context menu open at detach (or at SIGINT) left the
     // terminal in any-motion mode; drop that before the capture pair so the
     // host is handed back exactly what it had.
     if HOVER_TRACKING_ACTIVE.swap(false, Ordering::SeqCst) {
@@ -466,7 +466,7 @@ pub(super) fn restore_terminal_for_handoff() {
 /// closes that window: the restore mirrors the signal path, and
 /// `process::exit` skips the teardown that would otherwise hang.
 ///
-/// phux-i0e8.2.2: because this never returns, the CLI's own `Ok(end)`
+/// Because this never returns, the CLI's own `Ok(end)`
 /// handling can't run on this path — so the one-line explanation for a
 /// last-pane death (`AttachEnd::explanation`) is printed HERE, after the
 /// terminal reset (the screen is cooked again) and before the exit. A
@@ -572,8 +572,8 @@ mod tests {
     /// The save/take helpers behind [`SAVED_TERMIOS`] round-trip a
     /// snapshot exactly once: after a save, the next take returns
     /// `Some(_)`; subsequent takes return `None`. This is the unit
-    /// surface that backs the signal-arm true-restore path
-    /// (phux-2r7). The signal arm itself is exercised by a manual
+    /// surface that backs the signal-arm true-restore path.
+    /// The signal arm itself is exercised by a manual
     /// SIGINT during an attach session — see the comment on
     /// [`terminal_reset_on_signal`].
     ///
@@ -751,7 +751,7 @@ mod tests {
         );
     }
 
-    /// phux-npb3: `sync_mouse_capture` reconciles the outer DECSET with the
+    /// `sync_mouse_capture` reconciles the outer DECSET with the
     /// desired state — leave pair when dropping, enter pair when restoring,
     /// and nothing at all when the state already matches.
     #[test]
@@ -784,7 +784,7 @@ mod tests {
         MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
     }
 
-    /// phux-wrnm: hover reporting is raised only while something consumes
+    /// Hover reporting is raised only while something consumes
     /// it, only on top of live capture, and always unwound — including when
     /// capture itself drops while a menu is still open.
     #[test]
@@ -827,7 +827,7 @@ mod tests {
         MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
     }
 
-    /// phux-npb3: capture follows focus — wanted iff the global gate is on
+    /// Capture follows focus — wanted iff the global gate is on
     /// AND the focused pane has not opted out.
     #[test]
     fn desired_mouse_capture_follows_focused_pane_optout() {

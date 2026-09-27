@@ -36,7 +36,7 @@ pub(super) struct KernelRoute {
     pub(super) resync_required: bool,
     pub(super) ignored: bool,
     pub(super) failed: Option<String>,
-    /// phux-ijuj: transient status-bar notices raised by the kernel's own
+    /// Transient status-bar notices raised by the kernel's own
     /// effects rather than by the frame arm. Folded into the dispatched
     /// [`FrameOutcome`] by the arms whose frames can produce them.
     pub(super) notices: Vec<Notice>,
@@ -114,7 +114,7 @@ pub(super) fn attach_agent_sessions<'a>(
 /// count of the *other* sessions. The practical effect: attaching worked on a
 /// server with one session and failed on every server with two or more, which
 /// is to say phux stopped working as a multiplexer the moment it was used as
-/// one (phux-atch).
+/// one.
 ///
 /// Scoping here rather than narrowing the snapshot keeps the wire contract
 /// intact: the client still receives the whole workspace, and only the attach
@@ -557,7 +557,7 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             KernelEffect::AgentRecords { terminal_id, .. } => {
                 route.agent_touched.insert(terminal_id.clone());
             }
-            // phux-ijuj: history degradation is per-pane and recoverable —
+            // History degradation is per-pane and recoverable —
             // the live stream stays valid, only that pane's scrollback
             // boundary is gone. The kernel already told us WHICH pane, so
             // unlike an uncorrelated ERROR this one can name it.

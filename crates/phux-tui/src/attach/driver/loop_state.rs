@@ -1106,7 +1106,7 @@ impl SessionLoop {
         .await?;
         // Agent watches must not wait for a persisted TUI layout.
         self.reconcile_peer_agents(conn).await?;
-        // phux-c2td.3: the fleet's other half. Rides the same deferred
+        // The fleet's other half. Rides the same deferred
         // sweep, so it costs the first paint nothing.
         self.request_serving_host(conn).await?;
         self.request_host_inventory(conn).await
@@ -1679,7 +1679,7 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         needs_resync: Option<&AtomicBool>,
     ) -> Result<(), AttachError> {
-        // phux-npb3: capture follows focus. Closed panes are pruned so a
+        // Capture follows focus. Closed panes are pruned so a
         // recycled ResourceId can never inherit a stale opt-out.
         if !self.mouse_optout.is_empty() {
             self.mouse_optout.retain(|id| self.panes.contains_key(id));
@@ -1730,7 +1730,7 @@ impl SessionLoop {
         if !needs_resync.is_some_and(|flag| flag.swap(false, Ordering::AcqRel)) {
             return;
         }
-        // phux-esge: the writer dropped bytes the renderers believe landed,
+        // The writer dropped bytes the renderers believe landed,
         // so no front buffer describes the screen any more.
         crate::attach::pane_state::invalidate_all_fronts(&mut self.panes);
         if self.overlays.is_active() {
@@ -2401,7 +2401,7 @@ impl SessionLoop {
             FrameKind::CommandResult { request_id, result }
                 if self.peers.hosts_pending == Some(request_id) =>
             {
-                // phux-c2td.23: a satellite this inventory could not list
+                // A satellite this inventory could not list
                 // forgets its strays; one it reached gets their kills.
                 let asked_at = self.peers.hosts_pending_since;
                 let answers = self.fold_host_inventory(&result, repaint);
@@ -2426,7 +2426,7 @@ impl SessionLoop {
                 code: phux_protocol::wire::frame::ErrorCode::SatelliteUnreachable,
                 message,
             } if self.peers.hosts_pending.is_some() => {
-                // phux-lxov.1: grey the panes now. The inventory reply still
+                // Grey the panes now. The inventory reply still
                 // decides the notice, but the layout slot is already down.
                 if crate::attach::pane_state::note_satellite_unreachable(&mut self.panes, &message)
                 {
@@ -2730,7 +2730,7 @@ impl SessionLoop {
         self.attach_discovered_panes(conn, &replay).await
     }
 
-    /// phux-lxov.1: arm [`SATELLITE_PROBE_INTERVAL`] while any satellite pane
+    /// Arm [`SATELLITE_PROBE_INTERVAL`] while any satellite pane
     /// is down and no host inventory is already in flight.
     fn arm_satellite_probe(&mut self, now: tokio::time::Instant) {
         if self.host_sessions_supported
@@ -2813,7 +2813,7 @@ impl SessionLoop {
         self.orphan_kills = kills;
     }
 
-    /// phux-deya: take over the review index an earlier entry on this
+    /// Take over the review index an earlier entry on this
     /// connection handed out at a session switch.
     pub(super) fn set_review(&mut self, review: crate::attach::review::ReviewIndex) {
         self.review = review;
@@ -2914,7 +2914,7 @@ impl SessionLoop {
         {
             self.sync_agent_meta(conn).await?;
         }
-        // phux-p4vp: the ATTACHED snapshot refreshes the pane-cwd index
+        // The ATTACHED snapshot refreshes the pane-cwd index
         // behind the sidebar branch line.
         self.vcs
             .apply_snapshot(std::mem::take(&mut outcome.pane_cwds));
@@ -3111,7 +3111,7 @@ impl SessionLoop {
             self.on_layout_replaced(sidebar, repaint);
         } else if outcome.layout_get_answered {
             // No persisted layout: still resolve a resource-identity pick
-            // against the ATTACHED graph (phux-ah84).
+            // against the ATTACHED graph.
             self.resolve_cross_session_pick();
         }
         // ADR-0040: an agent record changed. Fold it into the review index even
@@ -3312,7 +3312,7 @@ impl SessionLoop {
         if drained.fleet_dirty {
             self.refresh_fleet(out, sidebar);
         }
-        // phux-c2td.3: the same in-place refresh for a session picker that
+        // The same in-place refresh for a session picker that
         // was opened before its host inventory landed.
         if std::mem::take(&mut self.session_picker_dirty) {
             self.refresh_session_picker(out, sidebar);
@@ -3409,7 +3409,7 @@ impl SessionLoop {
         }
     }
 
-    /// phux-c2td.3: rebuild and repaint the session picker, if it is open.
+    /// Rebuild and repaint the session picker, if it is open.
     fn refresh_session_picker<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -3621,7 +3621,7 @@ impl SessionLoop {
             let _ = sb.clear_expired_notice(std::time::Instant::now());
         }
         self.expire_overdue_host_inventory();
-        // phux-8n4w: surface a background update check once it lands.
+        // Surface a background update check once it lands.
         self.poll_update_notice(out, sidebar);
         // An overlay would be partly overwritten by the bar paint.
         if self.overlays.is_active() {

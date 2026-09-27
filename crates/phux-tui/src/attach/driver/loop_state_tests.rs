@@ -199,7 +199,7 @@ async fn bootstrapped_loop_with(
     (state, client, server, out)
 }
 
-/// phux-501l: a last-pane `RESOURCE_CLOSED` on the first recv-arm burst must
+/// A last-pane `RESOURCE_CLOSED` on the first recv-arm burst must
 /// end the attach without sending the deferred bootstrap subscriptions.
 #[tokio::test(flavor = "current_thread")]
 async fn last_pane_close_on_first_burst_skips_deferred_bootstrap_writes() {
@@ -811,7 +811,7 @@ async fn answer_inventory(
     assert!(passed.is_none(), "the inventory reply is consumed");
 }
 
-/// phux-lxov.1: a down satellite pane keeps its layout slot. An inventory
+/// A down satellite pane keeps its layout slot. An inventory
 /// that still cannot see the host does not attach it; one that can sends
 /// `ATTACH_RESOURCE` and clears the flag. A replay refusal puts the flag
 /// back without folding the leaf out.
@@ -1502,7 +1502,7 @@ async fn rename_barrier_error_keeps_the_current_status_name() {
     assert_eq!(state.session_name, "test");
 }
 
-/// phux-ah84: a CLI-created peer with an agent record but no TUI layout
+/// A CLI-created peer with an agent record but no TUI layout
 /// still paints in Agents, keyed by `ResourceId`.
 #[tokio::test(flavor = "current_thread")]
 async fn unvisited_peer_agent_paints_from_server_inventory() {
@@ -1546,7 +1546,7 @@ async fn unvisited_peer_agent_paints_from_server_inventory() {
     assert!(screen.contains("peer"), "{screen}");
 }
 
-/// phux-ah84: sweeping an unvisited peer GETs/SUBSCRIBEs its graph terminals.
+/// Sweeping an unvisited peer GETs/SUBSCRIBEs its graph terminals.
 #[tokio::test(flavor = "current_thread")]
 async fn sweep_discovers_graph_terminals_before_layout_persist() {
     let (mut state, mut client, mut server, _) =
@@ -1590,7 +1590,7 @@ async fn sweep_discovers_graph_terminals_before_layout_persist() {
     );
 }
 
-/// phux-ah84: a resource-identity pick focuses the inventory pane even when
+/// A resource-identity pick focuses the inventory pane even when
 /// the destination still has the single-pane attach bootstrap.
 #[tokio::test(flavor = "current_thread")]
 async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
@@ -1751,7 +1751,7 @@ fn snapshot_sidebar(state: &mut SessionLoop, out: &mut Vec<u8>, sidebar: Sidebar
     state.drain_repaint(out, Some(sidebar), &mut repaint);
 }
 
-/// phux-deya: A→B→A keeps an unchanged reviewed Done in the local queue,
+/// A→B→A keeps an unchanged reviewed Done in the local queue,
 /// the peer queue, and the roster, with the fleet closed.
 #[tokio::test(flavor = "current_thread")]
 async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {

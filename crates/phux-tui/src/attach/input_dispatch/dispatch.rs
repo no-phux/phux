@@ -137,7 +137,7 @@ struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
 /// dropped with a debug log — the wire spec has no "pre-attach buffer"
 /// notion.
 ///
-/// phux-4li.5: when a `KeyEvent` matches a configured keybind, the
+/// When a `KeyEvent` matches a configured keybind, the
 /// chord is consumed by the dispatcher and the corresponding layout
 /// action runs (focus move / resize / etc.). The key is NOT forwarded
 /// to the focused pane in that case — same convention as tmux's
@@ -178,7 +178,7 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
         let mut predicted_any = false;
         let mut layout_changed = false;
         // Drained rather than consumed: the driver owns `events` for the life of
-        // the attach and reuses its allocation for every batch (phux-l96p.4).
+        // the attach and reuses its allocation for every batch.
         for ev in events.drain(..) {
             let change = env.dispatch_event(ev).await?;
             layout_changed |= change.layout_changed;
@@ -198,7 +198,7 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
     Ok(layout_changed)
 }
 
-/// phux-foz.2: the which-key popup is transparent to input. It is
+/// The which-key popup is transparent to input. It is
 /// dismissed by — and never consumes — the next event: a key press
 /// pops it and then executes exactly as if the popup were absent
 /// (the resolver still holds the pending prefix, so the chord
@@ -339,7 +339,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         .await
     }
 
-    /// phux-5ke.4: while any overlay is active the stack captures all
+    /// While any overlay is active the stack captures all
     /// input. Key events flow to `OverlayState::handle_key`, which
     /// routes them to the *top* overlay (which may dismiss, popping
     /// back to whatever is beneath it). Mouse and paste events stay within
@@ -356,7 +356,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// chording. The resolver is reset on entry so a partial chord begun
     /// before the overlay opened cannot leak into post-dismiss input.
     ///
-    /// phux-foz.2: a passthrough popup (which-key) is excluded — the
+    /// A passthrough popup (which-key) is excluded — the
     /// stage above already dismissed it for presses/mouse, and events
     /// it deliberately ignores (key release/repeat, paste, focus) must
     /// flow to the pane, not be captured (and must NOT reset the
@@ -392,7 +392,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             resolver.reset();
         }
         let was_active = self.ctx.overlays.is_active();
-        // phux-ahv.1: an overlay may commit an action (e.g. the
+        // An overlay may commit an action (e.g. the
         // rename prompt returning `rename-window { name }`); run
         // it through the same path as a keybinding.
         let outcome = self.ctx.overlays.handle_key(key_event);
@@ -441,7 +441,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // has to come back off the pane's cells.
         let copy_commit = matches!(outcome, OverlayOutcome::Copy(_));
         let ran = self.apply_overlay_outcome(outcome).await? || copy_commit;
-        // phux-wrnm: a pointer dismissal (clicking outside a context
+        // A pointer dismissal (clicking outside a context
         // menu) leaves the overlay's cells on screen with nothing
         // scheduled to erase them — the key path has always
         // repainted on dismiss; the mouse path never did, because
@@ -488,7 +488,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
     }
 
-    /// phux-4li.5: resolver intercept. Runs BEFORE the predict layer
+    /// Resolver intercept. Runs BEFORE the predict layer
     /// so a chord that resolves to e.g. `focus-direction` doesn't
     /// leave a stale ghost overlay on the previous focused pane.
     async fn intercept_chord(&mut self, ev: &InputEvent) -> Result<StageOutcome, AttachError> {
@@ -515,12 +515,12 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// skipped entirely when the config flag is off — `predict_key`
     /// returns `Disabled` and no overlay paint is scheduled.
     ///
-    /// Arrows over a known cell on the current line (phux-9gw.1.3)
+    /// Arrows over a known cell on the current line
     /// need a grid peek to know the width of the grapheme they step
     /// over; we hand `read_grapheme_at` to the predict layer so it
     /// can refuse the prediction when the cell is blank.
     ///
-    /// phux-4li.6: peek the focused pane's grid via the active
+    /// Peek the focused pane's grid via the active
     /// window's focus. The driver also mirrors that id into its
     /// `focused_resource` local (server-frame handlers rely on it);
     /// either reads the same `ResourceId` here.
@@ -532,8 +532,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// an overlay the server never answered. On the alternate screen
     /// the overlay stays hidden until the app proves it echoes (vim
     /// insert mode, an agent TUI's prompt), so non-echoing apps (htop,
-    /// less) behave exactly as under the retired binary gate
-    /// (phux-51n6.1). The keystroke still travels upstream normally
+    /// less) behave exactly as under the retired binary gate.
+    /// The keystroke still travels upstream normally
     /// afterwards.
     fn feed_predict(&mut self, ev: &InputEvent) -> bool {
         use crate::predict::PredictionOutcome;
@@ -567,7 +567,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         matches!(outcome, PredictionOutcome::Predicted)
     }
 
-    /// phux-4li.6: `INPUT_KEY` / `INPUT_FOCUS` / `INPUT_PASTE` all target
+    /// `INPUT_KEY` / `INPUT_FOCUS` / `INPUT_PASTE` all target
     /// the client's focused pane (per ADR-0019 decision 6). Focus
     /// is canonically the active window's focus; the driver-side
     /// `focused_resource` mirror stays in sync for the render path.
@@ -593,13 +593,13 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!(terminal = ?pane, "dropping input: the pane's process exited");
             return Ok(false);
         }
-        // phux-lxov.1: a down satellite keeps its slot and its last
+        // A down satellite keeps its slot and its last
         // snapshot, and takes no new input until the link returns.
         if crate::attach::pane_state::pane_satellite_down(self.panes, &pane) {
             tracing::debug!(terminal = ?pane, "dropping input: satellite unreachable");
             return Ok(false);
         }
-        // phux-foz.1: forwarding key/paste input to a pane answers (or at
+        // Forwarding key/paste input to a pane answers (or at
         // least engages) its pending agent question, so clear its asked
         // attention flag. Focus/mouse events don't clear — merely looking
         // at a pane is not answering it. A real transition schedules the
@@ -644,7 +644,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
 
     /// Paint the queued predictions. Predictions are pane-local; shift
     /// them by the focused pane's render origin so a non-top-left pane
-    /// echoes over its own cells (phux-7ry0). ADR-0090: the display
+    /// echoes over its own cells. ADR-0090: the display
     /// policy gates the paint — on the alternate screen without echo
     /// evidence (or while tentative / past the TTL) the queue reconciles
     /// silently and nothing is painted.
@@ -661,7 +661,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             .and_then(|fid| self.panes.get(fid))
             .map_or((0, 0), |s| s.renderer.last_origin());
         let _ = overlay.render(self.predict, origin, self.out);
-        // phux-esge: the guesses now sit over the focused pane's cells; its
+        // The guesses now sit over the focused pane's cells; its
         // front buffer must not keep claiming what was there before them.
         if let Some(slot) = focused.and_then(|fid| self.panes.get_mut(fid)) {
             crate::attach::pane_state::invalidate_predicted_rows(slot, self.predict);
@@ -704,7 +704,7 @@ pub(super) fn wheel_scroll_delta(mouse: &MouseEvent) -> Option<isize> {
 /// routes in cells; this runs at the `INPUT_MOUSE` send boundary only, so
 /// every local consumer (overlays, wheel branch, drag) keeps cell units.
 /// Axes are clamped to 1px so a degenerate geometry can never zero out the
-/// position (phux-yyex).
+/// position.
 pub(super) fn scale_to_surface_pixels(mut mouse: MouseEvent, cell_px: (u16, u16)) -> MouseEvent {
     mouse.x *= f64::from(cell_px.0.max(1));
     mouse.y *= f64::from(cell_px.1.max(1));
@@ -714,7 +714,7 @@ pub(super) fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'
     // Same source of truth the server encoder and the FFI bridge use.
     // The four DECSET bits (9/1000/1002/1003) are the common cases, but
     // `TrackingMode` is non-exhaustive — a Mode-list miss is what sent
-    // grok/opencode wheels into local scroll (phux-2vnl).
+    // grok/opencode wheels into local scroll.
     libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)
         .is_ok_and(|options| options.tracking_mode != libghostty_vt::mouse::TrackingMode::None)
 }
@@ -857,7 +857,7 @@ pub(super) fn focused_pane_rect(
 }
 
 /// Resolve `SPAWN_RESOURCE.initial_size` for a spawn this client is about to
-/// issue (phux-a5xj), by asking `predict` for the tile the new leaf will
+/// issue, by asking `predict` for the tile the new leaf will
 /// occupy in the current content rect.
 ///
 /// `None` — and therefore an absent wire field — whenever the server did not
@@ -921,12 +921,12 @@ pub(in crate::attach) fn focused_pane_rect_for(
         .unwrap_or(content)
 }
 
-/// phux-z6wt: single choke point for "the focused pane's rect may have
+/// Single choke point for "the focused pane's rect may have
 /// changed without a SIGWINCH firing" — recomputes it via
 /// [`focused_pane_rect_for`] and fans it out to every surviving overlay
 /// ([`OverlayState::on_viewport_resize`]).
 ///
-/// PR #331 (phux-d26y) added that fan-out only on the SIGWINCH edge, but a
+/// PR #331 added that fan-out only on the SIGWINCH edge, but a
 /// peer's layout broadcast (`FrameOutcome::layout_replaced` in
 /// `server_frame.rs`) moves the focused pane's rect too, with no SIGWINCH
 /// involved. The same flag also covers the ResourceSpawned/ResourceClosed

@@ -178,7 +178,7 @@ pub(super) fn attach_client_caps(
     // `detect_color_support`. The advertised tier feeds the server's
     // per-client `downsample::rewrite_bytes` (SPEC §6.2).
     //
-    // phux-4li.5: declare L3 (`Layer::L3`) so the server forwards
+    // Declare L3 (`Layer::L3`) so the server forwards
     // `MetadataChanged` events for the `phux.tui.layout/v1` key.
     let bootstrap = phux_client_core::engine::ghostty::native_bootstrap_capabilities(
         BootstrapLimits::default(),

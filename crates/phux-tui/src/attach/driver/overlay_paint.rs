@@ -32,18 +32,18 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
     panes: &mut HashMap<ResourceId, PaneSlot>,
     engine_kernel: &AttachKernel,
     focused: Option<&ResourceId>,
-    // phux-x2hm: the driver's pane-zoom state. The base-frame repaints below
+    // The driver's pane-zoom state. The base-frame repaints below
     // render through `Workspace::render_window` so the zoomed pane fills the
     // window; the copy-mode branch keeps using the REAL active window because
     // copy mode operates on the focused pane regardless of zoom.
     zoomed: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&mut StatusBarPainter>,
-    // phux-4h5a: the sidebar reservation, so base-frame repaints under an
+    // The sidebar reservation, so base-frame repaints under an
     // overlay keep panes inset (no reflow flicker when a modal opens).
     // `None` reservation (default) is byte-identical.
     sidebar: Option<SidebarReservation>,
-    // phux-foz.10: the sidebar strip painter. The base-frame repaint under a
+    // The sidebar strip painter. The base-frame repaint under a
     // floating overlay starts with ED2 (full clear), so without the painter
     // the reserved columns stay blank and the sidebar vanishes for as long
     // as the palette / help / prompt / which-key overlay is open. Chrome
@@ -53,10 +53,10 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
     session_name: &str,
     theme: &crate::render::Theme,
 ) -> StatusBarPaint {
-    // phux-foz.14: floating modals center inside the pane content rect (the
+    // Floating modals center inside the pane content rect (the
     // viewport minus the sidebar strip and status-bar row), NOT the raw
     // viewport, so a centered box never lands on the sidebar columns and
-    // occludes the chrome the base-frame repaint (phux-foz.10) preserves. The
+    // occludes the chrome the base-frame repaint preserves. The
     // borrow of `status_bar` ends here (position is `Copy`), so it stays
     // available to move into `paint_full_frame` below.
     let bar_pos = status_bar.as_deref().map(StatusBarPainter::position);
@@ -99,7 +99,7 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
             slot.renderer.set_selection(None);
         }
         let _ = paint_copy_mode_status(out, sel, viewport_dims, theme);
-        // phux-esge: the strip lands on the bottom viewport row, which is a
+        // The strip lands on the bottom viewport row, which is a
         // pane row under a top-docked bar or no bar at all.
         crate::attach::pane_state::invalidate_all_fronts(panes);
         if matches!(
@@ -115,7 +115,7 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
         // the live panes visible by repainting the base frame, then emit
         // only the modal's bounded region on top. No `\x1b[2J` — the panes
         // surround the box instead of vanishing behind a full-screen clear.
-        // The base frame includes the sidebar strip (phux-foz.10): the
+        // The base frame includes the sidebar strip: the
         // repaint's own ED2 cleared it, and chrome must persist under a
         // floating overlay.
         let painted =
@@ -138,7 +138,7 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
                     )
                 });
         let _ = overlays.paint_clipped(out, viewport_dims, overlay_content, clip, theme.shadow);
-        // phux-esge: the box and its shadow sit over pane cells. Pane paint
+        // The box and its shadow sit over pane cells. Pane paint
         // is suppressed while it is up and dismissal forces a full repaint,
         // so this is insurance, not a fix — but it is free.
         crate::attach::pane_state::invalidate_all_fronts(panes);
@@ -147,7 +147,7 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
         // Full-screen overlay (no bounded region): clear + paint.
         let _ = out.write_all(b"\x1b[2J\x1b[H");
         let _ = overlays.paint(out, viewport_dims);
-        // phux-esge: the clear and the overlay replaced every pane cell.
+        // The clear and the overlay replaced every pane cell.
         crate::attach::pane_state::invalidate_all_fronts(panes);
         StatusBarPaint::NotPublished
     }
@@ -200,7 +200,7 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     out.flush()
 }
 
-/// phux-c2td.3: rebuild and repaint the session picker in place when a
+/// Rebuild and repaint the session picker in place when a
 /// fresh host inventory lands while it is open, so a picker opened before
 /// the `GET_STATE` reply fills in its satellite groups instead of showing a
 /// stale fleet. A no-op unless a live session picker is on the overlay stack
@@ -260,7 +260,7 @@ pub(super) fn refresh_session_picker_if_open<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-jpqd: rebuild and repaint the agent-fleet dashboard in place when it
+/// Rebuild and repaint the agent-fleet dashboard in place when it
 /// is the active live overlay. Extracted from `main_loop`'s per-frame fleet
 /// refresh so the foreign-topology intercepts (layout + agent-record GET
 /// replies, which `continue` past the general frame handler) can trigger the

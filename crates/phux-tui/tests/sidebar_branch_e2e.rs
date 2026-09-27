@@ -1,4 +1,4 @@
-//! phux-p4vp — end-to-end: the sidebar's VCS branch line derives from
+//! End-to-end: the sidebar's VCS branch line derives from
 //! REAL `ATTACHED` snapshot cwds, not client-side injection.
 //!
 //! Prior client coverage fed the branch machinery from the client side:
@@ -114,7 +114,7 @@ fn sidebar_branch_line_derives_from_attached_snapshot_cwd() {
         drop(wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await);
 
         // The seed shell blocks on the PTY inside the fixture repo,
-        // reached via the wire `cwd` (phux-3mtf). The snapshot cwd must
+        // reached via the wire `cwd`. The snapshot cwd must
         // come from the wire — nothing client-side knows this path.
         //
         // No retry loop: the cwd is applied at spawn time (portable_pty

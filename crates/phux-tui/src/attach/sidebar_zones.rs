@@ -1,4 +1,4 @@
-//! The sidebar's cross-session projections (phux-k0cw).
+//! The sidebar's cross-session projections.
 //!
 //! Agents and Sessions describe the whole server rather than only the
 //! attached session, so their
@@ -13,7 +13,7 @@
 //! and peer asked flags from the server-wide event stream the client has
 //! always held. A CLI-created session has no persisted TUI layout until a
 //! TUI visits it; the server window/resource graph is the inventory until
-//! then (phux-ah84).
+//! then.
 
 use std::collections::{HashMap, HashSet};
 
@@ -61,7 +61,7 @@ pub(super) struct PeerInputs<'a> {
     pub foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
     /// Peer panes that raised an ADR-0035 `Asked`.
     pub foreign_attention: &'a HashSet<ResourceId>,
-    /// Connection-lifetime review index (phux-deya). Peer rows read `seen`
+    /// Connection-lifetime review index. Peer rows read `seen`
     /// from here instead of hardcoding unseen.
     pub review: &'a ReviewIndex,
 }

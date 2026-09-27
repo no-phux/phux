@@ -1,6 +1,6 @@
 //! The driver's config-facing seams: the which-key popup, the attach-time
 //! notice, and the in-place config reload. The config-derived state itself
-//! is `crate::settings::TuiSettings` (phux-u1tq.2).
+//! is `crate::settings::TuiSettings`.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -19,7 +19,7 @@ use crate::settings::TuiSettings;
 use super::chrome::refresh_window_chrome;
 use super::overlay_paint::paint_active_overlay;
 
-/// phux-foz.2: (dis)arm the which-key popup deadline for one loop pass.
+/// (dis)arm the which-key popup deadline for one loop pass.
 ///
 /// Arms (`Some(now + delay)`) only while ALL of: the resolver is pending
 /// exactly at the prefix, the popup is enabled in config, and no overlay
@@ -44,7 +44,7 @@ pub(super) fn update_which_key_deadline(
     }
 }
 
-/// phux-foz.2: push the which-key popup when the timeout fires.
+/// Push the which-key popup when the timeout fires.
 ///
 /// Re-checks the arming conditions against the CURRENT state (the select!
 /// arm may race a same-iteration resolver mutation) and pushes a
@@ -74,7 +74,7 @@ pub(super) fn push_which_key_overlay(
     true
 }
 
-/// phux-foz.5: perform one explicit live config reload and repaint.
+/// Perform one explicit live config reload and repaint.
 ///
 /// Re-runs the layered config loader ([`TuiSettings::reload_in_place`])
 /// and, on success, swaps the reloadable settings — keybindings snapshot,
@@ -105,7 +105,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
     own_client_id: Option<ClientId>,
     agent_meta: &AgentMetaIndex,
     vcs: &mut VcsIndex,
-    // phux-k0cw: a reload rebuilds the sidebar painter cache-cold, so the
+    // A reload rebuilds the sidebar painter cache-cold, so the
     // cross-session zones must be re-projected with it or the strip comes
     // back with an empty queue and roster until the next peer push.
     peers: crate::attach::sidebar_zones::PeerInputs<'_>,
@@ -117,7 +117,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
     match settings.reload_in_place(&phux_config::loader::config_path()) {
         Ok(()) => {
             tracing::info!("config reloaded in place");
-            // phux-huhi: the new `[chrome]` thresholds reach the overlay
+            // The new `[chrome]` thresholds reach the overlay
             // stack immediately, including any modal already open.
             overlays.set_breakpoints(settings.chrome);
             // ADR-0101: an open settings page that just edited a theme slot
@@ -196,7 +196,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
     painted
 }
 
-/// phux-i0e8.2.3: set a caller-supplied attach-time notice (the reconnect
+/// Set a caller-supplied attach-time notice (the reconnect
 /// loop's "re-attached after server restart") on the status-bar painter's
 /// transient slot.
 ///

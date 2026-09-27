@@ -541,7 +541,7 @@ fn non_focused_output_letterboxes_like_the_full_frame() {
     rig.assert_consistent("after non-focused incremental output");
 }
 
-/// The dogfood stress (phux-foz.11): continuous output + synchronized-output
+/// The dogfood stress: continuous output + synchronized-output
 /// bursts on every pane while the control plane is spammed — window cycling,
 /// sidebar toggling, palette open/close — with server snapshot resyncs
 /// landing mid-spam, including resyncs whose grid lags the rect (the resize

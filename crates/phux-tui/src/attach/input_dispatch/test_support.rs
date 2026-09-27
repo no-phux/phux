@@ -28,7 +28,7 @@ use super::effects::{PendingSessionRename, ReattachTarget};
 /// assertions are on the frames collected — never on how fast they
 /// arrived. The timeout only stops a peer that never hangs up from
 /// wedging the binary. The 5s it replaces was generous on an idle laptop
-/// and a measurement of the scheduler on a saturated one (phux-br1f).
+/// and a measurement of the scheduler on a saturated one.
 pub(super) const PEER_DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub(super) fn tid(id: u32) -> ResourceId {

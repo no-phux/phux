@@ -16,7 +16,7 @@ use crate::layout::{LayoutState, Workspace};
 /// pre-toggle snapshot for the reflow handshake. Returns an empty map when
 /// there is no active window or its tree is unseeded (single-pane bootstrap).
 ///
-/// phux-l96p.4: this runs on every input batch — the reflow handshake needs a
+/// This runs on every input batch — the reflow handshake needs a
 /// *pre*-dispatch snapshot, so it cannot be deferred behind the "did zoom or
 /// the sidebar move?" test it feeds. It therefore goes through the paint
 /// path's memoized tiling rather than calling `compute_layout_in` directly:

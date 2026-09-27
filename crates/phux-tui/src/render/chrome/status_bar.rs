@@ -1,4 +1,4 @@
-//! Status-bar chrome layer (phux-5ke.2).
+//! Status-bar chrome layer.
 //!
 //! Replaces the hand-painted cell positioning from
 //! `attach::status_bar::StatusBarPainter` with a ratatui-based composer
@@ -53,14 +53,14 @@ pub enum Position {
     /// One row at the very bottom of the outer terminal.
     Bottom,
     /// One row at the very top of the outer terminal. Surfaced by the
-    /// `[status] position = "top"` config key (phux-foz.8).
+    /// `[status] position = "top"` config key.
     #[default]
     Top,
 }
 
 impl From<phux_config::StatusPosition> for Position {
-    /// Map the `[status] position` config value onto the render enum
-    /// (phux-foz.8). The mapping lives at this boundary so `phux-config`
+    /// Map the `[status] position` config value onto the render enum.
+    /// The mapping lives at this boundary so `phux-config`
     /// stays free of render types (ADR-0020).
     fn from(pos: phux_config::StatusPosition) -> Self {
         match pos {
@@ -88,11 +88,11 @@ pub struct StatusBarContext<'a> {
     /// by the `windows` widget. Empty ⇒ no window bar. TUI-side data fed
     /// into the widget pipeline via [`Self::as_widget`].
     pub windows: &'a [WindowInfo],
-    /// phux-foz.4: the focused pane's live working directory (`""` when
+    /// The focused pane's live working directory (`""` when
     /// unknown), consumed by the `cwd` widget. Injected by the painter
     /// from driver-fed state, like `windows`.
     pub cwd: &'a str,
-    /// phux-foz.4: the focused pane's last known command exit code
+    /// The focused pane's last known command exit code
     /// (OSC-133 `command_finished`), consumed by the `exit` widget.
     pub last_exit: Option<i32>,
 }
@@ -169,14 +169,14 @@ fn parse_color(spec: Option<&str>) -> Option<Color> {
     )
 }
 
-/// phux-9vf: the persistent error strip's style — reverse video + bold,
+/// The persistent error strip's style — reverse video + bold,
 /// so the diagnostic reads as an alarm strip rather than blending into
 /// normal chrome.
 fn alarm_style() -> Style {
     Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
 }
 
-/// phux-i0e8.2.1: compose `message` into a fresh 1-row [`Buffer`] of
+/// Compose `message` into a fresh 1-row [`Buffer`] of
 /// `cols` cells, every cell styled `style`, the message truncated to the
 /// span and the remainder padded with spaces so the strip covers the
 /// bar's full width.
@@ -284,7 +284,7 @@ fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color) 
             }
             target.set_symbol(&s);
         }
-        // phux-ahv.3: carry per-cell style (fg/bg/attrs) across the
+        // Carry per-cell style (fg/bg/attrs) across the
         // ratatui boundary; `write_buffer` emits it as SGR.
         if let Some(style) = &cell.style {
             target.set_style(to_ratatui_style(style));
@@ -299,7 +299,7 @@ fn fill_buffer(buffer: &mut Buffer, row: &[WidgetCell], cols: u16, fill: Color) 
 /// pane's logical position.
 ///
 /// The buffer is composed at its own origin (`0..cols`); `x` places it on
-/// screen, so a sidebar-inset bar lands beside the strip (phux-qtw8).
+/// screen, so a sidebar-inset bar lands beside the strip.
 fn write_buffer<W: Write>(
     out: &mut W,
     buffer: &Buffer,
@@ -321,7 +321,7 @@ fn write_buffer<W: Write>(
     let mut x = 0;
     while x < cols {
         let cell = &buffer[(x, 0)];
-        // phux-ahv.3: per-cell SGR (shared with the overlay painter).
+        // Per-cell SGR (shared with the overlay painter).
         crate::render::sgr::emit_cell_sgr(out, cell, &mut prev_styled)?;
         let sym = cell.symbol();
         // The row is one uninterrupted run from a single CUP, so what it
@@ -384,7 +384,7 @@ fn paint_supervisory_overlay<W: Write>(
     out.flush()
 }
 
-/// phux-foz.1: emit the agent-attention hint as a chip immediately left of
+/// Emit the agent-attention hint as a chip immediately left of
 /// the supervisory badge (`right_offset` cells in from the right edge; `0`
 /// when no badge is present). Same reverse+bold treatment as the ADR-0033
 /// badge, but the foreground rides the theme's `attention` slot — under
@@ -486,7 +486,7 @@ fn overlay_badge_into_buffer(
     }
 }
 
-/// Columns the bar yields at each edge of the viewport (phux-qtw8).
+/// Columns the bar yields at each edge of the viewport.
 ///
 /// A docked sidebar is a full-height strip, so the bar cannot span the full
 /// width without painting its window tabs underneath it. The caller
@@ -520,14 +520,14 @@ impl BarInset {
     }
 }
 
-/// phux-i0e8.2.1: how long a transient [`Notice`] stays on the bar row.
+/// How long a transient [`Notice`] stays on the bar row.
 ///
 /// After this elapses, [`StatusBarPainter::clear_expired_notice`] drops
 /// the notice. Expiry rides the driver's existing 1 s `status_tick`, so
 /// the effective lifetime is this value rounded up to the next tick.
 pub const NOTICE_TTL: Duration = Duration::from_secs(7);
 
-/// phux-i0e8.2.1: severity of a transient status-bar [`Notice`].
+/// Severity of a transient status-bar [`Notice`].
 ///
 /// Picks the toast-chip style only; it carries no routing semantics. `Warn`
 /// renders bold (matching the persistent error strip's weight), `Info`
@@ -551,7 +551,7 @@ impl NoticeSeverity {
     }
 }
 
-/// phux-i0e8.2.1: a transient, self-expiring status-bar message.
+/// A transient, self-expiring status-bar message.
 ///
 /// Produced by the server-frame dispatcher (`FrameOutcome::notices`) for
 /// lifecycle events that deserve a moment of visibility but no persistent
@@ -624,17 +624,17 @@ pub struct StatusBarPainter {
     /// Last (cols, rows) we painted into. Different dims invalidate
     /// `last_row` and force a fresh paint.
     last_viewport: Option<(u16, u16)>,
-    /// phux-ahv.3: the window list fed to the `windows` widget. Updated
+    /// The window list fed to the `windows` widget. Updated
     /// by the driver from the `Workspace` and injected into the render
     /// context inside [`Self::paint`]; a change invalidates the cache.
     windows: Vec<WindowInfo>,
-    /// phux-9vf: when `Some`, the painter ignores `bar`/`windows` and
+    /// When `Some`, the painter ignores `bar`/`windows` and
     /// paints this fixed error line instead. Set by the attach path when
     /// the on-disk config fails to load or build, so the user sees a
     /// visible reason the bar and keybindings are degraded rather than a
     /// silently empty row.
     error: Option<String>,
-    /// phux-i0e8.2.1: the transient notice slot and its expiry deadline.
+    /// The transient notice slot and its expiry deadline.
     /// One slot, newest-wins; painted as a compact right-aligned toast over
     /// the normal bar until [`Self::clear_expired_notice`] drops it. Never set while `error`
     /// is active (the persistent diagnostic outranks it) and never set on
@@ -647,12 +647,12 @@ pub struct StatusBarPainter {
     /// change invalidates the cache so the row repaints (and erases a cleared
     /// badge). Painted over the composed widget row, not replacing it.
     supervisory: Option<String>,
-    /// phux-foz.1: when `Some`, the agent-attention hint (e.g. ` ask `)
+    /// When `Some`, the agent-attention hint (e.g. ` ask `)
     /// is overlaid immediately left of the supervisory badge. Set by the
     /// driver whenever a pane's ADR-0035 asked flag flips; same cache
     /// semantics as `supervisory`.
     attention: Option<String>,
-    /// phux-foz.1: chip foreground for the attention hint, from the theme's
+    /// Chip foreground for the attention hint, from the theme's
     /// `attention` slot (the painter never hardcodes it). Under the chip's
     /// reverse video the foreground reads as the fill color.
     attention_fg: Color,
@@ -660,12 +660,12 @@ pub struct StatusBarPainter {
     /// as the sidebar, so the two read as one frame around the panes.
     fill: Color,
     prefix: String,
-    /// phux-foz.4: the focused pane's live working directory, fed by the
+    /// The focused pane's live working directory, fed by the
     /// driver from `cwd_changed` events (via the pane slots) and injected
     /// into the render context like `windows`. `None` ⇒ unknown (the
     /// `cwd` widget renders nothing).
     focused_cwd: Option<String>,
-    /// phux-foz.4: the focused pane's last known command exit code, fed
+    /// The focused pane's last known command exit code, fed
     /// by the driver from `command_finished` events. `None` ⇒ unknown.
     last_exit: Option<i32>,
     /// Window index under a live tab drag, painted as the insertion
@@ -721,7 +721,7 @@ impl StatusBarPainter {
         }
     }
 
-    /// phux-9vf: build a painter that shows a fixed error line instead of
+    /// Build a painter that shows a fixed error line instead of
     /// the configured widgets.
     ///
     /// The attach path reaches for this when the on-disk config fails to
@@ -764,7 +764,7 @@ impl StatusBarPainter {
 
     /// Which row this painter reserves ([`Position::Bottom`] or
     /// [`Position::Top`]). The paint/layout helpers read this so the pane
-    /// content rect and the bar row agree on the reservation (phux-foz.8).
+    /// content rect and the bar row agree on the reservation.
     #[must_use]
     pub const fn position(&self) -> Position {
         self.position
@@ -806,7 +806,7 @@ impl StatusBarPainter {
         true
     }
 
-    /// phux-foz.4: set (or clear, with `None`) the focused pane's live
+    /// Set (or clear, with `None`) the focused pane's live
     /// working directory rendered by the `cwd` widget. Returns `true` if
     /// the value actually changed; a change invalidates the row cache.
     pub fn set_focused_cwd(&mut self, cwd: Option<String>) -> bool {
@@ -818,7 +818,7 @@ impl StatusBarPainter {
         true
     }
 
-    /// phux-foz.4: set (or clear, with `None`) the focused pane's last
+    /// Set (or clear, with `None`) the focused pane's last
     /// command exit code rendered by the `exit` widget. Returns `true` if
     /// the value actually changed; a change invalidates the row cache.
     pub fn set_last_exit(&mut self, last_exit: Option<i32>) -> bool {
@@ -830,7 +830,7 @@ impl StatusBarPainter {
         true
     }
 
-    /// phux-i0e8.2.1: show a transient notice full-row on the bar for
+    /// Show a transient notice full-row on the bar for
     /// [`NOTICE_TTL`] from `now`. Newest-wins: a fresh notice replaces the
     /// current one (and restarts the clock). Returns `true` when the notice
     /// was accepted (the caller should repaint the bar).
@@ -838,7 +838,7 @@ impl StatusBarPainter {
     /// Refused — degrading to a `tracing` line, so the event is never
     /// entirely silent — in two cases:
     ///
-    /// - the persistent error line is active (phux-9vf): the fixed
+    /// - the persistent error line is active: the fixed
     ///   diagnostic outranks any transient message;
     /// - the configured bar is empty: an empty-bar painter never reserves
     ///   a row ([`Self::is_empty`] / [`Self::min_poll_interval`] stay
@@ -867,7 +867,7 @@ impl StatusBarPainter {
         true
     }
 
-    /// phux-i0e8.2.1: drop the notice once its deadline passes. Called from
+    /// Drop the notice once its deadline passes. Called from
     /// the driver's existing 1 s `status_tick`; returns `true` when the
     /// notice was cleared (the cache is invalidated, so the next paint
     /// restores the normal widget row).
@@ -907,7 +907,7 @@ impl StatusBarPainter {
         true
     }
 
-    /// phux-foz.1: set (or clear, with `None`) the agent-attention hint
+    /// Set (or clear, with `None`) the agent-attention hint
     /// overlaid left of the supervisory badge. Returns `true` if the hint
     /// actually changed; same error-line suppression and cache semantics as
     /// [`Self::set_supervisory`].
@@ -920,7 +920,7 @@ impl StatusBarPainter {
         true
     }
 
-    /// phux-foz.1: set the attention chip's foreground from the theme's
+    /// Set the attention chip's foreground from the theme's
     /// `attention` slot. The driver calls this once at attach; the painter
     /// itself never hardcodes the color.
     pub fn set_attention_color(&mut self, color: Color) {
@@ -963,7 +963,7 @@ impl StatusBarPainter {
 
     /// True if the underlying bar has no widgets configured.
     ///
-    /// phux-9vf: an error-line painter is never empty — the fixed
+    /// An error-line painter is never empty — the fixed
     /// diagnostic must always reserve and paint its row so the user sees
     /// why their chrome is degraded.
     #[must_use]
@@ -976,7 +976,7 @@ impl StatusBarPainter {
     /// `Some(1s)` when the bar isn't empty so the `time` widget
     /// refreshes at its declared cadence.
     ///
-    /// phux-9vf: an error-line painter reports the same `Some(1s)` so the
+    /// An error-line painter reports the same `Some(1s)` so the
     /// driver's `status_tick` arm keeps repainting it and the diagnostic
     /// survives pane output stomping the bottom row.
     #[must_use]
@@ -1022,7 +1022,7 @@ impl StatusBarPainter {
         if cols == 0 || rows == 0 {
             return Ok(false);
         }
-        // phux-qtw8: the bar yields the sidebar's columns. Everything below
+        // The bar yields the sidebar's columns. Everything below
         // composes and hit-tests against this span, not the viewport — an
         // inset wider than the terminal leaves nothing to paint.
         let (x, cols) = inset.span(cols);
@@ -1068,7 +1068,7 @@ impl StatusBarPainter {
     /// Paint the persistent full-row error that has taken the bar over, if
     /// any, and report its outcome; `None` when the widget pipeline owns the row.
     ///
-    /// phux-9vf: an error-line painter bypasses the widget pipeline and
+    /// An error-line painter bypasses the widget pipeline and
     /// paints the fixed diagnostic. It takes priority over the normal
     /// "empty bar with no windows is a no-op" short-circuit in the caller.
     fn paint_error_takeover<W: Write>(
@@ -1090,7 +1090,7 @@ impl StatusBarPainter {
     /// The window list is owned by the painter (the driver sets it
     /// from the Workspace); inject it into the render context so
     /// callers don't have to thread it through every paint path.
-    /// Injected BEFORE the cache compose (phux-foz.12) so `last_row`
+    /// Injected BEFORE the cache compose so `last_row`
     /// holds the strip actually painted — window tabs included — and
     /// [`Self::window_hit_at`] hit-tests against what is on screen.
     fn ctx_with_window_list<'a>(&'a self, ctx: &StatusBarContext<'a>) -> StatusBarContext<'a> {
@@ -1153,7 +1153,7 @@ impl StatusBarPainter {
     /// ADR-0033: the supervisory badge overlays the widget row
     /// (right-aligned). Emitted after the row so it wins; the full-row
     /// repaint in the caller erases any stale/cleared badge first.
-    /// phux-foz.1: the attention hint chips in immediately left of the
+    /// The attention hint chips in immediately left of the
     /// badge (or at the right edge when no badge is up). Same repaint
     /// discipline: the full-row repaint erased any cleared hint.
     fn paint_row_overlays<W: Write>(
@@ -1250,7 +1250,7 @@ impl StatusBarPainter {
                 Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
             );
         }
-        // phux-foz.1: the attention hint composes left of the badge, themed
+        // The attention hint composes left of the badge, themed
         // like the live paint.
         if let Some(hint) = &self.attention {
             overlay_badge_into_buffer(
@@ -1263,7 +1263,7 @@ impl StatusBarPainter {
                     .add_modifier(Modifier::REVERSED | Modifier::BOLD),
             );
         }
-        // phux-i0e8.2.1: mirror the live paint. The transient notice is a
+        // Mirror the live paint. The transient notice is a
         // compact toast over the normal row and temporarily outranks the
         // persistent right-edge chips beneath it.
         if let Some((notice, _)) = &self.notice {
@@ -1272,12 +1272,12 @@ impl StatusBarPainter {
         Some((buffer, x, row_index))
     }
 
-    /// phux-9vf: paint the fixed error diagnostic onto the bar row.
+    /// Paint the fixed error diagnostic onto the bar row.
     ///
     /// Bypasses the widget composer entirely: the message is laid into a
     /// reverse-video row (so it reads as an alarm strip rather than blending
     /// into normal chrome) and truncated to `cols`. Delegates to the shared
-    /// [`Self::paint_full_row_message`] (phux-i0e8.2.1), which the transient
+    /// [`Self::paint_full_row_message`], which the transient
     /// notice path also rides.
     fn paint_error_line<W: Write>(
         &mut self,
@@ -1293,7 +1293,7 @@ impl StatusBarPainter {
         self.paint_full_row_message(out, &message, alarm_style(), x, cols, rows)
     }
 
-    /// phux-i0e8.2.1: paint `message` full-row onto the bar row in `style`,
+    /// Paint `message` full-row onto the bar row in `style`,
     /// truncated to `cols` and padded to the span's full width.
     ///
     /// Cached on `last_row` / `last_viewport` like the normal path so repeated
@@ -1331,7 +1331,7 @@ impl StatusBarPainter {
         Ok(true)
     }
 
-    /// phux-r82.6: the async data feeds behind the bar's `exec` widgets.
+    /// The async data feeds behind the bar's `exec` widgets.
     /// The driver spawns one bounded interval runner per feed; an
     /// error-line painter (empty bar) has none.
     #[must_use]
@@ -1347,13 +1347,13 @@ impl StatusBarPainter {
         self.last_viewport = None;
     }
 
-    /// phux-foz.12: resolve a click column on the bar row to the window
+    /// Resolve a click column on the bar row to the window
     /// tab painted there, reading the strip cached by the last
     /// `paint_outcome` — so hit targets derive from exactly what is on
     /// screen and cannot drift from the composed layout (slot placement,
     /// separators, truncation, `Z`/`!` markers all included).
     ///
-    /// `x` is a screen column; a sidebar-inset bar (phux-qtw8) is painted from
+    /// `x` is a screen column; a sidebar-inset bar is painted from
     /// its own origin, so the cached origin is subtracted to index the strip.
     ///
     /// `None` when the bar has never painted, `x` is off the strip (left of its
@@ -1545,7 +1545,7 @@ mod tests {
         assert!(s.contains("\x1b[1;1H"), "no CUP-to-row-1: {s:?}");
     }
 
-    /// phux-foz.8: the `[status] position` config value maps 1:1 onto the
+    /// The `[status] position` config value maps 1:1 onto the
     /// render enum, and the painter reports it back through `position()`
     /// (the layout helpers key the content-rect shift off that getter).
     #[test]
@@ -1653,7 +1653,7 @@ mod tests {
 
     #[test]
     fn error_line_painter_is_not_empty_and_polls() {
-        // phux-9vf: an error-line painter must report non-empty + a poll
+        // An error-line painter must report non-empty + a poll
         // interval so the driver reserves the row and keeps repainting the
         // diagnostic (otherwise pane output stomps it and it never returns).
         let p = StatusBarPainter::error_line("config error: boom (run: phux config check)");
@@ -1663,7 +1663,7 @@ mod tests {
 
     #[test]
     fn error_line_painter_renders_message_on_bar_row() {
-        // phux-9vf: the fixed diagnostic paints onto the bar row even though
+        // The fixed diagnostic paints onto the bar row even though
         // no widgets are configured (the normal empty-bar short-circuit
         // would otherwise emit nothing).
         let mut p =
@@ -1700,7 +1700,7 @@ mod tests {
         assert_eq!(buf.len(), first_len, "unchanged dims must be a no-op");
     }
 
-    /// phux-i0e8.2.1: an accepted notice floats over the normal row as a
+    /// An accepted notice floats over the normal row as a
     /// compact toast, and a newer notice replaces it (newest-wins single slot).
     #[test]
     fn notice_paints_compact_toast_without_covering_bar_and_newest_wins() {
@@ -1786,7 +1786,7 @@ mod tests {
         );
     }
 
-    /// phux-i0e8.2.1: the persistent error line outranks a transient
+    /// The persistent error line outranks a transient
     /// notice — `set_notice` is refused and the diagnostic keeps the row.
     #[test]
     fn notice_is_suppressed_under_the_error_line() {
@@ -1808,7 +1808,7 @@ mod tests {
         );
     }
 
-    /// phux-i0e8.2.1: a notice expires after [`NOTICE_TTL`]; the clear
+    /// A notice expires after [`NOTICE_TTL`]; the clear
     /// invalidates the cache so the next paint restores the widget row.
     #[test]
     fn notice_expires_after_ttl_and_restores_the_widget_row() {
@@ -1841,7 +1841,7 @@ mod tests {
         );
     }
 
-    /// phux-i0e8.2.1: an empty-bar painter never reserves a row for a
+    /// An empty-bar painter never reserves a row for a
     /// notice — the notice is refused (degrading to tracing), the painter
     /// stays empty (no row reservation), and no poll interval appears.
     #[test]
@@ -2001,7 +2001,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.1: the attention hint paints as a right-aligned chip on the
+    /// The attention hint paints as a right-aligned chip on the
     /// bar row, colored by the theme-fed `attention_fg` (reverse video makes
     /// the fg the chip fill).
     #[test]
@@ -2035,7 +2035,7 @@ mod tests {
         assert!(strip_csi(&s).contains("[ ASK ]"), "chip text; got {s:?}");
     }
 
-    /// phux-foz.1: with a supervisory badge up, the attention chip shifts
+    /// With a supervisory badge up, the attention chip shifts
     /// left of it (badge width + 1-cell gap) instead of overpainting it.
     #[test]
     fn attention_hint_sits_left_of_the_supervisory_badge() {
@@ -2069,7 +2069,7 @@ mod tests {
         assert!(visible.contains("[ ASK ]") && visible.contains("[ FROZEN ]"));
     }
 
-    /// phux-foz.1: clearing the hint reports the change and the repainted
+    /// Clearing the hint reports the change and the repainted
     /// row no longer carries it.
     #[test]
     fn cleared_attention_hint_stops_painting() {
@@ -2102,7 +2102,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.4: the painter-owned focused-pane cwd feeds the `cwd`
+    /// The painter-owned focused-pane cwd feeds the `cwd`
     /// widget; setting it invalidates the cache and the widget renders
     /// the (home-uncollapsed here) directory.
     #[test]
@@ -2134,7 +2134,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.4: the painter-owned last-exit feeds the `exit` widget.
+    /// The painter-owned last-exit feeds the `exit` widget.
     /// Clearing it (a code-less `command_finished`) blanks the widget again.
     #[test]
     fn painter_renders_last_exit_through_exit_widget() {
@@ -2166,7 +2166,7 @@ mod tests {
         );
     }
 
-    /// phux-r82.6: the painter exposes its bar's exec feeds so the driver
+    /// The painter exposes its bar's exec feeds so the driver
     /// can spawn runners; pushing output through a feed shows up on the
     /// next paint (the async-refresh-into-cached-state contract).
     #[test]
@@ -2201,7 +2201,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.12: after a paint, the painter resolves click columns to
+    /// After a paint, the painter resolves click columns to
     /// the window tabs of the strip it painted: "0:bash 1:vim" in the left
     /// slot puts window 0 on columns 0..6, the separator on 6, window 1 on
     /// 7..12, and blank padding after — hit, miss, hit, miss.
@@ -2246,7 +2246,7 @@ mod tests {
         assert_eq!(p.window_hit_at(40), None, "off-strip is inert");
     }
 
-    /// phux-mv5y: a live tab drag underlines the pointed-at tab and
+    /// A live tab drag underlines the pointed-at tab and
     /// clears the marker when the drop index is dropped. Hit targets stay
     /// on the original cells.
     #[test]
@@ -2315,7 +2315,7 @@ mod tests {
         (start..=end).all(|x| buf[(x, 0)].modifier.contains(Modifier::UNDERLINED))
     }
 
-    /// phux-qtw8: with a left sidebar docked the bar starts BESIDE the strip,
+    /// With a left sidebar docked the bar starts BESIDE the strip,
     /// not under it — the window tabs the user reported reading as "under the
     /// sidebar". The CUP lands on the strip's first free column and no cell is
     /// emitted left of it.
@@ -2351,7 +2351,7 @@ mod tests {
         );
     }
 
-    /// phux-qtw8: a screen column is mapped back through the origin the bar
+    /// A screen column is mapped back through the origin the bar
     /// painted at, so a tab click with a sidebar docked selects the window
     /// actually under the pointer rather than one 20 columns to its left.
     #[test]
@@ -2404,7 +2404,7 @@ mod tests {
         assert_eq!(p.window_hit_at(32), None, "padding is inert");
     }
 
-    /// phux-qtw8: a right-docked sidebar narrows the bar instead of moving it —
+    /// A right-docked sidebar narrows the bar instead of moving it —
     /// the origin stays at 0 and the right-aligned widgets (and the supervisory
     /// badge) stop at the strip's left edge.
     #[test]
@@ -2440,7 +2440,7 @@ mod tests {
         assert_eq!(p.last_row.as_ref().map(|(x, w, _)| (*x, *w)), Some((0, 20)));
     }
 
-    /// phux-foz.12: the hit map tracks the strip across a window-list
+    /// The hit map tracks the strip across a window-list
     /// change + repaint — after a select the active marker moves but the
     /// columns keep resolving against the fresh paint.
     #[test]
@@ -2487,7 +2487,7 @@ mod tests {
         assert_eq!(p.window_hit_at(4), Some(1), "new tab is hittable");
     }
 
-    /// phux-foz.12: the error-line painter paints a diagnostic strip, not
+    /// The error-line painter paints a diagnostic strip, not
     /// tabs — every column is inert.
     #[test]
     fn window_hit_at_is_inert_on_the_error_line() {

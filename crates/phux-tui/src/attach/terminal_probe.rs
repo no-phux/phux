@@ -150,8 +150,8 @@ fn wait_readable<Fd: AsFd>(tty: &Fd, deadline: Instant) -> Option<bool> {
 /// One deadline, one remaining-time poll, EINTR retries the same Instant.
 ///
 /// The host-wall clock is not an oracle here: a descheduled test thread
-/// can outlive `PROBE_BUDGET * 4` without the probe restarting its budget
-/// (phux-tur1). Tests drive this with a fake clock so contention cannot
+/// can outlive `PROBE_BUDGET * 4` without the probe restarting its budget.
+/// Tests drive this with a fake clock so contention cannot
 /// be mistaken for a restarted deadline.
 fn wait_with(
     deadline: Instant,
@@ -299,7 +299,7 @@ mod tests {
     /// A silent source costs one remaining-time poll, not a restarted budget.
     ///
     /// The clock and `poll` are fakes so host descheduling cannot be judged
-    /// as probe work (phux-tur1). A restarted deadline would poll again
+    /// as probe work. A restarted deadline would poll again
     /// with a fresh 20 ms after the first timeout.
     #[test]
     fn silent_source_gives_up_at_the_deadline() {

@@ -1,4 +1,4 @@
-//! Off-loop stdout writer (phux-fysb).
+//! Off-loop stdout writer.
 //!
 //! The attach `tokio::select!` loop renders synchronously: every
 //! `paint_full_frame`/`render_at` ends in `out.flush()`. When `out` is the

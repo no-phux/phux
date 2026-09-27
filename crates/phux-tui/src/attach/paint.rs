@@ -23,7 +23,7 @@ use crate::render::chrome::status_bar::{
     BarInset, ComposePolicy, Position, StatusBarPainter, make_context,
 };
 
-// phux-l96p.2: the DEC 2026 constants and the nestable guard that owns them
+// The DEC 2026 constants and the nestable guard that owns them
 // moved to `super::render` so the per-pane paint can open its own block
 // without truncating the frame-level one opened here. `SyncOutput::begin`
 // emits the mode bytes only for the outermost block.
@@ -339,7 +339,7 @@ impl StatusBarPaint {
 }
 
 /// The server-authoritative mirror grid `(cols, rows)` used to letterbox a
-/// pane within its render rect (phux-7ubw).
+/// pane within its render rect.
 ///
 /// Reads the libghostty mirror's own grid size. On the (unexpected) error
 /// path it falls back to the rect dims, which makes [`render_at_letterboxed`]
@@ -453,7 +453,7 @@ pub(super) fn end_of_frame_cursor<W: Write>(
 /// # One chunk per frame
 ///
 /// The whole composite is buffered in a [`FrameBlock`] and reaches `out` as
-/// ONE write and ONE flush (phux-69pq.9). The component painters inside —
+/// ONE write and ONE flush. The component painters inside —
 /// pane renders, dividers, the sidebar strip, the bar — each flush on their
 /// own when run standalone, and against the off-loop
 /// [`super::stdout_writer::StdoutSink`] every flush is a separately queued
@@ -641,7 +641,7 @@ fn paint_full_frame_into<W: Write>(
     // reaches the terminal until the block ships.
     // ED2 (clear screen) + cursor home. Cheap and unambiguous.
     let _ = out.write_all(b"\x1b[2J\x1b[H");
-    // phux-esge: the clear wiped every pane's cells. Forget every front here,
+    // The clear wiped every pane's cells. Forget every front here,
     // at the clear, rather than trusting each pane's forced paint to: a pane
     // with no published replica is skipped below, and one whose render state
     // errors returns before its renderer reaches its own invalidation.
@@ -761,7 +761,7 @@ fn paint_full_frame_into<W: Write>(
 /// every agent-state transition, for a bar-less config.
 ///
 /// Like [`paint_full_frame`], the whole chrome repaint is one frame block:
-/// one write, one flush, delivered whole or not at all (phux-69pq.9).
+/// one write, one flush, delivered whole or not at all.
 #[allow(
     clippy::too_many_arguments,
     reason = "mirrors paint_full_frame's chrome context minus the pane map's mutability; same arg-list refactor follow-up"
@@ -835,7 +835,7 @@ fn paint_chrome_in_place_into<W: Write>(
         .map(|r| (r.x, r.y));
     // The enclosing frame block is the outer-terminal transaction; the
     // sidebar/status painters' own flushes are swallowed by it.
-    // phux-l96p.8: the pane grid's rules and TITLES are chrome, and a
+    // The pane grid's rules and TITLES are chrome, and a
     // pane title changing is exactly a `RepaintLevel::Chrome` event
     // (`handler`'s `chrome_dirty`). Repainting the grid here is what
     // makes a title land without waiting for the next full frame; it
@@ -877,7 +877,7 @@ fn paint_chrome_in_place_into<W: Write>(
     (status_bar_painted, cursor_placed)
 }
 
-/// phux-nz4.5: shared helper invoked after every pane render so the
+/// Shared helper invoked after every pane render so the
 /// status row is restored on top of whatever VT the pane renderer just
 /// wrote. No-op when there is no painter or no live viewport.
 ///
@@ -885,7 +885,7 @@ fn paint_chrome_in_place_into<W: Write>(
 /// position (outer-viewport coords); when present we CUP+show there.
 ///
 /// `fallback_origin` is the focused pane's `Rect` origin to use when
-/// `restore_cursor` is `None` (phux-9xn). Without this, the bar's
+/// `restore_cursor` is `None`. Without this, the bar's
 /// final write strands the host terminal's cursor at the end of the
 /// bar row — i.e. bottom-right of the screen. The fallback emits a
 /// CUP into the pane area + `?25l` so the cursor sits in a sane
@@ -923,7 +923,7 @@ pub(super) fn paint_bar_after_pane<W: Write>(
     bar_row_clobbered: bool,
 ) -> StatusBarPaint {
     let Some(painter) = status_bar else {
-        // phux-l96p.2: the pane renderer no longer flushes on its own (one
+        // The pane renderer no longer flushes on its own (one
         // flush per composite frame). With no bar there is no
         // `end_of_frame_cursor` below to own it, so this early return is the
         // frame's end and must publish what the pane painted.
@@ -986,7 +986,7 @@ pub(super) fn paint_bar_row<W: Write>(
     }
     match painter.paint_outcome(
         out,
-        // phux-qtw8: yield the sidebar's columns so the window tabs start
+        // Yield the sidebar's columns so the window tabs start
         // beside the strip, not underneath it.
         inset,
         viewport_dims.0,
@@ -1128,7 +1128,7 @@ pub enum SidebarEdge {
     Right,
 }
 
-/// A chrome-region reservation for the window sidebar (phux-4h5a): `width`
+/// A chrome-region reservation for the window sidebar: `width`
 /// columns reserved on `edge`. The driver builds this from `[sidebar]` config
 /// each frame (`None` when the sidebar is disabled) and threads the SAME value
 /// to every layout site so panes, dividers, reflow, mouse, and predict agree
@@ -1152,7 +1152,7 @@ pub(super) struct SidebarReservation {
 /// viewport back.
 ///
 /// `min_pane_cols` is [`crate::render::ChromeBreakpoints::min_pane_cols`] —
-/// the shipped 40 unless `[chrome]` moved it (phux-huhi).
+/// the shipped 40 unless `[chrome]` moved it.
 ///
 /// This is the single place the decision is made, so every layout site —
 /// panes, dividers, reflow, mouse hit-testing, the strip painter itself —
@@ -1190,7 +1190,7 @@ pub(super) const fn sidebar_reservation(
 /// (optional) sidebar are folded off the outer viewport.
 ///
 /// Height drops one row for the status bar (mirroring [`pane_viewport`]);
-/// `bar` carries the bar's row so a top-docked bar (phux-foz.8) shifts the
+/// `bar` carries the bar's row so a top-docked bar shifts the
 /// content origin to `y: 1` instead of trimming the bottom. Width and
 /// x-origin inset for the sidebar: a left strip pushes the origin right by
 /// `width`; a right strip just narrows the width. `width` is clamped to the
@@ -1241,13 +1241,13 @@ pub(super) fn content_layout(
     } else {
         rows
     };
-    // phux-foz.8: a top-docked bar pushes the content down one row; the
+    // A top-docked bar pushes the content down one row; the
     // bottom (default) reservation keeps the pre-knob `y: 0` origin.
     let y = match bar {
         Some(Position::Top) => 1,
         Some(Position::Bottom) | None => 0,
     };
-    // phux-l96p.8: one more row above the pane area for the pane-grid
+    // One more row above the pane area for the pane-grid
     // RAIL — the rule that closes the divider grid at the top and holds
     // each top-row pane's title. It is unconditional so that every pane
     // has a rule above it to be labelled in; a rail that appeared only
@@ -1320,7 +1320,7 @@ pub(super) const fn sidebar_rect(
 }
 
 /// Columns the status bar yields at each edge so it does not paint under a
-/// docked sidebar (phux-qtw8): the strip is full-height, so the bar shrinks to
+/// docked sidebar: the strip is full-height, so the bar shrinks to
 /// [`content_rect`]'s horizontal extent rather than spanning the full width.
 ///
 /// `BarInset::NONE` with the sidebar disabled, which keeps the bar row
@@ -1590,7 +1590,7 @@ mod tests {
         }
     }
 
-    /// phux-huhi: `[chrome] min-pane-cols` moves the yield threshold. The
+    /// `[chrome] min-pane-cols` moves the yield threshold. The
     /// motivating case is a 55-column terminal whose owner would rather
     /// keep the strip than the columns it costs.
     #[test]
@@ -1636,7 +1636,7 @@ mod tests {
         }
     }
 
-    /// phux-4h5a / phux-l96p.8: the disabled-path invariant. With no
+    /// The disabled-path invariant. With no
     /// sidebar the content rect is the full width, anchored one row down
     /// from where `pane_viewport` starts — that row is the pane-grid
     /// RAIL, which holds every top-row pane's title. Height is
@@ -1703,7 +1703,7 @@ mod tests {
         }
     }
 
-    /// phux-l96p.8: the rail costs a row only when there is a row to
+    /// The rail costs a row only when there is a row to
     /// spare. A viewport with one usable row keeps it for the pane —
     /// chrome must never be the only thing on screen.
     #[test]
@@ -1722,7 +1722,7 @@ mod tests {
         }
     }
 
-    /// phux-foz.8: a top-docked bar keeps the one-row height reservation but
+    /// A top-docked bar keeps the one-row height reservation but
     /// shifts the content origin down to row 1, so panes never underlap the
     /// bar row. The sidebar inset composes with the shift unchanged.
     #[test]
@@ -1818,7 +1818,7 @@ mod tests {
         assert_eq!(huge.x, 80);
     }
 
-    /// phux-qtw8: the strip docks flush to the outer edge, spans `width`
+    /// The strip docks flush to the outer edge, spans `width`
     /// columns, and runs the FULL viewport height — the bar row included. It is
     /// the bar that yields (see [`bar_inset`]), so the strip's height no longer
     /// depends on whether a bar is docked, or where.
@@ -1859,7 +1859,7 @@ mod tests {
         );
     }
 
-    /// phux-qtw8: the bar yields exactly the strip's columns, so the window tabs
+    /// The bar yields exactly the strip's columns, so the window tabs
     /// start beside the sidebar instead of painting underneath it. Its span is
     /// the content rect's horizontal extent — the two agree by construction.
     #[test]
@@ -1942,8 +1942,8 @@ mod tests {
     /// This is the size premise behind
     /// `stdout_writer::an_oversized_frame_on_an_empty_queue_is_written_not_dropped`,
     /// asserted here so the two cannot drift apart. Once the renderer stopped
-    /// flushing per pane (phux-l96p.2) and the composite frame stopped
-    /// flushing per component (phux-l96p.3), a full repaint became ONE chunk
+    /// flushing per pane and the composite frame stopped
+    /// flushing per component, a full repaint became ONE chunk
     /// handed to `StdoutSink` — and the sink's cap used to reject any chunk
     /// that did not fit alongside the queue, which at this size meant
     /// rejecting it even when the queue was empty. That froze the screen after
@@ -2029,7 +2029,7 @@ mod tests {
     /// component writes in synchronized output,
     /// emits both panes' rect-anchored content, draws the divider, and
     /// ends with an explicit cursor placement. Locks the full-frame
-    /// composition contract on the now-injectable sink (phux-549).
+    /// composition contract on the now-injectable sink.
     #[test]
     fn paint_full_frame_composites_two_panes_into_sink() {
         let left = ResourceId::local(1);
@@ -2084,7 +2084,7 @@ mod tests {
             "expected a divider CUP near the split column; out = {s:?}"
         );
         // The frame ends with an explicit cursor placement (CUP + DECTCEM)
-        // — never stranded at the bar tail (phux-gxy).
+        // — never stranded at the bar tail.
         assert!(
             s.contains("\x1b[?25h") || s.contains("\x1b[?25l"),
             "frame must end with an explicit cursor visibility; out = {s:?}"
@@ -2190,7 +2190,7 @@ mod tests {
         }
     }
 
-    /// phux-69pq.9: a full frame is ONE write and ONE flush at the sink, so
+    /// A full frame is ONE write and ONE flush at the sink, so
     /// the stdout queue holds it as one chunk that overflow delivers whole or
     /// drops whole. Two panes, dividers, a bar and a sidebar all compose
     /// through the block; none of their own flushes reaches the sink.
@@ -2253,7 +2253,7 @@ mod tests {
         );
     }
 
-    /// The chrome-only repaint holds to the same contract (phux-69pq.9).
+    /// The chrome-only repaint holds to the same contract.
     #[test]
     fn paint_chrome_in_place_reaches_the_sink_as_one_chunk() {
         let id = ResourceId::local(1);
@@ -2361,7 +2361,7 @@ mod tests {
     /// the helper now parks the cursor at (0,0) hidden as a safety
     /// net. The old behavior (no CUP) stranded the cursor at the
     /// bar's last cell — bottom-right of the host terminal — when no
-    /// follow-up paint owned final placement (phux-gxy).
+    /// follow-up paint owned final placement.
     #[test]
     fn paint_bar_after_pane_parks_at_top_left_hidden_when_both_none() {
         let mut painter = build_painter();
@@ -2686,7 +2686,7 @@ mod tests {
         );
     }
 
-    /// phux-wurs: `paint_focused_pane` must NOT resize the pane's libghostty
+    /// `paint_focused_pane` must NOT resize the pane's libghostty
     /// mirror to the client layout rect. The mirror grid size is
     /// server-authoritative (set only at the snapshot / resize-ack handler).
     /// Resizing the alt-screen mirror to a transient client-rect width during

@@ -409,7 +409,7 @@ fn build_cells<'p, F>(
     // The focused pane's rect is the whole emphasis model: a rule is on
     // the focused frame exactly when it lies on that rect's perimeter.
     // An unreachable satellite pane keeps its slot but loses the focus
-    // colour, so the frame reads as disabled chrome (phux-lxov.1).
+    // colour, so the frame reads as disabled chrome.
     let focused_down =
         focused.is_some_and(|id| label_of(id).is_some_and(|label| label.unreachable));
     // A lone pane has no neighbour to be told apart from, so its frame stays
@@ -978,7 +978,7 @@ mod tests {
         assert!(s.ends_with("\x1b[0m"), "expected trailing SGR reset");
     }
 
-    /// phux-l96p.8: focus is a COLOUR, not a stroke weight. The grid is
+    /// Focus is a COLOUR, not a stroke weight. The grid is
     /// uniformly light and the focused pane's own rules are tinted with
     /// `divider_focus` + bold. (This replaces the old
     /// `heavy_glyph_present_when_focus_adjacent`: heavy glyphs forced
@@ -1210,7 +1210,7 @@ mod tests {
         assert!(s.contains(&sgr_fg(theme().attention)));
     }
 
-    /// phux-lxov.1: a satellite pane badges its host on the border. While
+    /// A satellite pane badges its host on the border. While
     /// the link is down the badge and title use the recessive divider tone
     /// and the focused frame drops its focus colour.
     #[test]

@@ -34,7 +34,7 @@ pub mod action_registry;
 pub mod actions;
 mod agent_rows;
 mod attach_role;
-// phux-wrnm: what is on each right-click menu (ADR-0058). The overlay that
+// What is on each right-click menu (ADR-0058). The overlay that
 // renders one lives in `render::overlay::menu`.
 mod context_menu;
 pub mod copy;
@@ -52,12 +52,12 @@ mod ghost_stress_tests;
 pub mod input_dispatch;
 mod onboarding;
 pub mod paint;
-// phux-4fbs.4: `PaneSlot` and the client-local indices built over it. Shared
+// `PaneSlot` and the client-local indices built over it. Shared
 // vocabulary the driver and its siblings both read; see the module doc.
 mod pane_state;
-// phux-deya: connection-lifetime review index. Shared vocabulary the driver
+// Connection-lifetime review index. Shared vocabulary the driver
 // and the sidebar both read; keeping it out of `driver` preserves the
-// one-way orchestrator rule (phux-4fbs.4).
+// one-way orchestrator rule.
 pub mod plugin_actions;
 pub mod plugin_panes;
 mod review;
@@ -81,7 +81,7 @@ mod repaint;
 pub mod server_frame;
 mod stdout_writer;
 mod terminal_probe;
-// phux-l96p.4: the outer terminal's input handle. Split out of the driver
+// The outer terminal's input handle. Split out of the driver
 // because "how stdin is read" is a transport concern with its own fallback
 // ladder, not part of the loop's state machine.
 mod tty_input;

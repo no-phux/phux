@@ -371,7 +371,7 @@ impl RenderOverlay for ContextMenu {
         // (menus pin to a pointer, they do not reflow), so `area` is not
         // consulted here.
         //
-        // phux-fsb: paint the box whole or not at all. A resize between the
+        // Paint the box whole or not at all. A resize between the
         // open and this paint can leave `self.rect` hanging off the new
         // viewport, and a clipped paint is worse than none: the hit-test
         // reads the pinned rect, so a truncated box shows one set of rows
@@ -400,7 +400,7 @@ impl RenderOverlay for ContextMenu {
         true
     }
 
-    /// phux-fsb: a menu is pinned to the pointer cell it was opened at,
+    /// A menu is pinned to the pointer cell it was opened at,
     /// against the content rect of the viewport that existed then. A resize
     /// invalidates that box, so the driver drops the menu instead of
     /// leaving an invisible overlay eating input.
@@ -762,7 +762,7 @@ mod tests {
             .collect()
     }
 
-    /// phux-fsb: a menu is painted whole or not at all.
+    /// A menu is painted whole or not at all.
     ///
     /// A partial paint is the dangerous state: the box on screen shows one
     /// set of rows while `row_at` — which reads the pinned, pre-resize
@@ -799,7 +799,7 @@ mod tests {
         );
     }
 
-    /// phux-fsb: the menu declares that its geometry does not survive a
+    /// The menu declares that its geometry does not survive a
     /// resize, which is what makes the driver drop it. Without this the
     /// overlay stays active and invisible, capturing every keystroke —
     /// and Enter commits whatever row the selection happens to hold.

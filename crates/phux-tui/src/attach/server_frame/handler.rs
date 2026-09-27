@@ -52,7 +52,7 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     panes: &'a mut HashMap<ResourceId, PaneSlot>,
     workspace: &'a mut Workspace,
     focused_resource: &'a mut Option<ResourceId>,
-    // phux-x2hm: the driver's pane-zoom state. RENDER/REFLOW geometry reads go
+    // The driver's pane-zoom state. RENDER/REFLOW geometry reads go
     // through `Workspace::render_window(zoomed)` so a zoomed pane paints to the
     // full window and non-zoomed panes (absent from the synthetic single-leaf
     // layout) correctly do not paint. A `ResourceSpawned`-ok split clears this
@@ -64,14 +64,14 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     /// ATTACHED and from `phux.session.keep_empty/v1` broadcasts; read when
     /// the last pane closes, to show the empty state instead of detaching.
     keep_empty_session: &'a mut bool,
-    // phux-k0cw: this client's own session, so the layout arm can tell OUR
+    // This client's own session, so the layout arm can tell OUR
     // layout broadcast from a peer's. No layout is attributed locally until
     // ATTACHED resolves the session.
     focused_session: Option<SessionId>,
     /// `Option` so an attach with no configured widgets pays nothing for the
     /// chrome path.
     status_bar: Option<&'a mut StatusBarPainter>,
-    // phux-4h5a: the window-sidebar reservation, threaded identically to
+    // The window-sidebar reservation, threaded identically to
     // `status_bar` so every layout site in this dispatcher tiles panes into
     // the SAME inset content rect the driver paints + reflows against. `None`
     // (sidebar disabled, the default) makes `content_rect` the full pane
@@ -86,7 +86,7 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     pending_layout_request: Option<u32>,
     pending_splits: &'a mut HashMap<u32, PendingSplit>,
     pending_windows: &'a mut HashMap<u32, PendingWindow>,
-    // phux-i0e8.2.2: Terminals whose close THIS client asked for
+    // Terminals whose close THIS client asked for
     // (kill-pane / kill-window soft-kill dispatch). The `ResourceClosed`
     // arm drains the marker and suppresses the pane-exit notice for an
     // expected close — the user killed it; telling them it died is noise.
@@ -105,13 +105,13 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     // MetadataChanged arms decode agent records into it; the driver reads
     // it when composing window labels.
     agent_meta: &'a mut AgentMetaIndex,
-    // phux-5ke.4: when `true` an overlay is on top; pane libghostty
+    // When `true` an overlay is on top; pane libghostty
     // mirrors keep ingesting `vt_write` (per ADR-0013) but stdout
     // flushes (render_at, bar paint, predict-overlay paint) are
     // suppressed so the modal doesn't get scribbled over. The driver
     // triggers a full repaint on overlay dismiss.
     overlay_active: bool,
-    // phux-jhv8: when `true` this frame is an earlier member of a coalesced
+    // When `true` this frame is an earlier member of a coalesced
     // burst — a later frame in the same drain targets this pane, so its
     // libghostty mirror still ingests `vt_write` (state stays correct) but the
     // stdout paint (render_at, bar, predict-overlay, reconcile) is suppressed.
@@ -424,7 +424,7 @@ fn unexpected_frame(frame: &FrameKind) -> AttachError {
 /// per-pane initial cells arrive separately through each bootstrap
 /// transcript.
 ///
-/// phux-4li.5: the returned outcome signals the driver to emit `GET_METADATA`
+/// The returned outcome signals the driver to emit `GET_METADATA`
 /// and `SUBSCRIBE_METADATA` for the layout key so we (a) reconcile against a
 /// persisted layout from a previous session and (b) receive `METADATA_CHANGED`
 /// broadcasts from sibling clients (ADR-0019 decision 2).
@@ -451,7 +451,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
         "ATTACHED: seeding focused_resource from snapshot"
     );
     *ctx.focused_resource = Some(bootstrap.clone());
-    // phux-4li.4: seed the workspace with a single window holding
+    // Seed the workspace with a single window holding
     // one leaf so the existing single-pane render path keeps
     // working. The L3 metadata-fetch path replaces this with the
     // server-stored layout (possibly multi-window) when present.
@@ -468,7 +468,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
     for pane in snapshot.resources.iter().filter(|pane| is_terminal(pane)) {
         if let std::collections::hash_map::Entry::Vacant(v) = ctx.panes.entry(pane.id.clone()) {
             let slot = v.insert(PaneSlot::new_with_size(pane.cols, pane.rows)?);
-            // phux-foz.4: seed the pane's cwd from the snapshot (the
+            // Seed the pane's cwd from the snapshot (the
             // spawn cwd); `cwd_changed` events refine it live.
             slot.cwd.clone_from(&pane.cwd);
             // ADR-0124: a pane retained after its process exited arrives
@@ -480,7 +480,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
                 .map(crate::attach::pane_state::ExitMark::from_facet);
         }
     }
-    // phux-p4vp: hand the per-pane cwds up to the driver so the
+    // Hand the per-pane cwds up to the driver so the
     // sidebar can derive each window's VCS branch client-side.
     let pane_cwds: Vec<(ResourceId, String)> = snapshot
         .resources
@@ -500,7 +500,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
         );
         v.insert(PaneSlot::new_with_size(content.w, content.h)?);
     }
-    // phux-17u: stash the session name for the status-bar
+    // Stash the session name for the status-bar
     // `WidgetContext`. The snapshot carries `sessions:
     // Vec<SessionInfo>` plus `focused_session`; the name is the
     // `SessionInfo` whose `id` matches the focused session. The
@@ -509,7 +509,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
     // focused session somehow isn't in the list (shouldn't
     // happen — the focused session is always one of them).
     *ctx.session_name = focused_session_name(snapshot);
-    // phux-4li.20: hand the driver the full session graph so the
+    // Hand the driver the full session graph so the
     // `<leader> a` session picker can list peer sessions. The
     // snapshot is the authoritative session list at attach time;
     // a dedicated request/response frame would be redundant.
@@ -652,7 +652,7 @@ const fn paint_permitted(
 
 /// The rect this pane will paint into, used to size a mirror on first sight.
 ///
-/// phux-x2hm: read through the zoom-honoring view, so a zoomed pane is sized
+/// Read through the zoom-honoring view, so a zoomed pane is sized
 /// against the whole window. Falls back to the content rect when the pane has
 /// no tile (single-pane bootstrap, or a pane in a non-active window).
 ///
@@ -698,7 +698,7 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
     let damaged = route.damaged(terminal_id);
     let ack = route.ack;
     let pty_writes = route.pty_writes;
-    // phux-ijuj: live output can retire this pane's scrollback
+    // Live output can retire this pane's scrollback
     // (a pruned or codec-failed anchor). Every exit from this arm
     // carries the resulting notice; the branches are exclusive, so
     // only one of them moves it.
@@ -797,7 +797,7 @@ pub(in crate::attach) struct OutputFrame<'a, W> {
     pub(in crate::attach) kernel: &'a AttachKernel,
     pub(in crate::attach) panes: &'a mut HashMap<ResourceId, PaneSlot>,
     pub(in crate::attach) workspace: &'a Workspace,
-    /// phux-x2hm: the pane zoomed to fill the window, if any.
+    /// The pane zoomed to fill the window, if any.
     pub(in crate::attach) zoomed: Option<&'a ResourceId>,
     pub(in crate::attach) focused_resource: Option<&'a ResourceId>,
     pub(in crate::attach) status_bar: Option<&'a mut StatusBarPainter>,
@@ -874,7 +874,7 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
                 overlay,
             );
         } else if let Some(rect) = rect {
-            // phux-2x9: a non-focused pane repaints on its own output so it is
+            // A non-focused pane repaints on its own output so it is
             // not visually frozen. A pane with no rect is off-screen (another
             // window) and paints nothing.
             paint_background_interior(&mut block, rect, panes, terminal_id, walk);
@@ -894,7 +894,7 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
         },
     );
     if !shipped {
-        // phux-esge: the panes recorded cells the terminal may never have
+        // The panes recorded cells the terminal may never have
         // received, and their dirty bits are already cleared.
         crate::attach::pane_state::invalidate_all_fronts(panes);
     }
@@ -924,7 +924,7 @@ fn finish_output_frame<W: crate::attach::RenderSink>(
         .focused_resource
         .and_then(|fid| tail.panes.get(fid))
         .and_then(|slot| slot.renderer.last_cursor());
-    // phux-9xn: the focused pane's Rect origin parks (and hides) the cursor
+    // The focused pane's Rect origin parks (and hides) the cursor
     // when `last_cursor` is None, so a frame never strands it at the bar's
     // tail — bottom-right of the host terminal.
     let fallback_origin = tail
@@ -980,7 +980,7 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     predict.set_alt_screen(crate::attach::input_dispatch::terminal_in_alt_screen(
         walk.terminal,
     ));
-    // Per-cell match reconcile (phux-9gw.1.1): walk pending
+    // Per-cell match reconcile: walk pending
     // predictions against the freshly painted cell grid;
     // confirmed predictions drop, contradictions drop their
     // suffix, predictions still ahead of confirmed state
@@ -993,7 +993,7 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
                 // base scalar, so multi-codepoint Insert
                 // predictions (flag emoji, ZWJ sequences, base
                 // plus combining marks) reconcile against the
-                // whole painted cluster (phux-9gw.1.6).
+                // whole painted cluster.
                 s.renderer
                     .read_grapheme_string_at(walk, r, c)
                     .ok()
@@ -1015,7 +1015,7 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     // silently instead of painting.
     if predict.should_display(now_ms) {
         let _ = overlay.render(predict, pane_origin, out);
-        // phux-esge: the guesses now sit over the pane's cells; the front
+        // The guesses now sit over the pane's cells; the front
         // buffer must not keep claiming what was there before them.
         if let Some(slot) = panes.get_mut(fid) {
             crate::attach::pane_state::invalidate_predicted_rows(slot, predict);
@@ -1023,7 +1023,7 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-2x9: repaint a NON-focused pane on its own output so it isn't
+/// Repaint a NON-focused pane on its own output so it isn't
 /// visually frozen — output (and the post-split/resize resync snapshot) must
 /// show without the user focusing the pane. `render_at` is dirty-tracked, so
 /// steady-state output only repaints changed rows. The frame's shared tail
@@ -1039,7 +1039,7 @@ fn paint_background_interior<W: crate::attach::RenderSink>(
     let Some(slot) = panes.get_mut(terminal_id) else {
         return;
     };
-    // phux-foz.11: letterbox like every other paint path.
+    // Letterbox like every other paint path.
     // An undersized mirror (resize handshake in flight)
     // painted incrementally at the rect origin here, while
     // `paint_full_frame` centres the same mirror — dirty
@@ -1057,7 +1057,7 @@ fn paint_background_interior<W: crate::attach::RenderSink>(
     );
 }
 
-/// The reason is the whole point of the frame (phux-l83x): with `ERROR`
+/// The reason is the whole point of the frame: with `ERROR`
 /// non-fatal at the receiver, `DETACHED` plus transport close is the only
 /// ending a consumer may act on, so this is the one place the client learns
 /// *why*. The message is diagnostic text — logged, never trusted as the
@@ -1084,7 +1084,7 @@ fn directory_listing_outcome(
     }
 }
 
-/// phux-4li.5: reconcile-on-attach reply path. The driver sends
+/// Reconcile-on-attach reply path. The driver sends
 /// `GET_METADATA { request_id }` immediately after ATTACHED;
 /// the server replies with `MetadataValue { request_id, value }`.
 /// Match by id, decode the layout envelope, and adopt its topology
@@ -1141,7 +1141,7 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
             Ok(FrameOutcome {
                 layout_replaced: true,
                 layout_get_answered: true,
-                // phux-e9fd: the persisted layout just replaced the
+                // The persisted layout just replaced the
                 // single-pane bootstrap, so every leaf's rect moved.
                 // Without the reflow each restored pane keeps the
                 // attach-time winsize the server derived from the
@@ -1155,7 +1155,7 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-4li.5: broadcast reconcile. Another attached client
+/// Broadcast reconcile. Another attached client
 /// mutated `phux.tui.layout/v1`; decode + adopt topology + repaint.
 /// ADR-0049: the sender's serialized focus is never authoritative.
 /// Tombstones (`value: None`) are treated as "layout reset" —
@@ -1176,7 +1176,7 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
         };
         return Ok(apply_asked_flag(ctx, terminal.clone(), value.as_deref()));
     }
-    // phux-foz.5: the config-reload doorbell. Value bytes are an
+    // The config-reload doorbell. Value bytes are an
     // opaque nonce (only there to defeat the server's equal-bytes
     // SET dedup); a tombstone is not a reload request.
     if key == CONFIG_RELOAD_KEY && matches!(scope, Scope::Global) {
@@ -1218,7 +1218,7 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
             let attach_panes = adopt_workspace(ctx, new_ws);
             Ok(FrameOutcome {
                 layout_replaced: true,
-                // phux-e9fd: a peer's topology change reshapes our
+                // A peer's topology change reshapes our
                 // tiles too. The peer sized the PTYs against ITS
                 // content rect, which is only ours when both
                 // clients run the same viewport and chrome.
@@ -1328,7 +1328,7 @@ fn adopt_workspace<W: crate::attach::RenderSink>(
     attach_panes
 }
 
-/// phux-4li.12: split-pane reply path. Look up the parked
+/// Split-pane reply path. Look up the parked
 /// `PendingSplit` by request id; on Ok apply the split + seed the
 /// new `PaneSlot` + broadcast the envelope. On Err log + bell.
 fn handle_terminal_spawned<W: crate::attach::RenderSink>(
@@ -1336,7 +1336,7 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
     request_id: u32,
     result: SpawnResult,
 ) -> Result<FrameOutcome, AttachError> {
-    // phux-4li.15: a parked new-window takes priority — its reply
+    // A parked new-window takes priority — its reply
     // opens a window on the spawned pane instead of splitting the
     // active one. Request ids are unique across both maps.
     if let Some(pending) = ctx.pending_windows.remove(&request_id) {
@@ -1358,11 +1358,11 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
     };
     let instance = result.instance();
     match result {
-        // phux-c2td.18: a split spawned on a satellite through the hub
+        // A split spawned on a satellite through the hub
         // streams to no one until it is attached, and that attach can be
         // refused. Hand the split back to be parked on the attach: it
         // applies only when the attach succeeds, as a satellite window does.
-        // phux-c2td.25: the satellite's instance token rides along.
+        // The satellite's instance token rides along.
         SpawnResult::Ok(new_id) | SpawnResult::OkBound { id: new_id, .. } if !new_id.is_local() => {
             Ok(FrameOutcome {
                 adopt_spawned: vec![ParkedAdopt::Split(PendingSplit {
@@ -1461,7 +1461,7 @@ fn split_fallback_notice(host: &SplitHost) -> Option<Notice> {
 /// split from: apply the parked intent there, seed the new pane's slot, and,
 /// when that window is the one on screen, move focus onto it.
 ///
-/// phux-c2td.18: a satellite split waits through two relayed round trips, so
+/// A satellite split waits through two relayed round trips, so
 /// the user may have switched windows, or closed the source pane, meanwhile.
 /// The split follows its source pane's window rather than whatever window is
 /// active, and one whose source pane is gone is dropped ([`split_dropped`])
@@ -1506,7 +1506,7 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
     Ok(FrameOutcome {
         layout_replaced: true,
         emit_set_metadata: true,
-        // phux-tnh: the split shrank the sibling
+        // The split shrank the sibling
         // and added a leaf; emit per-leaf resizes
         // so the server learns the real split dims
         // instead of leaving panes at spawn size.
@@ -1521,7 +1521,7 @@ fn focus_landed_split<W: crate::attach::RenderSink>(
     new_id: ResourceId,
     zoom_on_spawn: bool,
 ) {
-    // phux-x2hm: a split un-zooms (tmux parity). The new pane needs its
+    // A split un-zooms (tmux parity). The new pane needs its
     // tile, and the reflow_panes diff is taken against the now-cleared
     // (real, tiled) view. phux-r82.7: unless the parked intent asked to zoom
     // the spawned pane (`placement = "zoomed"` plugin panes) — then the new
@@ -1535,7 +1535,7 @@ fn focus_landed_split<W: crate::attach::RenderSink>(
             .active_window()
             .and_then(|ls| ls.focus.clone()),
     );
-    // Re-anchor predictive echo to the freshly focused pane (phux-7ry0).
+    // Re-anchor predictive echo to the freshly focused pane.
     // The split leaves the predict layer holding the previous pane's
     // viewport + cursor; a keystroke before the new pane's first snapshot
     // would otherwise echo at the old pane's coordinates (mid-screen ghost).
@@ -1565,7 +1565,7 @@ fn abandon_split<W: crate::attach::RenderSink>(
 
 /// A spawned split that has nowhere to go: bell, and say why. The layout,
 /// focus, and zoom are left as they are. The pane it spawned would then run
-/// with nothing referencing it, so it is killed (phux-c2td.20): its spawn or
+/// with nothing referencing it, so it is killed: its spawn or
 /// attach just answered, so its host is reachable.
 fn split_dropped<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
@@ -1592,7 +1592,7 @@ fn window_holding_pane(workspace: &Workspace, pane: &ResourceId) -> Option<usize
     })
 }
 
-/// phux-4li.12: a Terminal closed. Fold it out of the layout if
+/// A Terminal closed. Fold it out of the layout if
 /// it's a known leaf, drop its `PaneSlot` regardless. If we
 /// initiated the kill (or it died on us spontaneously), the
 /// server still broadcasts this so every attached client folds
@@ -1618,7 +1618,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
         ?reason,
         "ResourceClosed",
     );
-    // phux-i0e8.2.2: was this close one WE asked for (kill-pane /
+    // Was this close one WE asked for (kill-pane /
     // kill-window)? Drain the marker unconditionally — every close
     // consumes at most one expectation, whatever its exit status —
     // so a later spontaneous death of a re-used id still notifies.
@@ -1679,7 +1679,7 @@ fn fold_dead_resource<W: crate::attach::RenderSink>(
     // The fold may have emptied the window; drop any such
     // windows and keep `active` valid.
     ctx.workspace.prune_empty_windows();
-    // phux-4r1: consumer-owned detach policy (ADR-0015 L1).
+    // Consumer-owned detach policy (ADR-0015 L1).
     // The server reports the fact (RESOURCE_CLOSED) and stops
     // there; deciding whether *this* client detaches is the
     // TUI's call. When the last pane closed there is nothing
@@ -1697,7 +1697,7 @@ fn fold_dead_resource<W: crate::attach::RenderSink>(
         tracing::info!("ResourceClosed folded the last pane; detaching");
         return FrameOutcome {
             exit: true,
-            // phux-i0e8.2.2: carry the dead pane's status up
+            // Carry the dead pane's status up
             // so the CLI can explain the exit on the cooked
             // terminal — an OOM-killed shell must not look
             // like phux crashed.
@@ -1716,7 +1716,7 @@ fn fold_dead_resource<W: crate::attach::RenderSink>(
     FrameOutcome {
         layout_replaced: true,
         emit_set_metadata: true,
-        // phux-tnh: the survivor's Rect grew; tell the
+        // The survivor's Rect grew; tell the
         // server so its PTY winsize grows too.
         reflow_panes: true,
         notices,
@@ -1798,7 +1798,7 @@ fn apply_keep_empty_broadcast<W: crate::attach::RenderSink>(
     FrameOutcome::default()
 }
 
-/// phux-4s6o / phux-q7ks: a `phux.session.name/v1` broadcast. The handler
+/// A `phux.session.name/v1` broadcast. The handler
 /// updates this client's status name when the `current` side matches; the
 /// driver folds the pair into the cached session graph so peer roster
 /// rows follow without a re-attach.
@@ -1819,7 +1819,7 @@ fn apply_session_rename_broadcast<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-i0e8.2.2: survivors get a transient Warn notice naming the dead pane
+/// Survivors get a transient Warn notice naming the dead pane
 /// and its exit shape. Silent for a clean exit 0 (the user typed `exit`;
 /// nothing is wrong) and for a close this client itself requested.
 fn pane_exit_notices(
@@ -1888,7 +1888,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
             event: AgentEvent::CommandFinished { exit_code },
             ..
         } => fold_command_finished(ctx, &terminal, exit_code),
-        // phux-k0cw: the pane set of ANOTHER session changed. This client
+        // The pane set of ANOTHER session changed. This client
         // holds a server-wide `SUBSCRIBE_EVENTS { terminal: None }`, so the
         // server announces every spawn and close — which is precisely what
         // makes enumerate-then-subscribe race-free and keeps the whole
@@ -1911,7 +1911,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
 /// lease-holder into the pane's slot so the next paint renders the "FROZEN" /
 /// "wheel" badge.
 ///
-/// phux-i0e8.2.1: a holder TRANSITION on the FOCUSED pane also raises a
+/// A holder TRANSITION on the FOCUSED pane also raises a
 /// transient status-bar notice — the badge shows the steady state; the notice
 /// calls out the moment the wheel moved. The first `TerminalControl` a slot
 /// ever sees is the attach-time initial state (the server re-states the lease
@@ -1987,7 +1987,7 @@ fn fold_agent_ask<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-foz.4: the pane's shell changed directory (kernel-observed,
+/// The pane's shell changed directory (kernel-observed,
 /// announced at prompt boundaries / output settle). Fold it into the
 /// slot so the status-bar `cwd` widget tracks the focused pane;
 /// `chrome_dirty` only when the value actually moved, and the chrome
@@ -2011,7 +2011,7 @@ fn fold_cwd_changed<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-foz.4: a command finished in the pane; record its OSC-133
+/// A command finished in the pane; record its OSC-133
 /// exit code for the status-bar `exit` widget. `None` is recorded
 /// too — "the last command reported no code" honestly blanks the
 /// widget rather than pinning a stale code.
@@ -2032,7 +2032,7 @@ fn fold_command_finished<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-ijuj: ERROR never terminates the attach. SPEC §9 puts
+/// ERROR never terminates the attach. SPEC §9 puts
 /// termination on `DETACHED` plus transport close, and the same
 /// `ErrorCode` is emitted both fatally and non-fatally by the same
 /// server, so no client-side "which codes are fatal" table can be
@@ -2075,7 +2075,7 @@ fn handle_error_frame(request_id: Option<u32>, code: ErrorCode, message: &str) -
 }
 
 /// The `ERROR` arm: a correlated refusal of a parked satellite attach
-/// (phux-c2td.3, phux-c2td.18) decides that window or split; anything else
+/// decides that window or split; anything else
 /// is the ordinary error notice.
 fn error_frame_outcome<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
@@ -2104,7 +2104,7 @@ fn error_frame_outcome<W: crate::attach::RenderSink>(
 }
 
 /// Grey every pane on the host a `SatelliteUnreachable` names. The layout
-/// leaf stays; chrome is the only thing that moves (phux-lxov.1).
+/// leaf stays; chrome is the only thing that moves.
 fn note_satellite_down<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     code: ErrorCode,
@@ -2142,7 +2142,7 @@ fn remark_pending_satellite<W: crate::attach::RenderSink>(
 }
 
 /// The `COMMAND_RESULT` arm: the reply to a parked satellite attach
-/// (phux-c2td.3, phux-c2td.18) decides whether its window opens or its split
+/// decides whether its window opens or its split
 /// applies; any other reply that reached the dispatcher instead of its
 /// awaiter is dropped, inert (see the arm's comment in [`dispatch_frame`]).
 fn command_result_outcome<W: crate::attach::RenderSink>(
@@ -2213,8 +2213,8 @@ fn take_pending_adopt<W: crate::attach::RenderSink>(
 
 /// Apply the reply to a parked satellite pane's `ATTACH_RESOURCE`.
 ///
-/// Success opens the window (phux-c2td.3) or applies the split
-/// (phux-c2td.18) on the adopted pane, exactly as a local spawn's reply
+/// Success opens the window or applies the split
+/// on the adopted pane, exactly as a local spawn's reply
 /// would. A refusal opens nothing and saves nothing ([`adopt_refused`]):
 /// a dead window or split in the shared layout would be the worse outcome.
 fn handle_adopt_reply<W: crate::attach::RenderSink>(
@@ -2275,7 +2275,7 @@ fn adopt_refused<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-c2td.20: the pane a refused attach leaves running on its satellite
+/// The pane a refused attach leaves running on its satellite
 /// with nothing referencing it, when a kill could reach it: one this client
 /// spawned for this window or split ([`ParkedAdopt::spawned_pane`]) that is
 /// otherwise unreferenced ([`unreferenced`]). A satellite session's existing
@@ -2291,7 +2291,7 @@ fn orphaned_pane<W: crate::attach::RenderSink>(
     unreferenced(ctx, &parked.spawned_pane()?.id)
 }
 
-/// phux-c2td.25: the pane a refusal saying its satellite is unreachable
+/// The pane a refusal saying its satellite is unreachable
 /// leaves running, when this client spawned it bound to that satellite's
 /// instance token and nothing else here references it. The driver may
 /// retry it later, only through the conditional kill (ADR-0109), which the
@@ -2314,7 +2314,7 @@ fn stranded_bound_pane<W: crate::attach::RenderSink>(
 /// silence, and the hub waits on each relayed command, up to its 30 s relay
 /// deadline, before it reads this client's next frame, so the kill would
 /// hold every keystroke behind it. An unconditional kill is not retried
-/// later either (phux-c2td.23): an unreachable satellite cannot be told
+/// later either: an unreachable satellite cannot be told
 /// from one that is restarting, whose next panes may reuse this pane's id.
 /// Only a bound pane is retried, conditionally ([`stranded_bound_pane`]).
 const fn kill_can_reach(code: ErrorCode) -> bool {
@@ -2334,7 +2334,7 @@ fn unreferenced<W: crate::attach::RenderSink>(
 }
 
 /// Whether a window holds `pane` or a parked window or split adopts it. The
-/// driver asks the same before it retries a stray's kill (phux-c2td.23).
+/// driver asks the same before it retries a stray's kill.
 /// It sees this client alone: another client or agent that attached the
 /// pane on the satellite is invisible here.
 pub(in crate::attach) fn pane_is_referenced(
@@ -2353,7 +2353,7 @@ pub(in crate::attach) fn pane_is_referenced(
     window_holding_pane(workspace, pane).is_some() || adopting_window || adopting_split
 }
 
-/// phux-c2td.3: open a satellite pane's window once its attach succeeded.
+/// Open a satellite pane's window once its attach succeeded.
 ///
 /// Opens the window on the adopted pane, makes it active, focuses the pane,
 /// and asks for the layout broadcast and a reflow — the same follow-up a
@@ -2380,7 +2380,7 @@ fn open_adopted_window<W: crate::attach::RenderSink>(
     })
 }
 
-/// phux-4li.15: apply a `RESOURCE_SPAWNED` reply for a parked
+/// Apply a `RESOURCE_SPAWNED` reply for a parked
 /// `new-window` action. On success it appends a window seeded on the
 /// freshly spawned pane (making it active), seeds the pane's slot, and
 /// re-anchors `focused_resource`. The follow-up flags mirror the split path:
@@ -2441,7 +2441,7 @@ pub(super) fn handle_window_spawned<W: crate::attach::RenderSink>(
     }
 }
 
-/// phux-17u: resolve the focused session's display name from an
+/// Resolve the focused session's display name from an
 /// `ATTACHED` snapshot for the status-bar `session-name` widget.
 ///
 /// The snapshot carries `sessions: Vec<SessionInfo>` plus a
@@ -2597,7 +2597,7 @@ mod session_name_tests {
 
     #[test]
     fn focused_session_name_resolves_the_matching_session() {
-        // phux-17u: the widget reads the name of the focused session,
+        // The widget reads the name of the focused session,
         // not the first session in the list.
         let snapshot = snapshot_with(
             vec![

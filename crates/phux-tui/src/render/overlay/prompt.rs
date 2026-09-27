@@ -1,4 +1,4 @@
-//! Prompt overlay (phux-ahv.1) — a single-line text input modal.
+//! Prompt overlay — a single-line text input modal.
 //!
 //! Captures a string from the user, then commits it as a configured
 //! action: on Enter the overlay returns [`OverlayCommand::Commit`] with a
@@ -36,7 +36,7 @@ pub struct PromptOverlay {
     /// Color slots snapshotted from the active [`Theme`] at construction.
     /// Captured (not borrowed) so the overlay stays `'static`.
     theme: Theme,
-    /// phux-huhi: `[chrome]` thresholds, stamped by `OverlayState::push`.
+    /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
 

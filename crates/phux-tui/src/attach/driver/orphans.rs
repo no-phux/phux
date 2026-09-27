@@ -1,4 +1,4 @@
-//! phux-c2td.20: best-effort kills for satellite panes this client spawned
+//! Best-effort kills for satellite panes this client spawned
 //! whose attach was then refused.
 //!
 //! A window or split spawned on a satellite (`new-window { host }`,
@@ -9,7 +9,7 @@
 //! sends. The satellite is often why the attach failed, so the kill can fail
 //! too: its reply is consumed here and logged at debug, never surfaced.
 //!
-//! phux-c2td.23: a session switch drops the windows and splits still
+//! A session switch drops the windows and splits still
 //! opening, and sends no kill on the way out: the hub waits on each relayed
 //! command before it reads this client's next frame, so a kill would hold
 //! up the re-attach. Their panes are *strays*, remembered here and killed
@@ -79,7 +79,7 @@ enum StrayKill {
     /// bound or a hub without `CONDITIONAL_KILL`.
     Unconditional,
     /// `KILL_RESOURCE_IF` under this instance token with
-    /// `UNATTACHED_SINCE_SPAWN` (phux-c2td.25).
+    /// `UNATTACHED_SINCE_SPAWN`.
     Conditional(ServerInstance),
 }
 
@@ -285,7 +285,7 @@ impl OrphanKills {
         });
     }
 
-    /// phux-c2td.25: remember panes a refusal saying their satellite is
+    /// Remember panes a refusal saying their satellite is
     /// unreachable left running, each bound to that satellite's instance
     /// token, to retry through the conditional kill once it answers again.
     /// Without `CONDITIONAL_KILL` this records nothing, as before: an

@@ -28,15 +28,15 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) painted_output: Option<ResourceId>,
     /// `true` ⇒ the loop should exit cleanly: either the server sent
     /// `DETACHED`, or a `RESOURCE_CLOSED` folded the last pane out of the
-    /// layout and the consumer-owned detach policy (phux-4r1) decided to
+    /// layout and the consumer-owned detach policy decided to
     /// leave (nothing left to render or route input to).
     pub(in crate::attach) exit: bool,
-    /// phux-i0e8.2.2: WHY the loop is exiting, when `exit` is `true`.
+    /// WHY the loop is exiting, when `exit` is `true`.
     /// `Some(LastPaneClosed { .. })` is set ONLY by the `ResourceClosed`
     /// arm when the fold emptied the workspace, carrying the dead pane's
     /// exit status so the CLI can explain the exit on the cooked terminal
     /// after teardown. `Some(Detached { reason })` is set by the `Detached`
-    /// arm, carrying the server's stated reason (phux-l83x). `None` with
+    /// arm, carrying the server's stated reason. `None` with
     /// `exit: true` is a detach with nothing to say about it; the driver
     /// folds it to a reason-less [`AttachEnd::Detached`].
     pub(in crate::attach) exit_reason: Option<AttachEnd>,
@@ -44,7 +44,7 @@ pub(in crate::attach) struct FrameOutcome {
     /// `GET_METADATA` + `SUBSCRIBE_METADATA` for the layout key so
     /// other clients' mutations broadcast back to us (ADR-0019).
     pub(in crate::attach) subscribe_layout: bool,
-    /// phux-k0cw: a layout broadcast for a session that is NOT this client's
+    /// A layout broadcast for a session that is NOT this client's
     /// — `(session, Some(bytes))` for a value, `(session, None)` for a
     /// tombstone.
     ///
@@ -55,7 +55,7 @@ pub(in crate::attach) struct FrameOutcome {
     /// same code path would let another session's window rearrangement replace
     /// your pane tree.
     pub(in crate::attach) foreign_layout: Option<(SessionId, Option<Vec<u8>>)>,
-    /// phux-k0cw: a `phux.agent/v1` push for a Terminal this client does not
+    /// A `phux.agent/v1` push for a Terminal this client does not
     /// hold a pane slot for.
     ///
     /// Routed out rather than folded into the local [`AgentMetaIndex`],
@@ -63,14 +63,14 @@ pub(in crate::attach) struct FrameOutcome {
     /// LOCAL pane set and would silently evict a foreign record on the next
     /// sweep.
     pub(in crate::attach) foreign_agent: Option<(ResourceId, Option<Vec<u8>>)>,
-    /// phux-k0cw: an ADR-0035 `Asked` event for a Terminal outside this
+    /// An ADR-0035 `Asked` event for a Terminal outside this
     /// client's pane set — a peer agent is blocked on a human.
     pub(in crate::attach) foreign_attention: Option<ResourceId>,
     /// ADR-0136: the mirrored asked flag cleared for a Terminal outside
     /// this client's pane set. Kept apart from [`Self::foreign_attention`]
     /// so one frame can raise one and the fold can drop the other.
     pub(in crate::attach) foreign_attention_clear: Option<ResourceId>,
-    /// phux-k0cw: a `ResourceSpawned` / `ResourceClosed` for a Terminal this client
+    /// A `ResourceSpawned` / `ResourceClosed` for a Terminal this client
     /// does not hold, so the peer pane set (and its subscriptions) needs
     /// re-sweeping. This is what closes the enumerate-then-subscribe race
     /// without any wire change.
@@ -105,19 +105,19 @@ pub(in crate::attach) struct FrameOutcome {
     /// that attach succeeds (`handle_adopt_reply`), and a refusal bells and
     /// names the host instead of leaving a blank window or a dead split.
     pub(in crate::attach) adopt_spawned: Vec<crate::attach::actions::ParkedAdopt>,
-    /// phux-c2td.20: satellite panes this client spawned whose attach was
+    /// Satellite panes this client spawned whose attach was
     /// refused, so no window or split references them. The driver sends
     /// each a best-effort `KILL_RESOURCE` through the hub, the host-qualified
     /// kill `phux kill host/@id` uses, and logs a failed kill at debug.
     pub(in crate::attach) kill_orphans: Vec<ResourceId>,
-    /// phux-c2td.25: satellite panes this client spawned bound to their
+    /// Satellite panes this client spawned bound to their
     /// satellite's instance token whose attach was refused because that
     /// satellite was unreachable. No kill can reach them now; the driver
     /// remembers them, when the hub advertises `CONDITIONAL_KILL`, and
     /// retries each once through `KILL_RESOURCE_IF` after the satellite
     /// answers again.
     pub(in crate::attach) unreachable_strays: Vec<phux_client::conditional_kill::BoundResource>,
-    /// phux-4li.12: `true` ⇒ the server-side frame mutated layout in
+    /// `true` ⇒ the server-side frame mutated layout in
     /// a way the *local* client originated (split landed, kill folded);
     /// the driver should broadcast the new envelope via
     /// `SET_METADATA` so sibling clients reconcile.
@@ -127,7 +127,7 @@ pub(in crate::attach) struct FrameOutcome {
     /// session's layout key instead of leaving it for the next attach to
     /// adopt (an empty workspace has no encodable envelope to write instead).
     pub(in crate::attach) clear_layout: bool,
-    /// phux-tnh: `true` ⇒ a pane lifecycle event (close/spawn) changed
+    /// `true` ⇒ a pane lifecycle event (close/spawn) changed
     /// surviving panes' dimensions. The driver must diff the new layout
     /// against the pre-frame rects and emit a `RESIZE_TERMINAL` per
     /// changed leaf so the server reflows each PTY (TIOCSWINSZ) — without
@@ -155,14 +155,14 @@ pub(in crate::attach) struct FrameOutcome {
     /// one. Set ONLY by the `DirectoryListing` arm.
     pub(in crate::attach) directory_listing:
         Option<(u32, phux_protocol::wire::frame::DirectoryListingResult)>,
-    /// phux-4li.20: `Some((sessions, focused))` ⇒ ATTACHED just landed
+    /// `Some((sessions, focused))` ⇒ ATTACHED just landed
     /// and carried the server's full session graph. The driver caches
     /// it so the `<leader> a` session picker can list the other
     /// sessions without a follow-up request/response frame — the
     /// `ATTACHED` snapshot is already authoritative at attach time (SPEC
     /// §13). Set ONLY by the `Attached` arm.
     pub(in crate::attach) sessions: Option<(Vec<SessionInfo>, SessionId)>,
-    /// phux-ah84: windows and resources from the same ATTACHED snapshot
+    /// Windows and resources from the same ATTACHED snapshot
     /// graph. The driver caches them so the Agents list can name panes in
     /// CLI-created sessions that have no persisted TUI layout yet.
     pub(in crate::attach) inventory: Option<(Vec<WindowInfo>, Vec<ResourceInfo>)>,
@@ -190,15 +190,15 @@ pub(in crate::attach) struct FrameOutcome {
     pub(in crate::attach) agent_meta_changed: bool,
     /// The Terminal a local agent GET/broadcast applied to, even when the
     /// stored record was identical, so the connection-lifetime review index
-    /// can fold without invalidating on a repeat read (phux-deya).
+    /// can fold without invalidating on a repeat read.
     pub(in crate::attach) agent_meta_terminal: Option<ResourceId>,
-    /// phux-p4vp: per-pane working directories carried by the `ATTACHED`
+    /// Per-pane working directories carried by the `ATTACHED`
     /// snapshot (`ResourceInfo::cwd`). The driver folds these into its
     /// pane-cwd index, from which the sidebar's branch line is derived
     /// client-side (see `phux_client::vcs`). Set ONLY by the `Attached` arm;
     /// empty otherwise.
     pub(in crate::attach) pane_cwds: Vec<(ResourceId, String)>,
-    /// phux-foz.5: `true` ⇒ a subscribed `phux.config.reload/v1`
+    /// `true` ⇒ a subscribed `phux.config.reload/v1`
     /// doorbell rang (a `phux config reload` from some shell). The driver
     /// re-runs its layered config loader and swaps its config-derived
     /// state in place, exactly as for the `reload-config` action; on a
@@ -206,12 +206,12 @@ pub(in crate::attach) struct FrameOutcome {
     /// error. Set ONLY by the `MetadataChanged` arm; tombstones do not
     /// set it.
     pub(in crate::attach) config_reload: bool,
-    /// phux-4s6o: `Some((current, new))` ⇒ a subscribed `phux.session.name/v1`
+    /// `Some((current, new))` ⇒ a subscribed `phux.session.name/v1`
     /// broadcast applied a rename. The handler updates this client's status
     /// name when `current` matches; the driver renames the cached session
     /// graph so the roster/picker follow without a re-attach.
     pub(in crate::attach) session_rename: Option<(String, String)>,
-    /// phux-i0e8.2.1: transient status-bar notices raised by this frame,
+    /// Transient status-bar notices raised by this frame,
     /// drained by the driver into the painter's newest-wins notice slot
     /// (`StatusBarPainter::set_notice`) right after the dispatch returns.
     /// Producers today: a focused-pane input-authority (`TerminalControl`)
@@ -252,7 +252,7 @@ pub(super) const fn frame_kind_label(frame: &FrameKind) -> &'static str {
     }
 }
 
-/// phux-i0e8.2.1: text for the focused pane's input-authority notice.
+/// Text for the focused pane's input-authority notice.
 ///
 /// The transient counterpart of the persistent `WHEEL:*` badge
 /// (ADR-0033): the badge shows who holds the wheel; this line calls out
@@ -265,7 +265,7 @@ pub(super) fn input_authority_notice(holder: Option<ClientId>) -> String {
     )
 }
 
-/// phux-i0e8.2.2: user-facing name for a pane in a status-bar notice.
+/// User-facing name for a pane in a status-bar notice.
 ///
 /// A local terminal reads `pane N`; a federation satellite's pane keeps
 /// its host tag (`pane host/N`) so the notice does not alias two panes

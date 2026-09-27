@@ -1,4 +1,4 @@
-//! Canonical action registry (phux-ahv.8).
+//! Canonical action registry.
 //!
 //! The fuzzy commands-and-help finder needs a human-facing catalogue of the
 //! actions the dispatcher can run. That catalogue must
@@ -514,7 +514,7 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
 /// registry's [`ActionSpec::resolved_action`], so choosing a palette row
 /// runs exactly what a keybinding would.
 ///
-/// phux-r82.5: `plugin_actions` is the driver's snapshot of enabled
+/// `plugin_actions` is the driver's snapshot of enabled
 /// plugins' manifest `[[actions]]`. When non-empty, the rows follow the
 /// static categories under a trailing **Plugin** header, labelled
 /// `plugin: <plugin-name>: <action title>` and committing the shared
@@ -526,7 +526,7 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
 /// same action + args shape (see
 /// [`super::plugin_actions::merge_plugin_bindings`]).
 ///
-/// phux-r82.7: `plugin_panes` is the driver's snapshot of enabled
+/// `plugin_panes` is the driver's snapshot of enabled
 /// plugins' hostable manifest `[[panes]]` (placement `split`/`tab`/
 /// `zoomed`; overlay entries are dropped at snapshot time). Their rows
 /// share the same trailing **Plugin** header, labelled
@@ -587,7 +587,7 @@ fn chord_annotation(keybindings: Option<&KeybindingsCfg>, resolved: &ResolvedAct
 /// config failed to load).
 ///
 /// The palette renders `None` as the literal `"unbound"` because its rows
-/// are a table with a shortcut column. The context menus (phux-wrnm) leave
+/// are a table with a shortcut column. The context menus leave
 /// an unbound row's annotation blank instead — a menu is not a reference
 /// table, and a column of "unbound" reads as noise. Both go through this
 /// one resolver so the two surfaces can never disagree about which chord
@@ -761,7 +761,7 @@ mod tests {
         );
     }
 
-    /// The exhaustiveness gate (phux-i0e8.11.3): [`REGISTRY`] and
+    /// The exhaustiveness gate: [`REGISTRY`] and
     /// [`NON_PALETTE_ACTIONS`] must partition `ACTION_NAMES` exactly —
     /// disjoint, and their union equal to the dispatched set in both
     /// directions. Adding a `run_action` arm therefore forces a described

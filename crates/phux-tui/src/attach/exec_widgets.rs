@@ -1,4 +1,4 @@
-//! phux-r82.6: per-client interval runners behind `exec` status widgets.
+//! Per-client interval runners behind `exec` status widgets.
 //!
 //! The widget side (`phux_config::widget::ExecWidget`) only ever renders a
 //! cached strip; this module is the host half that keeps the cache fresh.

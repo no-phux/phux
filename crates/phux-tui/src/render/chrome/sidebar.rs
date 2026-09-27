@@ -6,7 +6,7 @@
 //! window names directly beneath it. Neither area's position depends on its
 //! population, and empty areas keep their headers and placeholders.
 //!
-//! The strip's last row holds New window (phux-fce4), bottom-anchored, with a
+//! The strip's last row holds New window, bottom-anchored, with a
 //! collapse chevron in the bottom corner cell (phux-foz.9; clicking it runs
 //! `toggle-sidebar`). Commands and Settings stay on the palette and the
 //! context menu.
@@ -37,7 +37,7 @@ use crate::render::{clip_text, display_width};
 use phux_client::agent_meta::AgentMetaState;
 use phux_protocol::ids::{ResourceId, SessionId};
 
-/// Label of the "create" affordance row (phux-fce4).
+/// Label of the "create" affordance row.
 ///
 /// Clicking it runs the `new-window` action — the sidebar lists windows,
 /// so `+ new window` creates one.
@@ -50,8 +50,8 @@ pub const SPACES_HEADER: &str = "Sessions";
 pub const AGENTS_EMPTY: &str = "—";
 /// Placeholder when no sessions are available.
 pub const SESSIONS_EMPTY: &str = "—";
-/// The collapse chevron painted in the strip's bottom corner
-/// (phux-foz.9). Clicking it runs `toggle-sidebar`.
+/// The collapse chevron painted in the strip's bottom corner.
+/// Clicking it runs `toggle-sidebar`.
 pub const COLLAPSE_GLYPH: &str = "‹";
 
 /// Minimum strip height (rows) at which the footer affordances render.
@@ -63,15 +63,14 @@ const MIN_FOOTER_HEIGHT: u16 = 4;
 const GUTTER: u16 = 1;
 const ICON_COLUMNS: usize = 2;
 
-/// One agent-running pane, as the sidebar's `agents` section renders it
-/// (phux-foz.9).
+/// One agent-running pane, as the sidebar's `agents` section renders it.
 ///
 /// Built by the driver from the server-owned ADR-0040
 /// `phux.agent/v1` record or an `AgentSession` resource stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentEntry {
     /// The session holding the agent's pane, or `None` for the session this
-    /// client is attached to (phux-k0cw).
+    /// client is attached to.
     ///
     /// `None` is what keeps a local row cheap: it commits `select-window`,
     /// which moves client-local focus and nothing else. `Some(name)` commits
@@ -91,8 +90,7 @@ pub struct AgentEntry {
     pub window: usize,
     /// The window's stored name, herdr's "workspace" column on the row.
     pub window_name: String,
-    /// The pane's DFS leaf ordinal inside its window, when known
-    /// (phux-k0cw).
+    /// The pane's DFS leaf ordinal inside its window, when known.
     ///
     /// Only a cross-session commit needs it: `switch-session` can select the
     /// pane as well as the window, so an agent row lands the user on the pane
@@ -225,7 +223,7 @@ impl SessionRosterEntry {
     }
 }
 
-/// The counts the strip's shape is derived from (phux-k0cw).
+/// The counts the strip's shape is derived from.
 ///
 /// [`row_model`] takes this rather than the projections themselves, which is
 /// what lets the input dispatcher hit-test a click without rebuilding the
@@ -313,7 +311,7 @@ pub enum SidebarRow {
     NewWindow,
 }
 
-/// The interactive target a mouse position resolves to (phux-fce4).
+/// The interactive target a mouse position resolves to.
 ///
 /// Deliberately INDEX-based rather than carrying resolved names, so the enum
 /// stays `Copy` and the row model remains derivable from counts alone. The
@@ -333,7 +331,7 @@ pub enum SidebarHit {
     Sessions,
     /// The `+ new` affordance.
     NewWindow,
-    /// The collapse chevron in the bottom corner (phux-foz.9) —
+    /// The collapse chevron in the bottom corner —
     /// clicking runs `toggle-sidebar`.
     Collapse,
 }
@@ -361,7 +359,7 @@ pub enum SidebarTarget {
     },
 }
 
-/// The click-resolution table for one painted frame (phux-k0cw).
+/// The click-resolution table for one painted frame.
 ///
 /// [`SidebarHit`] carries an index; this turns the index back into an
 /// action. It is snapshotted per paint, which opens a staleness window: list
@@ -529,7 +527,7 @@ fn push_session_entries(rows: &mut Vec<SidebarRow>, counts: SidebarCounts, limit
 /// must be the same shape the painter was fed, so a click resolves against the
 /// frame it landed on. The bottom
 /// corner cell — on the separator column, which is otherwise never a
-/// target — is the collapse chevron (phux-foz.9).
+/// target — is the collapse chevron.
 #[must_use]
 pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<SidebarHit> {
     let local_x = x.checked_sub(rect.x)?;
@@ -790,8 +788,8 @@ impl SidebarPainter {
     }
 
     /// Compose the strip into a `rect`-sized ratatui [`Buffer`] (origin
-    /// `(0, 0)`), for the structured `snapshot --rendered` compositor
-    /// (phux-l5xa / phux-4h5a). The VT [`Self::paint`] path uses the same
+    /// `(0, 0)`), for the structured `snapshot --rendered` compositor.
+    /// The VT [`Self::paint`] path uses the same
     /// `compose` step internally, so the cells match a live paint.
     #[must_use]
     pub fn compose_buffer(&self, rect: Rect, rule: SidebarRule, junction: Option<u16>) -> Buffer {
@@ -824,7 +822,7 @@ impl SidebarPainter {
         )
     }
 
-    /// Render a section's empty-state placeholder (phux-foz.13): the label
+    /// Render a section's empty-state placeholder: the label
     /// nested one indent under the header, dim + italic so it reads as a
     /// quiet "nothing here yet" rather than a real, selectable row.
     fn empty_line(&self, label: &str, text_w: u16) -> Line<'static> {
@@ -850,9 +848,9 @@ impl SidebarPainter {
         let (glyph, glyph_style) = self.window_glyph(w);
         let exited = w.exited_marker();
         let exited_w = exited.as_ref().map_or(0, |marker| display_width(marker));
-        // phux-foz.1: reserve 2 cells for the ` !` attention
+        // Reserve 2 cells for the ` !` attention
         // suffix so a long label can't push it off the strip.
-        // phux-fpgl.33: same for the retained-exit ` x` / ` xN` marker.
+        // Same for the retained-exit ` x` / ` xN` marker.
         let label_w = usize::from(text_w)
             .saturating_sub(4) // nested indent + glyph + space
             .saturating_sub(if w.attention { 2 } else { 0 })
@@ -872,7 +870,7 @@ impl SidebarPainter {
             Span::styled(format!("{glyph} "), glyph_style),
             Span::styled(label.clone(), style),
         ];
-        // phux-foz.1: a window holding a pane that asked for a
+        // A window holding a pane that asked for a
         // human answer (ADR-0035) gets a themed `!` marker.
         if w.attention {
             left.push(Span::styled(
@@ -954,7 +952,7 @@ impl SidebarPainter {
         )
     }
 
-    /// Render one agent row (phux-foz.9): lifecycle glyph and locator on
+    /// Render one agent row: lifecycle glyph and locator on
     /// the left, the agent's name flush right. The glyph carries state; the
     /// locator says where to go; the name says who is there.
     ///
@@ -1018,7 +1016,7 @@ impl SidebarPainter {
         justify(left, right, text_w)
     }
 
-    /// Render one roster line (phux-k0cw): a status dot, the session name,
+    /// Render one roster line: a status dot, the session name,
     /// and a right-aligned state histogram (`●1 ◐2`).
     ///
     /// The dot takes the session's worst rung via
@@ -1110,7 +1108,7 @@ impl SidebarPainter {
         ))
     }
 
-    /// Render an affordance row (phux-fce4), muted like the rest of the
+    /// Render an affordance row, muted like the rest of the
     /// footer chrome. phux-foz.13: the leading action glyph (`+` / `=`)
     /// rides the slightly-brighter `sidebar_section` register — the same
     /// muted anchor color the section headers use — so the affordances read
@@ -1289,7 +1287,7 @@ fn paint_separator(
             cell.set_style(Style::default().fg(theme.border));
         }
     }
-    // phux-foz.9: the collapse chevron claims the rule's bottom cell
+    // The collapse chevron claims the rule's bottom cell
     // whenever the footer renders (same condition as `hit_test`).
     if collapse_visible(rect)
         && let Some(cell) = buf.cell_mut((sep_x, rect.h - 1))
@@ -1774,7 +1772,7 @@ mod tests {
             h: 12,
         };
 
-        // phux-k0cw: the queue is zone 1, so its only row is index 1.
+        // The queue is zone 1, so its only row is index 1.
         let mut unseen = agent(0, "a", "claude", AgentMetaState::Done);
         unseen.seen = false;
         p.set_needs_you(vec![unseen.clone()]);
@@ -2105,7 +2103,7 @@ mod tests {
         assert_ne!(text("claude"), text("codex"));
     }
 
-    /// phux-foz.1: a window whose pane asked for a human answer (ADR-0035)
+    /// A window whose pane asked for a human answer (ADR-0035)
     /// carries a `!` marker on its sidebar tab; unmarked tabs stay plain.
     /// The marker change also busts the paint cache.
     #[test]
@@ -2133,7 +2131,7 @@ mod tests {
         );
     }
 
-    /// phux-fpgl.33: a window whose pane is retained after exit (ADR-0124)
+    /// A window whose pane is retained after exit (ADR-0124)
     /// carries a dim `x` marker plus the exit status on its sidebar tab.
     #[test]
     fn retained_window_gets_an_exit_marker() {
@@ -2174,7 +2172,7 @@ mod tests {
         // window rows omit branch context and emit no changed cells.
         assert!(p.set_windows(vec![win_branch("a", true, "main")]));
         assert!(p.set_windows(vec![win_branch("a", true, "feature")]));
-        // phux-foz.9: same contract for the agents section — a state
+        // Same contract for the agents section — a state
         // flip (idle -> working) must repaint.
         let idle = agent(0, "a", "claude", AgentMetaState::Idle);
         assert!(p.set_needs_you(vec![idle.clone()]));
@@ -2226,7 +2224,7 @@ mod tests {
         assert!(!strip_text(&p, rect).contains("wave2/herdr"));
     }
 
-    /// phux-mv5y: a live window-row drag paints the insertion marker on
+    /// A live window-row drag paints the insertion marker on
     /// the pointed-at row and clears it when the index is dropped.
     #[test]
     fn window_drop_marker_follows_the_index_and_clears() {
@@ -2328,7 +2326,7 @@ mod tests {
         assert_eq!(row_text(&buf, rect, 6), row_text(&changed, rect, 6));
     }
 
-    /// phux-k0cw: a cross-session queue row is labelled by its SESSION, not
+    /// A cross-session queue row is labelled by its SESSION, not
     /// by its window — "edit" locates nothing once the row can come from
     /// anywhere on the server.
     #[test]
@@ -2392,7 +2390,7 @@ mod tests {
         assert!(satellite_open_action(&ResourceId::local(1)).is_none());
     }
 
-    /// phux-4s6o: a queue click must carry the peer's `SessionId` so a
+    /// A queue click must carry the peer's `SessionId` so a
     /// rename of that session cannot retarget the switch.
     #[test]
     fn a_foreign_queue_click_carries_session_identity() {
@@ -2415,7 +2413,7 @@ mod tests {
         );
     }
 
-    /// phux-ah84: a graph-discovered agent click carries `ResourceId` and
+    /// A graph-discovered agent click carries `ResourceId` and
     /// omits fabricated window/pane indices.
     #[test]
     fn a_foreign_queue_click_carries_resource_identity() {
@@ -2642,9 +2640,9 @@ mod tests {
         insta::assert_snapshot!(strip_text(&p, rect));
     }
 
-    /// phux-fce4: the New window footer renders on the strip's last row
+    /// The New window footer renders on the strip's last row
     /// when the strip is tall enough, and drops out below the minimum.
-    /// phux-foz.9: the collapse chevron claims the bottom corner cell.
+    /// The collapse chevron claims the bottom corner cell.
     #[test]
     fn footer_affordance_renders_on_the_last_row() {
         let mut p = SidebarPainter::new(Theme::default());
@@ -2684,7 +2682,7 @@ mod tests {
         );
     }
 
-    /// phux-kb91: a right-docked strip puts its rule (and the collapse
+    /// A right-docked strip puts its rule (and the collapse
     /// chevron) on its pane-facing first column, and every row target moves
     /// one column away from it, out to the screen edge.
     #[test]
@@ -2981,7 +2979,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.9: the bottom corner cell is the collapse chevron — the
+    /// The bottom corner cell is the collapse chevron — the
     /// only interactive cell on the separator column.
     #[test]
     fn hit_test_resolves_the_collapse_corner() {

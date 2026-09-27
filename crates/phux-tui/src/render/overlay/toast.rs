@@ -1,4 +1,4 @@
-//! Toast overlay (phux-r82.5): a small dismissable notice modal.
+//! Toast overlay: a small dismissable notice modal.
 //!
 //! Used by the plugin-action runtime to surface a failed action's captured
 //! output without freezing the TUI — the action runs in a spawned task and
@@ -28,7 +28,7 @@ pub struct ToastOverlay {
     /// Snapshotted (copied) at construction so the overlay stays `'static`.
     theme: Theme,
     passthrough: bool,
-    /// phux-huhi: `[chrome]` thresholds, stamped by `OverlayState::push`.
+    /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
 

@@ -4,12 +4,12 @@
 //! window/pane of the attached session with its agent identity (the
 //! ADR-0040 `phux.agent/v1` record, kept live by the driver's per-pane
 //! metadata subscriptions), asked/attention state (ADR-0035), and the
-//! pane's branch/cwd (phux-p4vp) — grouped under session headers, fuzzy
+//! pane's branch/cwd — grouped under session headers, fuzzy
 //! filterable, and committing pane focus through the single `run_action`
 //! dispatch path. Zero new wire surface (ADR-0030): this module is a pure
 //! client-side projection of state the client already receives.
 //!
-//! ## Foreign sessions: subscribed, not sampled (phux-jpqd, phux-k0cw)
+//! ## Foreign sessions: subscribed, not sampled
 //!
 //! The `ATTACHED` snapshot's session graph
 //! ([`phux_protocol::wire::info::SessionInfo`]) describes *other* sessions
@@ -452,7 +452,7 @@ fn foreign_session_row(session: &SessionInfo) -> SelectItem {
     .indented()
 }
 
-/// phux-jpqd: the selectable pane rows for a **foreign** session, drawn
+/// The selectable pane rows for a **foreign** session, drawn
 /// from its cached persisted [`Workspace`] (`foreign_layouts`). Same DFS
 /// leaf enumeration as [`current_session_pane_rows`], but each row commits
 /// a one-step `switch-session { name, window, pane }` — the re-attach lands
@@ -486,7 +486,7 @@ fn foreign_session_pane_rows(
     rows
 }
 
-/// One foreign pane's fleet row (phux-jpqd): `{glyph} {w}:{name}.{p} {who}`
+/// One foreign pane's fleet row: `{glyph} {w}:{name}.{p} {who}`
 /// with the declared state word as its dimmed secondary, committing
 /// `switch-session { name, window = w, pane = p }`. The `phux.agent/v1`
 /// record supplies the name (`name [kind]`) and glyph/state; absent, the
@@ -976,7 +976,7 @@ mod tests {
         assert_eq!(headers, vec!["work (current)", "alpha", "zeta"]);
     }
 
-    /// phux-jpqd: a foreign session WITH a cached persisted layout lists one
+    /// A foreign session WITH a cached persisted layout lists one
     /// selectable row per pane committing a one-step
     /// `switch-session { name, window, pane }`, with agent glyph/state from
     /// the fetched foreign records — not the old single switch-session hop.
@@ -1051,7 +1051,7 @@ mod tests {
         );
     }
 
-    /// phux-jpqd: a foreign session with an EMPTY cached layout still falls
+    /// A foreign session with an EMPTY cached layout still falls
     /// back to the single switch-session hop.
     #[test]
     fn foreign_session_with_empty_cached_layout_falls_back_to_switch_row() {

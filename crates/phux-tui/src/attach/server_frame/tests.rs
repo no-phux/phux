@@ -25,7 +25,7 @@ use crate::predict::{Overlay, PredictionState, PredictiveConfig};
 
 static TRACE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-/// phux-atch: the attach participant set is the FOCUSED session's panes,
+/// The attach participant set is the FOCUSED session's panes,
 /// not every pane in the snapshot.
 ///
 /// The snapshot is a whole-workspace view by contract, but the server
@@ -349,8 +349,7 @@ fn off_window_ready_waits_for_every_snapshot_pane_and_attach_ready() {
     // spans a session's windows, and the server bootstraps every pane in
     // it. The window entries are what make that resolvable — a real
     // `build_session_snapshot` always emits one per window, and the
-    // attach participant set maps pane -> window -> session through them
-    // (phux-atch).
+    // attach participant set maps pane -> window -> session through them.
     let snapshot = SessionSnapshot::new(session, focused_window, focused.clone())
         .with_windows(vec![
             WindowInfo::new(focused_window, session, "w0".to_owned()),
@@ -774,7 +773,7 @@ fn handle_server_frame<W: crate::attach::RenderSink>(
     focused_resource: &mut Option<ResourceId>,
     zoomed: &mut Option<ResourceId>,
     session_name: &mut String,
-    // phux-k0cw: this client's own session, so a test can drive the
+    // This client's own session, so a test can drive the
     // foreign-layout guard.
     focused_session: Option<SessionId>,
     status_bar: Option<&mut crate::render::chrome::status_bar::StatusBarPainter>,
@@ -968,7 +967,7 @@ fn try_drive_layout_frame(
         focused,
         &mut zoomed,
         &mut session_name,
-        // phux-k0cw: these fixtures are session 1, so a
+        // These fixtures are session 1, so a
         // `phux.tui.layout/v1/1` broadcast is OUR layout and is adopted.
         // A key naming any other session is a peer's and must not be.
         Some(SessionId::new(1)),
@@ -1075,7 +1074,7 @@ fn directory_listing_reply_is_handed_to_the_driver() {
 /// client down over a SUCCESS reply it simply had nowhere to put.
 ///
 /// This is the same rule the `ERROR` arm already stated for the failure twin
-/// of these frames (phux-ijuj) and the same "no matching pending request"
+/// of these frames and the same "no matching pending request"
 /// drop `MetadataValue` already made — the two success replies were the gap.
 ///
 /// `docs/spec/L1.md` §5 already required this: "A `COMMAND` is asynchronous:
@@ -1780,7 +1779,7 @@ fn drive_output_seq_with_viewport(
     .expect("handle_server_frame")
 }
 
-/// phux-ih39: live output that races ahead of bootstrap publication must
+/// Live output that races ahead of bootstrap publication must
 /// not be interpreted against placeholder geometry. Absolute cursor
 /// movement past column 80 is the compact regression oracle.
 #[test]
@@ -1850,7 +1849,7 @@ fn synchronized_output_paints_only_after_end_across_frames() {
     assert!(printable.contains("half-drawn frame"));
 }
 
-/// phux-l96p.3: an incremental output paint is ONE synchronized-output block.
+/// An incremental output paint is ONE synchronized-output block.
 ///
 /// Before this, only the destructive full-frame path wrapped itself in DEC
 /// 2026; the incremental path — the one that runs on every `RESOURCE_OUTPUT` —
@@ -1914,7 +1913,7 @@ fn an_incremental_output_paint_is_one_synchronized_block() {
     );
 }
 
-/// phux-l96p.3: a suppressed frame paints nothing at all.
+/// A suppressed frame paints nothing at all.
 ///
 /// The coalescing mask, a modal overlay, an open synchronized-output
 /// transaction and the driver's frame pacer all route through the same
@@ -1959,7 +1958,7 @@ fn a_deferred_output_frame_emits_nothing_but_still_applies() {
     assert_eq!(cell, Some('d'), "the mirror still ingested the bytes");
 }
 
-/// phux-l96p.3: a frame that changes nothing on screen costs nothing.
+/// A frame that changes nothing on screen costs nothing.
 ///
 /// Re-applying identical bytes leaves the mirror's dirty tracking clean and
 /// the bar's cache intact, so the frame block never opens — no `?2026h`, no
@@ -1999,7 +1998,7 @@ fn a_frame_that_changes_nothing_writes_nothing() {
     );
 }
 
-/// phux-foz.9: an OSC 0/2 title riding in ordinary `RESOURCE_OUTPUT`
+/// An OSC 0/2 title riding in ordinary `RESOURCE_OUTPUT`
 /// bytes is the only identity signal a plain `claude`/`codex` pane
 /// emits — the frame must raise `chrome_dirty` when the title moves so
 /// the driver refreshes the window labels and the sidebar's agents
@@ -2075,7 +2074,7 @@ fn output_title_change_marks_chrome_dirty() {
     );
 }
 
-/// phux-foz.9: the symmetric bootstrap path — a resync
+/// The symmetric bootstrap path — a resync
 /// replays the pane's title too, so a previously unseen title raises
 /// `chrome_dirty` exactly like the output hot path.
 #[test]
@@ -2160,7 +2159,7 @@ fn snapshot_during_synchronized_output_waits_for_live_end() {
     );
 }
 
-/// phux-ih39: the ATTACHED graph already carries per-pane dimensions.
+/// The ATTACHED graph already carries per-pane dimensions.
 /// Seed slots from that graph so pre-bootstrap output doesn't get
 /// interpreted at 80x24.
 #[test]
@@ -2271,7 +2270,7 @@ fn terminal_output_seq_zero_is_rejected() {
 /// output for the right (non-focused) pane and assert the captured VT
 /// carries a CUP into the right pane's rect origin plus the emitted
 /// graphemes — proving the regression without a live terminal.
-/// phux-l96p.3: the settle paints EVERY withheld pane, in one frame.
+/// The settle paints EVERY withheld pane, in one frame.
 ///
 /// The mechanism behind the debt fold in `handle_frame_burst`. The bug it
 /// closes: `admit` pushes `next_allowed` to `now + interval` on an admitted
@@ -2512,7 +2511,7 @@ fn drive_snapshot(
     outcome
 }
 
-/// phux-paer: on re-attach the server sends a bootstrap per pane; a
+/// On re-attach the server sends a bootstrap per pane; a
 /// NON-focused pane's publication must paint into its rect, or the pane
 /// renders blank while input still routes — the "screens wiped but still
 /// typable" report. The symmetric counterpart to
@@ -2673,7 +2672,7 @@ fn output_for_inactive_window_pane_warms_mirror_but_does_not_paint() {
     assert_eq!(cell, Some('o'), "pane 2 mirror should hold the output");
 }
 
-/// phux-4li.15: a `RESOURCE_SPAWNED` reply for a parked new-window
+/// A `RESOURCE_SPAWNED` reply for a parked new-window
 /// opens a new window seeded on the spawned pane, makes it active,
 /// re-anchors focus, and asks for a broadcast + reflow.
 #[test]
@@ -2800,7 +2799,7 @@ fn a_spawned_satellite_window_opens_when_its_attach_succeeds() {
 
 /// A refused attach of a spawned satellite window opens nothing, saves
 /// nothing, bells, and names the host. The pane it spawned there is
-/// referenced by nothing, so exactly that pane is killed (phux-c2td.20),
+/// referenced by nothing, so exactly that pane is killed,
 /// unless the refusal says the satellite is unreachable: then no kill could
 /// reach it, and the hub would hold this client's input behind the attempt.
 #[test]
@@ -2921,7 +2920,7 @@ fn edge_token() -> phux_protocol::ids::ServerInstance {
     phux_protocol::ids::ServerInstance::new([3; 16])
 }
 
-/// phux-c2td.25: a bound spawn reply parks the window with the satellite's
+/// A bound spawn reply parks the window with the satellite's
 /// instance token, so a pane it strands can later be killed conditionally.
 #[test]
 fn a_bound_satellite_window_spawn_keeps_its_instance_token() {
@@ -3006,7 +3005,7 @@ fn a_bound_satellite_split_spawn_keeps_its_instance_token() {
     assert_eq!(reply.leaves, vec![tid(1), tid(2)]);
 }
 
-/// phux-c2td.25: a refusal saying the satellite is unreachable strands the
+/// A refusal saying the satellite is unreachable strands the
 /// pane for a later conditional retry only when its spawn was bound and
 /// nothing here references it; it sends no immediate kill either way. A
 /// refusal from a satellite that answered kills at once, as before, and
@@ -3066,7 +3065,7 @@ fn an_unreachable_refusal_strands_only_a_bound_unreferenced_pane() {
     assert!(outcome.unreachable_strays.is_empty());
 }
 
-/// phux-c2td.3: drive one reply through the dispatcher with a parked
+/// Drive one reply through the dispatcher with a parked
 /// satellite-session window (request 9, adopting the existing `edge/@9`).
 /// Returns the outcome, the workspace, focus, the bytes written, and how
 /// many windows are still parked.
@@ -3276,7 +3275,7 @@ fn drive_spawned_with_pending_split(zoom_on_spawn: bool) -> Option<ResourceId> {
     zoomed
 }
 
-/// phux-r82.7: a parked split with `zoom_on_spawn` zooms the freshly
+/// A parked split with `zoom_on_spawn` zooms the freshly
 /// spawned pane (placement = "zoomed" plugin panes).
 #[test]
 fn terminal_spawned_zoom_on_spawn_zooms_the_new_pane() {
@@ -3320,7 +3319,7 @@ struct SplitReply {
     workspace: Workspace,
 }
 
-/// phux-c2td.18: drive one reply through the dispatcher with `split` parked
+/// Drive one reply through the dispatcher with `split` parked
 /// under request 9 against a workspace holding pane 1.
 fn drive_split_reply(split: crate::attach::actions::PendingSplit, frame: FrameKind) -> SplitReply {
     drive_split_reply_in(Workspace::single(tid(1)), Some(tid(1)), split, frame)
@@ -3379,7 +3378,7 @@ fn drive_split_reply_in(
     }
 }
 
-/// phux-c2td.18: a split spawned on a satellite does not apply yet. The
+/// A split spawned on a satellite does not apply yet. The
 /// relayed pane streams to no one until it is attached, and the attach can
 /// be refused, so the reply hands the split back to be parked on it.
 #[test]
@@ -3444,7 +3443,7 @@ fn a_spawned_satellite_split_applies_when_its_attach_succeeds() {
     assert_eq!(reply.parked, 0, "the parked split is consumed");
 }
 
-/// phux-lxov.1: opening `host/@N` places that existing pane beside the
+/// Opening `host/@N` places that existing pane beside the
 /// local leaf once its attach succeeds, and kills nothing.
 #[test]
 fn an_existing_satellite_pane_lands_beside_the_local_leaf() {
@@ -3502,7 +3501,7 @@ fn a_refused_open_of_an_existing_satellite_pane_does_not_kill_it() {
     assert_eq!(reply.parked, 0);
 }
 
-/// phux-lxov.1: `SatelliteUnreachable` greys the satellite pane and keeps
+/// `SatelliteUnreachable` greys the satellite pane and keeps
 /// its layout leaf.
 #[test]
 fn satellite_unreachable_greys_the_pane_and_keeps_its_leaf() {
@@ -3695,7 +3694,7 @@ fn a_local_split_reply_raises_no_notice() {
     assert!(reply.outcome.notices.is_empty());
 }
 
-/// phux-c2td.18: the user switched windows while a satellite split waited on
+/// The user switched windows while a satellite split waited on
 /// its attach. The split lands beside its source pane, in that pane's window,
 /// and neither the window on screen nor its focus moves.
 #[test]
@@ -3728,10 +3727,10 @@ fn a_split_parked_across_a_window_switch_lands_beside_its_source() {
     assert!(!reply.belled);
 }
 
-/// phux-c2td.18: the source pane closed while its split waited. Nothing is
+/// The source pane closed while its split waited. Nothing is
 /// split beside some other pane: the split is dropped, with a bell and a
 /// notice, for a satellite split's attach and a local split's spawn alike.
-/// phux-c2td.20: the pane it spawned is referenced by nothing, so it is
+/// The pane it spawned is referenced by nothing, so it is
 /// killed.
 #[test]
 fn a_split_whose_source_pane_closed_is_dropped() {
@@ -3902,7 +3901,7 @@ fn bell_frame_writes_bel_to_sink() {
 
 /// Drive a `RESOURCE_CLOSED { terminal_id, exit_status }` through
 /// [`handle_server_frame`] and return the resulting [`FrameOutcome`]
-/// so the consumer-side detach policy (phux-4r1) can be asserted.
+/// so the consumer-side detach policy can be asserted.
 fn drive_closed(
     layout: &mut Workspace,
     focused: &mut Option<ResourceId>,
@@ -3967,7 +3966,7 @@ fn drive_closed_expecting(
     .expect("handle_server_frame")
 }
 
-/// phux-4r1: the detach policy is consumer-owned. When the LAST pane
+/// The detach policy is consumer-owned. When the LAST pane
 /// closes there is nothing left to render or route input to, so the
 /// TUI detaches itself — the `ResourceClosed` arm returns
 /// `FrameOutcome { exit: true }`. This is the consumer-side half of
@@ -4163,7 +4162,7 @@ fn keep_empty_mark_follows_broadcasts_for_this_session_only() {
     assert!(!outcome.exit, "the broadcast mark keeps the attach");
 }
 
-/// phux-4s6o: a session-rename broadcast updates this client's status name
+/// A session-rename broadcast updates this client's status name
 /// when `current` matches, and always reports the pair so the driver can
 /// refresh the peer graph.
 #[test]
@@ -4343,7 +4342,7 @@ fn new_window_from_the_empty_state_opens_the_first_window() {
     assert!(outcome.emit_set_metadata && outcome.reflow_panes);
 }
 
-/// phux-i0e8.2.2: a last-pane death by signal (or unknown cause)
+/// A last-pane death by signal (or unknown cause)
 /// carries `exit_status: None` up as the exit reason, so the CLI can
 /// say "killed" instead of pretending the exit was clean.
 #[test]
@@ -4362,7 +4361,7 @@ fn last_pane_signal_death_carries_none_status_in_exit_reason() {
     );
 }
 
-/// phux-l83x: `DETACHED` exits the loop *with* the server's stated
+/// `DETACHED` exits the loop *with* the server's stated
 /// reason. Before the frame carried one, every ending — a requested
 /// detach, a server shutting down under the user, another client taking
 /// the attach — reached the CLI as the same wordless `Detached`.
@@ -4473,7 +4472,7 @@ fn drive_asked(
     .expect("handle_server_frame")
 }
 
-/// phux-foz.1: an ADR-0035 `Asked` event raises the pane's attention
+/// An ADR-0035 `Asked` event raises the pane's attention
 /// flag and asks the driver to repaint the chrome — including for a
 /// NON-focused pane (the whole point is surfacing a question the user
 /// is not looking at).
@@ -4549,7 +4548,7 @@ fn early_local_ask_survives_persisted_layout_adoption() {
     );
 }
 
-/// phux-foz.1: a repeated `Asked` while the flag is already up changes
+/// A repeated `Asked` while the flag is already up changes
 /// no visible state, so it must not request another repaint.
 #[test]
 fn repeated_asked_event_does_not_redirty_chrome() {
@@ -4568,7 +4567,7 @@ fn repeated_asked_event_does_not_redirty_chrome() {
     assert!(panes.get(&pane).expect("slot").attention, "flag stays up");
 }
 
-/// phux-foz.1: an `Asked` for a pane with no slot yet (it can precede
+/// An `Asked` for a pane with no slot yet (it can precede
 /// the first snapshot) is dropped without a repaint, mirroring the
 /// early-`TerminalControl` policy.
 #[test]
@@ -4588,7 +4587,7 @@ fn asked_event_for_unknown_pane_is_dropped() {
     );
 }
 
-/// phux-foz.4: drive one agent event through [`handle_server_frame`]
+/// Drive one agent event through [`handle_server_frame`]
 /// with minimal single-pane scaffolding; returns the outcome.
 fn drive_event(
     panes: &mut HashMap<ResourceId, PaneSlot>,
@@ -4634,7 +4633,7 @@ fn drive_event(
     .expect("handle_server_frame")
 }
 
-/// phux-foz.4: a `cwd_changed` event lands in the pane's slot and
+/// A `cwd_changed` event lands in the pane's slot and
 /// dirties the chrome; repeating the same directory is a no-op.
 #[test]
 fn cwd_changed_event_updates_slot_and_coalesces() {
@@ -4665,7 +4664,7 @@ fn cwd_changed_event_updates_slot_and_coalesces() {
     assert!(!repeat.chrome_dirty, "unchanged cwd must not repaint");
 }
 
-/// phux-foz.4: a `command_finished` event records the exit code (and a
+/// A `command_finished` event records the exit code (and a
 /// later code replaces it); an unchanged value is a no-op.
 #[test]
 fn command_finished_event_records_last_exit() {
@@ -4700,7 +4699,7 @@ fn command_finished_event_records_last_exit() {
     assert_eq!(panes.get(&pane).expect("slot").last_exit, Some(127));
 }
 
-/// phux-foz.4: cwd/exit events for a pane with no slot yet are dropped
+/// Cwd/exit events for a pane with no slot yet are dropped
 /// without a repaint, mirroring the early-`TerminalControl` policy.
 #[test]
 fn cwd_and_exit_events_for_unknown_pane_are_dropped() {
@@ -4737,7 +4736,7 @@ fn idle_event_is_ignored() {
     assert!(!outcome.chrome_dirty);
 }
 
-/// phux-i0e8.2.1: a `TerminalControl` event carrying `holder` and a
+/// A `TerminalControl` event carrying `holder` and a
 /// running lifecycle.
 fn control_event(holder: Option<ClientId>) -> phux_protocol::wire::frame::AgentEvent {
     use phux_protocol::wire::frame::{AgentEvent, ControlAction, ResourceLifecycle};
@@ -4753,7 +4752,7 @@ fn control_event(holder: Option<ClientId>) -> phux_protocol::wire::frame::AgentE
     }
 }
 
-/// phux-i0e8.2.1: drive one frame through [`handle_server_frame`]
+/// Drive one frame through [`handle_server_frame`]
 /// with an explicit focused pane (which `drive_event` pins to the
 /// event's own terminal), for the input-authority notice tests.
 fn drive_frame_focused(
@@ -4834,7 +4833,7 @@ fn focused_holder_transition_yields_a_notice_and_initial_state_does_not() {
     );
 }
 
-/// phux-i0e8.2.1: a holder transition on an UNFOCUSED pane refreshes
+/// A holder transition on an UNFOCUSED pane refreshes
 /// the chrome but raises no notice — the transient slot is scoped to
 /// the pane the user is typing into.
 #[test]
@@ -4916,7 +4915,7 @@ fn degraded_federation_transition_yields_a_warn_notice() {
     );
 }
 
-/// phux-ijuj: no `ErrorCode`, in either correlation shape, ends the
+/// No `ErrorCode`, in either correlation shape, ends the
 /// attach.
 ///
 /// SPEC §9 puts termination on `DETACHED` plus transport close, and this
@@ -4998,7 +4997,7 @@ fn no_error_code_is_fatal_in_the_attached_phase() {
     }
 }
 
-/// phux-ijuj: per-pane scrollback loss reaches the status bar.
+/// Per-pane scrollback loss reaches the status bar.
 ///
 /// `KernelStatus::HistoryUnavailable` used to be swallowed by the
 /// catch-all `tracing::warn!` over kernel statuses, so a pane whose
@@ -5060,7 +5059,7 @@ fn history_unavailable_status_names_the_pane_in_a_warn_notice() {
     );
 }
 
-/// phux-4r1: closing one of several panes is NOT a detach. The
+/// Closing one of several panes is NOT a detach. The
 /// survivor stays attached — the `ResourceClosed` arm folds the
 /// closed leaf out, re-anchors focus, and asks for a repaint +
 /// reflow + broadcast, with `exit: false`.
@@ -5098,7 +5097,7 @@ fn closing_one_of_several_panes_keeps_the_client_attached() {
     );
 }
 
-/// phux-i0e8.2.2: a surviving layout gets a transient Warn notice when
+/// A surviving layout gets a transient Warn notice when
 /// a sibling pane dies with a non-zero status — the OOM-killed / crashed
 /// process must not vanish silently while the fold animates over it.
 #[test]
@@ -5117,7 +5116,7 @@ fn survivor_close_with_nonzero_status_raises_warn_notice() {
     assert_eq!(outcome.notices[0].text, "pane 1: exited 137");
 }
 
-/// phux-i0e8.2.2: `exit_status: None` (signal kill / unknown) names the
+/// `exit_status: None` (signal kill / unknown) names the
 /// shape rather than inventing a code.
 #[test]
 fn survivor_close_by_signal_names_the_kill_shape() {
@@ -5138,7 +5137,7 @@ fn survivor_close_by_signal_names_the_kill_shape() {
     );
 }
 
-/// phux-i0e8.2.2: a close THIS client requested (kill-pane /
+/// A close THIS client requested (kill-pane /
 /// kill-window parked the id in `expected_closes`) is suppressed —
 /// and the marker is DRAINED, so a later spontaneous death of the
 /// same id would notify again.
@@ -5198,7 +5197,7 @@ fn drive_meta_frame(frame: FrameKind, agent_meta: &mut AgentMetaIndex) -> FrameO
     let pane = tid(1);
     let mut layout = Workspace::single(pane.clone());
     let mut focused = Some(pane.clone());
-    // phux-k0cw: the agent arm now checks pane membership before folding
+    // The agent arm now checks pane membership before folding
     // a record into the LOCAL index, so the fixture must hold the slot it
     // claims to be receiving records for — which is what a subscribed
     // pane always has in practice.
@@ -5323,7 +5322,7 @@ fn agent_metadata_get_reply_is_correlated_by_request_id() {
     assert!(agent_meta.records.is_empty());
 }
 
-/// phux-foz.5: the `phux.config.reload/v1` doorbell flags a config
+/// The `phux.config.reload/v1` doorbell flags a config
 /// reload on a non-tombstone Global broadcast; tombstones and
 /// non-Global scopes do not ring it.
 #[test]

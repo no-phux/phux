@@ -1,4 +1,4 @@
-//! Chrome + overlay color theme (phux-ahv.4).
+//! Chrome + overlay color theme.
 //!
 //! Single source of truth for the hand-picked colors that the chrome
 //! (status bar, dividers) and overlays (help, prompt) paint with. Before
@@ -23,7 +23,7 @@
 //! - [`section_header`] — section headings inside grouped discovery surfaces.
 //! - [`error`] — error / alarm text.
 //! - [`sidebar_section`] — the sidebar's muted `spaces` / `agents`
-//!   section headers (phux-foz.9).
+//!   section headers.
 //! - [`divider`] / [`divider_focus`] — the pane-divider rules: the
 //!   recessive structural tone, and the focused pane's own frame.
 //! - [`pane_title`] / [`pane_title_focus`] — the label inset into a
@@ -32,7 +32,7 @@
 //!   inheriting the terminal foreground would be unreadable.
 //! - [`agent_idle`] / [`agent_working`] / [`agent_blocked`] /
 //!   [`agent_done`] — agent lifecycle state colors in the sidebar's
-//!   agents section (phux-foz.9).
+//!   agents section.
 //!
 //! [`accent`]: Theme::accent
 //! [`chord`]: Theme::chord
@@ -136,22 +136,22 @@ pub struct Theme {
     /// Background of selection chrome: the copy-mode status strip (and
     /// future selected list rows).
     pub selection_bg: Color,
-    /// Attention chrome (phux-foz.1): the sidebar tab marker and the
+    /// Attention chrome: the sidebar tab marker and the
     /// status-bar hint painted when an agent in a pane is waiting on a
     /// human answer (ADR-0035 `AgentEvent::Asked`).
     pub attention: Color,
-    /// Sidebar section headers (phux-foz.9): the muted lowercase
+    /// Sidebar section headers: the muted lowercase
     /// `spaces` / `agents` headings of the herdr-shaped sidebar.
     pub sidebar_section: Color,
-    /// Agent lifecycle coloring (phux-foz.9): an `idle` agent row's
+    /// Agent lifecycle coloring: an `idle` agent row's
     /// glyph + state text in the sidebar's agents section.
     pub agent_idle: Color,
-    /// Agent lifecycle coloring (phux-foz.9): a `working` agent row.
+    /// Agent lifecycle coloring: a `working` agent row.
     pub agent_working: Color,
-    /// Agent lifecycle coloring (phux-foz.9): a `blocked` agent row
+    /// Agent lifecycle coloring: a `blocked` agent row
     /// (waiting on a human).
     pub agent_blocked: Color,
-    /// Agent lifecycle coloring (phux-foz.9): a `done` agent row.
+    /// Agent lifecycle coloring: a `done` agent row.
     pub agent_done: Color,
     /// Pane-divider rules that do not touch the focused pane. The
     /// recessive structural register: a rule is scaffolding, never
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(t.agent_done, Color::Rgb(0xbe, 0xf2, 0x64));
     }
 
-    /// The structural chrome roles (phux-l96p.8) ride the same lime/slate
+    /// The structural chrome roles ride the same lime/slate
     /// palette; split from the test above only to keep each one readable.
     #[test]
     fn structural_slots_match_shipped_colors() {
@@ -655,7 +655,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.9: every sidebar/agent slot is config-overridable like the
+    /// Every sidebar/agent slot is config-overridable like the
     /// rest — unknown-slot warnings would otherwise silently eat them.
     #[test]
     fn sidebar_and_agent_slots_are_overridable() {

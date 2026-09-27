@@ -95,7 +95,7 @@ fn detach_classification_requires_local_intent_and_plain_detach() {
     ));
 }
 
-/// phux-0db: a session created from inside the TUI (picker "new
+/// A session created from inside the TUI (picker "new
 /// session") seeds its pane in the client's cwd, not `None` (= the
 /// daemon's CWD).
 #[test]
@@ -114,7 +114,7 @@ fn create_session_target_carries_client_cwd() {
     );
 }
 
-/// phux-i0e8.2.3: the attach-time notice seam `main_loop` calls right
+/// The attach-time notice seam `main_loop` calls right
 /// after the bootstrap chrome refresh. A configured bar accepts the
 /// reconnect notice (and paints it full-row on the next bar paint); no
 /// painter, or no notice, is a quiet no-op.
@@ -373,7 +373,7 @@ fn attach_error_io_display_includes_source() {
     assert!(msg.contains("attach loop io error"));
 }
 
-// -- lenient resolver at attach (phux-i0e8.3.4) -----------------------
+// -- lenient resolver at attach -----------------------
 
 #[test]
 fn attach_resolver_survives_one_bad_chord_and_keeps_detach() {
@@ -461,7 +461,7 @@ fn keybind_error_line_is_empty_without_diagnostics() {
 
 #[test]
 fn config_error_line_recommends_config_check() {
-    // phux-i0e8.3.5: the remedy is the verb that diagnoses
+    // The remedy is the verb that diagnoses
     // (`config check`), not the one that merely renders the
     // effective config (`config show`).
     let line = config_error_line(&"boom");
@@ -479,7 +479,7 @@ fn config_error_line_recommends_config_check() {
     );
 }
 
-// -- which-key popup arming (phux-foz.2) ------------------------------
+// -- which-key popup arming ------------------------------
 
 /// Build a resolver from the shipped defaults and walk it to the
 /// pending-prefix state (`C-a` fed, continuation awaited).
@@ -605,7 +605,7 @@ fn which_key_push_declines_without_pending_prefix_or_over_a_modal() {
     assert_eq!(overlays.depth(), 1, "nothing stacked on the modal");
 }
 
-/// phux-jy4t: the layout metadata key is per-session, so two sessions
+/// The layout metadata key is per-session, so two sessions
 /// never share (and clobber) one bucket.
 #[test]
 fn layout_key_is_per_session() {
@@ -618,7 +618,7 @@ fn layout_key_is_per_session() {
     assert!(a.starts_with(LAYOUT_KEY), "still under the layout prefix");
 }
 
-/// phux-foz.8: a foreign session's layout GET reply round-trips into
+/// A foreign session's layout GET reply round-trips into
 /// the picker cache; a tombstone (`None`) or garbage clears/skips the
 /// entry so the picker falls back to the plain switch row.
 #[test]
@@ -645,7 +645,7 @@ fn apply_foreign_layout_reply_caches_clears_and_survives_garbage() {
     assert!(!cache.contains_key(&sid), "tombstone clears");
 }
 
-/// phux-jpqd: a foreign pane's agent-record GET reply round-trips into
+/// A foreign pane's agent-record GET reply round-trips into
 /// the fleet cache; a tombstone (`None`) or an unparseable record
 /// clears the entry so the fleet row falls back to `?`/"no agent".
 #[test]
@@ -682,14 +682,14 @@ fn apply_foreign_agent_reply_caches_clears_and_survives_garbage() {
     assert!(!cache.contains_key(&id), "tombstone clears");
 }
 
-/// phux-jpqd: pruning keeps only the agent records whose panes still
+/// Pruning keeps only the agent records whose panes still
 /// appear in some cached foreign layout — a peer closing a pane (or a
 fn session_info(id: u32, name: &str) -> phux_protocol::wire::info::SessionInfo {
     phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(id), name)
         .with_window_count(1)
 }
 
-/// phux-k0cw: peer layout keys are SUBSCRIBED, not merely read once.
+/// Peer layout keys are SUBSCRIBED, not merely read once.
 ///
 /// The one-shot sweep this replaces was an attach-time photograph that
 /// rotted silently — tolerable while peers appeared only inside a modal
@@ -874,7 +874,7 @@ fn prune_foreign_agents_retains_only_live_foreign_panes() {
         !cache.contains_key(&stale),
         "a pane in no layout is evicted"
     );
-    // phux-k0cw: the send-once subscription bookkeeping is pruned with
+    // The send-once subscription bookkeeping is pruned with
     // the record. Left behind, it would suppress the re-subscribe if that
     // pane id ever came back, and the row would go permanently silent.
     assert!(subscribed.contains(&live));
@@ -889,7 +889,7 @@ fn prune_foreign_agents_retains_only_live_foreign_panes() {
     assert!(subscribed.is_empty());
 }
 
-/// phux-ah84: a CLI-created session has no persisted TUI layout, so the
+/// A CLI-created session has no persisted TUI layout, so the
 /// live set is the server graph. Pruning must not evict those records.
 #[test]
 fn prune_foreign_agents_keeps_graph_terminals_without_a_layout() {
@@ -903,7 +903,7 @@ fn prune_foreign_agents_keeps_graph_terminals_without_a_layout() {
     assert!(subscribed.contains(&graph));
 }
 
-/// phux-ah84: graph terminals are GET/SUBSCRIBEd even with no TUI layout.
+/// Graph terminals are GET/SUBSCRIBEd even with no TUI layout.
 #[tokio::test]
 async fn graph_terminals_are_subscribed_without_a_layout() {
     let (client_stream, server_stream) = UnixStream::pair().expect("pair");
@@ -1189,7 +1189,7 @@ fn headless_history_control_responses_clear_outstanding_request() {
 /// ADR-0060 guard: the `rec: None` arm of `run_buffered` must behave
 /// exactly as the function did before the tee existed — the bare
 /// `StdoutSink`, and the same pre-handshake failure delivered on the
-/// cooked outer terminal (phux-roz) with no wrapper in the way.
+/// cooked outer terminal with no wrapper in the way.
 #[tokio::test(flavor = "current_thread")]
 async fn run_buffered_without_a_recorder_passes_the_bare_sink() {
     let socket =
@@ -1356,7 +1356,7 @@ async fn attach_negotiation_rejects_non_hello_ok_reply() {
     drop(client);
     match res {
         Err(AttachError::Protocol(msg)) => {
-            // phux-i0e8.7.3: a frame with no arm is explained as version
+            // A frame with no arm is explained as version
             // skew with a remedy, never dumped as a Debug rendering.
             assert!(msg.contains("unexpected HELLO reply"), "{msg}");
             assert!(msg.contains("run `phux doctor`"), "{msg}");
@@ -1366,7 +1366,7 @@ async fn attach_negotiation_rejects_non_hello_ok_reply() {
 }
 
 // -----------------------------------------------------------------
-// phux-foz.10: chrome persists while overlays are open.
+// Chrome persists while overlays are open.
 // -----------------------------------------------------------------
 
 use crate::render::overlay::{RenderOverlay, SelectItem, SelectList};
@@ -1624,7 +1624,7 @@ fn assert_yielded_layout_sites(view: (u16, u16), sidebar: Option<SidebarReservat
     );
 }
 
-/// phux-ed8j: the sidebar's narrow-terminal yield, composited.
+/// The sidebar's narrow-terminal yield, composited.
 ///
 /// `sidebar_reservation()` already folds to `None` at 50 columns in
 /// unit tests. This is the glass: the same fold the driver threads to
@@ -1812,7 +1812,7 @@ fn palette_overlay() -> Box<dyn RenderOverlay> {
     Box::new(SelectList::new("command palette", items, &theme))
 }
 
-/// The agent-fleet dashboard, as the dispatcher builds it (phux-foz.7):
+/// The agent-fleet dashboard, as the dispatcher builds it:
 /// a `SelectList` carrying the fleet live key, with rows from
 /// [`crate::attach::fleet::fleet_items`]. It rides the same bounded
 /// floating-modal path as the palette, and the driver's fleet-dirty
@@ -1854,7 +1854,7 @@ fn overlay_base_frame_without_painter_blanks_the_sidebar() {
     );
 }
 
-/// phux-foz.10: opening the command palette must NOT blank the sidebar.
+/// Opening the command palette must NOT blank the sidebar.
 /// The floating-modal base frame repaints the strip (window label +
 /// session host) and the panes, then paints the modal on top.
 #[test]
@@ -1878,7 +1878,7 @@ fn command_palette_keeps_sidebar_visible() {
         all.contains(PROBE_PANE_TEXT),
         "pane content must stay visible around the floating modal;\n{all}"
     );
-    // phux-foz.14: the modal centers inside the pane content rect, so its
+    // The modal centers inside the pane content rect, so its
     // box corners land right of the sidebar divider — never inside the
     // reserved strip columns (the sidebar draws no corner glyphs itself).
     assert!(
@@ -1895,7 +1895,7 @@ fn command_palette_keeps_sidebar_visible() {
     );
 }
 
-/// phux-foz.10: every bounded (floating) overlay kind shares the same
+/// Every bounded (floating) overlay kind shares the same
 /// base-frame path, so which-key, prompts, pickers, and toasts
 /// must all keep the sidebar visible too.
 #[test]

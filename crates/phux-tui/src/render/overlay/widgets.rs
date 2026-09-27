@@ -1,4 +1,4 @@
-//! Reusable themed overlay primitives (phux-ahv.5).
+//! Reusable themed overlay primitives.
 //!
 //! [`Modal`] is the centered bordered box every overlay ([`prompt`], the
 //! action finder, pickers) paints through, plus the shared geometry and
@@ -119,7 +119,7 @@ pub fn centered(outer: Rect, frac_num: u16, min_w: u16, min_h: u16) -> Rect {
 /// whole chrome shares, so "compact" means the same thing to the status
 /// bar, the sidebar, and every overlay.
 ///
-/// `bp` is the per-attach snapshot of `[chrome]` (phux-huhi); pass
+/// `bp` is the per-attach snapshot of `[chrome]`; pass
 /// [`ChromeBreakpoints::default`] where there is no config to consult.
 #[must_use]
 pub const fn is_compact(outer: Rect, bp: ChromeBreakpoints) -> bool {
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(centered_panel(outer, 6, 30, 10, bp), outer);
     }
 
-    /// phux-huhi: the breakpoint is the caller's, not a constant. The same
+    /// The breakpoint is the caller's, not a constant. The same
     /// 80x30 viewport floats under the shipped thresholds and goes
     /// full-bleed under a `[chrome]` that raised them — which is the whole
     /// point of the knob for someone who wants full-bleed pickers on a
@@ -473,7 +473,7 @@ mod tests {
         assert!(inner.y + inner.height <= outer.y + outer.height);
     }
 
-    /// phux-foz.14: when the outer rect is the pane content rect (viewport
+    /// When the outer rect is the pane content rect (viewport
     /// inset by a left sidebar strip), the centered modal must stay fully
     /// inside it — its left edge lands right of the sidebar divider, never on
     /// the strip columns. This is the exact geometry the floating-modal path

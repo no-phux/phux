@@ -14,7 +14,7 @@ mod tests;
 
 pub(super) use handler::handle_server_frame;
 pub(super) use handler::pane_is_referenced;
-// phux-l96p.3: the composited output frame, shared with the driver's frame
+// The composited output frame, shared with the driver's frame
 // pacer so a paced settle paints through exactly the same path a live
 // `RESOURCE_OUTPUT` does.
 pub(super) use handler::{OutputFrame, paint_output_frame};

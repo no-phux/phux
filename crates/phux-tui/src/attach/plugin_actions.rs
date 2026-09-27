@@ -1,4 +1,4 @@
-//! Plugin actions in the TUI (phux-r82.5).
+//! Plugin actions in the TUI.
 //!
 //! Plugin manifest `[[actions]]` were previously reachable only through
 //! `phux config run PLUGIN ACTION` and the MCP tool — nothing in the TUI

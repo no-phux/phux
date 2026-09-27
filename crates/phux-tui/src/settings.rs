@@ -1,5 +1,4 @@
-//! Config-derived TUI state: built once per attach, swapped whole on reload
-//! (phux-u1tq.2).
+//! Config-derived TUI state: built once per attach, swapped whole on reload.
 //!
 //! Before this module the driver derived the same dozen values from a
 //! `phux_config::Config` in three places -- a `ConfigSeed` at attach
@@ -77,20 +76,20 @@ pub struct TuiSettings {
     /// which-key rows, the onboarding hint). `None` only when the config
     /// failed to load at attach.
     pub keybindings: Option<KeybindingsCfg>,
-    /// phux-4li.5: the keybind resolver built from that snapshot. `None`
+    /// The keybind resolver built from that snapshot. `None`
     /// exactly when [`Self::keybindings`] is.
     pub resolver: Option<Resolver>,
-    /// phux-ahv.4: single source of truth for chrome + overlay colors.
+    /// Single source of truth for chrome + overlay colors.
     pub theme: Theme,
-    /// phux-huhi: the responsive-chrome thresholds.
+    /// The responsive-chrome thresholds.
     pub chrome: ChromeBreakpoints,
-    /// phux-nz4.5: status-bar painter, or `None` when the config composes an
+    /// Status-bar painter, or `None` when the config composes an
     /// empty bar (the driver then reclaims the bar row).
     pub status_bar: Option<StatusBarPainter>,
-    /// phux-r82.5: palette rows + manifest `keys` merged into the prefix
+    /// Palette rows + manifest `keys` merged into the prefix
     /// table.
     pub plugin_actions: Vec<PluginActionEntry>,
-    /// phux-r82.7: the hostable pane entries committing `plugin-pane`.
+    /// The hostable pane entries committing `plugin-pane`.
     pub plugin_panes: Vec<PluginPaneEntry>,
     /// The which-key popup knobs.
     pub which_key: WhichKey,
@@ -192,7 +191,7 @@ impl TuiSettings {
         tracing::warn!(error = %err, "phux-config load failed; surfacing on status bar");
         let theme = Theme::default();
         let mut status_bar = StatusBarPainter::error_line(config_error_line(err));
-        // phux-foz.1: the attention chip rides the theme even on the error
+        // The attention chip rides the theme even on the error
         // line, as the attach-time seed always did.
         status_bar.set_attention_color(theme.attention);
         status_bar.set_fill(theme.surface);
@@ -271,7 +270,7 @@ impl TuiSettings {
         let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
-        // phux-i0e8.3.4: deliberately the STRICT build. Reload keeps its
+        // Deliberately the STRICT build. Reload keeps its
         // all-or-nothing contract: any binding the resolver rejects fails the
         // whole reload and the previous config stays fully in effect.
         let resolver = Resolver::new(&keybindings).map_err(|err| err.to_string())?;
@@ -295,7 +294,7 @@ impl TuiSettings {
         plugin_panes: Vec<PluginPaneEntry>,
     ) -> Self {
         let theme = Theme::from_cfg(&cfg.theme);
-        // phux-foz.1: the attention hint's chip color comes from the theme's
+        // The attention hint's chip color comes from the theme's
         // `attention` slot rather than a hardcoded SGR in the painter.
         if let Some(sb) = status_bar.as_mut() {
             sb.set_attention_color(theme.attention);
@@ -333,7 +332,7 @@ pub const fn sidebar_edge(position: SidebarPosition) -> SidebarEdge {
     }
 }
 
-/// phux-r82.5 / phux-r82.7: the enabled plugins' manifests, resolved
+/// The enabled plugins' manifests, resolved
 /// relative to the canonical config path -- the same resolution
 /// `phux config run` uses. A broken manifest is skipped with a warning.
 fn enabled_manifests(cfg: &Config) -> Vec<PluginManifest> {
@@ -376,7 +375,7 @@ pub fn compose_status_bar(
     manifests: &[PluginManifest],
 ) -> Result<Option<StatusBarPainter>, WidgetError> {
     let registry = phux_config::WidgetRegistry::with_builtins();
-    // phux-r82.6: fold enabled plugins' `[[widgets]]` contributions in
+    // Fold enabled plugins' `[[widgets]]` contributions in
     // after the user's own `[status]` widgets. Invalid contributions are
     // dropped with a warning inside the merge (mirroring the plugin
     // keybinding policy), so a broken plugin cannot fail the build; a
@@ -387,7 +386,7 @@ pub fn compose_status_bar(
     if bar.is_empty() {
         return Ok(None);
     }
-    // phux-foz.8: `[status] position = "top" | "bottom"` picks the
+    // `[status] position = "top" | "bottom"` picks the
     // reserved row; the pane content rect shifts to match (see
     // `paint::content_rect`).
     let mut painter = StatusBarPainter::new(bar, cfg.status.position.into());
@@ -395,13 +394,13 @@ pub fn compose_status_bar(
     Ok(Some(painter))
 }
 
-/// Build the lenient [`Resolver`] from a keybindings snapshot (phux-4li.5).
+/// Build the lenient [`Resolver`] from a keybindings snapshot.
 ///
-/// The snapshot is the plugin-merged one (phux-r82.5), so manifest `keys`
+/// The snapshot is the plugin-merged one, so manifest `keys`
 /// chords resolve like user bindings -- the merge already validated each
 /// contributed chord, so a plugin can't poison this build.
 ///
-/// phux-i0e8.3.4: the build is **lenient per binding** -- a resolver always
+/// The build is **lenient per binding** -- a resolver always
 /// comes back, and each diagnostic disables exactly the binding it names.
 /// Before this, one malformed chord failed the whole build and silently
 /// disabled EVERY binding, including `detach`. Diagnostics are logged here;
@@ -418,7 +417,7 @@ pub fn build_resolver_from(kb: &KeybindingsCfg) -> (Resolver, Vec<BindingDiagnos
 }
 
 /// Format the lenient resolver's diagnostics as the one-line status-bar
-/// error strip (phux-i0e8.3.4).
+/// error strip.
 ///
 /// Names the first offending chord, the reason, how many more bindings (if
 /// any) were also disabled, and the actionable next step (`phux config
@@ -443,12 +442,11 @@ pub fn keybind_error_line(diags: &[BindingDiagnostic]) -> String {
     }
 }
 
-/// Format a one-line, on-screen config error for the status bar (phux-9vf).
+/// Format a one-line, on-screen config error for the status bar.
 ///
 /// The `Display` of the error plus the actionable next step. The remedy is
 /// `phux config check` -- the verb that diagnoses, with key paths and layer
-/// attribution -- not `config show`, which only renders the effective config
-/// (phux-i0e8.3.5).
+/// attribution -- not `config show`, which only renders the effective config.
 pub fn config_error_line(err: &impl std::fmt::Display) -> String {
     format!("config error: {err} (run: phux config check)")
 }

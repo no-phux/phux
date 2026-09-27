@@ -35,7 +35,7 @@ use super::dispatch::apply_focus_transition;
 /// signal, focus move, prediction reset, `SET_METADATA` broadcast, bell,
 /// detach, parked spawn (split / new-window), and kill-frame sequences.
 ///
-/// Shared by the keybinding path and the overlay-commit path (phux-ahv.1)
+/// Shared by the keybinding path and the overlay-commit path
 /// so a rename committed from the prompt broadcasts and repaints exactly
 /// like a keybinding would. Returns `true` if the layout changed (the
 /// caller repaints).
@@ -117,7 +117,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         panes,
     ))
     .await;
-    // phux-foz.5: hand a `reload-config` up to the driver, which owns the
+    // Hand a `reload-config` up to the driver, which owns the
     // config-derived state (resolver, theme, keybindings snapshot, status
     // bar) this batch is still borrowing.
     if effects.reload_config {
@@ -247,7 +247,7 @@ fn push_move_failure(ctx: &mut DispatchCtx<'_>, message: &str) {
         )));
 }
 
-/// phux-x2hm: flip pane-zoom. Un-zoom if zoomed; otherwise zoom the
+/// Flip pane-zoom. Un-zoom if zoomed; otherwise zoom the
 /// focused pane. `run_action` already gated single-pane windows.
 fn apply_zoom_toggle(
     toggle: bool,
@@ -264,7 +264,7 @@ fn apply_zoom_toggle(
     };
 }
 
-/// phux-4h5a: flip the window-sidebar on/off state. The driver re-folds
+/// Flip the window-sidebar on/off state. The driver re-folds
 /// `sidebar_enabled` into the per-frame reservation after dispatch, so
 /// the `layout_mutated` repaint tiles into the new content rect.
 const fn apply_sidebar_toggle(toggle: bool, sidebar_enabled: &mut bool) {
@@ -279,8 +279,8 @@ const fn apply_sidebar_toggle(toggle: bool, sidebar_enabled: &mut bool) {
 /// Focus moved (keybinding pane navigation) — re-anchor predict to
 /// the new pane: reset its cursor + viewport and drop the old pane's
 /// queue, so a keystroke before the next reconcile echoes at the
-/// right place rather than the old pane's (mid-screen) coordinates
-/// (phux-7ry0). Subsumes the plain `clear_predict` drop.
+/// right place rather than the old pane's (mid-screen) coordinates.
+/// Subsumes the plain `clear_predict` drop.
 fn apply_focus_effect(
     set_focus: Option<ResourceId>,
     clear_predict: bool,
@@ -305,7 +305,7 @@ fn apply_focus_effect(
 ///
 /// Encoding can fail only on an empty workspace (we just produced
 /// it — shouldn't happen), but propagate cleanly if it ever does.
-/// phux-jy4t: keyed per session so a split here persists to THIS
+/// Keyed per session so a split here persists to THIS
 /// session's layout, not a key every session shares.
 async fn send_layout_metadata(
     set_metadata: bool,
@@ -390,7 +390,7 @@ async fn send_directory_request(
 
 /// kill-pane / kill-window `KILL_RESOURCE` commands; the `RESOURCE_CLOSED`
 /// fold-out happens as each resource tears down. Park the targets and their
-/// request ids FIRST (phux-i0e8.2.2): once the frames are on the wire the
+/// request ids FIRST: once the frames are on the wire the
 /// close — or the refusal — can race back, and an unmarked close would
 /// notice-spam the user about a death they ordered.
 async fn send_kill_frames(
@@ -422,7 +422,7 @@ async fn send_command_frames(
     Ok(())
 }
 
-/// phux-r82.5: a plugin action runs as a spawned child-process task —
+/// A plugin action runs as a spawned child-process task —
 /// fire-and-forget from the input loop's perspective. The driver's
 /// `select!` picks up the completion report and toasts failures. All
 /// client-local (config + exec); nothing goes on the wire (ADR-0017).
@@ -617,11 +617,11 @@ pub(super) fn consume_chord(
 pub(super) struct ActionEffects {
     /// `true` ⇒ the active window was mutated in-place; driver repaints.
     pub(super) layout_mutated: bool,
-    /// phux-x2hm: `true` ⇒ flip the driver's pane-zoom state (zoom the
+    /// `true` ⇒ flip the driver's pane-zoom state (zoom the
     /// focused pane to fill the window, or un-zoom). `apply_action_effects`
     /// owns the actual toggle since the `zoomed` state lives in the driver.
     pub(super) toggle_zoom: bool,
-    /// phux-4h5a: `true` ⇒ flip the driver's window-sidebar on/off state.
+    /// `true` ⇒ flip the driver's window-sidebar on/off state.
     /// `apply_action_effects` owns the toggle since `sidebar_enabled` lives in
     /// the driver; it also sets `layout_mutated` so the panes reflow into (or
     /// out of) the sidebar's reserved columns on the same-iteration repaint.
@@ -635,19 +635,19 @@ pub(super) struct ActionEffects {
     pub(super) set_metadata: bool,
     /// `true` ⇒ emit a terminal bell (BEL `\x07`).
     pub(super) bell: bool,
-    /// phux-4li.16: `true` ⇒ the active window changed; the driver must
+    /// `true` ⇒ the active window changed; the driver must
     /// drop the prediction queue (anchored to the old window's focused
     /// pane) so a stale ghost echo doesn't paint into the new window
     /// before the next `RESOURCE_OUTPUT` reconciles.
     pub(super) clear_predict: bool,
     /// `true` ⇒ emit `DETACH` and wait for `DETACHED`.
     pub(super) detach: bool,
-    /// phux-4li.12: a `split-pane` action emitted a `SPAWN_RESOURCE`
+    /// A `split-pane` action emitted a `SPAWN_RESOURCE`
     /// and parked a [`PendingSplit`] keyed by `request_id`. The async
     /// caller sends the frame, then inserts the parked entry into the
     /// driver-wide `pending_splits` map.
     pub(super) spawn_terminal: Option<(u32, PendingSplit, FrameKind)>,
-    /// phux-4li.15: a `new-window` action emitted a `SPAWN_RESOURCE` and
+    /// A `new-window` action emitted a `SPAWN_RESOURCE` and
     /// parked a [`PendingWindow`] keyed by `request_id`. The async caller
     /// sends the frame and inserts the parked entry into the driver-wide
     /// `pending_windows` map; the reply opens a new window on the
@@ -673,7 +673,7 @@ pub(super) struct ActionEffects {
     /// `RESOURCE_CLOSED` is ever broadcast for a resource the server does
     /// not have.
     pub(super) kill_requests: Vec<(u32, ResourceId)>,
-    /// phux-i0e8.2.2: the Terminals `kill_frames` targets. The async
+    /// The Terminals `kill_frames` targets. The async
     /// caller parks them in `DispatchCtx::expected_closes` so the
     /// eventual `RESOURCE_CLOSED` is recognized as client-initiated and
     /// its pane-exit notice suppressed.
@@ -707,14 +707,14 @@ pub(super) struct ActionEffects {
     /// so a rejected rename cannot lie. Peers learn the new name from the
     /// same subscribed broadcast rather than waiting for a re-attach.
     pub(super) rename_session: Option<String>,
-    /// phux-r82.5: a `plugin-action` dispatch carrying
+    /// A `plugin-action` dispatch carrying
     /// `(plugin_id, action_id)`. The async caller
     /// ([`apply_action_effects`]) spawns the child-process run via
     /// [`crate::attach::plugin_actions::spawn_plugin_action`] so the input loop
     /// never blocks on the plugin; completion lands on the driver's
     /// plugin-events channel (failure output toasts there).
     pub(super) run_plugin: Option<(String, String)>,
-    /// phux-foz.5: `true` ⇒ the user asked for a live config reload
+    /// `true` ⇒ the user asked for a live config reload
     /// (`reload-config`, via palette or a bound chord). Carried up to the
     /// driver via `DispatchCtx::reload_request`; the driver re-runs the
     /// layered loader after this batch and swaps its config-derived
@@ -736,7 +736,7 @@ pub(super) struct PaneMoveIntent {
 
 /// An in-process re-attach request raised by a dispatched action.
 ///
-/// Produced by `switch-session` / `new-session` (phux-eb0) and carried up
+/// Produced by `switch-session` / `new-session` and carried up
 /// to the driver via `DispatchCtx::switch_request`; `main_loop` returns a
 /// `SwitchTo` exit and the outer loop detaches and re-attaches on the same
 /// connection without dropping the transport or leaving raw mode.
@@ -752,7 +752,7 @@ pub enum ReattachTarget {
         /// cannot retarget the click. Satellite rows leave this `None`:
         /// their ids are host-local and not attachable on this hub.
         id: Option<SessionId>,
-        /// phux-foz.8: window index to select once the target session's
+        /// Window index to select once the target session's
         /// persisted layout loads — the one-step cross-session window
         /// pick. `None` keeps the session's own remembered focus. The
         /// index addresses the target's L3 workspace (the same order its
@@ -760,14 +760,14 @@ pub enum ReattachTarget {
         /// the index is out of range, the switch still lands and the
         /// select is a logged no-op.
         window: Option<usize>,
-        /// phux-jpqd: DFS leaf ordinal within `window` to focus once the
+        /// DFS leaf ordinal within `window` to focus once the
         /// target's layout loads — the one-step cross-session **pane**
         /// pick the agent-fleet dashboard's foreign rows carry. `None`
         /// keeps the window's own restored focus. Applied only after
         /// `window` resolves in range; an out-of-range ordinal degrades to
         /// a logged no-op, same as `window`.
         pane: Option<usize>,
-        /// phux-ah84: authoritative pane identity from the server graph or
+        /// Authoritative pane identity from the server graph or
         /// a persisted layout leaf. When present, the driver focuses this
         /// `ResourceId` after re-attach instead of fabricating TUI window
         /// or pane indices. Window/pane remain as layout-backed hints.

@@ -27,7 +27,7 @@ use crate::render::{ChromeBreakpoints, Theme};
 use super::effects::ReattachTarget;
 
 /// Mutable context the input-dispatch path needs to update on a chord
-/// that resolves to a layout action (phux-4li.5). Bundles the items
+/// that resolves to a layout action. Bundles the items
 /// that would otherwise inflate `dispatch_input_events`'s argument
 /// list past clippy's threshold.
 pub(in crate::attach) struct DispatchCtx<'a> {
@@ -60,7 +60,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     ///
     /// SPEC input.md §3.1: `INPUT_MOUSE` positions on the wire are
     /// Terminal-local surface-space PIXELS; the dispatcher routes in cells
-    /// and scales by this at the send boundary only (phux-yyex).
+    /// and scales by this at the send boundary only.
     pub cell_px: (u16, u16),
     /// Monotonic source of new request ids. We don't currently issue
     /// per-action correlated requests (the only side-channel today is
@@ -76,7 +76,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// test fixture that doesn't exercise the lane.
     pub input_replay:
         Option<&'a std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
-    /// phux-a5xj: did the server advertise
+    /// Did the server advertise
     /// [`ServerFeature::SpawnInitialSize`](phux_protocol::caps::ServerFeature::SpawnInitialSize)?
     /// When set, a spawn carries the tile the new leaf will occupy so the
     /// pane bootstraps at its real geometry instead of at the server default
@@ -84,11 +84,11 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// field would be skipped by length anyway — omitting it keeps the
     /// frame byte-identical to what that server has always decoded.
     pub spawn_initial_size_supported: bool,
-    /// phux-4li.12: parked split actions awaiting their
+    /// Parked split actions awaiting their
     /// `RESOURCE_SPAWNED` reply. `run_action` inserts;
     /// `handle_server_frame` removes.
     pub pending_splits: &'a mut HashMap<u32, PendingSplit>,
-    /// phux-4li.15: parked `new-window` actions awaiting their
+    /// Parked `new-window` actions awaiting their
     /// `RESOURCE_SPAWNED` reply. Same lifecycle as `pending_splits`,
     /// keyed in the same request-id space.
     pub pending_windows: &'a mut HashMap<u32, PendingWindow>,
@@ -104,7 +104,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// host it reads. Newest request wins: a reply carrying any other id is
     /// stale (the user already navigated on) and is dropped.
     pub pending_directory: &'a mut Option<crate::attach::directory_picker::PendingDirectory>,
-    /// phux-i0e8.2.2: Terminals whose close THIS client requested
+    /// Terminals whose close THIS client requested
     /// (kill-pane / kill-window soft-kill). [`apply_action_effects`]
     /// parks the target ids here at the kill-dispatch seam; the
     /// `ResourceClosed` arm of `handle_server_frame` drains a matching
@@ -119,7 +119,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// to be folded out on the strength of the refusal alone — otherwise a
     /// pane left behind by a dead resource can never be closed.
     pub pending_kills: &'a mut HashMap<u32, ResourceId>,
-    /// phux-5ke.4: overlay stack. When non-empty the dispatcher routes
+    /// Overlay stack. When non-empty the dispatcher routes
     /// key events to the active overlay (no resolver, no predict, no
     /// pane forwarding) and discovery actions push onto it.
     pub overlays: &'a mut OverlayState,
@@ -127,17 +127,17 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// The action finder uses it to show each live chord. `None` when
     /// config load failed (rows then show as unbound).
     pub keybindings: Option<&'a phux_config::KeybindingsCfg>,
-    /// phux-ahv.4: chrome + overlay color theme, resolved from
+    /// Chrome + overlay color theme, resolved from
     /// `[theme]` config at driver start. Overlays snapshot it at
     /// construction (action finder, `rename-window`) so their painted
     /// colors flow from a single source of truth.
     pub theme: &'a Theme,
-    /// phux-4li.20: the server's session graph, cached from the latest
+    /// The server's session graph, cached from the latest
     /// `ATTACHED` snapshot. The `session-picker` action builds its rows
     /// from this list. Empty until the first snapshot lands (the picker then
     /// still offers its new-session row).
     pub sessions: &'a [phux_protocol::wire::info::SessionInfo],
-    /// phux-c2td.3: the federation host inventory from the driver's latest
+    /// The federation host inventory from the driver's latest
     /// `GET_STATE` (`ServerFeature::HostSessions`), one row per satellite
     /// this server dials. The session picker groups its rows by host from
     /// this, and `switch-session { name, host }` resolves its target pane
@@ -145,12 +145,12 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// satellites, or one that predates the feature — in which case the
     /// picker is its ungrouped self.
     pub hosts: &'a [phux_protocol::wire::info::HostInventory],
-    /// phux-c2td.3: set by an action that wants a fresher host inventory
+    /// Set by an action that wants a fresher host inventory
     /// (opening the session picker). The driver sends one `GET_STATE` after
     /// the batch and folds the reply into [`Self::hosts`]; a picker already
     /// open refreshes its rows in place when it lands.
     pub host_refresh_request: &'a mut bool,
-    /// phux-foz.8: peer sessions' persisted L3 workspaces, fetched by the
+    /// Peer sessions' persisted L3 workspaces, fetched by the
     /// driver right after ATTACH (one `GET_METADATA` per peer on the
     /// per-session layout key). The `<leader> w` window picker reads this
     /// to list a foreign session's windows as one-step jump rows
@@ -160,7 +160,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// snapshot — peers' later mutations are not tracked (the post-switch
     /// select degrades to a logged no-op if the index went stale).
     pub foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
-    /// phux-jpqd: the `phux.agent/v1` records the driver fetched for
+    /// The `phux.agent/v1` records the driver fetched for
     /// **foreign** panes — one one-shot `GET_METADATA` per `ResourceId` in a
     /// peer session's cached [`Self::foreign_layouts`] workspace, keyed by
     /// that terminal id. The `agent-fleet` dashboard reads this so a foreign
@@ -171,12 +171,12 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub foreign_agents: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     /// Satellite terminals whose mirrored asked flag is set (ADR-0136).
     pub foreign_attention: &'a std::collections::HashSet<ResourceId>,
-    /// phux-4li.20: id of the session this client is attached to. The
+    /// Id of the session this client is attached to. The
     /// picker places this row first and marks it `current`; selecting it
     /// dismisses the picker without reattaching. `None` before the first
     /// snapshot.
     pub focused_session: Option<phux_protocol::ids::SessionId>,
-    /// phux-eb0: the name of the session this client is attached to,
+    /// The name of the session this client is attached to,
     /// resolved from the latest ATTACHED snapshot (and from a confirmed
     /// `phux.session.name/v1` change). A `switch-session` targeting this
     /// session without a window/pane target is a silent no-op (guarded in
@@ -195,23 +195,23 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// surfaces it on the status bar after this batch. `None` when the
     /// batch did not refuse a rename.
     pub rename_notice: &'a mut Option<String>,
-    /// phux-eb0: out-channel for a committed `switch-session { name }`.
+    /// Out-channel for a committed `switch-session { name }`.
     /// `apply_action_effects` sets this to `Some(target)` when the user
     /// picks a peer session; the driver's `main_loop` reads it after the
     /// dispatch batch and returns `LoopExit::SwitchTo(target)` so the
     /// outer loop re-attaches. Cleared by the driver each iteration.
     pub switch_request: &'a mut Option<ReattachTarget>,
-    /// phux-x2hm: the driver's pane-zoom state — `Some(id)` when pane `id`
+    /// The driver's pane-zoom state — `Some(id)` when pane `id`
     /// is zoomed to fill the window. `apply_action_effects` flips this for a
     /// `toggle-zoom` action; the driver reads it (via `Workspace::render_window`)
     /// to render/reflow the zoomed pane.
     pub zoomed: &'a mut Option<ResourceId>,
-    /// phux-4h5a: the active sidebar reservation, or `None` when the sidebar is
+    /// The active sidebar reservation, or `None` when the sidebar is
     /// disabled. The `resize-pane` min-cell gate tiles into the inset content
     /// rect so the underflow check matches the width panes actually paint into
     /// when a sidebar is docked.
     pub sidebar: Option<SidebarReservation>,
-    /// phux-4h5a: the driver's sidebar on/off state. `toggle-sidebar` flips
+    /// The driver's sidebar on/off state. `toggle-sidebar` flips
     /// this (via `ActionEffects::toggle_sidebar`); the driver re-folds it into
     /// the per-frame `sidebar` reservation after dispatch so the toggle repaint
     /// reflects the new state. Owned by the driver like `zoomed`.
@@ -224,7 +224,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// before flipping a flag whose effect the driver would then fold
     /// away — see the `toggle-sidebar` arm of [`run_action`].
     pub sidebar_width: &'a mut u16,
-    /// phux-huhi: the attach's `[chrome]` breakpoints. `toggle-sidebar`
+    /// The attach's `[chrome]` breakpoints. `toggle-sidebar`
     /// consults [`ChromeBreakpoints::min_pane_cols`] for the same
     /// "would this actually change anything?" arithmetic the driver's
     /// [`sidebar_reservation`] fold uses, so the keypress and the layout
@@ -232,7 +232,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     ///
     /// [`sidebar_reservation`]: crate::attach::paint::sidebar_reservation
     pub chrome: ChromeBreakpoints,
-    /// phux-k0cw: the sidebar's click-resolution table for the frame on
+    /// The sidebar's click-resolution table for the frame on
     /// screen — the same one the strip painter rendered from
     /// ([`crate::render::chrome::sidebar::SidebarPainter::click_targets`]).
     /// It carries both the counts `hit_test` derives the row shape from and
@@ -245,7 +245,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// paint path uses so a click hit-tests against the rects actually on
     /// screen, including the one-row downshift under a top-docked bar.
     pub bar: Option<crate::render::chrome::status_bar::Position>,
-    /// phux-foz.12: the driver's status-bar painter, lent read-only so a
+    /// The driver's status-bar painter, lent read-only so a
     /// click on the bar row can hit-test the window tabs against the
     /// exact strip the painter last painted
     /// ([`StatusBarPainter::window_hit_at`]). `None` when no bar is
@@ -268,26 +268,26 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// this set — so the host terminal's raw mouse handling returns for that
     /// pane without forcing the whole session to `mouse = false`.
     pub mouse_optout: &'a mut std::collections::HashSet<ResourceId>,
-    /// phux-oih5.16: driver-owned, client-local attention excursion state.
+    /// Driver-owned, client-local attention excursion state.
     /// The first `next-attention` saves an origin; later cycles preserve it,
     /// and `return-from-attention` consumes it. Never serialized or shared.
     pub attention_navigation: &'a mut AttentionNavigation,
-    /// phux-r82.5: enabled plugins' manifest `[[actions]]`, snapshotted at
+    /// Enabled plugins' manifest `[[actions]]`, snapshotted at
     /// driver start (same lifecycle as `keybindings`). The command palette
     /// appends one namespaced row per entry under a "Plugin" header.
     pub plugin_actions: &'a [PluginActionEntry],
-    /// phux-r82.7: enabled plugins' hostable manifest `[[panes]]`
+    /// Enabled plugins' hostable manifest `[[panes]]`
     /// (placement `split`/`tab`/`zoomed`; overlay is deferred), snapshotted
     /// at driver start alongside `plugin_actions`. The command palette
     /// appends one namespaced row per entry; a dispatched `plugin-pane`
     /// looks its argv + placement up here.
     pub plugin_panes: &'a [PluginPaneEntry],
-    /// phux-r82.5: sender half of the driver's plugin-events channel. A
+    /// Sender half of the driver's plugin-events channel. A
     /// dispatched `plugin-action` spawns the child-process run off the
     /// input loop and reports completion here; the driver's `select!`
     /// surfaces failures as a toast. `None` in unit tests (no runtime).
     pub plugin_tx: Option<&'a tokio::sync::mpsc::UnboundedSender<PluginRunResult>>,
-    /// phux-foz.5: out-channel for a dispatched `reload-config`. Set by
+    /// Out-channel for a dispatched `reload-config`. Set by
     /// [`apply_action_effects`]; the driver reads it after the dispatch
     /// batch and re-runs the layered config loader, swapping its
     /// config-derived state in place (or keeping the old state and
@@ -306,7 +306,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// subscriptions. The `agent-fleet` action projects them into the
     /// dashboard rows.
     pub agent_meta: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
-    /// phux-foz.7 / phux-p4vp: the driver's pane-cwd index + memoized
+    /// The driver's pane-cwd index + memoized
     /// branch cache. The fleet rows resolve each pane's branch through it
     /// (mut only for the memo).
     pub vcs: &'a mut crate::attach::pane_state::VcsIndex,

@@ -76,7 +76,7 @@ pub(super) fn run_action(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
     focused: Option<&ResourceId>,
-    // phux-foz.7: read-only view of the live pane slots. The `agent-fleet`
+    // Read-only view of the live pane slots. The `agent-fleet`
     // arm snapshots each pane's asked flag / OSC title / cwd from it;
     // every other arm ignores it. Threaded as a parameter (not a ctx
     // field) because the driver also passes `panes` mutably alongside the
@@ -193,7 +193,7 @@ fn move_pane(
     });
 }
 
-/// phux-4li.12: `SPAWN_RESOURCE` → server allocates the new
+/// `SPAWN_RESOURCE` → server allocates the new
 /// Terminal under `DEFAULT_GROUP_ID` and replies with
 /// `RESOURCE_SPAWNED { request_id, result: Ok(new_id) }`. The
 /// layout mutation happens in the reply handler — see
@@ -201,7 +201,7 @@ fn move_pane(
 /// `apply_spawned_ok`. We park a `PendingSplit` keyed by
 /// request id so the reply knows which leaf to split.
 ///
-/// phux-c2td.18: splitting a satellite pane spawns the new pane on that
+/// Splitting a satellite pane spawns the new pane on that
 /// satellite through the attached hub (`SPAWN_RESOURCE.satellite`), at the
 /// focused pane's directory there when the client knows it. The reply
 /// attaches the relayed pane and the split applies only when that attach
@@ -228,7 +228,7 @@ fn split_pane(
         effects.bell = true;
         return;
     };
-    // phux-lxov.1: `resource = "host/@N"` (or `@N`) opens that existing
+    // `resource = "host/@N"` (or `@N`) opens that existing
     // pane into this window. A spawn is the other shape, below.
     if resolved.args.contains_key("resource") {
         let Some(target) = resource_id_arg(resolved) else {
@@ -281,7 +281,7 @@ fn split_pane(
     effects.spawn_terminal = Some((request_id, pending, frame));
 }
 
-/// phux-c2td.25: ask a satellite spawn to bind its pane to the satellite's
+/// Ask a satellite spawn to bind its pane to the satellite's
 /// instance token (ADR-0109), so a pane the spawn strands can later be
 /// killed conditionally. A hub or satellite without `CONDITIONAL_KILL`
 /// skips the field by length and answers unbound; a local spawn is left
@@ -298,7 +298,7 @@ fn bind_satellite_spawn(frame: &mut FrameKind) {
     }
 }
 
-/// phux-lxov.1: attach `target` and split it into the current window.
+/// Attach `target` and split it into the current window.
 ///
 /// A pane already in this workspace is focused rather than opened twice.
 /// The attach is parked on the split: the leaf appears only when
@@ -354,10 +354,10 @@ fn open_existing_pane(
 
 /// The host a split spawns on.
 ///
-/// `wanted` is `split-pane { host }` (phux-lxov.1): the new pane is spawned
+/// `wanted` is `split-pane { host }`: the new pane is spawned
 /// on that satellite with `owner_terminal: None`, and the returned
 /// Satellite id is what the layout leaf stores. Absent `wanted`, a split
-/// follows the focused pane (phux-c2td.18).
+/// follows the focused pane.
 fn explicit_split_host(
     wanted: Option<SatelliteHost>,
     focused: &ResourceId,
@@ -370,7 +370,7 @@ fn explicit_split_host(
     }
 }
 
-/// The host a split of `focused` spawns on (phux-c2td.18).
+/// The host a split of `focused` spawns on.
 ///
 /// A local pane splits on the attached server. A satellite pane splits on
 /// its satellite when the hub advertises `LIST_DIRECTORY_HOST`, the bit that
@@ -410,7 +410,7 @@ fn kill_focused_pane(
     let request_id = take_request_id(ctx);
     effects.kill_frames = vec![kill_resource_frame(&focused_id, request_id)];
     effects.kill_requests = vec![(request_id, focused_id.clone())];
-    // phux-i0e8.2.2: mark the close as ours so the resulting
+    // Mark the close as ours so the resulting
     // RESOURCE_CLOSED does not raise a pane-exit notice.
     effects.expected_closes = vec![focused_id];
 }
@@ -539,7 +539,7 @@ fn set_pane(
     // top of every loop iteration.
 }
 
-/// phux-4li.15: open a new window. Spawn a fresh Terminal
+/// Open a new window. Spawn a fresh Terminal
 /// (same SPAWN as a split) and park a `PendingWindow`; the
 /// reply (`handle_server_frame`'s `ResourceSpawned` arm) adds a
 /// window seeded on the spawned pane and makes it active. The
@@ -571,7 +571,7 @@ fn new_window(
         satellite: host_arg(resolved),
         owner_terminal: None,
         agent_session: None,
-        // phux-a5xj: the new window holds one leaf, so the pane
+        // The new window holds one leaf, so the pane
         // fills the whole content rect. Predicting that here spares
         // the pane a bootstrap-then-reflow round trip.
         initial_size: spawn_initial_size(ctx, |content| Some((content.w, content.h))),
@@ -669,7 +669,7 @@ fn placeholder_label(host: &ListingHost, path: &str) -> String {
         .map_or_else(|| shown.to_owned(), |host| format!("{shown} on {host}"))
 }
 
-/// phux-4li.15: close every pane in the active window, one correlated
+/// Close every pane in the active window, one correlated
 /// `KILL_RESOURCE` each (the same mechanism as `kill-pane`). As each
 /// `RESOURCE_CLOSED` — or each `TerminalNotFound` refusal for a leaf whose
 /// resource is already gone — lands, `handle_server_frame` folds the pane
@@ -695,7 +695,7 @@ fn kill_active_window(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
         .iter()
         .map(|(request_id, leaf)| kill_resource_frame(leaf, *request_id))
         .collect();
-    // phux-i0e8.2.2: every pane in the window dies at our request;
+    // Every pane in the window dies at our request;
     // none of those closes is news.
     effects.expected_closes = leaves;
 }
@@ -777,7 +777,7 @@ fn rename_window(
     } else {
         // No name ⇒ open the interactive prompt pre-filled with
         // the active window's current name. On commit it re-runs
-        // `rename-window` with the typed name (phux-ahv.1).
+        // `rename-window` with the typed name.
         let current = ctx
             .workspace
             .windows
@@ -870,7 +870,7 @@ fn resize_pane(
     }
 }
 
-/// phux-foz.5: explicit live config reload. The actual re-read +
+/// Explicit live config reload. The actual re-read +
 /// swap happens in the driver after this batch (see
 /// `DispatchCtx::reload_request`): the resolver that just
 /// resolved this chord, the theme, and the keybindings
@@ -1019,7 +1019,7 @@ fn push_context_menu(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
 /// `select-window { index }` (the same per-client switch the
 /// numeric prefix bindings use). Other sessions list their own
 /// windows as one-step `switch-session { name, window }` rows
-/// when their persisted layout is cached (phux-foz.8), falling
+/// when their persisted layout is cached, falling
 /// back to a single "switch to session" row otherwise. With no
 /// rows at all it bells.
 fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
@@ -1037,14 +1037,14 @@ fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
         .push(Box::new(SelectList::new("Windows", items, ctx.theme)));
 }
 
-/// phux-4li.20: push the session picker. The current session is
+/// Push the session picker. The current session is
 /// first and marked in its secondary text so the list is a full
 /// inventory and opens with useful orientation. Committing that
 /// row dismisses the picker as a silent no-op; peer rows commit
 /// `switch-session { name }`. A trailing "+ New session" row
 /// keeps creation reachable even when no sessions are cached.
 ///
-/// phux-c2td.3: against a federation hub the rows are grouped by
+/// Against a federation hub the rows are grouped by
 /// host — this host, then each satellite — and a satellite row
 /// commits `switch-session { name, host }`. The open also asks
 /// the driver for a fresh inventory; the list carries the live
@@ -1057,14 +1057,14 @@ fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
     ));
 }
 
-/// phux-foz.7: push the agent-fleet dashboard — every pane of
+/// Push the agent-fleet dashboard — every pane of
 /// the attached session grouped under session headers, with its
 /// ADR-0040 agent record (name/kind + state glyph), ADR-0035
 /// asked/attention highlight, and branch/cwd. Current-session
 /// rows commit `focus-pane { window, pane }` through the single
 /// dispatch path.
 ///
-/// phux-jpqd: a FOREIGN session with a cached persisted layout
+/// A FOREIGN session with a cached persisted layout
 /// (`foreign_layouts`) lists one row per pane committing a
 /// one-step `switch-session { name, window, pane }`, its agent
 /// glyph/state drawn from `foreign_agents` — no attach hop to see
@@ -1166,7 +1166,7 @@ fn return_from_attention(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects)
     effects.set_focus = Some(origin);
 }
 
-/// phux-foz.7: focus a specific pane addressed as
+/// Focus a specific pane addressed as
 /// (window index, DFS leaf ordinal) — the commit the fleet
 /// dashboard's current-session rows carry. Per-client, like
 /// `select-window` (no broadcast): switch to the window, then
@@ -1213,24 +1213,24 @@ fn focus_pane(
     effects.set_focus = Some(target);
 }
 
-/// phux-4li.20 / phux-eb0: re-target this client to another
+/// Re-target this client to another
 /// session. The effect carries the target up to
 /// `apply_action_effects`, which routes it to the driver's
 /// outer re-attach loop (in-process re-attach on the same
 /// connection). A bad/absent `name` arg bells.
 ///
-/// phux-foz.8: an optional `window = N` arg makes it the
+/// An optional `window = N` arg makes it the
 /// one-step cross-session window pick — after the re-attach
 /// loads the target's persisted layout, the driver selects
 /// window `N`. The grouped window picker's foreign-session
 /// rows commit this form.
 ///
-/// phux-jpqd: an additional optional `pane = P` arg extends it
+/// An additional optional `pane = P` arg extends it
 /// to a one-step cross-session PANE pick — after selecting the
 /// window, the driver focuses its DFS leaf ordinal `P`. The
 /// agent-fleet dashboard's foreign pane rows commit this form.
 ///
-/// phux-c2td.3: an optional `host = "NAME"` arg names a federation
+/// An optional `host = "NAME"` arg names a federation
 /// satellite instead of a session on this server, and takes the
 /// [`open_satellite_session`] path — the session picker's satellite
 /// rows commit that form.
@@ -1407,7 +1407,7 @@ fn new_session(
     }
 }
 
-/// phux-r82.5: run a plugin manifest action through the same
+/// Run a plugin manifest action through the same
 /// child-process runtime `phux config run PLUGIN ACTION` uses.
 /// Sync dispatch only records the intent; the async caller
 /// (`apply_action_effects`) spawns the run off the input loop so
@@ -1426,7 +1426,7 @@ fn plugin_action(resolved: &phux_config::keybind::ResolvedAction, effects: &mut 
     effects.run_plugin = Some((plugin, action));
 }
 
-/// phux-r82.7: open a plugin manifest `[[panes]]` entry as a
+/// Open a plugin manifest `[[panes]]` entry as a
 /// real server-side Terminal running the pane's argv. Routes
 /// through the SAME `SPAWN_RESOURCE` machinery `split-pane` /
 /// `new-window` use (ADR-0017: no plugin-privileged wire
@@ -1556,7 +1556,7 @@ fn last_pane(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>, effects: &
     effects.set_focus = Some(target);
 }
 
-/// phux-x2hm: zoom needs more than one pane (a single-pane window
+/// Zoom needs more than one pane (a single-pane window
 /// bells, like tmux). When already zoomed the REAL tree still has >1
 /// leaf, so this same check permits un-zooming. The driver owns
 /// the `zoomed` state; we just signal intent + request a repaint.
@@ -1601,7 +1601,7 @@ const fn toggle_sidebar(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
         effects.bell = true;
         return;
     }
-    // phux-4h5a: show/hide the window sidebar. The driver owns
+    // Show/hide the window sidebar. The driver owns
     // `sidebar_enabled`; we signal intent + a repaint so the panes
     // reflow into/out of the reserved columns.
     effects.toggle_sidebar = true;

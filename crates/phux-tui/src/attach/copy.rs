@@ -1,4 +1,4 @@
-//! Client-local copy-mode extraction and clipboard emission (phux-v6jw).
+//! Client-local copy-mode extraction and clipboard emission.
 //!
 //! Per [ADR-0030](../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md),
 //! selection is a *client-side projection* over the consumer's own libghostty
@@ -27,7 +27,7 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 
 /// Extract the plain text of `req`'s selection from `terminal`.
 ///
-/// Branches on [`CopyRequest::grab`] (phux-7143):
+/// Branches on [`CopyRequest::grab`]:
 /// - [`SelectionGrab::Rect`] maps the overlay's inclusive `(row, col)` viewport
 ///   rectangle onto two [`Point::Viewport`] grid references and builds a
 ///   two-corner [`Selection`] (rectangular when `req.rectangle`).
@@ -67,7 +67,7 @@ pub fn extract_selection_text(
 /// Build the one-shot [`Selection`] `req`'s grab names, or `None` when the
 /// engine reports nothing selectable or a libghostty call fails.
 ///
-/// Branches on [`CopyRequest::grab`] (phux-7143): `Rect` builds a two-corner
+/// Branches on [`CopyRequest::grab`]: `Rect` builds a two-corner
 /// selection from the overlay's own rectangle; every other grab delegates to
 /// libghostty's matching `select_*` helper at the overlay cursor. `select_all`
 /// ignores the cursor.

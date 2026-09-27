@@ -127,7 +127,7 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     assert_eq!(received[1].key, PhysicalKey::X);
 }
 
-// -- which-key popup passthrough (phux-foz.2) --------------------------
+// -- which-key popup passthrough --------------------------
 
 /// Drive `dispatch_input_events` with the given events against a
 /// resolver already pending at the prefix and either which-key or
@@ -363,7 +363,7 @@ fn sidebar_click_action_maps_rows_to_registry_actions() {
     let new = sidebar_click_action(strip, &quiet, 4, 22).expect("new row hits");
     assert_eq!(new.action, "new-window");
     assert!(new.args.is_empty());
-    // phux-foz.9: the collapse chevron in the bottom corner.
+    // The collapse chevron in the bottom corner.
     let collapse = sidebar_click_action(strip, &quiet, 27, 22).expect("collapse corner hits");
     assert_eq!(collapse.action, "toggle-sidebar");
     assert!(collapse.args.is_empty());
@@ -377,7 +377,7 @@ fn sidebar_click_action_maps_rows_to_registry_actions() {
     assert!(sidebar_click_action(strip, &quiet, 27, 0).is_none());
 }
 
-/// phux-k0cw: a queue row commits a LOCAL focus or a CROSS-SESSION
+/// A queue row commits a LOCAL focus or a CROSS-SESSION
 /// re-attach depending on the row, and a roster row switches session.
 /// The two are deliberately different commits — the distinction is the
 /// whole reason the target table is snapshotted per paint.
@@ -491,7 +491,7 @@ fn left_press_at(x: u16, y: u16) -> InputEvent {
     })
 }
 
-/// phux-wrnm: the same press with the right button.
+/// The same press with the right button.
 fn right_press_at(x: u16, y: u16) -> InputEvent {
     use phux_protocol::input::key::ModSet;
     InputEvent::Mouse(MouseEvent {
@@ -659,7 +659,7 @@ async fn sidebar_consumes_clicks_on_blank_rows() {
     assert_eq!(pending, 0);
 }
 
-/// phux-wrnm: a right press on a window block selects that window (a
+/// A right press on a window block selects that window (a
 /// menu acts on what you pointed at) and then opens its window menu.
 #[tokio::test]
 async fn sidebar_right_press_on_a_window_block_selects_it_and_opens_its_menu() {
@@ -669,7 +669,7 @@ async fn sidebar_right_press_on_a_window_block_selects_it_and_opens_its_menu() {
     assert_eq!(pending, 0);
 }
 
-/// phux-wrnm: every other cell of the strip is session chrome, so a
+/// Every other cell of the strip is session chrome, so a
 /// right press there opens the session menu rather than doing nothing.
 #[tokio::test]
 async fn sidebar_right_press_on_blank_chrome_opens_the_session_menu() {
@@ -852,7 +852,7 @@ async fn sidebar_window_drop_off_the_rows_changes_nothing() {
     }
 }
 
-/// phux-mv5y: motion over another window row points the insertion marker
+/// Motion over another window row points the insertion marker
 /// at that slot; release and focus-loss cancel both clear it.
 #[tokio::test]
 async fn sidebar_drag_drop_marker_follows_the_pointer_and_clears() {
@@ -1059,7 +1059,7 @@ async fn bar_click_on_window_tab_selects_it() {
     );
 }
 
-/// The same tab click works with the bar docked at the TOP (phux-foz.8):
+/// The same tab click works with the bar docked at the TOP:
 /// the claimed row is y = 0 and the pane content below is untouched.
 #[tokio::test]
 async fn bar_click_honors_top_placement() {
@@ -1100,7 +1100,7 @@ async fn bar_claim_leaves_pane_content_alone() {
     }
 }
 
-/// phux-wrnm: a right press on a tab selects that window and opens its
+/// A right press on a tab selects that window and opens its
 /// window menu — the tab-bar equivalent of right-clicking a browser tab.
 #[tokio::test]
 async fn bar_right_press_on_a_tab_selects_it_and_opens_the_window_menu() {
@@ -1112,7 +1112,7 @@ async fn bar_right_press_on_a_tab_selects_it_and_opens_the_window_menu() {
     assert!(received.is_empty(), "nothing reaches a pane: {received:?}");
 }
 
-/// phux-wrnm: off the tabs the bar is session chrome — the session name,
+/// Off the tabs the bar is session chrome — the session name,
 /// the widgets, the padding — so a right press there opens the session
 /// menu instead of being swallowed.
 #[tokio::test]
@@ -1188,7 +1188,7 @@ async fn tab_drop_off_the_bar_changes_nothing() {
     }
 }
 
-/// phux-mv5y: motion over another tab points the insertion marker at that
+/// Motion over another tab points the insertion marker at that
 /// slot; release and focus-loss cancel both clear it.
 #[tokio::test]
 async fn tab_drag_drop_marker_follows_the_pointer_and_clears() {
@@ -1900,7 +1900,7 @@ async fn wheel_down_in_alt_screen_pane_synthesizes_arrow_down() {
 
 /// An app that opted out of alternate scroll (`?1007l`) is still on the
 /// alt screen, so the client must not local-scroll. Forward the wheel
-/// instead of eating a no-op (phux-2vnl).
+/// instead of eating a no-op.
 #[tokio::test]
 async fn wheel_with_alt_scroll_off_forwards_to_the_app() {
     let (received, _, _, _) = dispatch_mouse_two_pane_with(
@@ -1996,8 +1996,8 @@ async fn wheel_down_at_live_tail_is_forwarded() {
     }
 }
 
-/// Alt-screen with prior primary history still must not local-scroll
-/// (phux-2vnl): the wheel becomes arrows, not a replica history pan.
+/// Alt-screen with prior primary history still must not local-scroll:
+/// the wheel becomes arrows, not a replica history pan.
 #[tokio::test]
 async fn wheel_in_alt_screen_with_prior_history_still_synthesizes_arrows() {
     let mut vt = primary_scrollback_vt(40);
@@ -2204,7 +2204,7 @@ async fn clicking_outside_the_menu_closes_it_and_repaints() {
 
 /// A pane that opted out via `set-pane mouse off` gets no menu either:
 /// the whole point of the opt-out is that the client stops claiming
-/// that pane's pointer events (phux-npb3).
+/// that pane's pointer events.
 #[tokio::test]
 async fn right_press_on_an_opted_out_pane_opens_nothing() {
     let mut overlays = OverlayState::new();
@@ -2244,7 +2244,7 @@ async fn forwarded_input_mouse_scales_cells_to_surface_pixels() {
     )
     .await;
     // Pane 2's content starts one column right of the divider, and one
-    // row under the pane-grid rail (phux-l96p.8).
+    // row under the pane-grid rail.
     let expected_x = (70.0 - f64::from(dx) - 1.0) * 8.0;
     let expected_y = (5.0 - 1.0) * 16.0;
     match received.as_slice() {

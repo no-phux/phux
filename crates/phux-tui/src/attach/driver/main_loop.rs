@@ -18,7 +18,7 @@ use crate::render::chrome::status_bar::Notice;
 use super::entry::LoopExit;
 use super::loop_state::{SessionLoop, Step};
 
-/// phux-jhv8: upper bound on how many already-queued frames one `recv`
+/// Upper bound on how many already-queued frames one `recv`
 /// wake-up drains before painting. A back-to-back output burst (nvim
 /// startup) is a few dozen frames; the cap only guards against a server
 /// that streams without pause starving the stdin/signal `select!` arms.
@@ -26,7 +26,7 @@ pub(super) const FRAME_COALESCE_CAP: usize = 1024;
 
 /// The terminal a frame would repaint under normal handling, if any — the
 /// `vt_write` + render pair a coalesced burst can defer to a later same-pane
-/// frame (phux-jhv8). Output and snapshot frames carry pane content; every
+/// frame. Output and snapshot frames carry pane content; every
 /// other frame (layout, lifecycle, control) paints through its own path or
 /// not at all, so it never defers (returns `None`).
 pub(super) const fn frame_paint_target(frame: &FrameKind) -> Option<&ResourceId> {
@@ -36,7 +36,7 @@ pub(super) const fn frame_paint_target(frame: &FrameKind) -> Option<&ResourceId>
     }
 }
 
-/// Per-frame paint-deferral mask for a coalesced burst (phux-jhv8).
+/// Per-frame paint-deferral mask for a coalesced burst.
 ///
 /// `targets[i]` is the pane frame `i` would repaint (`None` for control
 /// frames). The result is `true` at `i` iff some later frame repaints the
@@ -71,7 +71,7 @@ pub(super) const fn frame_defers_paint(deferred_by_coalesce: bool, _frame: &Fram
 /// in one place. Subsequent bootstrap and `RESOURCE_OUTPUT` frames come off the
 /// wire as usual.
 ///
-/// phux-eb0: returns a [`LoopExit`] so the outer loop in
+/// Returns a [`LoopExit`] so the outer loop in
 /// [`run_with_stdout_predict`] can re-attach to another session without
 /// dropping the transport or leaving raw mode. Every session-scoped local
 /// in [`SessionLoop`] is rebuilt on each entry, so a re-attach starts from a
@@ -90,7 +90,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     initial_attached: FrameKind,
     predict_cfg: PredictiveConfig,
     out: &mut W,
-    // phux-fysb: the off-loop StdoutSink's backpressure flag. When the writer
+    // The off-loop StdoutSink's backpressure flag. When the writer
     // drops a stale backlog under a slow terminal it sets this; we repaint the
     // latest state from scratch (a self-contained full frame supersedes the
     // dropped diffs). `None` for the synchronous test sink.
@@ -102,28 +102,28 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // First-use moment consumed by this loop entry. Session switches receive
     // `None`, so they never repeat attach guidance.
     onboarding_claim: Option<crate::attach::onboarding::AttachClaim>,
-    // phux-i0e8.2.3: transient status-bar notice to seed at attach time —
+    // Transient status-bar notice to seed at attach time —
     // the reconnect loop's "re-attached after server restart". Applied to
     // the painter right after the bootstrap chrome refresh, so the first
     // bar paint (driven by the initial TERMINAL_SNAPSHOT burst) shows it;
     // expiry rides the ordinary 1 s status_tick. `None` on a first attach
     // and on session switches.
     initial_notice: Option<Notice>,
-    // phux-foz.8: window index to select once this session's persisted
+    // Window index to select once this session's persisted
     // layout loads. Set by the outer loop when a one-step cross-session
     // window pick (`switch-session { name, window }`) drove the re-attach;
     // `None` on a plain attach/switch. Resolved (and consumed) on the
     // first layout reconcile; out-of-range degrades to the session's own
     // restored focus with a warning.
     initial_window: Option<usize>,
-    // phux-jpqd: DFS leaf ordinal to focus (within `initial_window`) once
+    // DFS leaf ordinal to focus (within `initial_window`) once
     // this session's layout loads — the pane half of a one-step
     // cross-session PANE pick (`switch-session { name, window, pane }`,
     // the agent-fleet foreign rows). `None` on a plain switch or a
     // window-only pick; resolved alongside `initial_window` and, like it,
     // degrades to a logged no-op if out of range.
     initial_pane: Option<usize>,
-    // phux-ah84: authoritative ResourceId to focus after re-attach, from
+    // Authoritative ResourceId to focus after re-attach, from
     // a graph-discovered agent row (`switch-session { resource }`). Wins
     // over window/pane indices and works before a TUI layout exists.
     initial_resource: Option<ResourceId>,
@@ -143,10 +143,10 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     input_replay: Option<
         std::rc::Rc<std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
     >,
-    // phux-c2td.23: the stray satellite panes an earlier entry on this
+    // The stray satellite panes an earlier entry on this
     // connection still owed a kill. Empty on the first attach.
     orphan_kills: super::orphans::OrphanKills,
-    // phux-deya: per-identity review status carried across session switches
+    // Per-identity review status carried across session switches
     // on this connection. Empty on the first attach.
     review: crate::attach::review::ReviewIndex,
 ) -> Result<LoopExit, AttachError> {
@@ -164,7 +164,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         carried_sidebar,
     )?;
     session.set_control_dial(control_dial.clone());
-    // phux-r82.6: spawn one bounded interval runner per `exec` widget. The
+    // Spawn one bounded interval runner per `exec` widget. The
     // runners execute off-loop and write into the widgets' shared caches;
     // the bar's normal repaint tick picks changed cells up, so the render
     // loop never blocks on a widget command. The guard aborts the tasks
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn coalesce_defers_every_pane_frame_but_its_last() {
-        // phux-jhv8: in a coalesced burst, every output frame for a pane
+        // In a coalesced burst, every output frame for a pane
         // defers EXCEPT that pane's final frame, which settles the screen.
         let p = |id| Some(ResourceId::Local { id });
         // Single-pane burst: only the last frame paints.

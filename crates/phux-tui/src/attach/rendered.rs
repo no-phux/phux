@@ -57,7 +57,7 @@ pub(super) fn compose_full_frame_cells(
     focused_resource: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&StatusBarPainter>,
-    // phux-4h5a: the window-sidebar reservation. `None` (disabled, the
+    // The window-sidebar reservation. `None` (disabled, the
     // default) makes `content_rect` the full pane viewport, byte-identical to
     // the pre-sidebar tiling. When `Some`, panes inset and `sidebar_painter`
     // overlays the strip into its reserved columns.
@@ -112,7 +112,7 @@ pub(super) fn compose_full_frame_cells(
     };
     overlay_buffer(&mut frame, &divider_buf, (0, 0), true);
 
-    // Overlay the sidebar strip into its reserved columns (phux-4h5a). The
+    // Overlay the sidebar strip into its reserved columns. The
     // strip buffer is composed at origin (0,0), so shift it to the reserved
     // rect's x. Its styled blanks/separator are kept (skip_blanks = false) so
     // the strip's full extent shows; it sits in columns `content_rect` carved
@@ -334,7 +334,7 @@ mod tests {
 
     /// The compositor tiles each pane's content into its rect, draws the
     /// divider between them, and adopts the focused pane's cursor as the
-    /// frame cursor — the render-verify harness contract (phux-l5xa).
+    /// frame cursor — the render-verify harness contract.
     #[test]
     fn compose_places_pane_content_divider_and_focused_cursor() {
         let left = ResourceId::local(1);
@@ -566,7 +566,7 @@ mod tests {
     }
 
     /// With a status bar the bottom row is reserved and carries the bar
-    /// content (here the session name), composited over the panes (phux-l5xa).
+    /// content (here the session name), composited over the panes.
     #[test]
     fn compose_overlays_status_bar_on_the_bottom_row() {
         let pane = ResourceId::local(1);
@@ -610,7 +610,7 @@ mod tests {
         assert_eq!(frame.cell(1, 0).expect("first pane row").grapheme, "h");
     }
 
-    /// phux-qtw8: with the sidebar open the bar row belongs to the STRIP in the
+    /// With the sidebar open the bar row belongs to the STRIP in the
     /// strip's columns — the window tabs start beside it, not underneath. This
     /// is the reported bug, asserted on the assembled frame: before the fix the
     /// tabs composed from column 0 and read as sitting "under" the sidebar.

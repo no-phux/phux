@@ -14,7 +14,7 @@
 //! one-element case — the common path is unchanged from a UX standpoint.
 //!
 //! Submodules:
-//! - [`prompt`] — single-line text-input modal (phux-ahv.1)
+//! - [`prompt`] — single-line text-input modal
 //! - [`widgets`] — reusable themed primitives ([`Modal`])
 //!
 //! [`Modal`]: widgets::Modal
@@ -35,7 +35,7 @@ pub mod pending;
 pub mod prompt;
 pub mod select_list;
 pub mod selection;
-// phux-u1tq.4: the settings page (ADR-0101).
+// The settings page (ADR-0101).
 pub mod settings;
 pub mod toast;
 pub mod which_key;
@@ -156,7 +156,7 @@ pub trait RenderOverlay {
         false
     }
 
-    /// phux-huhi: adopt the attach-wide `[chrome]` breakpoints.
+    /// Adopt the attach-wide `[chrome]` breakpoints.
     ///
     /// [`OverlayState::push`] calls this on every overlay as it is stacked,
     /// so a modal picks the thresholds up from the one place that read the
@@ -179,7 +179,7 @@ pub trait RenderOverlay {
     /// and stays open to show it -- stores the value.
     fn set_theme(&mut self, _theme: &Theme) {}
 
-    /// phux-wrnm: `true` for an overlay that hover-tracks the pointer with
+    /// `true` for an overlay that hover-tracks the pointer with
     /// no button held (the context menu). The driver upgrades the outer
     /// terminal's mouse reporting from button-event (`?1002h`) to
     /// any-motion (`?1003h`) while such an overlay is on the stack, and
@@ -190,7 +190,7 @@ pub trait RenderOverlay {
         false
     }
 
-    /// phux-fsb: whether this overlay's geometry stays valid across a
+    /// Whether this overlay's geometry stays valid across a
     /// viewport resize.
     ///
     /// Every centered overlay lays itself out from the `area` handed to
@@ -207,7 +207,7 @@ pub trait RenderOverlay {
         true
     }
 
-    /// phux-d26y: re-derive geometry from the focused pane's new size after
+    /// Re-derive geometry from the focused pane's new size after
     /// a viewport resize. `pane_cols` / `pane_rows` are the focused pane's
     /// dimensions in the *new* layout.
     ///
@@ -220,7 +220,7 @@ pub trait RenderOverlay {
     /// ignores this (the default no-op).
     fn on_viewport_resize(&mut self, _pane_cols: u16, _pane_rows: u16) {}
 
-    /// phux-foz.7: offer this overlay a freshly rebuilt row set tagged
+    /// Offer this overlay a freshly rebuilt row set tagged
     /// `key`. A *live* overlay whose data projects shared client state —
     /// the agent-fleet dashboard — replaces its rows in place (preserving
     /// query/selection) and returns `true` so the driver repaints it; every
@@ -299,7 +299,7 @@ pub struct OverlayState {
     /// Bottom-to-top overlay stack. The last element is the top — it
     /// receives input and is painted last (on top of the others).
     stack: Vec<Box<dyn RenderOverlay>>,
-    /// phux-huhi: the attach's `[chrome]` breakpoints, stamped onto every
+    /// The attach's `[chrome]` breakpoints, stamped onto every
     /// overlay as it is pushed. One seam rather than a parameter on every
     /// overlay constructor — the driver sets it once
     /// ([`Self::set_breakpoints`]) and pushes stay unchanged everywhere.
@@ -325,7 +325,7 @@ impl OverlayState {
         }
     }
 
-    /// phux-huhi: adopt the attach's `[chrome]` breakpoints.
+    /// Adopt the attach's `[chrome]` breakpoints.
     ///
     /// Called by the driver once the config is loaded, before any overlay
     /// can be pushed. Already-stacked overlays are re-stamped too, so a
@@ -391,7 +391,7 @@ impl OverlayState {
             .is_some_and(|o| o.passthrough_escape_cancels_prefix())
     }
 
-    /// phux-wrnm: `true` when any stacked overlay hover-tracks the pointer
+    /// `true` when any stacked overlay hover-tracks the pointer
     /// (see [`RenderOverlay::wants_pointer_hover`]). The driver reconciles
     /// the outer terminal's motion reporting against this each loop
     /// iteration, exactly the way it reconciles capture against focus.
@@ -400,7 +400,7 @@ impl OverlayState {
         self.stack.iter().any(|o| o.wants_pointer_hover())
     }
 
-    /// phux-fsb: drop every overlay whose geometry a viewport resize
+    /// Drop every overlay whose geometry a viewport resize
     /// invalidated ([`RenderOverlay::survives_resize`]), returning `true`
     /// when the stack changed so the caller repaints.
     ///
@@ -418,7 +418,7 @@ impl OverlayState {
         self.stack.len() != before
     }
 
-    /// phux-d26y: hand every surviving overlay the focused pane's new size
+    /// Hand every surviving overlay the focused pane's new size
     /// ([`RenderOverlay::on_viewport_resize`]).
     ///
     /// Runs *after* [`Self::dismiss_stale_on_resize`] on the same SIGWINCH
@@ -436,7 +436,7 @@ impl OverlayState {
     /// target and is painted last (above any overlays beneath it).
     ///
     /// The overlay is stamped with the attach's `[chrome]` breakpoints on
-    /// the way in (phux-huhi), so every construction site gets the
+    /// the way in, so every construction site gets the
     /// configured thresholds without naming them.
     pub fn push(&mut self, mut overlay: Box<dyn RenderOverlay>) {
         overlay.set_breakpoints(self.breakpoints);
@@ -520,7 +520,7 @@ impl OverlayState {
         }
     }
 
-    /// phux-foz.7: hand a freshly rebuilt row set tagged `key` to the
+    /// Hand a freshly rebuilt row set tagged `key` to the
     /// stacked overlays, top-down. The first overlay that accepts it (a
     /// live [`SelectList`] carrying the matching key — the agent-fleet
     /// dashboard) replaces its rows and stops the walk; `true` means some
@@ -564,10 +564,10 @@ impl OverlayState {
     ///
     /// Returns the union of every stacked overlay's [`RenderOverlay::bounds`],
     /// each centered inside `content` — the pane content rect (the viewport
-    /// minus the sidebar strip and status-bar row), NOT the raw viewport
-    /// (phux-foz.14). Centering against `content` keeps a modal's box off the
+    /// minus the sidebar strip and status-bar row), NOT the raw viewport.
+    /// Centering against `content` keeps a modal's box off the
     /// sidebar columns, so it never occludes the chrome the floating-modal
-    /// base-frame repaint (phux-foz.10) works to preserve.
+    /// base-frame repaint works to preserve.
     ///
     /// When `Some`, the driver paints the live panes as a base frame and
     /// emits only this region on top (a true floating modal); when `None`,
@@ -619,7 +619,7 @@ impl OverlayState {
     ///
     /// Overlays render against `content` — the pane content rect (viewport
     /// minus the sidebar strip and status-bar row), so a centered modal lands
-    /// inside the pane region rather than over the chrome (phux-foz.14). The
+    /// inside the pane region rather than over the chrome. The
     /// buffer stays full-viewport sized (`viewport_dims`) so `clip` and the
     /// drop shadow keep absolute screen coordinates.
     pub fn paint_clipped(
@@ -995,7 +995,7 @@ mod tests {
         assert!(buf.is_empty());
     }
 
-    /// phux-huhi: an overlay that records the breakpoints handed to it, so
+    /// An overlay that records the breakpoints handed to it, so
     /// the stamping seam can be asserted without a real modal.
     #[derive(Default)]
     struct BreakpointProbe {
@@ -1283,7 +1283,7 @@ mod tests {
         )
     }
 
-    /// The reported failure (phux-fsb), stated as the invariant it broke:
+    /// The reported failure, stated as the invariant it broke:
     /// after a resize clips a pinned menu away, it must not still be
     /// sitting on the stack turning Enter into `kill-pane`.
     #[test]

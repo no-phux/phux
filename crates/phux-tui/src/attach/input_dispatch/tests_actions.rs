@@ -135,7 +135,7 @@ fn focused_pane_rect_tracks_rendered_pane_bounds() {
         Some(crate::render::chrome::status_bar::Position::Bottom),
         None,
     );
-    // Row 0 is the pane-grid rail (phux-l96p.8); panes start at row 1.
+    // Row 0 is the pane-grid rail; panes start at row 1.
     assert_eq!(split_rect.y, 1);
     assert_eq!(
         split_rect.h, 22,
@@ -211,7 +211,7 @@ const ALL_FEATURES: ServerFeatureSet = ServerFeatureSet::with(&[
 ]);
 
 /// [`run`] against a server that did NOT advertise
-/// `ServerFeature::SpawnInitialSize` (phux-a5xj).
+/// `ServerFeature::SpawnInitialSize`.
 fn run_without_spawn_size_support(
     action: &phux_config::keybind::ResolvedAction,
     workspace: &mut Workspace,
@@ -247,7 +247,7 @@ fn run_with_last_and_features(
     run_with_last_features_and_hosts(action, workspace, last_focused, features, &[])
 }
 
-/// phux-c2td.3: the same runner with a federation host inventory in the
+/// The same runner with a federation host inventory in the
 /// dispatch context, for `switch-session { name, host }`.
 fn run_with_hosts(
     action: &phux_config::keybind::ResolvedAction,
@@ -300,7 +300,7 @@ fn run_in(
 
 #[test]
 fn reload_config_action_raises_the_reload_effect() {
-    // phux-foz.5: the arm only raises the effect — the driver owns
+    // The arm only raises the effect — the driver owns
     // the actual re-read + swap (the ctx borrows the state to
     // replace). No layout mutation, no bell, no frames.
     let mut workspace = Workspace::single(tid(1));
@@ -359,14 +359,14 @@ fn kill_window_emits_one_soft_kill_sequence_per_leaf() {
             .collect::<Vec<_>>(),
         vec![tid(1), tid(2), tid(3)],
     );
-    // phux-i0e8.2.2: every targeted leaf is marked as an expected
+    // Every targeted leaf is marked as an expected
     // close so the resulting TERMINAL_CLOSEDs stay notice-silent.
     assert_eq!(effects.expected_closes, vec![tid(1), tid(2), tid(3)]);
     // No synchronous removal — ResourceClosed folds + prunes.
     assert_eq!(workspace.windows.len(), 1);
 }
 
-/// phux-i0e8.2.2: `kill-pane` marks its own target as an expected
+/// `kill-pane` marks its own target as an expected
 /// close alongside the kill frame, and correlates the request id so a
 /// refusal can be attributed back to the leaf.
 #[test]
@@ -437,7 +437,7 @@ fn last_pane_dispatch_jumps_across_windows_and_toggles() {
 }
 
 // ---------------------------------------------------------------------
-// phux-a5xj — the dispatcher stamps the tile onto the spawn
+// The dispatcher stamps the tile onto the spawn
 // ---------------------------------------------------------------------
 
 fn spawn_initial_size_of(frame: &FrameKind) -> Option<(u16, u16)> {
@@ -649,7 +649,7 @@ fn new_window_with_a_host_spawns_on_that_satellite() {
     assert!(asks_binding(&frame), "{frame:?}");
 }
 
-/// phux-c2td.25: whether a spawn asks for the instance binding (ADR-0109).
+/// Whether a spawn asks for the instance binding (ADR-0109).
 fn asks_binding(frame: &FrameKind) -> bool {
     matches!(
         frame,
@@ -683,7 +683,7 @@ fn split_action() -> phux_config::keybind::ResolvedAction {
     action
 }
 
-/// phux-c2td.18: splitting a satellite pane spawns the new pane on that
+/// Splitting a satellite pane spawns the new pane on that
 /// satellite through the hub, at the pane's directory there.
 #[test]
 fn split_pane_on_a_satellite_pane_spawns_on_that_satellite_at_its_cwd() {
@@ -742,7 +742,7 @@ fn split_pane_on_a_local_pane_is_unchanged() {
     assert!(!asks_binding(&frame), "{frame:?}");
 }
 
-/// phux-lxov.1: `split-pane { host }` from a local pane spawns on that
+/// `split-pane { host }` from a local pane spawns on that
 /// satellite with no owner, so the hub places the new pane itself and the
 /// reply's Satellite id is what the layout stores.
 #[test]
@@ -772,7 +772,7 @@ fn split_onto_host_spawns_with_satellite_and_no_owner() {
     assert!(asks_binding(&frame), "{frame:?}");
 }
 
-/// phux-lxov.1: `split-pane { resource = "host/@N" }` attaches that pane
+/// `split-pane { resource = "host/@N" }` attaches that pane
 /// into the current window. It does not spawn, and it does not open a
 /// new window.
 #[test]
@@ -999,7 +999,7 @@ fn move_window_without_a_destination_bells() {
     assert_eq!(window_names(&workspace), ["1", "2", "3"]);
 }
 
-/// phux-x2hm: a multi-pane window can zoom — `toggle-zoom` requests the
+/// A multi-pane window can zoom — `toggle-zoom` requests the
 /// driver-side flip (`toggle_zoom`) plus a repaint (`layout_mutated`),
 /// without mutating the real tree or bell-ing.
 #[test]
@@ -1029,7 +1029,7 @@ fn toggle_zoom_on_multi_pane_window_requests_toggle() {
     assert!(!effects.bell);
 }
 
-/// phux-x2hm: a single-pane window has nothing to zoom — `toggle-zoom`
+/// A single-pane window has nothing to zoom — `toggle-zoom`
 /// bells (tmux parity) and does NOT request a toggle or repaint.
 #[test]
 fn toggle_zoom_on_single_pane_window_bells() {
@@ -1075,10 +1075,10 @@ fn two_pane_workspace_with_ratio(ratio: f32) -> Workspace {
     }
 }
 
-/// phux-z6wt: a peer's layout broadcast can shrink the focused pane with
+/// A peer's layout broadcast can shrink the focused pane with
 /// no SIGWINCH involved — `server_frame`'s `is_layout_key` arm decodes
 /// the peer's `Workspace`, swaps it in wholesale, and returns
-/// `FrameOutcome { layout_replaced: true, .. }`. PR #331 (phux-d26y)
+/// `FrameOutcome { layout_replaced: true, .. }`. PR #331
 /// only fanned the focused pane's new size out to overlays on the
 /// SIGWINCH edge, so before this fix nothing on the `layout_replaced`
 /// path called it: copy-mode kept clamping the selection into the pane
@@ -1158,7 +1158,7 @@ fn layout_replace_reclaims_the_focused_pane_rect_for_overlays() {
     );
 }
 
-/// phux-foz.3: `resize-pane { direction, amount }` dispatches through
+/// `resize-pane { direction, amount }` dispatches through
 /// `run_action` — the ratio moves by amount/axis-cells, the layout
 /// repaints, and the mutation broadcasts via `SET_METADATA` (unlike
 /// per-client focus moves).
@@ -1188,7 +1188,7 @@ fn resize_pane_dispatch_moves_ratio_and_broadcasts() {
     );
 }
 
-/// phux-foz.3: a `resize-pane` missing its args bells and mutates
+/// A `resize-pane` missing its args bells and mutates
 /// nothing (ADR-0019 decision 5 bell-no-op contract).
 #[test]
 fn resize_pane_dispatch_missing_args_bells() {
@@ -1201,7 +1201,7 @@ fn resize_pane_dispatch_missing_args_bells() {
     assert!((root_ratio(&workspace) - before).abs() < f32::EPSILON);
 }
 
-/// phux-foz.3: a resize that would squeeze a pane below the 2-cell
+/// A resize that would squeeze a pane below the 2-cell
 /// floor (ADR-0019 decision 5) bells and leaves the ratio unchanged.
 #[test]
 fn resize_pane_dispatch_min_cell_floor_bells() {
@@ -1220,7 +1220,7 @@ fn resize_pane_dispatch_min_cell_floor_bells() {
     assert!((root_ratio(&workspace) - before).abs() < f32::EPSILON);
 }
 
-/// phux-4h5a: `toggle-sidebar` requests the driver-side flip
+/// `toggle-sidebar` requests the driver-side flip
 /// (`toggle_sidebar`) plus a repaint (`layout_mutated`), unconditionally —
 /// even single-pane, since the strip lists windows. It never bells and
 /// mutates no tree.
@@ -1237,7 +1237,7 @@ fn toggle_sidebar_requests_flip_and_repaint() {
     assert!(!effects.toggle_zoom);
 }
 
-/// phux-4h5a: `apply_action_effects` flips the driver-owned
+/// `apply_action_effects` flips the driver-owned
 /// `sidebar_enabled` when `toggle_sidebar` is set — off→on and back on a
 /// second toggle.
 #[tokio::test]
@@ -1319,7 +1319,7 @@ fn run_capturing(
 
 /// Like [`run_capturing`], but seeds the dispatcher's cached session
 /// graph so `session-picker` tests can drive the picker. The third element
-/// is the host-inventory refresh request the action raised (phux-c2td.3).
+/// is the host-inventory refresh request the action raised.
 fn run_capturing_with_sessions(
     action: &phux_config::keybind::ResolvedAction,
     workspace: &mut Workspace,
@@ -1384,7 +1384,7 @@ fn palette_committed_action_routes_through_run_action() {
 
 #[test]
 fn plugin_action_records_run_intent_for_the_async_caller() {
-    // phux-r82.5: the sync dispatcher never execs the plugin itself —
+    // The sync dispatcher never execs the plugin itself —
     // it records (plugin, action) and the async caller spawns the
     // child-process run so the input loop can't freeze on a plugin.
     let mut args = BTreeMap::new();
@@ -1684,7 +1684,7 @@ fn window_picker_groups_windows_under_their_session() {
     assert!(!items[scratch + 1].action.args.contains_key("window"));
 }
 
-/// phux-foz.8: with a peer session's persisted layout cached, the
+/// With a peer session's persisted layout cached, the
 /// picker lists that session's windows as one-step rows committing
 /// `switch-session { name, window }` — same `index:name` + pane-count
 /// shape as the current session's rows.
@@ -1737,7 +1737,7 @@ fn window_picker_lists_foreign_windows_one_step_when_layout_cached() {
     );
 }
 
-/// phux-foz.8: an empty cached workspace (decoded but windowless) is
+/// An empty cached workspace (decoded but windowless) is
 /// not useful — the picker falls back to the plain switch row.
 #[test]
 fn window_picker_empty_foreign_layout_falls_back_to_switch_row() {
@@ -1759,7 +1759,7 @@ fn window_picker_empty_foreign_layout_falls_back_to_switch_row() {
     assert!(!items[scratch + 1].action.args.contains_key("window"));
 }
 
-/// phux-foz.8: committing a one-step picker row through `run_action`
+/// Committing a one-step picker row through `run_action`
 /// yields the combined reattach target — session name AND window index
 /// — that the driver resolves after the re-attach.
 #[test]
@@ -1785,7 +1785,7 @@ fn one_step_picker_row_commits_switch_session_with_window() {
     assert_eq!(workspace.active, 0);
 }
 
-/// phux-foz.8: a `switch-session` with a bad `window` arg (negative /
+/// A `switch-session` with a bad `window` arg (negative /
 /// non-integer) degrades to a plain switch rather than belling — the
 /// `name` is still valid and honoring it is strictly more useful.
 #[test]
@@ -1812,7 +1812,7 @@ fn switch_session_bad_window_arg_degrades_to_plain_switch() {
     assert!(!effects.bell);
 }
 
-/// phux-jpqd: a `switch-session { name, window, pane }` — the commit the
+/// A `switch-session { name, window, pane }` — the commit the
 /// agent-fleet dashboard's foreign pane rows carry — parses into the
 /// combined one-step cross-session pane target.
 #[test]

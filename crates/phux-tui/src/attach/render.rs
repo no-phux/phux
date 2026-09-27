@@ -559,8 +559,8 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// cursor BEFORE the pane's outer-viewport origin is added. The
     /// predictive-echo layer re-anchors from this (predictions are
     /// pane-local); see [`Self::last_cursor_local`]'s field docs for why
-    /// feeding it [`Self::last_cursor`] strands the echo mid-screen
-    /// (phux-7ry0). `None` if the cursor was hidden or no render has occurred.
+    /// feeding it [`Self::last_cursor`] strands the echo mid-screen.
+    /// `None` if the cursor was hidden or no render has occurred.
     #[must_use]
     pub const fn last_cursor_local(&self) -> Option<(u16, u16)> {
         self.last_cursor_local
@@ -585,7 +585,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// This takes a fresh snapshot of `terminal` — it must not be called
     /// concurrently with [`Self::render_at`] (the `&mut self` receiver
     /// guarantees that statically). Used by the per-cell reconcile in
-    /// the predict layer (phux-9gw.1.1) to confirm or contradict
+    /// the predict layer to confirm or contradict
     /// predictions against the authoritative cell grid.
     pub fn read_grapheme_at(
         &mut self,
@@ -608,7 +608,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// (no grapheme, wide-tail placeholder, or out of range). Unlike
     /// [`Self::read_grapheme_at`], which truncates to the base scalar,
     /// this preserves the whole cluster so the predict-layer reconcile
-    /// (phux-9gw.1.6) can compare it against a predicted multi-codepoint
+    /// can compare it against a predicted multi-codepoint
     /// cluster.
     ///
     /// Same snapshot semantics as [`Self::read_grapheme_at`]: takes a
@@ -818,7 +818,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// When the mirror is >= the rect on an axis, this degrades to the
     /// existing [`Self::render_at`] clamp on that axis (no pad, clip to the
     /// rect) — a wider/taller mirror is confined to the rect exactly as
-    /// before (phux-wurs). The mirror-equals-rect case is byte-identical to
+    /// before. The mirror-equals-rect case is byte-identical to
     /// [`Self::render_at_full`]: zero pad ⇒ no margin bars ⇒ the same core
     /// paint at the same origin.
     ///
@@ -1984,7 +1984,7 @@ struct Letterbox {
     inner_origin: (u16, u16),
     /// Painted extent `min(mirror, rect)` on each axis — the clamp the
     /// existing `render_at` already applies, so a mirror >= the rect is
-    /// confined to the rect (phux-wurs) with no pad.
+    /// confined to the rect with no pad.
     inner_clip: (u16, u16),
     /// Left pad width in columns (`= inner_origin.0 - rect_origin.0`).
     margin_left: u16,
@@ -2449,7 +2449,7 @@ mod tests {
         );
     }
 
-    /// phux-994s: a walk-identity (generation) change rebuilds the pooled
+    /// A walk-identity (generation) change rebuilds the pooled
     /// render state even at identical geometry, so the first incremental
     /// paint of the new generation repaints every row instead of trusting
     /// the previous generation's already-painted cache.
@@ -3205,7 +3205,7 @@ mod tests {
         );
     }
 
-    /// phux-wurs: the render must clip to the pane's rect, not to the
+    /// The render must clip to the pane's rect, not to the
     /// (server-authoritative) mirror grid. When the mirror is WIDER than the
     /// rect — the resize-handshake window where the server's grid is still
     /// width N while the client layout reports width M < N — `render_at` must
@@ -3246,7 +3246,7 @@ mod tests {
         }
     }
 
-    /// phux-wurs: the row walk clips to the rect height too — a mirror taller
+    /// The row walk clips to the rect height too — a mirror taller
     /// than the rect must not paint rows below the rect.
     #[test]
     fn render_at_clips_rows_to_rect_not_mirror_height() {
@@ -3279,7 +3279,7 @@ mod tests {
         );
     }
 
-    /// phux-l5xa: `render_at_cells` projects graphemes + resolved style into
+    /// `render_at_cells` projects graphemes + resolved style into
     /// a dense frame, shifted by the origin, and returns the cursor in
     /// frame-absolute coordinates.
     #[test]
@@ -3356,7 +3356,7 @@ mod tests {
     }
 
     /// A mirror that fills or exceeds the rect produces no pad and clamps the
-    /// clip to the rect — the existing `render_at` behaviour (phux-wurs).
+    /// clip to the rect — the existing `render_at` behaviour.
     #[test]
     fn letterbox_rect_clamps_when_mirror_ge_rect() {
         // Equal: no pad, clip == rect.
@@ -3584,7 +3584,7 @@ mod tests {
         assert_eq!(renderer.last_origin(), (2, 1));
     }
 
-    /// phux-l5xa: a double-width glyph occupies its base cell; the
+    /// A double-width glyph occupies its base cell; the
     /// `SpacerTail` column is the empty grapheme so widths stay exact.
     #[test]
     fn render_at_cells_marks_wide_glyph_tail_empty() {
@@ -4120,7 +4120,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // phux-esge: the cell-diff paint and its front buffer
+    // The cell-diff paint and its front buffer
     // ---------------------------------------------------------------
 
     /// One screen cell as a viewer sees it: the whole cluster, the wide-glyph
@@ -4823,7 +4823,7 @@ mod tests {
         }
     }
 
-    /// phux-5js7: ECH of a wrapped wide glyph's continuation rewrites the
+    /// ECH of a wrapped wide glyph's continuation rewrites the
     /// spacer head on the previous row. A pooled `RenderState` (and a full paint)
     /// that trusts dirty bits) must copy that rewrite, matching a fresh
     /// snapshot. This is seed 11 of the property test below, locked so it

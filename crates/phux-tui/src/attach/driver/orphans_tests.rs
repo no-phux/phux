@@ -158,7 +158,7 @@ fn other_frames_pass_through() {
     assert_eq!(kills.observe(uncorrelated.clone()), Some(uncorrelated));
 }
 
-/// phux-c2td.23: a stray is handed back once its satellite answers, and
+/// A stray is handed back once its satellite answers, and
 /// only its satellite: another one answering says nothing about it.
 #[test]
 fn a_stray_is_due_once_its_host_answers() {
@@ -251,7 +251,7 @@ fn a_stray_is_due_within_its_ttl_and_forgotten_after() {
     );
 }
 
-/// phux-c2td.25: a conditional stray outlives [`STRAY_TTL`] and is
+/// A conditional stray outlives [`STRAY_TTL`] and is
 /// forgotten only past [`BOUND_STRAY_TTL`].
 #[test]
 fn a_conditional_stray_waits_for_the_longer_ttl() {
@@ -353,7 +353,7 @@ fn unreachable_hosts_forget_their_strays() {
     assert_eq!(waiting(&mut kills, now), vec![other(4)]);
 }
 
-/// phux-c2td.25: a conditional stray outlives every unreachable signal,
+/// A conditional stray outlives every unreachable signal,
 /// since the satellite judges its kill; an unconditional one beside it on
 /// the same host is forgotten.
 #[test]
@@ -429,7 +429,7 @@ fn a_switch_remembers_parked_and_drained_spawns() {
     assert_eq!(waiting(&mut kills, now), vec![edge(9), edge(10)]);
 }
 
-/// phux-c2td.25: a bound switch stray is retried with `KILL_RESOURCE_IF`
+/// A bound switch stray is retried with `KILL_RESOURCE_IF`
 /// carrying its instance token and the attachment condition when the hub
 /// advertises `CONDITIONAL_KILL`, and with today's `KILL_RESOURCE` when it
 /// does not. An unbound one keeps `KILL_RESOURCE` either way.
@@ -488,7 +488,7 @@ fn a_drained_bound_spawn_is_retried_conditionally() {
     assert_eq!(command, bound(edge(9)).bound().unwrap().kill_command());
 }
 
-/// phux-c2td.25: a pane an unreachable satellite stranded is recorded for
+/// A pane an unreachable satellite stranded is recorded for
 /// a conditional retry only when the hub advertises `CONDITIONAL_KILL`;
 /// without it nothing is recorded, so neither kill is ever sent.
 #[test]

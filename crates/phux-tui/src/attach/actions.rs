@@ -1,4 +1,4 @@
-//! Pure layout-action helpers for the multi-pane TUI dispatcher (phux-4li.5).
+//! Pure layout-action helpers for the multi-pane TUI dispatcher.
 //!
 //! Per ADR-0019 decisions 1, 2, and 6 the client interprets keybind
 //! `ResolvedAction`s (resolved by [`phux_config::keybind::Resolver`]) into
@@ -358,14 +358,14 @@ fn clamp_ratio(r: f32) -> f32 {
 /// in either axis under `viewport`. Used by [`apply_resize`] to gate
 /// the bell-no-op per ADR-0019 decision 5.
 ///
-/// phux-4h5a: tiles into the inset content rect so the underflow check sees
+/// Tiles into the inset content rect so the underflow check sees
 /// the same width panes paint into when a `sidebar` is docked. The status-bar
 /// row is intentionally NOT reserved here (`bar = None`): this gate has
 /// always measured against the full pane-row budget, and the
 /// `content_rect(.., None, None)` form reproduces the prior
 /// `pane_rects(tree, viewport)` byte-for-byte on the disabled path.
 ///
-/// phux-foz.3: measures the *proportional* tiling
+/// Measures the *proportional* tiling
 /// ([`pane_rects_proportional_in`]), not the frozen tiling paint uses.
 /// The §6.2 viewport-reflow floor would otherwise pin every rect at
 /// minimum and this gate would never trip, letting `resize-pane` bank
@@ -506,10 +506,10 @@ pub fn write_bell<W: Write>(out: &mut W) -> io::Result<()> {
 }
 
 // -----------------------------------------------------------------------------
-// Pending-split bookkeeping + spawned/closed seams (phux-4li.12)
+// Pending-split bookkeeping + spawned/closed seams
 // -----------------------------------------------------------------------------
 
-/// Parked state for an in-flight `split-pane` action (phux-4li.12).
+/// Parked state for an in-flight `split-pane` action.
 ///
 /// `run_action` emits a `SPAWN_RESOURCE` request and parks one of these
 /// keyed by the request id. When the matching `RESOURCE_SPAWNED { Ok }`
@@ -527,20 +527,20 @@ pub(super) struct PendingSplit {
     pub focused_at_request: ResourceId,
     /// Axis along which to split.
     pub dir: SplitDir,
-    /// phux-r82.7: `true` ⇒ after the split applies, zoom the freshly
+    /// `true` ⇒ after the split applies, zoom the freshly
     /// spawned pane to fill the window instead of the default un-zoom
     /// (`placement = "zoomed"` plugin panes). Built-in `split-pane`
     /// always parks `false` (a split un-zooms, tmux parity).
     pub zoom_on_spawn: bool,
-    /// phux-c2td.18: the host the new pane was asked of. A split on a
+    /// The host the new pane was asked of. A split on a
     /// satellite pane spawns on that satellite; against a hub that cannot,
     /// it spawns here and the reply says so.
     pub host: SplitHost,
-    /// phux-c2td.18: `Some(pane)` once a satellite spawn has answered and the
+    /// `Some(pane)` once a satellite spawn has answered and the
     /// split waits on that pane's `ATTACH_RESOURCE` reply; the split applies
     /// only when the attach succeeds. `None` while the spawn is in flight.
     pub adopt: Option<SpawnedPane>,
-    /// phux-lxov.1: an existing pane (`host/@N` or `@N`) to attach and place
+    /// An existing pane (`host/@N` or `@N`) to attach and place
     /// in this window. Unlike [`Self::adopt`], a refusal leaves that pane
     /// alone — this client did not spawn it.
     pub open_existing: Option<ResourceId>,
@@ -575,7 +575,7 @@ impl SpawnedPane {
     }
 }
 
-/// Which host a parked split's pane is spawned on (phux-c2td.18).
+/// Which host a parked split's pane is spawned on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) enum SplitHost {
     /// The attached server's own host: a split of a local pane.
@@ -614,7 +614,7 @@ impl ParkedAdopt {
 
     /// The pane this client spawned for this window or split, if it did: a
     /// split always spawns its pane, a window only when it did not adopt an
-    /// existing satellite session's (phux-c2td.20).
+    /// existing satellite session's.
     pub(super) const fn spawned_pane(&self) -> Option<&SpawnedPane> {
         match self {
             Self::Window(window) => window.spawned_pane(),
@@ -636,7 +636,7 @@ impl PendingWindow {
 }
 
 /// A `new-window` action that emitted a `SPAWN_RESOURCE` and is awaiting
-/// its `RESOURCE_SPAWNED` reply (phux-4li.15). The reply handler adds a
+/// its `RESOURCE_SPAWNED` reply. The reply handler adds a
 /// new window named `name` holding the spawned pane as its sole leaf.
 /// Parked separately from [`PendingSplit`] (keyed by the same
 /// `request_id` space) so the reply knows whether it's growing the
@@ -645,7 +645,7 @@ impl PendingWindow {
 pub(super) struct PendingWindow {
     /// Name for the window the spawned pane will seed.
     pub name: String,
-    /// phux-c2td.3: `Some` when the window waits on a satellite pane's
+    /// `Some` when the window waits on a satellite pane's
     /// attach instead of a spawn: a satellite session's active pane, or a
     /// pane this client just spawned on a satellite. Its reply is the
     /// `ATTACH_RESOURCE` `COMMAND_RESULT` (or a correlated `ERROR`), not a
@@ -658,12 +658,11 @@ pub(super) struct PendingWindow {
 /// it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Adopt {
-    /// A pane that already existed: a satellite session's active pane
-    /// (phux-c2td.3). A refused attach leaves it alone.
+    /// A pane that already existed: a satellite session's active pane.
+    /// A refused attach leaves it alone.
     Existing(ResourceId),
     /// A pane this client just spawned on a satellite for this window.
-    /// Nothing else references it, so a refused attach kills it
-    /// (phux-c2td.20).
+    /// Nothing else references it, so a refused attach kills it.
     Spawned(SpawnedPane),
 }
 
@@ -676,7 +675,7 @@ impl Adopt {
     }
 }
 
-/// Pure seam for the `ResourceSpawned { Ok }` handler (phux-4li.12).
+/// Pure seam for the `ResourceSpawned { Ok }` handler.
 ///
 /// Applies a parked [`PendingSplit`] against `state`. The driver side
 /// then takes the returned new state, replaces its `layout_state`, and
@@ -744,7 +743,7 @@ fn unused_leaf_id(state: &LayoutState) -> ResourceId {
 }
 
 /// The `(cols, rows)` the pane a parked [`PendingSplit`] is waiting on will
-/// occupy once its reply lands (phux-a5xj).
+/// occupy once its reply lands.
 ///
 /// This is the same computation the post-reply reflow performs — the split
 /// applied by [`apply_spawned_ok`], tiled by
@@ -763,7 +762,7 @@ pub(super) fn predicted_spawn_dims(
     pending: &PendingSplit,
     content: Rect,
 ) -> Option<(u16, u16)> {
-    // phux-r82.7: a `zoom_on_spawn` split zooms the new pane the instant it
+    // A `zoom_on_spawn` split zooms the new pane the instant it
     // lands, and `Workspace::render_window` tiles a zoomed pane as a lone
     // full-content leaf — so the split's own geometry never reaches the PTY.
     if pending.zoom_on_spawn {
@@ -775,7 +774,7 @@ pub(super) fn predicted_spawn_dims(
     rects.get(&placeholder).map(|rect| (rect.w, rect.h))
 }
 
-/// Pure seam for the `ResourceClosed` handler (phux-4li.12).
+/// Pure seam for the `ResourceClosed` handler.
 ///
 /// Folds `dying` out of `state`, using [`apply_kill`] under
 /// the hood. Because `apply_kill` operates on `state.focus`, this
@@ -1207,7 +1206,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // phux-4li.12: pure-seam tests for split-pane / kill-pane wiring.
+    // Pure-seam tests for split-pane / kill-pane wiring.
     //
     // The driver's async main_loop is hard to test in isolation because
     // it wires together a tokio select! across signals, sockets, and
@@ -1219,7 +1218,7 @@ mod tests {
     // ---------------------------------------------------------------------
 
     // ---------------------------------------------------------------------
-    // phux-a5xj — spawn-time geometry prediction
+    // Spawn-time geometry prediction
     // ---------------------------------------------------------------------
 
     /// The property the whole fix rests on: what the client predicts at

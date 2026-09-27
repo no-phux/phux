@@ -106,7 +106,7 @@ pub(super) fn session_id_arg(resolved: &phux_config::keybind::ResolvedAction) ->
 /// Pull a `resource = "@N"` / `"host/@N"` arg out of a `switch-session`.
 ///
 /// Graph-discovered agent rows navigate by this identity instead of a
-/// fabricated TUI window/pane index (phux-ah84). `None` for a typed name,
+/// fabricated TUI window/pane index. `None` for a typed name,
 /// a window-only pick, or a malformed selector.
 pub(super) fn resource_id_arg(
     resolved: &phux_config::keybind::ResolvedAction,
@@ -145,7 +145,7 @@ pub(super) fn str_arg(
     resolved.args.get(key)?.as_str().map(ToOwned::to_owned)
 }
 
-/// The `mouse` argument of `set-pane` (phux-npb3).
+/// The `mouse` argument of `set-pane`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PaneMouseArg {
     /// Opt the pane back in to client mouse handling.
@@ -217,7 +217,7 @@ pub(super) fn signal_arg(
 /// Build the `KILL_RESOURCE` command that closes `target`.
 ///
 /// This used to type `exit\n` into the pane as `INPUT_KEY` events and wait
-/// for the shell to notice (phux-4li.12). That only worked when the pane's
+/// for the shell to notice. That only worked when the pane's
 /// foreground process was a shell sitting at a prompt: with an editor, a
 /// pager, an agent CLI, or a wedged process in the foreground the keystrokes
 /// were swallowed and the pane simply never closed. It also could not remove

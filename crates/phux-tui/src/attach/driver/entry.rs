@@ -32,7 +32,7 @@ enum AttachStart<'a> {
 }
 
 /// Production attach: wrap stdout in the off-loop [`StdoutSink`](crate::attach::stdout_writer)
-/// so a slow terminal never blocks the select loop (phux-fysb), then run the
+/// so a slow terminal never blocks the select loop, then run the
 /// session. Tests use the synchronous [`run_with_stdout`] seam directly.
 ///
 /// `rec` is the `phux --rec` session recorder (ADR-0060). When present the
@@ -51,7 +51,7 @@ async fn run_from_start(
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    // phux-8n4w: kick the best-effort release check before the loop. It runs
+    // Kick the best-effort release check before the loop. It runs
     // off-thread and leaves an answer in the state cache that the driver's
     // bar tick reads; nothing here blocks on the network.
     crate::attach::update_notice::spawn_background_refresh();
@@ -152,7 +152,7 @@ pub(super) async fn run_buffered(
 /// exits cleanly. Only after the server's `ATTACHED` frame arrives do
 /// we flip the terminal into raw + alt screen via `RawModeGuard`.
 ///
-/// `initial_notice` (phux-i0e8.2.3) is a transient status-bar message shown
+/// `initial_notice` is a transient status-bar message shown
 /// once the session is attached and painting — the CLI's reconnect loop
 /// passes `re-attached after server restart` so the recovery is visible
 /// *inside* the TUI (a cooked-terminal eprintln is alt-screened over within
@@ -491,7 +491,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
     resync: Option<&AtomicBool>,
     mut writer: Option<crate::attach::stdout_writer::WriterHandle>,
     probe_default_colors: bool,
-    // phux-i0e8.2.3: transient status-bar notice for the FIRST `main_loop`
+    // Transient status-bar notice for the FIRST `main_loop`
     // entry only (an in-invocation session switch must not re-show it) —
     // the reconnect loop's "re-attached after server restart".
     initial_notice: Option<Notice>,
@@ -552,7 +552,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // this comment already anticipated, in the one form the hook can't see.
     install_panic_hook_once();
 
-    // phux-eb0: outer re-attach loop. `main_loop` is single-session by
+    // Outer re-attach loop. `main_loop` is single-session by
     // construction (it builds ~15 session-scoped locals and replays the
     // ATTACHED frame once on entry). When the user picks another session
     // via `<leader> a` the loop returns `LoopExit::SwitchTo(name)`; here
@@ -571,13 +571,13 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // entry, so in-process session switches never repeat it.
     let onboarding_path = crate::attach::onboarding::state_path();
     let mut onboarding_claim = crate::attach::onboarding::begin_attach(&onboarding_path);
-    // phux-foz.8: window index to select after a one-step cross-session
+    // Window index to select after a one-step cross-session
     // window pick (`switch-session { name, window }`) re-attaches. `None`
     // on the first attach and after plain switches; set per-iteration by
     // the SwitchTo arm below, consumed by `main_loop` once the target's
     // persisted layout loads. phux-jpqd: `pending_pane` is the pane half
     // of a one-step cross-session pane pick (`switch-session { .., pane }`).
-    // phux-ah84: `pending_resource` is the authoritative graph identity
+    // `pending_resource` is the authoritative graph identity
     // (`switch-session { .., resource }`) used when no TUI layout exists yet.
     let mut pending_window: Option<usize> = None;
     let mut pending_pane: Option<usize> = None;
@@ -588,11 +588,11 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // `pending_window` / `pending_pane` this is deliberately NOT `take`n — it
     // persists for the life of the attach, across any number of switches.
     let mut carried_sidebar: Option<CarriedSidebar> = None;
-    // phux-i0e8.2.3: hand the reconnect notice to the first `main_loop`
+    // Hand the reconnect notice to the first `main_loop`
     // entry only (same `take` pattern as the onboarding hint above): a
     // session switch re-enters `main_loop` but is not a reconnect.
     let mut initial_notice = initial_notice;
-    // phux-c2td.23: the stray satellite panes this client still owes a kill,
+    // The stray satellite panes this client still owes a kill,
     // handed out by each `LoopExit::SwitchTo` and into the next entry, so the
     // record lives as long as this connection, not one session's loop.
     let mut orphan_kills = super::orphans::OrphanKills::default();
@@ -694,7 +694,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
 ///
 /// An existing session re-attaches by name; a new-session request creates it
 /// (or attaches, if the name is already taken) via `CreateIfMissing`.
-/// phux-foz.8: a one-step window pick carries a target window, stashed in
+/// A one-step window pick carries a target window, stashed in
 /// `pending_window` for the next `main_loop` entry, which resolves it once the
 /// new session's layout loads. phux-jpqd: a foreign fleet row also carries a
 /// target pane, resolved after the window select. phux-ah84: a graph-discovered
@@ -751,7 +751,7 @@ pub(super) fn create_session_target(name: String) -> AttachTarget {
     }
 }
 
-/// phux-eb0: send `DETACH` and drain frames until `DETACHED` arrives, so
+/// Send `DETACH` and drain frames until `DETACHED` arrives, so
 /// the server-side per-consumer state (reference grid, subscriber lists)
 /// is released before the next `ATTACH` on the same connection.
 ///
@@ -763,12 +763,12 @@ pub(super) fn create_session_target(name: String) -> AttachTarget {
 /// genuine error (the switch can't complete), surfaced as
 /// `AttachError::Disconnected`.
 ///
-/// phux-c2td.23: the one exception is `orphan_kills`, which outlives the
+/// The one exception is `orphan_kills`, which outlives the
 /// session. It sees each drained frame, so the reply to an orphan kill still
 /// settles and a satellite pane answering a spawn the old loop parked is
 /// remembered as a stray to kill later.
 ///
-/// phux-deya: the review index is the other exception. Agent metadata (and
+/// The review index is the other exception. Agent metadata (and
 /// unparsed `AgentSession` output) that lands in this window must still
 /// fold, or an identical GET after re-attach cannot recover a missed
 /// done-working-done cycle.
@@ -797,7 +797,7 @@ async fn detach_and_drain(
     }
 }
 
-/// phux-eb0: clear the alt screen between sessions so the previous
+/// Clear the alt screen between sessions so the previous
 /// session's grid doesn't briefly show under the new session's first
 /// paint. The new bootstrap repaint lands immediately after, so this is a
 /// one-frame clear, not a flicker.
@@ -806,7 +806,7 @@ fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
     out.flush()
 }
 
-/// phux-eb0: how the `main_loop` `select!` loop terminated.
+/// How the `main_loop` `select!` loop terminated.
 ///
 /// `main_loop` is single-session by construction — it builds all the
 /// session-scoped locals up front and replays one ATTACHED frame. Rather
@@ -831,7 +831,7 @@ fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
 )]
 pub(super) enum LoopExit {
     /// The session ended (detach / server DETACHED / last pane closed).
-    /// Carries WHY (phux-i0e8.2.2) so the teardown path can explain a
+    /// Carries WHY so the teardown path can explain a
     /// last-pane death on the cooked terminal. The process exits.
     Detached {
         end: AttachEnd,
@@ -853,11 +853,11 @@ pub(super) enum LoopExit {
         /// silently reverts a `toggle-sidebar` the user made. The width rides
         /// along for the same reason: a dragged edge must not snap back.
         sidebar: CarriedSidebar,
-        /// phux-c2td.23: the stray satellite panes this client still owes a
+        /// The stray satellite panes this client still owes a
         /// kill, including the ones the switch itself strands. Connection
         /// state, not session state, so it rides into the next entry.
         orphan_kills: super::orphans::OrphanKills,
-        /// phux-deya: per-identity review status for this connection. Session
+        /// Per-identity review status for this connection. Session
         /// loops rebuild pane slots; this does not.
         review: crate::attach::review::ReviewIndex,
     },

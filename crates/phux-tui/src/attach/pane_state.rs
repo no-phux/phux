@@ -71,7 +71,7 @@ pub(super) fn published_replica<'a>(
     })
 }
 
-/// Driver-owned state for client-local attention navigation (phux-oih5.16).
+/// Driver-owned state for client-local attention navigation.
 ///
 /// The first jump saves the pane the user came from. Further cycling leaves
 /// that origin untouched; return consumes it even when the pane has gone
@@ -127,7 +127,7 @@ pub(super) struct PaneSlot {
     /// "the wheel"), or `None` when the pane is `Open`. Compared against the
     /// driver's own `ClientId` to render "you" vs another client.
     pub input_holder: Option<ClientId>,
-    /// phux-i0e8.2.1: `true` once this slot has folded at least one
+    /// `true` once this slot has folded at least one
     /// `TerminalControl` event. The first one a slot sees is the
     /// attach-time initial state (the server re-states the lease on
     /// subscribe) and must NOT raise the input-authority status-bar
@@ -141,7 +141,7 @@ pub(super) struct PaneSlot {
     /// scrollback forever and the pane looks frozen: new output (e.g. the
     /// shell prompt after a TUI app exits) lands below the visible rows.
     pub viewport_scrolled: bool,
-    /// phux-foz.1: `true` when an agent in this pane is waiting on a human
+    /// `true` when an agent in this pane is waiting on a human
     /// answer. Set by an inbound ADR-0035 `AgentEvent::Asked`; cleared when
     /// the user sends key/paste input to the pane (see
     /// [`clear_attention_on_input`]). Read at chrome-paint time for the
@@ -151,18 +151,18 @@ pub(super) struct PaneSlot {
     pub sync_output_since: Option<tokio::time::Instant>,
     /// Whether mirror state changed during the transaction.
     pub sync_output_dirty: bool,
-    /// phux-foz.4: the pane's working directory as the server last
+    /// The pane's working directory as the server last
     /// announced it — seeded from the `ATTACHED` snapshot's
     /// `ResourceInfo.cwd` (the spawn cwd) and refined by `cwd_changed`
     /// events. `None` until either lands. Projected into the status-bar
     /// `cwd` widget when this pane is focused.
     pub cwd: Option<String>,
-    /// phux-foz.4: exit code of the last command that finished in this
+    /// Exit code of the last command that finished in this
     /// pane (`command_finished.exit_code`, OSC-133 `D` mark). `None`
     /// before the first command finishes or when the shell reported no
     /// code. Projected into the status-bar `exit` widget when focused.
     pub last_exit: Option<i32>,
-    /// phux-foz.9: the OSC 0/2 title as of the last chrome-relevant engine
+    /// The OSC 0/2 title as of the last chrome-relevant engine
     /// apply, cached from the published replica so title transitions are cheap.
     /// is the ONLY identity signal a plain `claude`/`codex` pane emits
     /// (no `phux.agent/v1` record, no ADR-0035 events), and it arrives
@@ -180,7 +180,7 @@ pub(super) struct PaneSlot {
     /// unseen and climbs the strip until the user actually visits it. Starts
     /// `false` — a pane you have never focused has never been reviewed.
     pub seen: bool,
-    /// phux-lxov.1: the pane's satellite link is down. The layout leaf stays;
+    /// The pane's satellite link is down. The layout leaf stays;
     /// chrome draws grey and input is dropped until a later inventory says
     /// the host answers again, which replays the pane's snapshot.
     pub satellite_down: bool,
@@ -422,7 +422,7 @@ pub(super) fn published_test_state(
     (kernel, KernelEffectBuffer::new(), panes)
 }
 
-/// phux-p4vp: the driver's per-pane workspace metadata — each pane's
+/// The driver's per-pane workspace metadata — each pane's
 /// working directory (from the `ATTACHED` snapshot's `ResourceInfo::cwd`)
 /// plus the memoizing branch cache that turns a cwd into a VCS branch
 /// label by reading `.git/HEAD` (see [`phux_client::vcs`]). Entirely
@@ -457,7 +457,7 @@ impl VcsIndex {
         self.cache.branch_for(&cwd)
     }
 
-    /// phux-foz.7: the VCS branch label for an explicit `cwd` (the fleet
+    /// The VCS branch label for an explicit `cwd` (the fleet
     /// dashboard resolves against the pane's *live* cwd — snapshot-seeded
     /// and refined by `cwd_changed` events — rather than this index's
     /// snapshot-only map). Same memoized `.git/HEAD` read, never a
@@ -489,7 +489,7 @@ pub(super) fn reanchor_predict_to_pane(
     }
 }
 
-/// phux-foz.1: clear a pane's asked-attention flag because the user sent it
+/// Clear a pane's asked-attention flag because the user sent it
 /// input (the clearing rule documented in `docs/consumers/tui.md`). Returns
 /// `true` when the flag actually flipped, so the caller can schedule a
 /// chrome repaint only on a real transition.
@@ -549,7 +549,7 @@ pub(super) fn pane_exited(panes: &HashMap<ResourceId, PaneSlot>, pane: &Resource
     panes.get(pane).is_some_and(|slot| slot.exited.is_some())
 }
 
-/// phux-lxov.1: keys and mouse reports to a satellite pane whose link is
+/// Keys and mouse reports to a satellite pane whose link is
 /// down are dropped. Scrolling and copy-mode still read the last snapshot.
 pub(super) fn pane_satellite_down(
     panes: &HashMap<ResourceId, PaneSlot>,
@@ -611,7 +611,7 @@ mod tests {
     use super::*;
     use crate::attach::render::ReplicaWalk;
 
-    /// phux-lxov.1: the hub's unreachable wording names a host, and only
+    /// The hub's unreachable wording names a host, and only
     /// that host's panes go grey. A later return clears them for replay.
     #[test]
     fn satellite_unreachable_marks_one_host_and_a_return_clears_it() {
@@ -663,7 +663,7 @@ mod tests {
         );
     }
 
-    /// phux-994s: a republished replica generation at UNCHANGED geometry must
+    /// A republished replica generation at UNCHANGED geometry must
     /// serve fresh rows through an incremental paint — no `force_full`.
     ///
     /// Before the generation token, this was true only because every
@@ -769,7 +769,7 @@ mod tests {
         );
     }
 
-    /// phux-oih5.16: the driver holds exactly one client-local origin. A
+    /// The driver holds exactly one client-local origin. A
     /// second attention jump cannot overwrite it, and return consumes it.
     #[test]
     fn attention_navigation_saves_once_and_consumes() {
@@ -780,7 +780,7 @@ mod tests {
         assert_eq!(navigation.take_origin(), None);
     }
 
-    /// phux-foz.1: key/paste input forwarded to a pane clears its asked
+    /// Key/paste input forwarded to a pane clears its asked
     /// flag exactly once — the transition reports `true`, repeats and
     /// unknown panes report `false` (no spurious chrome repaints).
     #[test]

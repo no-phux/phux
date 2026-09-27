@@ -15,7 +15,7 @@ use phux_client::agent_meta::{
 };
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
-/// phux-foz.8: fetch each peer session's persisted layout — one
+/// Fetch each peer session's persisted layout — one
 /// `GET_METADATA` on the per-session layout key per session other than
 /// `focused` — so the window picker can render one-step cross-session
 /// window rows. Correlation is via `pending` (request id -> session id);
@@ -42,7 +42,7 @@ pub(super) async fn sync_foreign_layout_subscriptions(
             key: key.clone(),
         })
         .await?;
-        // phux-k0cw: the GET is the level; this is the edge. Sent even when
+        // The GET is the level; this is the edge. Sent even when
         // the GET will answer `None` — a peer that has not persisted a layout
         // yet is precisely the one whose FIRST write matters, and without the
         // subscription that write is invisible until the next attach.
@@ -61,7 +61,7 @@ pub(super) async fn sync_foreign_layout_subscriptions(
     Ok(())
 }
 
-/// phux-foz.8: fold one foreign-session layout GET reply into the picker's
+/// Fold one foreign-session layout GET reply into the picker's
 /// cache. `value: None` (nothing persisted) or an undecodable envelope
 /// clears the entry, so the picker falls back to the plain
 /// "switch to this session" row rather than showing stale windows.
@@ -93,7 +93,7 @@ pub(super) fn apply_foreign_layout_reply(
 /// GET/SUBSCRIBE `phux.agent/v1` for each terminal in `targets`.
 ///
 /// Used both after a peer layout lands and from the server graph when no
-/// TUI layout has been persisted yet (phux-ah84). A satellite terminal also
+/// TUI layout has been persisted yet. A satellite terminal also
 /// gets the asked-flag key (ADR-0136); that GET is correlated through
 /// `asked_pending`, not `pending`, because its value is not an agent record.
 pub(super) async fn sync_foreign_agent_ids(
@@ -149,12 +149,12 @@ pub(super) async fn sync_foreign_agent_ids(
     Ok(())
 }
 
-/// phux-jpqd: fold one foreign-pane agent-record GET reply into the fleet's
+/// Fold one foreign-pane agent-record GET reply into the fleet's
 /// cache. `value: None` (no record) or an unparseable record clears the
 /// entry, so the fleet row falls back to `?` / "no agent" rather than
 /// showing stale identity — the same clear-on-empty policy as
 /// [`apply_foreign_layout_reply`]. Returns whether the cache actually moved,
-/// so an identical GET does not dirty chrome (phux-deya).
+/// so an identical GET does not dirty chrome.
 pub(super) fn apply_foreign_agent_reply(
     cache: &mut HashMap<ResourceId, AgentRecord>,
     id: ResourceId,
@@ -171,7 +171,7 @@ pub(super) fn apply_foreign_agent_reply(
 /// graph-only inventory no longer names them). Called before re-requesting
 /// the surviving panes.
 ///
-/// phux-k0cw: the send-once subscription bookkeeping is pruned with it. A
+/// The send-once subscription bookkeeping is pruned with it. A
 /// pane that leaves and later returns under the same id must be re-subscribed
 /// — leaving it in the `subscribed` set would suppress the re-subscribe and
 /// the row would go permanently silent.
@@ -184,7 +184,7 @@ pub(super) fn prune_foreign_agents(
     subscribed.retain(|id| live.contains(id));
 }
 
-/// ADR-0040 (phux-3ert): reconcile the agent-metadata index with the live
+/// ADR-0040: reconcile the agent-metadata index with the live
 /// pane set.
 ///
 /// For every pane that has no live `phux.agent/v1` watch yet, send a

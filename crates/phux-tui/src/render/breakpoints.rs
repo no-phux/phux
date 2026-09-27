@@ -4,7 +4,7 @@
 //! (`docs/consumers/tui.md` §4.5). They used to be `const`s read at the use
 //! sites, which made them correct-by-default and untunable: a user on an
 //! unusual geometry — a 100-column terminal who wants full-bleed pickers, a
-//! 55-column one who wants to keep the sidebar — had no knob (phux-huhi).
+//! 55-column one who wants to keep the sidebar — had no knob.
 //!
 //! They are now a plain `Copy` value built once per attach from `[chrome]`
 //! and threaded to every layout site, exactly like the sidebar reservation

@@ -135,10 +135,10 @@ struct HeadlessChrome {
 /// Fold `[sidebar]`, `[chrome]`, `[theme]`, and `[status]` in exactly as a
 /// live attach does: the same tolerant [`TuiSettings`] load.
 ///
-/// phux-4h5a: read `[sidebar]` so `phux snapshot --rendered` shows the
+/// Read `[sidebar]` so `phux snapshot --rendered` shows the
 /// strip exactly as a live attach would. Disabled (the default) folds to
 /// `None`, keeping the rendered frame byte-identical to the pre-sidebar one.
-/// phux-huhi: the same `[chrome]` thresholds a live attach folds in, so a
+/// The same `[chrome]` thresholds a live attach folds in, so a
 /// rendered snapshot yields the sidebar at the width the user configured.
 fn headless_chrome(viewport_dims: (u16, u16)) -> HeadlessChrome {
     let settings = TuiSettings::load_tolerant();
@@ -198,7 +198,7 @@ struct HeadlessSession {
     pending_splits: HashMap<u32, PendingSplit>,
     /// Windows this client asked for, keyed by request id.
     pending_windows: HashMap<u32, PendingWindow>,
-    /// phux-i0e8.2.2: headless composite dispatches no kill actions, so the
+    /// Headless composite dispatches no kill actions, so the
     /// expected-close set stays empty; threaded for the shared signature.
     expected_closes: HashSet<ResourceId>,
     /// `request_id` -> the Terminal a command this client sent named, for the
@@ -212,7 +212,7 @@ struct HeadlessSession {
     /// ADR-0040: one-shot `phux.agent/v1` reads so the composited window
     /// labels prefer structured agent records, matching a live attach.
     agent_meta: AgentMetaIndex,
-    /// phux-p4vp: pane cwd + branch memo so the composited sidebar carries
+    /// Pane cwd + branch memo so the composited sidebar carries
     /// the same branch lines a live attach would.
     vcs: VcsIndex,
 }
@@ -343,7 +343,7 @@ impl HeadlessSession {
         if let Some(sb) = self.status_bar.as_mut() {
             sb.set_windows(windows.clone());
         }
-        // phux-4h5a: feed the same window list into the strip painter so the
+        // Feed the same window list into the strip painter so the
         // composited frame shows the sidebar tabs when `[sidebar]` is enabled.
         let mut sidebar_painter = SidebarPainter::new(self.sidebar_theme);
         sidebar_painter.set_windows(windows);
@@ -356,7 +356,7 @@ impl HeadlessSession {
         };
         crate::attach::sidebar_zones::summarize_local_agents(&mut session, &local);
         sidebar_painter.set_roster(vec![session]);
-        // phux-foz.9: and the attention queue, from the same record index +
+        // And the attention queue, from the same record index +
         // title fallback a live attach renders.
         //
         // LOCAL rows and the current session only. A capture must be
@@ -551,7 +551,7 @@ pub async fn run_headless_rendered(
         HeadlessSession::new(engine_kernel, headless_chrome(viewport_dims), viewport_dims);
 
     // Replay ATTACHED so the focused-pane + workspace bootstrap runs once.
-    // phux-k0cw: no session is known yet (ATTACHED is what reports it), and
+    // No session is known yet (ATTACHED is what reports it), and
     // the headless composite never subscribes, so it never receives a layout
     // BROADCAST to adopt or reject — only the GET answer it asked for, which
     // takes the `MetadataValue` path.

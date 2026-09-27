@@ -147,7 +147,7 @@ pub(super) fn window_picker_items(
             .get(&session.id)
             .filter(|ws| !ws.windows.is_empty())
         {
-            // phux-foz.8: the one-step rows. Same `index:name` + pane-count
+            // The one-step rows. Same `index:name` + pane-count
             // shape as the current session's rows, but committing
             // `switch-session { name, window }` so a single Enter lands in
             // that window of that session.
@@ -220,7 +220,7 @@ pub(super) fn current_session_window_rows(workspace: &Workspace) -> Vec<SelectIt
         .collect()
 }
 
-/// phux-foz.8: the indented one-step jump rows for a **foreign** session,
+/// The indented one-step jump rows for a **foreign** session,
 /// drawn from its cached persisted [`Workspace`] (`DispatchCtx::
 /// foreign_layouts`). Same `index:name` + pane-count shape as
 /// [`current_session_window_rows`], but each row commits
@@ -266,7 +266,7 @@ pub(super) fn foreign_session_window_rows(
 }
 
 /// Build the session picker's rows from the client's cached
-/// session graph (phux-4li.20).
+/// session graph.
 ///
 /// One row per session, with `focused` first and marked `current`. Each row's
 /// label is the session name with a window/attached-client summary as the
@@ -337,7 +337,7 @@ pub(in crate::attach) fn session_picker_rows(
     items
 }
 
-/// Build the session picker's rows grouped by host (phux-c2td.3).
+/// Build the session picker's rows grouped by host.
 ///
 /// With no satellite inventory (`hosts` empty — a non-hub server, or one
 /// that predates `ServerFeature::HostSessions`) this is exactly

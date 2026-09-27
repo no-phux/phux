@@ -1,4 +1,4 @@
-//! Connection-lifetime agent review state (phux-deya).
+//! Connection-lifetime agent review state.
 //!
 //! `PaneSlot.seen` dies with each session-loop rebuild. Review is per-viewer
 //! and per-identity, so it lives next to orphan bookkeeping in the outer
@@ -9,7 +9,7 @@
 //! cycle without a revision.
 //!
 //! Lifted out of the driver so [`super::sidebar_zones`] and chrome can read
-//! it without naming `driver::` (phux-4fbs.4).
+//! it without naming `driver::`.
 
 use std::collections::HashMap;
 

@@ -143,7 +143,7 @@ fn frame_interval() -> Duration {
     })
 }
 
-/// The frame-rate governor for pane output (phux-l96p.3).
+/// The frame-rate governor for pane output.
 ///
 /// The coalescing drain that preceded this collapses frames that are ALREADY
 /// QUEUED on one socket read. It cannot help a producer whose lines arrive one

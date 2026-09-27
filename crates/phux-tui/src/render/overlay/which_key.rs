@@ -1,4 +1,4 @@
-//! Which-key popup (phux-foz.2).
+//! Which-key popup.
 //!
 //! A small floating panel that appears when the user presses the prefix
 //! and then hesitates: it lists every prefix-table continuation (key,
@@ -42,7 +42,7 @@ pub struct WhichKeyOverlay {
     rows: Vec<(String, String)>,
     /// Color slots snapshotted from the active [`Theme`] at construction.
     theme: Theme,
-    /// phux-huhi: `[chrome]` thresholds, stamped by `OverlayState::push`.
+    /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
 
