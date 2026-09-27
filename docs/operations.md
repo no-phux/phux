@@ -462,10 +462,13 @@ A profile only sets *default* paths, and `--socket`, `PHUX_SOCKET`,
 walk past a default. So the boundary is also enforced, with no override:
 
 - **Connect and bind.** A development build refuses to connect to, bridge
-  to, or bind the production socket (the `default` profile's
-  `…/phux.sock`, compared after resolving symlinked directories). Every
-  local client connection, `phux stdio-bridge`, and the server's bind go
-  through `phux_config::socket::refuse_dev_on_production`.
+  to, or bind a production socket: `/tmp/phux-$USER/phux.sock`,
+  `/run/user/<uid>/phux/phux.sock`, or `$XDG_RUNTIME_DIR/phux/phux.sock`
+  when that directory is not inside the temp directory (test harnesses pin
+  the released layout in a temp sandbox, which is not production). Paths
+  are compared after resolving symlinked directories. Every local client
+  connection, `phux stdio-bridge`, and the server's bind go through
+  `phux_config::socket::refuse_dev_on_production`.
 - **Hot swap.** `phux upgrade` re-execs whatever binary sits at the
   server's installed path. Before it does, the server asks that binary what
   it is (`PHUX_PROBE_BUILD_KIND=1 phux` prints `release`, `local`, or
