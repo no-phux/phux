@@ -491,7 +491,7 @@ forbid_fixed .github/workflows/agent-integration-release.yml "-type f -name '*.t
 require_fixed scripts/pack-release.sh 'stage="phux-${id}-${target}"'
 require_fixed scripts/pack-release.sh 'echo "${sha}  ${stage}.tar.gz" > "${archive}.sha256"'
 require_fixed crates/phux/src/commands/update/release.rs 'format!("phux-{tag}-{target}")'
-require_fixed crates/phux/src/commands/update/release.rs 'releases/download/{tag}/{archive}'
+require_fixed crates/phux/src/commands/update/release.rs 'releases/download/{release_tag}/{archive}'
 require_fixed crates/phux/src/commands/update/release.rs 'format!("{archive_url}.sha256")'
 # `phux update` resolves "latest" the same way the installer does, and the
 # same multi-stream defect applied: the redirect follows whichever stream
