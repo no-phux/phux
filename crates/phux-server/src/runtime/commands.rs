@@ -353,38 +353,6 @@ fn seed_session_with_pty_and_colors_and_metadata(
     Ok(terminal)
 }
 
-/// Add a **PTY-backed** pane to an existing `session`'s window and spawn its
-/// `TerminalActor` — the split counterpart to [`seed_session_with_pty`]
-/// (phux-i9zl).
-///
-/// Identical to `seed_session_with_pty` except the new pane joins
-/// `session`'s window via `add_pane_to_session` instead of
-/// creating a fresh `spawn-N` session. A TUI split routes here so the new
-/// L1 Terminal stays in the spawning client's current session.
-///
-/// Returns `Ok(None)` when `session` has no window to host the pane
-/// (unreachable for a seeded session); the caller maps that to a wire
-/// `SpawnError`. `Err` is an actor-build failure, same as the seed path.
-pub fn spawn_pane_with_pty(
-    state: &SharedState,
-    session: phux_core::ids::SessionId,
-    cmd: portable_pty::CommandBuilder,
-    scrollback: phux_config::ScrollbackLimits,
-    root_token: &CancellationToken,
-) -> Result<Option<phux_core::ids::ResourceId>, crate::terminal_actor::TerminalActorError> {
-    spawn_pane_with_pty_and_colors(
-        state,
-        &SpawnOwnership::Session(session),
-        cmd,
-        scrollback,
-        root_token,
-        None,
-        None,
-        None,
-        SpawnAttribution::default(),
-    )
-}
-
 /// Registry ownership address for a newly spawned pane.
 #[derive(Debug)]
 pub(crate) enum SpawnOwnership {

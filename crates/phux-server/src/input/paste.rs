@@ -6,8 +6,7 @@
 //! [`PasteEvent`] flows through [`PerTerminalPasteEncoder::encode`], which:
 //!
 //! 1. Classifies untrusted payloads with `paste::is_safe`.
-//! 2. Applies the per-pane policy ([`UntrustedPolicy`]) — reject /
-//!    sanitize-via-encode / allow.
+//! 2. Rejects untrusted payloads that are not safe.
 //! 3. Encodes via `paste::encode`, choosing the `bracketed` flag from the
 //!    pane's DEC mode 2004 state.
 //!
@@ -20,31 +19,12 @@ use libghostty_vt::{
 };
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 
-/// Per-pane policy for untrusted paste payloads.
-///
-/// Trusted payloads always pass through `paste::encode` unmodified. This
-/// enum governs only the [`PasteTrust::Untrusted`] path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UntrustedPolicy {
-    /// Drop untrusted-and-unsafe payloads (return `PasteOutcome::Rejected`).
-    /// Untrusted-but-safe payloads are still forwarded.
-    #[default]
-    Reject,
-    /// Run all untrusted payloads through `paste::encode` regardless of
-    /// safety; the encoder will strip control bytes and replace newlines
-    /// per its sanitization rules.
-    Sanitize,
-    /// Forward all untrusted payloads as if trusted. Useful for clients on
-    /// a trusted transport.
-    Allow,
-}
-
 /// Result of a paste encode attempt.
 #[derive(Debug)]
 pub enum PasteOutcome<'a> {
     /// Encoded bytes, ready to write to the PTY.
     Encoded(&'a [u8]),
-    /// The payload was rejected by [`UntrustedPolicy::Reject`].
+    /// An untrusted payload failed `paste::is_safe`.
     Rejected,
 }
 
@@ -55,8 +35,6 @@ pub struct PerTerminalPasteEncoder {
     scratch: Vec<u8>,
     /// Reusable output buffer.
     out: Vec<u8>,
-    /// Per-pane policy for untrusted payloads.
-    pub policy: UntrustedPolicy,
 }
 
 impl Default for PerTerminalPasteEncoder {
@@ -66,27 +44,19 @@ impl Default for PerTerminalPasteEncoder {
 }
 
 impl PerTerminalPasteEncoder {
-    /// Construct a new per-pane paste encoder with the default
-    /// [`UntrustedPolicy::Reject`] policy.
+    /// Construct a new per-pane paste encoder.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             scratch: Vec::new(),
             out: Vec::new(),
-            policy: UntrustedPolicy::default(),
         }
-    }
-
-    /// Set the per-pane untrusted policy.
-    pub const fn set_policy(&mut self, policy: UntrustedPolicy) -> &mut Self {
-        self.policy = policy;
-        self
     }
 
     /// Encode a wire paste event into PTY bytes.
     ///
-    /// Returns [`PasteOutcome::Rejected`] when an untrusted-and-unsafe
-    /// payload meets [`UntrustedPolicy::Reject`] (the default). Otherwise
+    /// Returns [`PasteOutcome::Rejected`] for an untrusted-and-unsafe
+    /// payload. Otherwise
     /// returns [`PasteOutcome::Encoded`] holding a slice into the encoder's
     /// internal buffer, valid until the next call.
     pub fn encode(
@@ -103,9 +73,7 @@ impl PerTerminalPasteEncoder {
         event: &PasteEvent,
         bracketed: bool,
     ) -> Result<PasteOutcome<'_>, Error> {
-        // Trust handling. Trusted payloads bypass safety classification;
-        // untrusted ones go through `is_safe` against the policy.
-        if self.would_reject(event) {
+        if Self::would_reject(event) {
             return Ok(PasteOutcome::Rejected);
         }
 
@@ -131,10 +99,9 @@ impl PerTerminalPasteEncoder {
         Ok(PasteOutcome::Encoded(&self.out))
     }
 
-    /// Whether the current policy rejects this paste before encoding.
-    pub(crate) fn would_reject(&self, event: &PasteEvent) -> bool {
+    /// Whether this paste is rejected before encoding.
+    pub(crate) fn would_reject(event: &PasteEvent) -> bool {
         event.trust == PasteTrust::Untrusted
-            && self.policy == UntrustedPolicy::Reject
             // `is_safe` accepts UTF-8 only; arbitrary untrusted bytes are unsafe.
             && !std::str::from_utf8(&event.data).is_ok_and(is_safe)
     }
@@ -153,25 +120,6 @@ mod tests {
                 .expect("Terminal::new");
             terminal
         }
-    }
-
-    /// Mirror of `phux-protocol`'s `paste_trust_discriminants_match_libghostty`:
-    /// libghostty currently does not ship a `PasteTrust` enum, so this test
-    /// pins the wire values to their documented 0/1. If libghostty later
-    /// adds the type, this test should be upgraded to compare against it.
-    #[test]
-    fn paste_trust_discriminants_pinned() {
-        assert_eq!(PasteTrust::Trusted as u8, 0);
-        assert_eq!(PasteTrust::Untrusted as u8, 1);
-    }
-
-    #[test]
-    fn paste_event_round_trips_via_clone() {
-        let a = PasteEvent {
-            trust: PasteTrust::Trusted,
-            data: b"hello".to_vec(),
-        };
-        assert_eq!(a, a.clone());
     }
 
     #[test]
@@ -239,24 +187,5 @@ mod tests {
         };
         let out = enc.encode(&ev, &terminal).expect("encode");
         assert!(matches!(out, PasteOutcome::Encoded(_)));
-    }
-
-    #[test]
-    fn sanitize_policy_forwards_unsafe() {
-        let terminal = make_terminal();
-        let mut enc = PerTerminalPasteEncoder::new();
-        enc.set_policy(UntrustedPolicy::Sanitize);
-        let ev = PasteEvent {
-            trust: PasteTrust::Untrusted,
-            data: b"a\nb".to_vec(),
-        };
-        let out = enc.encode(&ev, &terminal).expect("encode");
-        match out {
-            PasteOutcome::Encoded(b) => {
-                // In non-bracketed mode, `paste::encode` replaces \n with \r.
-                assert_eq!(b, b"a\rb", "unexpected sanitized payload {b:?}");
-            }
-            PasteOutcome::Rejected => panic!("sanitize policy should not reject"),
-        }
     }
 }

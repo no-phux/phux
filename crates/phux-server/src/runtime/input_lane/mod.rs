@@ -855,7 +855,7 @@ fn prepare_acknowledged_batch(
         }
     };
     if inputs.iter().any(
-        |input| matches!(input, TerminalInput::Paste(event) if encoder.paste.would_reject(event)),
+        |input| matches!(input, TerminalInput::Paste(event) if crate::input::paste::PerTerminalPasteEncoder::would_reject(event)),
     ) {
         return Err(CommandResult::Error {
             code: ErrorCode::UnsafePaste,
