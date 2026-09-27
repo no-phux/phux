@@ -165,7 +165,7 @@ measure_first_frame() {
     if (( latency > budget || useful_glass > budget )); then
         printf 'first-frame: useful frame missed %s ns to glass (sdk=%s, schedulable=%s, to_glass=%s)\n' \
             "$budget" "$latency" "$useful_schedule" "$useful_glass" >&2
-        return 1
+            return 1
     fi
 }
 
@@ -285,8 +285,10 @@ fi
 cleanup() {
     # Preserve the status that triggered EXIT. Bare `|| true` cleanup lines would
     # otherwise make a failed wait_named / validation look like success under
-    # --detach (bash EXIT traps use the trap's last command status).
+    # --detach. macOS /bin/bash 3.2 ignores return/exit from an EXIT-trap
+    # function while EXIT is still armed (#875/#878); clear it first so exit sticks.
     local status=$?
+    trap - EXIT
     if [[ -n "$FRONT_PID" ]]; then
         kill -KILL "$FRONT_PID" 2>/dev/null || true
         wait "$FRONT_PID" 2>/dev/null || true
