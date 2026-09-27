@@ -1,20 +1,13 @@
-//! Generated human-readable session names for the `${random-name}`
-//! placeholder in `defaults.session-name-template` (phux-c2td.6).
+//! `defaults.session-name-template` rendering: `${cwd-basename}` and the
+//! generated `${random-name}` (`drifting-cedar`).
 //!
-//! A generated name is one adjective and one noun from two small embedded
-//! word lists, joined by `-` (`drifting-cedar`). The words are lowercase
-//! ASCII letters only, so a generated name is always a valid bare session
-//! name and never collides with the `name:N.M` selector grammar.
-//!
-//! The picker is a non-cryptographic `SplitMix64` generator. Nothing
-//! security-relevant rides on these names: they are display labels, the
-//! session's stable identity is its server-assigned id, and uniqueness is
-//! enforced by the caller against the live session list. Seeding from std's
-//! per-process hash keys keeps this free of a randomness dependency, and an
-//! explicit seed keeps every test deterministic.
+//! Generated names are lowercase ASCII `adjective-noun`, so always a valid
+//! bare session name. The picker is a non-cryptographic `SplitMix64`: these
+//! are display labels, and callers enforce uniqueness.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
+use std::path::Path;
 
 /// The template placeholder that expands to a generated adjective-noun name.
 pub const RANDOM_NAME_PLACEHOLDER: &str = "${random-name}";
@@ -50,9 +43,6 @@ pub(crate) const NOUNS: &[&str] = &[
 ];
 
 /// A small deterministic name picker (`SplitMix64`).
-///
-/// Clone it to preview the picks a generator will make; tests seed it with
-/// [`NameRng::seeded`] and production code uses [`NameRng::from_entropy`].
 #[derive(Debug, Clone)]
 pub struct NameRng {
     state: u64,
@@ -85,8 +75,7 @@ impl NameRng {
         z ^ (z >> 31)
     }
 
-    /// One word from a non-empty list. The modulo bias over lists this
-    /// small is far below anything a display name could notice.
+    /// One word from a non-empty list (modulo bias is irrelevant here).
     fn pick(&mut self, words: &[&'static str]) -> &'static str {
         let len = u64::try_from(words.len()).unwrap_or(u64::MAX);
         let index = usize::try_from(self.next_u64() % len).unwrap_or(0);
@@ -102,84 +91,124 @@ pub fn random_name(rng: &mut NameRng) -> String {
     format!("{adjective}-{noun}")
 }
 
-/// Whether `template` asks for a generated name, so a caller resolving a
-/// collision knows that re-rendering can produce a different candidate.
+/// Whether `template` asks for a generated name, so re-rendering can
+/// resolve a collision.
 #[must_use]
 pub fn template_has_random_name(template: &str) -> bool {
     template.contains(RANDOM_NAME_PLACEHOLDER)
 }
 
+/// Render a session-name template for an auto-created session.
+///
+/// `${cwd-basename}` becomes the last component of `cwd` with `:` replaced by
+/// `_` (`:` is the selector's session/window delimiter); `${random-name}` a
+/// fresh generated name. Unknown placeholders pass through. May return an
+/// empty string (`/` has no basename); the caller picks the fallback.
+#[must_use]
+pub fn render_session_name_template(template: &str, cwd: &Path) -> String {
+    render_session_name_template_with(template, cwd, &mut NameRng::from_entropy())
+}
+
+/// [`render_session_name_template`] with a caller-supplied generator. Every
+/// `${random-name}` in one render is the same pick, expanded before
+/// `${cwd-basename}` so a directory name is never re-expanded.
+#[must_use]
+pub fn render_session_name_template_with(template: &str, cwd: &Path, rng: &mut NameRng) -> String {
+    let basename = cwd
+        .file_name()
+        .map(|os| os.to_string_lossy().replace(':', "_"))
+        .unwrap_or_default();
+    let expanded = if template_has_random_name(template) {
+        template.replace(RANDOM_NAME_PLACEHOLDER, &random_name(rng))
+    } else {
+        template.to_owned()
+    };
+    expanded.replace("${cwd-basename}", &basename)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ADJECTIVES, NOUNS, NameRng, random_name, template_has_random_name};
+    use super::*;
     use std::collections::BTreeSet;
 
-    fn assert_curated(list: &[&str]) {
-        assert!(
-            (64..=128).contains(&list.len()),
-            "list size {} outside 64..=128",
-            list.len()
-        );
-        for word in list {
-            assert!(!word.is_empty(), "empty word");
+    #[test]
+    fn word_lists_are_curated_and_disjoint() {
+        for list in [ADJECTIVES, NOUNS] {
+            assert!((64..=128).contains(&list.len()));
             assert!(
-                word.bytes().all(|b| b.is_ascii_lowercase()),
-                "{word:?} is not lowercase ascii letters"
+                list.iter()
+                    .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase()))
             );
+            assert_eq!(list.iter().collect::<BTreeSet<_>>().len(), list.len());
         }
-        let unique: BTreeSet<_> = list.iter().collect();
-        assert_eq!(unique.len(), list.len(), "duplicate word in list");
-    }
-
-    #[test]
-    fn adjectives_are_curated() {
-        assert_curated(ADJECTIVES);
-    }
-
-    #[test]
-    fn nouns_are_curated() {
-        assert_curated(NOUNS);
-    }
-
-    #[test]
-    fn lists_do_not_share_words() {
         let adjectives: BTreeSet<_> = ADJECTIVES.iter().collect();
-        let shared: Vec<_> = NOUNS.iter().filter(|n| adjectives.contains(n)).collect();
-        assert!(shared.is_empty(), "words in both lists: {shared:?}");
+        assert!(NOUNS.iter().all(|n| !adjectives.contains(n)));
     }
 
     #[test]
-    fn same_seed_yields_same_names() {
-        let mut a = NameRng::seeded(42);
-        let mut b = NameRng::seeded(42);
-        for _ in 0..16 {
-            assert_eq!(random_name(&mut a), random_name(&mut b));
+    fn seeded_picks_are_deterministic_well_formed_and_varied() {
+        let (mut a, mut b) = (NameRng::seeded(42), NameRng::seeded(42));
+        let names: BTreeSet<_> = (0..64)
+            .map(|_| {
+                let name = random_name(&mut a);
+                assert_eq!(name, random_name(&mut b));
+                let (adjective, noun) = name.split_once('-').expect("adjective-noun");
+                assert!(ADJECTIVES.contains(&adjective) && NOUNS.contains(&noun));
+                name
+            })
+            .collect();
+        assert!(names.len() > 32, "picks barely vary: {names:?}");
+    }
+
+    #[test]
+    fn templates_render_per_their_placeholders() {
+        let seeded = random_name(&mut NameRng::seeded(9));
+        for (template, cwd, want) in [
+            ("default", "/Users/me/phux", "default".to_owned()),
+            (
+                "phux-${cwd-basename}",
+                "/Users/me/phux",
+                "phux-phux".to_owned(),
+            ),
+            ("${cwd-basename}", "/tmp/a:b", "a_b".to_owned()),
+            (
+                "${cwd-basename}",
+                "/tmp/my.project",
+                "my.project".to_owned(),
+            ),
+            ("${cwd-basename}", "/", String::new()),
+            ("${unknown}", "/tmp/x", "${unknown}".to_owned()),
+            ("${random-name}", "/tmp/x", seeded.clone()),
+            (
+                "${cwd-basename}-${random-name}",
+                "/home/notes",
+                format!("notes-{seeded}"),
+            ),
+            (
+                "${random-name}/${random-name}",
+                "/tmp/x",
+                format!("{seeded}/{seeded}"),
+            ),
+            // A basename containing the placeholder is not re-expanded.
+            (
+                "${cwd-basename}",
+                "/tmp/${random-name}",
+                "${random-name}".to_owned(),
+            ),
+        ] {
+            let got = render_session_name_template_with(
+                template,
+                Path::new(cwd),
+                &mut NameRng::seeded(9),
+            );
+            assert_eq!(got, want, "{template} in {cwd}");
         }
-    }
-
-    #[test]
-    fn generated_name_is_one_adjective_and_one_noun() {
-        let mut rng = NameRng::seeded(7);
-        for _ in 0..256 {
-            let name = random_name(&mut rng);
-            let (adjective, noun) = name.split_once('-').expect("adjective-noun");
-            assert!(ADJECTIVES.contains(&adjective), "{adjective}");
-            assert!(NOUNS.contains(&noun), "{noun}");
-        }
-    }
-
-    #[test]
-    fn successive_picks_vary() {
-        let mut rng = NameRng::seeded(1);
-        let names: BTreeSet<_> = (0..32).map(|_| random_name(&mut rng)).collect();
-        assert!(names.len() > 16, "picks barely vary: {names:?}");
-    }
-
-    #[test]
-    fn detects_the_placeholder() {
-        assert!(template_has_random_name("${random-name}"));
         assert!(template_has_random_name("work-${random-name}"));
         assert!(!template_has_random_name("${cwd-basename}"));
-        assert!(!template_has_random_name("default"));
+
+        // A template without the placeholder draws nothing from the rng.
+        let mut rng = NameRng::seeded(11);
+        let _ = render_session_name_template_with("default", Path::new("/tmp/x"), &mut rng);
+        assert_eq!(random_name(&mut rng), random_name(&mut NameRng::seeded(11)));
     }
 }

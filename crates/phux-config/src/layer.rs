@@ -1,59 +1,41 @@
 //! Layered config resolution and merge (ADR-0039).
 //!
-//! A config file may declare a top-level `extends = ["path-or-name"]`
-//! array. The effective config is an ordered stack — embedded
-//! `default.toml` <- extended layers (depth-first, in listed order) <-
-//! the declaring file — folded with the same recursive table merge the
-//! two-layer scheme used, plus one addition: a key ending in `-append`
-//! whose value is an array appends to (rather than replaces) the array
-//! under the base key.
-//!
-//! Resolution is bounded ([`MAX_EXTENDS_DEPTH`]) and acyclic; a layer
-//! reachable via two branches (diamond) is merged once, at its first
-//! position. Every failure names the offending layer file.
-//!
-//! The merge records **provenance** as it folds: which layer set each
-//! effective leaf key, and — for arrays — which layer contributed each
-//! element. [`merged_config_with_provenance`] returns the merged table
-//! together with a [`ConfigProvenance`]; `phux config show --layers`
-//! renders it.
+//! A file may declare `extends = ["path-or-name"]`. The effective config is
+//! embedded `default.toml` <- extended layers (depth-first, listed order) <-
+//! the declaring file, merged recursively; a key `x-append` holding an array
+//! appends to `x` instead of replacing it. Resolution is depth-bounded and
+//! acyclic, a diamond layer merges once at its first position, and every
+//! failure names the offending file. The fold records which layer set each
+//! leaf (and each array element) for `phux config show --layers`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use crate::{ConfigError, byte_offset_to_line_col};
+use crate::ConfigError;
 
-/// Maximum `extends` nesting below the root config file.
-///
-/// The root file's layers sit at depth 1; a file at depth
-/// `MAX_EXTENDS_DEPTH` may not declare `extends`. Deep enough for
-/// user <- distro <- distro-base stacks with room to spare; small
-/// enough that a runaway include graph fails fast.
+/// Maximum `extends` nesting below the root config file (whose layers sit at
+/// depth 1).
 pub const MAX_EXTENDS_DEPTH: usize = 4;
 
 const EXTENDS_KEY: &str = "extends";
 const APPEND_SUFFIX: &str = "-append";
 
-/// Display path used for the embedded defaults layer in errors.
 const DEFAULTS_DISPLAY_PATH: &str = "<embedded default.toml>";
 
 /// One layer of the resolved config stack, in merge order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerSource {
-    /// The `default.toml` embedded in the phux binary — always the
-    /// first (lowest-precedence) layer.
+    /// The embedded `default.toml`; always first.
     Defaults,
-    /// A layer file pulled in via `extends` (ADR-0039).
+    /// A layer file pulled in via `extends`.
     Extended(PathBuf),
-    /// The root config file (the user's `config.toml`) — always the
-    /// last (highest-precedence) layer.
+    /// The root config file; always last.
     User(PathBuf),
 }
 
 impl LayerSource {
-    /// The on-disk path of this layer, if it has one (the embedded
-    /// defaults do not).
+    /// The on-disk path of this layer (the embedded defaults have none).
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match self {
@@ -66,77 +48,46 @@ impl LayerSource {
 /// Provenance of one effective leaf key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyOrigin {
-    /// Index into [`ConfigProvenance::layers`] of the layer that last
-    /// set — or, for arrays, last appended to — this key.
+    /// Index into [`ConfigProvenance::layers`] of the layer that last set
+    /// (or appended to) this key.
     pub layer: usize,
-    /// For arrays: the contributing layer index of each element, in
-    /// element order (`-append` elements carry the appending layer;
-    /// a plain assignment attributes every element to the assigning
-    /// layer). `None` for non-array leaves.
+    /// For arrays, the contributing layer of each element.
     pub elements: Option<Vec<usize>>,
 }
 
-/// Which layer set each effective config key (ADR-0039 attribution).
-///
-/// Produced by [`merged_config_with_provenance`]. Keys are dotted
-/// paths to the *leaf* values of the merged table (tables themselves
-/// carry no entry; array elements are attributed via
-/// [`KeyOrigin::elements`]). Path segments that are not bare TOML keys
-/// are double-quoted, so entries read like TOML addresses, e.g.
-/// `keybindings.prefix-table."%"`.
+/// Which layer set each effective leaf key. Keys are dotted TOML addresses,
+/// non-bare segments double-quoted (`keybindings.prefix-table."%"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigProvenance {
-    /// The resolved layer stack in merge order: `Defaults` first, the
-    /// root `User` file last, `Extended` layers in between.
+    /// The resolved layer stack in merge order.
     pub layers: Vec<LayerSource>,
     /// Dotted leaf path -> origin, sorted by path.
     pub keys: BTreeMap<String, KeyOrigin>,
 }
 
-/// Top-level array keys whose elements carry a `manifest` path.
-///
-/// Plugin loaders resolve a relative `[[plugins]]` manifest against the
-/// *user config file's* directory (`crate::plugin::resolve_manifest_path`).
-/// A shared layer — a distro, a team baseline — lives somewhere else
-/// entirely, so a relative manifest it declares would dangle once merged.
-/// Layer resolution therefore rewrites those paths to absolute against
-/// the layer's own directory before the merge erases provenance.
+/// Top-level arrays whose elements carry a `manifest` path. A relative
+/// manifest in a shared layer is made absolute against that layer's
+/// directory, since `[[plugins]]` otherwise resolve against the user's file.
 const MANIFEST_ARRAY_KEYS: [&str; 2] = ["plugins", "plugins-append"];
 
-/// Parse `input` as a plain TOML table, mapping errors to
-/// [`ConfigError::Parse`] with `line:col` pointing into `input`.
-fn parse_table(input: &str, path: &Path) -> Result<toml::Table, ConfigError> {
-    toml::from_str(input).map_err(|e| {
-        let position = e.span().map(|r| byte_offset_to_line_col(input, r.start));
-        ConfigError::Parse {
-            path: path.to_path_buf(),
-            position,
-            message: e.message().to_owned(),
-        }
-    })
+/// Parse `input` as a plain TOML table.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "private module helper; pub would trip unreachable_pub"
+)]
+pub(crate) fn parse_table(input: &str, path: &Path) -> Result<toml::Table, ConfigError> {
+    toml::from_str(input).map_err(|e| ConfigError::parse(path, input, e.span(), e.message()))
 }
 
-/// Merge the full layer stack, returning table plus provenance.
-///
-/// The stack is the embedded defaults, any layers named via `extends`
-/// (ADR-0039), then `user_input`; the [`ConfigProvenance`] is recorded
-/// during the fold.
-///
-/// The table half is exactly what [`crate::merged_config_table`]
-/// returns (that function delegates here); the provenance half backs
-/// `phux config show --layers`.
-///
-/// `path` is used for error reporting on `user_input` and as the base
-/// directory for relative `extends` entries; layer files are read from
-/// disk. When `user_input` declares no `extends`, no I/O occurs.
+/// Merge the full layer stack (defaults, `extends` layers, `user_input`) and
+/// record provenance. `path` anchors relative `extends` entries; with no
+/// `extends`, no I/O occurs.
 ///
 /// # Errors
 ///
-/// Returns [`ConfigError::Parse`] if the embedded defaults,
-/// `user_input`, or a layer file are not valid TOML;
+/// [`ConfigError::Parse`] for invalid TOML in any layer;
 /// [`ConfigError::LayerRead`] / [`ConfigError::LayerCycle`] /
-/// [`ConfigError::Layer`] for layer-resolution and `-append` failures,
-/// each naming the offending file.
+/// [`ConfigError::Layer`] for resolution and `-append` failures.
 pub fn merged_config_with_provenance(
     user_input: &str,
     path: &Path,
@@ -159,8 +110,7 @@ pub(crate) fn merged_with_budget(
 
     let mut layers = vec![LayerSource::Defaults];
     let mut recorded = BTreeMap::new();
-    // Fold the defaults from an empty base so their keys are recorded
-    // like any other layer's; the result is the defaults table itself.
+    // Fold the defaults from an empty base so their keys are recorded too.
     let mut merged = merge_layer(
         toml::Table::new(),
         default_table,
@@ -198,11 +148,8 @@ pub(crate) fn merged_with_budget(
     Ok((merged, ConfigProvenance { layers, keys }))
 }
 
-/// Resolve the ordered layer stack rooted at `user_input` / `path`.
-///
-/// Returns `(layer path, table)` pairs in merge order: extended layers
-/// first (depth-first, in listed order), the root file last. Each
-/// table has its `extends` key consumed.
+/// `(layer path, table)` pairs in merge order, root file last, each with its
+/// `extends` key consumed.
 fn resolve_user_stack(
     user_input: &str,
     path: &Path,
@@ -211,8 +158,7 @@ fn resolve_user_stack(
     let mut budget = ReadBudget(max_read_bytes);
     budget.consume(user_input.len(), path, path)?;
     let root = parse_table(user_input, path)?;
-    // The root is on the chain from the start, so a layer that extends
-    // the user's own config file is reported as a cycle.
+    // The root is on the chain, so extending the user's own file is a cycle.
     let mut resolver = LayerResolver {
         visiting: vec![canonical(path)],
         seen: HashSet::new(),
@@ -253,10 +199,6 @@ impl LayerResolver {
             }
         }
         if depth > 0 {
-            // Only *extended* layers are rewritten: the root file's relative
-            // manifests already resolve against its own directory by the
-            // documented `[[plugins]]` contract, and leaving them untouched
-            // keeps `phux config show` output identical to what the user wrote.
             let layer_dir = path.parent().unwrap_or_else(|| Path::new(""));
             absolutize_plugin_manifests(&mut table, layer_dir);
         }
@@ -286,8 +228,7 @@ impl LayerResolver {
     }
 }
 
-/// Aggregate unique-file budget. Embedded defaults are trusted compiled bytes;
-/// root input and each first-visited external layer consume the caller's budget.
+/// Aggregate byte budget over the root input and each unique external layer.
 struct ReadBudget(Option<usize>);
 
 impl ReadBudget {
@@ -337,9 +278,8 @@ fn layer_read_error(path: &Path, parent: &Path, source: std::io::Error) -> Confi
     }
 }
 
-/// Rewrite relative `manifest` paths in [`MANIFEST_ARRAY_KEYS`] arrays to
-/// absolute paths under `layer_dir`, so a shared layer's plugin wiring
-/// keeps working no matter where the user's config file lives.
+/// Make relative `manifest` paths in [`MANIFEST_ARRAY_KEYS`] absolute under
+/// `layer_dir`.
 fn absolutize_plugin_manifests(table: &mut toml::Table, layer_dir: &Path) {
     for key in MANIFEST_ARRAY_KEYS {
         let Some(toml::Value::Array(entries)) = table.get_mut(key) else {
@@ -361,9 +301,7 @@ fn absolutize_plugin_manifests(table: &mut toml::Table, layer_dir: &Path) {
     }
 }
 
-/// Fold `.` and `..` components lexically (no filesystem access, no
-/// symlink resolution) so a distro layer's `../../plugins/...` manifest
-/// reads cleanly in `phux config show` output and error messages.
+/// Fold `.` and `..` components lexically, without touching the filesystem.
 fn lexical_normalize(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -402,10 +340,9 @@ fn extends_entries(value: toml::Value, path: &Path) -> Result<Vec<String>, Confi
         .collect()
 }
 
-/// Map one `extends` entry to a layer path (ADR-0039): absolute paths
-/// pass through; anything with a path separator or a `.toml` suffix is
-/// relative to the declaring file's directory; a bare name `n` means
-/// `layers/n.toml` beside the declaring file.
+/// Map one `extends` entry to a layer path: absolute passes through, a path
+/// or `.toml` name is relative to the declaring file, and a bare name `n`
+/// means `layers/n.toml` beside it.
 fn resolve_entry(entry: &str, declaring: &Path) -> PathBuf {
     let candidate = Path::new(entry);
     let resolved = if candidate.is_absolute() {
@@ -424,62 +361,42 @@ fn resolve_entry(entry: &str, declaring: &Path) -> PathBuf {
     rewrite_retired_distro_layer(&resolved)
 }
 
-/// `distros/herdr/herdr.toml` was renamed to `distros/starter/starter.toml`.
-///
-/// `phux config init --distro herdr` already aliases the bundled *name*.
-/// Existing configs baked the old absolute path, so a checkout that
-/// dropped the file made `phux update`'s re-exec refuse to start. If the
-/// named herdr layer is gone and `distros/starter/starter.toml` sits next
-/// to where it used to be, load that instead. A still-present herdr file
-/// (the compatibility stub) wins unchanged.
+/// `distros/herdr/herdr.toml` was renamed to `distros/starter/starter.toml`,
+/// and configs baked the old absolute path: when the herdr layer is gone
+/// but the starter sits beside it, load the starter.
 fn rewrite_retired_distro_layer(path: &Path) -> PathBuf {
     if path.is_file() {
         return path.to_path_buf();
     }
-    let Some(starter) = herdr_layer_to_starter(path) else {
-        return path.to_path_buf();
-    };
-    if starter.is_file() {
-        starter
-    } else {
-        path.to_path_buf()
-    }
+    herdr_layer_to_starter(path)
+        .filter(|starter| starter.is_file())
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Map `.../distros/herdr/herdr.toml` to `.../distros/starter/starter.toml`.
 fn herdr_layer_to_starter(path: &Path) -> Option<PathBuf> {
-    if path.file_name()? != "herdr.toml" {
-        return None;
-    }
     let herdr_dir = path.parent()?;
-    if herdr_dir.file_name()? != "herdr" {
-        return None;
-    }
     let distros = herdr_dir.parent()?;
-    if distros.file_name()? != "distros" {
-        return None;
-    }
-    Some(distros.join("starter").join("starter.toml"))
+    let is_herdr = path.file_name()? == "herdr.toml"
+        && herdr_dir.file_name()? == "herdr"
+        && distros.file_name()? == "distros";
+    is_herdr.then(|| distros.join("starter").join("starter.toml"))
 }
 
-/// Canonical identity for cycle / diamond detection. Falls back to the
-/// lexical path when canonicalization fails (e.g. the root path names
-/// no real file, as in pure-string parses); the read step reports the
-/// real error for missing layers.
+/// Canonical identity for cycle / diamond detection, or the lexical path
+/// when the file does not exist (the read reports that).
 fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Provenance recorder threaded through one layer's merge: the layer's
-/// stack index plus the shared path -> origin map.
+/// Provenance recorder for one layer's merge.
 struct Recorder<'a> {
     layer: usize,
     keys: &'a mut BTreeMap<String, KeyOrigin>,
 }
 
 impl Recorder<'_> {
-    /// A plain assignment set `path` to `value` (replacing whatever a
-    /// lower layer put there).
+    /// A plain assignment replaced whatever lower layers set at `path`.
     fn record_set(&mut self, path: &str, value: &toml::Value) {
         let elements = match value {
             toml::Value::Array(items) => Some(vec![self.layer; items.len()]),
@@ -494,8 +411,7 @@ impl Recorder<'_> {
         );
     }
 
-    /// An `-append` directive added `added` elements to the array at
-    /// `path` (creating it when absent).
+    /// An `-append` added `added` elements to the array at `path`.
     fn record_append(&mut self, path: &str, added: usize) {
         match self.keys.get_mut(path) {
             Some(origin) if origin.elements.is_some() => {
@@ -504,9 +420,7 @@ impl Recorder<'_> {
                     elements.extend(std::iter::repeat_n(self.layer, added));
                 }
             }
-            // No lower layer recorded an array here (or the recorded
-            // shape was not an array, which the merge itself rejects):
-            // the append created the array, so it owns every element.
+            // The append created the array, so it owns every element.
             _ => {
                 self.keys.insert(
                     path.to_owned(),
@@ -520,17 +434,11 @@ impl Recorder<'_> {
     }
 }
 
-/// Dotted-path segment for `key` under `prefix`: bare TOML keys join
-/// with `.`; anything else is double-quoted so the path stays a valid
-/// TOML address.
-///
-/// `pub(crate)` because [`crate::check`]'s semantic pass builds paths
-/// for keybinding findings and they must spell keys exactly the way
-/// provenance recorded them, or layer attribution silently misses.
+/// Dotted path for `key` under `prefix`, double-quoting non-bare keys. Shared
+/// with [`crate::check`] so its findings match provenance paths exactly.
 #[allow(
     clippy::redundant_pub_crate,
-    reason = "`pub` here would trip `unreachable_pub`: the module is \
-              private and this fn is not re-exported"
+    reason = "private module helper; pub would trip unreachable_pub"
 )]
 pub(crate) fn child_path(prefix: &str, key: &str) -> String {
     let is_bare = !key.is_empty()
@@ -549,15 +457,10 @@ pub(crate) fn child_path(prefix: &str, key: &str) -> String {
     }
 }
 
-/// Recursively merge `overlay` (from the layer file at `layer`) into
-/// `base`, recording provenance into `recorder`.
-///
-/// Tables merge per key; any other value type — including arrays —
-/// replaces wholesale. A key `x-append` holding an array appends its
-/// elements to `base`'s `x` (creating it when absent) instead of
-/// replacing. Misuse — appending to a non-array, a non-array append
-/// value, or `x` and `x-append` in the same overlay table — is an
-/// error naming `layer`.
+/// Recursively merge `overlay` (from `layer`) into `base`. Tables merge per
+/// key; everything else, arrays included, replaces. `x-append` appends to
+/// `x`; appending to a non-array, a non-array append, or `x` beside
+/// `x-append` in one table is an error naming `layer`.
 fn merge_layer(
     mut base: toml::Table,
     overlay: toml::Table,
@@ -570,8 +473,7 @@ fn merge_layer(
         message,
     };
 
-    // Split plain keys from `-append` directives; plain keys apply
-    // first so append order is deterministic regardless of key order.
+    // Plain keys apply first so append order is deterministic.
     let mut appends: Vec<(String, toml::Value)> = Vec::new();
     let mut plain = toml::Table::new();
     for (key, value) in overlay {
@@ -601,11 +503,8 @@ fn merge_layer(
                 );
             }
             (_, toml::Value::Table(o)) => {
-                // No base table to merge into, but the overlay table
-                // may still carry nested `-append` directives (e.g.
-                // `[[hooks.<name>-append]]` when the base defines no
-                // hooks at all); normalize them against an empty base
-                // so directive keys never leak into the final table.
+                // Merge against an empty base so nested `-append`
+                // directives never leak into the final table.
                 base.insert(
                     key,
                     toml::Value::Table(merge_layer(toml::Table::new(), o, layer, &path, recorder)?),
@@ -646,11 +545,8 @@ fn merge_layer(
     Ok(base)
 }
 
-/// Project the recorded origins onto the *final* merged table: walk
-/// its leaves and keep exactly one entry per leaf path. This drops
-/// entries left stale by shape changes across layers (a scalar later
-/// replaced by a table leaves its old leaf entry behind; the walk
-/// never visits it).
+/// Project the recorded origins onto the final table's leaves, dropping
+/// entries left stale by shape changes across layers.
 fn finalize_keys(
     table: &toml::Table,
     recorded: &BTreeMap<String, KeyOrigin>,
@@ -662,9 +558,6 @@ fn finalize_keys(
         match value {
             toml::Value::Table(t) => finalize_keys(t, recorded, &path, out),
             leaf => {
-                // Every leaf was inserted through the recorder, so the
-                // lookup succeeds; the fallback (attribute to the
-                // defaults layer) is purely defensive.
                 let mut origin = recorded.get(&path).cloned().unwrap_or(KeyOrigin {
                     layer: 0,
                     elements: None,
@@ -725,51 +618,26 @@ mod retired_distro_tests {
     use std::path::Path;
 
     #[test]
-    fn herdr_toml_maps_onto_starter_toml_in_the_same_distros_tree() {
-        let old = Path::new("/Users/me/src/phux/distros/herdr/herdr.toml");
-        assert_eq!(
-            herdr_layer_to_starter(old).as_deref(),
-            Some(Path::new("/Users/me/src/phux/distros/starter/starter.toml"))
-        );
+    fn a_missing_herdr_layer_loads_the_starter_beside_it() {
         assert_eq!(
             herdr_layer_to_starter(Path::new("/tmp/not-a-distro/herdr.toml")),
             None
         );
-        assert_eq!(
-            herdr_layer_to_starter(Path::new("/tmp/distros/other/other.toml")),
-            None
-        );
-    }
-
-    #[test]
-    fn missing_herdr_layer_loads_starter_when_it_sits_beside_the_old_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let distros = dir.path().join("distros");
         std::fs::create_dir_all(distros.join("starter")).expect("starter dir");
         std::fs::create_dir_all(distros.join("herdr")).expect("herdr dir");
-        std::fs::write(
-            distros.join("starter").join("starter.toml"),
-            "defaults.history-limit = 12345\n",
-        )
-        .expect("starter.toml");
-        let missing = distros.join("herdr").join("herdr.toml");
-        assert!(!missing.is_file());
-        let rewritten = rewrite_retired_distro_layer(&missing);
-        assert_eq!(rewritten, distros.join("starter").join("starter.toml"));
+        let starter = distros.join("starter").join("starter.toml");
+        std::fs::write(&starter, "defaults.history-limit = 12345\n").expect("starter.toml");
+        let herdr = distros.join("herdr").join("herdr.toml");
 
         let user = dir.path().join("config.toml");
-        let input = format!("extends = [\"{}\"]\n", missing.display());
+        let input = format!("extends = [\"{}\"]\n", herdr.display());
         let cfg = crate::parse_with_defaults(&input, &user).expect("retired path still loads");
         assert_eq!(cfg.defaults.history_limit, 12345);
-    }
 
-    #[test]
-    fn a_present_herdr_stub_is_not_rewritten() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let distros = dir.path().join("distros");
-        std::fs::create_dir_all(distros.join("herdr")).expect("herdr dir");
-        let stub = distros.join("herdr").join("herdr.toml");
-        std::fs::write(&stub, "defaults.history-limit = 7\n").expect("stub");
-        assert_eq!(rewrite_retired_distro_layer(&stub), stub);
+        // A still-present herdr stub wins unchanged.
+        std::fs::write(&herdr, "defaults.history-limit = 7\n").expect("stub");
+        assert_eq!(rewrite_retired_distro_layer(&herdr), herdr);
     }
 }
