@@ -36,6 +36,7 @@ mod detach_fence;
 mod event_restamp;
 mod link_gap;
 mod list_directory;
+mod path_query;
 mod satellite_spawn;
 
 /// Per-step hang guard (the hub link dials with backoff).

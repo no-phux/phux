@@ -10,7 +10,7 @@ use phux_client_core::handshake::validate_hello_ok;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, ClientCapabilities, Layer, LayerSet, ServerFeature,
-    ServerFeatureSet,
+    ServerFeatureExtSet, ServerFeatureSet,
 };
 use phux_protocol::ids::{ResourceId, StreamId};
 use phux_protocol::wire::frame::{
@@ -357,6 +357,8 @@ pub struct NegotiatedBootstrap {
     pub limits: BootstrapLimits,
     /// Additive server features authenticated by `HELLO_OK`.
     pub server_features: ServerFeatureSet,
+    /// Extended additive features, negotiated in the trailing `HELLO_OK` word.
+    pub server_features_ext: ServerFeatureExtSet,
 }
 
 #[derive(Debug)]
@@ -732,6 +734,7 @@ impl Connection {
                     profile: selected_profile,
                     limits: bootstrap_limits,
                     server_features: server_caps.features,
+                    server_features_ext: server_caps.features_ext,
                 });
                 self.server_id = Some(server_id);
                 Ok(())

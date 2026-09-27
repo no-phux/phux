@@ -540,10 +540,6 @@ impl RelayHandle {
     }
 
     /// Query paths on this satellite, with a bounded typed refusal on failure.
-    #[allow(
-        dead_code,
-        reason = "consumer dispatch is implemented on the sibling branch"
-    )]
     pub(crate) async fn path_query(
         &self,
         root: String,

@@ -587,11 +587,8 @@ impl SessionLoop {
             directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
                 server_features,
             ),
-            // phux-client's NegotiatedBootstrap currently projects only the
-            // original feature word. This remains disabled until its extension
-            // word is exposed; guessing from an older bit would break peers.
             path_query_supported: crate::attach::path_picker::supported(
-                phux_protocol::ServerFeatureExtSet::new(),
+                negotiated.server_features_ext,
             ),
             host_sessions_supported: server_features.contains(ServerFeature::HostSessions),
             whoami_supported: server_features.contains(ServerFeature::Whoami),

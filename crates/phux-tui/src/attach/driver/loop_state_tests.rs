@@ -171,6 +171,7 @@ async fn loop_before_drain(
         profile: BootstrapProfile::SynthesizedVtRaw,
         limits: BootstrapLimits::default(),
         server_features: features,
+        server_features_ext: phux_protocol::ServerFeatureExtSet::new(),
     };
     let mut state = SessionLoop::new(
         negotiated,
@@ -199,6 +200,36 @@ async fn bootstrapped_loop_with(
         .await
         .unwrap();
     (state, client, server, out)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_path_picker_requires_the_negotiated_extension() {
+    use phux_protocol::{ServerFeatureExt, ServerFeatureExtSet};
+
+    for (features_ext, expected) in [
+        (ServerFeatureExtSet::new(), false),
+        (
+            ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]),
+            true,
+        ),
+    ] {
+        let negotiated = NegotiatedBootstrap {
+            profile: BootstrapProfile::SynthesizedVtRaw,
+            limits: BootstrapLimits::default(),
+            server_features: ServerFeatureSet::new(),
+            server_features_ext: features_ext,
+        };
+        let state = SessionLoop::new(
+            negotiated,
+            PredictiveConfig::disabled(),
+            false,
+            None,
+            EntryPick::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(state.path_query_supported, expected);
+    }
 }
 
 /// A last-pane `RESOURCE_CLOSED` on the first recv-arm burst must

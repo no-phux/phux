@@ -19,6 +19,7 @@ use phux_protocol::wire::frame::{
 };
 use tokio::sync::Semaphore;
 
+use crate::hub::relay::RelayHandle;
 use crate::state::{ClientId, Outbound, SharedState};
 
 use super::directory;
@@ -45,6 +46,27 @@ pub(super) struct PathRequest {
     pub(super) host: Option<SatelliteHost>,
 }
 
+enum PathRoute {
+    Local,
+    Relay(RelayHandle),
+    Refused(String),
+}
+
+fn path_route(state: &SharedState, host: Option<SatelliteHost>) -> PathRoute {
+    let Some(host) = host else {
+        return PathRoute::Local;
+    };
+    state.with(|server| match server.hub_relay(&host) {
+        Some(relay) => PathRoute::Relay(relay),
+        None if server.hub_table().is_some() => {
+            PathRoute::Refused(format!("no satellite named {host} in this hub's registry"))
+        }
+        None => PathRoute::Refused(format!(
+            "this server is not a federation hub; it has no route to satellite {host}"
+        )),
+    })
+}
+
 /// Dispatch without holding up the connection's frame loop. Closing the
 /// outbound mailbox cancels the wait, while a blocked worker retains its
 /// permit until it actually returns from the filesystem.
@@ -57,10 +79,11 @@ pub(super) fn handle_path_query(
     if !state.with(|s| s.client_speaks_l3(client_id)) {
         return;
     }
+    let route = path_route(state, request.host);
     let out_tx = out_tx.clone();
     tokio::spawn(async move {
         let result = tokio::select! {
-            result = answer(request.root, request.query, request.recursive, request.host) => result,
+            result = answer(route, request.root, request.query, request.recursive) => result,
             () = out_tx.closed() => return,
         };
         let _ = out_tx
@@ -72,15 +95,7 @@ pub(super) fn handle_path_query(
     });
 }
 
-async fn answer(
-    root: String,
-    query: String,
-    recursive: bool,
-    host: Option<SatelliteHost>,
-) -> PathQueryResult {
-    if let Some(host) = host {
-        return Err(refusal(&root, format!("no route to satellite {host}")));
-    }
+async fn answer(route: PathRoute, root: String, query: String, recursive: bool) -> PathQueryResult {
     if root.len() > MAX_ROOT_BYTES
         || root.contains('\0')
         || query.len() > MAX_QUERY_BYTES
@@ -91,6 +106,35 @@ async fn answer(
     if recursive && query.is_empty() {
         return Err(refusal(&root, "recursive search requires a query"));
     }
+    match route {
+        PathRoute::Local => local_request(root, query, recursive).await,
+        PathRoute::Relay(relay) => relay_request(relay, root, query, recursive).await,
+        PathRoute::Refused(message) => Err(refusal(&root, message)),
+    }
+}
+
+async fn relay_request(
+    relay: RelayHandle,
+    root: String,
+    query: String,
+    recursive: bool,
+) -> PathQueryResult {
+    let Some(_host_slot) = directory::RELAYED_PER_HOST.try_acquire(relay.host()) else {
+        return Err(refusal(
+            &root,
+            format!(
+                "satellite {} already has too many host queries in flight",
+                relay.host()
+            ),
+        ));
+    };
+    let Ok(_permit) = directory::RELAYED_LISTINGS.try_acquire() else {
+        return Err(refusal(&root, "too many relayed host queries in flight"));
+    };
+    relay.path_query(root, query, recursive).await
+}
+
+async fn local_request(root: String, query: String, recursive: bool) -> PathQueryResult {
     let Ok(permit) = PATH_WORKERS.try_acquire() else {
         return Err(refusal(&root, "too many path searches in flight; retry"));
     };

@@ -116,17 +116,18 @@ static LISTINGS: Semaphore = Semaphore::const_new(MAX_LISTINGS_IN_FLIGHT);
 const MAX_RELAYED_LISTINGS_IN_FLIGHT: usize = 8;
 
 /// Permits for [`MAX_RELAYED_LISTINGS_IN_FLIGHT`].
-static RELAYED_LISTINGS: Semaphore = Semaphore::const_new(MAX_RELAYED_LISTINGS_IN_FLIGHT);
+pub(super) static RELAYED_LISTINGS: Semaphore =
+    Semaphore::const_new(MAX_RELAYED_LISTINGS_IN_FLIGHT);
 
 /// Most relayed listings one satellite may hold, so a silent satellite cannot
 /// starve healthy ones of the server-wide pool.
 const MAX_RELAYED_LISTINGS_PER_HOST: usize = 2;
 
 /// Per-satellite counts for [`MAX_RELAYED_LISTINGS_PER_HOST`].
-static RELAYED_PER_HOST: HostSlots = HostSlots::new(MAX_RELAYED_LISTINGS_PER_HOST);
+pub(super) static RELAYED_PER_HOST: HostSlots = HostSlots::new(MAX_RELAYED_LISTINGS_PER_HOST);
 
 /// In-flight relayed listings per satellite, capped at `per_host` each.
-struct HostSlots {
+pub(super) struct HostSlots {
     per_host: usize,
     in_flight: Mutex<BTreeMap<SatelliteHost, usize>>,
 }
@@ -141,7 +142,7 @@ impl HostSlots {
 
     /// Take one of `host`'s slots, or `None` when it already holds all of
     /// them. The slot returns when the permit drops.
-    fn try_acquire(&'static self, host: &SatelliteHost) -> Option<HostPermit> {
+    pub(super) fn try_acquire(&'static self, host: &SatelliteHost) -> Option<HostPermit> {
         let mut in_flight = self.lock();
         let held = in_flight.get(host).copied().unwrap_or(0);
         if held >= self.per_host {
@@ -164,7 +165,7 @@ impl HostSlots {
 
 /// One held per-satellite slot; dropping it returns the slot and forgets a
 /// host with none left.
-struct HostPermit {
+pub(super) struct HostPermit {
     slots: &'static HostSlots,
     host: SatelliteHost,
 }

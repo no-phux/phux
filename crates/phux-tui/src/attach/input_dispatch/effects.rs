@@ -76,7 +76,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         // This is an input event, never a shell command or an Enter key.
         let paste = phux_protocol::input::paste::PasteEvent {
             data: text.into_bytes(),
-            trust: phux_protocol::input::paste::PasteTrust::Trusted,
+            trust: phux_protocol::input::paste::PasteTrust::Untrusted,
         };
         conn.send(&phux_protocol::input::InputEvent::Paste(paste).into_frame(target))
             .await?;
