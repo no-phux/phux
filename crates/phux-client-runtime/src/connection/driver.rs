@@ -7,7 +7,9 @@ use tokio::sync::watch;
 
 use super::io::{Io, dial};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Wake, lock};
-use crate::control::{ControlError, InboundDelivery, Status};
+use phux_protocol::wire::frame::FrameKind;
+
+use crate::control::{ControlError, InboundDelivery, Status, encode};
 
 enum Decision {
     Stop,
@@ -293,17 +295,33 @@ impl<'a> Pump<'a> {
 
     async fn step(&mut self) -> Result<(), ConnectionEnd> {
         let expiry = self.expiry_wait();
+        let reading = self.has_inbound_room();
+        // Soft residual: an in-flight probe deadline while paused cannot
+        // observe its answer (reads are gated), and the backlog already
+        // proves the peer is alive. Clear it; do not only skip start_probe.
+        if !reading {
+            self.probe_deadline = None;
+        }
         tokio::select! {
             () = self.signals.outbound.notified() => self.flush_outbound().await,
             () = closed(&mut self.signals.close) => Err(ConnectionEnd::Closed),
             () = signal(&mut self.signals.resync) => Err(ConnectionEnd::Resync),
-            () = signal(&mut self.signals.nudge) => self.start_probe().await,
+            // A paused read has a backlog the peer just sent: it is alive,
+            // and a probe answer could not be read before its deadline.
+            () = signal(&mut self.signals.nudge) => if reading { self.start_probe().await } else { Ok(()) },
             () = wait_for_probe(&mut self.probe_deadline), if self.probe_deadline.is_some() => {
                 Err(ConnectionEnd::Dropped(Some("liveness probe timed out".to_owned())))
             }
             () = tokio::time::sleep(expiry) => self.expire_inputs().await,
-            inbound = self.io.read_frames(self.name) => self.accept_inbound(inbound).await,
+            inbound = self.io.read_frames(self.name), if reading => self.accept_inbound(inbound).await,
         }
+    }
+
+    /// Backpressure: a queued-delivery consumer that has fallen behind
+    /// pauses reads until it drains, leaving the backlog in the socket.
+    fn has_inbound_room(&self) -> bool {
+        let control = lock(self.shared);
+        control.options().deliver_inbound != InboundDelivery::Queued || control.has_inbound_room()
     }
 
     fn expiry_wait(&self) -> Duration {
@@ -354,19 +372,28 @@ impl<'a> Pump<'a> {
         if frames.is_empty() {
             return Ok(());
         }
-        let (fed, outbound) = {
+        let (fed, outbound, pongs) = {
             let mut control = lock(self.shared);
             // A binding that keeps its own per-frame state on one owning
             // thread takes delivery itself; the socket is still ours.
-            let fed = if control.options().deliver_inbound == InboundDelivery::Queued {
-                frames
-                    .into_iter()
-                    .try_for_each(|frame| control.queue_inbound(frame))
+            let (fed, pongs) = if control.options().deliver_inbound == InboundDelivery::Queued {
+                // Answer Ping on the driver before enqueue so a stalled
+                // consumer cannot strand liveness replies behind UI drain.
+                let (to_queue, pongs) = peel_queued_pings(frames);
+                let fed = if to_queue.is_empty() {
+                    Ok(())
+                } else {
+                    control.queue_inbound_batch(to_queue)
+                };
+                (fed, pongs)
             } else {
-                control.feed_bytes_batch(&frames)
+                (control.feed_bytes_batch(&frames), Vec::new())
             };
-            (fed, control.take_outbound())
+            (fed, control.take_outbound(), pongs)
         };
+        // Pongs first: the peer's probe must not wait on consumer-queued
+        // outbound that may still be draining.
+        self.write_all(pongs).await?;
         self.write_all(outbound).await?;
         // Edge-triggered: a frame flood costs one callback, not one per
         // frame, and the callback runs with no lock held.
@@ -389,6 +416,25 @@ impl<'a> Pump<'a> {
         }
         Ok(())
     }
+}
+
+/// Pull Ping frames out of a queued batch and encode matching Pongs.
+///
+/// Non-Ping frames (and undecodable bytes) stay for the consumer. Ping is
+/// session liveness, not UI state: leaving it behind a stalled drain makes
+/// stall depend on the UI thread for replies.
+fn peel_queued_pings(frames: Vec<Vec<u8>>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let mut keep = Vec::with_capacity(frames.len());
+    let mut pongs = Vec::new();
+    for frame in frames {
+        match FrameKind::decode(&frame) {
+            Ok((FrameKind::Ping { nonce }, [])) => {
+                pongs.push(encode(&FrameKind::Pong { nonce }));
+            }
+            _ => keep.push(frame),
+        }
+    }
+    (keep, pongs)
 }
 
 async fn wait_for_probe(deadline: &mut Option<Pin<Box<tokio::time::Sleep>>>) {

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use phux_client_runtime::control::{ControlOptions, Event, SpawnRequest, Status};
+use phux_client_runtime::control::{ControlOptions, Event, InboundDelivery, SpawnRequest, Status};
 use phux_client_runtime::reconnect::Ladder;
 use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Listener, Runtime, Target};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
@@ -356,6 +356,87 @@ fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
         client.close();
         proxy.abort();
         drop(controller);
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+    });
+}
+
+/// Feed what a queued-delivery driver retained, as a binding does.
+fn feed_queued(client: &Client) {
+    for frame in client.take_inbound() {
+        client
+            .with_control(|control| control.feed_bytes(&frame))
+            .expect("feed a queued frame");
+    }
+}
+
+/// Stall-epoch asserts must surface Dropped reason: hosted CI only shows
+/// left=2 right=1. Overflow vs send-failed vs peer-closed vs probe-timeout
+/// splits the Soft residual from a server-scope HARD HOLD.
+fn assert_epoch_held(client: &Client, epoch: u64, what: &str) {
+    let after = client.connection_epoch();
+    if after == epoch {
+        return;
+    }
+    let status = client.status();
+    let last_error = client.last_error();
+    let lost: Vec<_> = client
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::ConnectionLost { message } => Some(message),
+            _ => None,
+        })
+        .collect();
+    panic!(
+        "{what}: epoch {epoch} -> {after}; status={status:?}; last_error={last_error:?}; ConnectionLost={lost:?}"
+    );
+}
+
+#[test]
+fn a_consumer_that_falls_behind_backs_up_the_socket_without_redialing() {
+    // Hosted Linux sees the server close the socket during the stall; the
+    // dump on failure names which pump fault cancelled the connection.
+    let _trace = phux_server_testkit::tracing_capture::TracingCapture::install("falls-behind");
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let mut queued = options();
+        queued.control.deliver_inbound = InboundDelivery::Queued;
+        let client = Runtime::connect(Target::uds(&socket), queued).expect("connect");
+        wait_until("attach", || {
+            feed_queued(&client);
+            client.status() == Status::Attached
+        })
+        .await;
+        let epoch = client.connection_epoch();
+
+        let _ = client.spawn_terminal(SpawnRequest {
+            command: Some(vec![
+                "/usr/bin/seq".to_owned(),
+                "1".to_owned(),
+                "200000".to_owned(),
+            ]),
+            ..SpawnRequest::default()
+        });
+        // Stall like a busy UI thread while the terminal floods output:
+        // far more frames than the queue holds, and more than one read.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_epoch_held(&client, epoch, "a full queue redialed");
+
+        wait_until("the flood to finish arriving", || {
+            feed_queued(&client);
+            client
+                .take_events()
+                .iter()
+                .any(|event| matches!(event, Event::Exited { .. }))
+        })
+        .await;
+        assert_epoch_held(&client, epoch, "draining redialed");
+        assert_eq!(client.status(), Status::Attached);
+
+        client.close();
         drop(shutdown);
         server.await.unwrap().unwrap();
     });

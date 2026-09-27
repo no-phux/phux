@@ -570,6 +570,10 @@ enum PumpFault {
     /// The outbound mailbox closed mid-replay. The pump abandons the task
     /// without touching shared state.
     ReplayAbandoned,
+    /// The pane's actor was gone when the pump asked it for a replacement:
+    /// a pane that exited while this consumer was fenced behind a full
+    /// mailbox. `RESOURCE_CLOSED` is the pane's end; the connection is fine.
+    PaneGone,
 }
 
 /// Whether a broadcast control frame belongs to a pump's current generation,
@@ -809,9 +813,9 @@ impl OutputPumpContext {
 
     /// Ask the actor for the replacement native checkpoint.
     ///
-    /// A closed mailbox, a refused capture, and a dropped reply all lose the
-    /// generation; only the refusal is worth telling the client about, since
-    /// the other two mean the actor is already gone.
+    /// Only a refused capture loses the generation. A closed mailbox or a
+    /// dropped reply means the actor is already gone, which ends this pump
+    /// without failing the connection.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn capture_native_checkpoint(
         &self,
@@ -834,9 +838,12 @@ impl OutputPumpContext {
             .await
             .is_err()
         {
-            return Err(PumpFault::GenerationLost);
+            return Err(PumpFault::PaneGone);
         }
-        let Ok(Ok(reply)) = reply_rx.await else {
+        let Ok(reply) = reply_rx.await else {
+            return Err(PumpFault::PaneGone);
+        };
+        let Ok(reply) = reply else {
             let _ = self
                 .out_tx
                 .send(Outbound::Frame(FrameKind::Error {
@@ -2632,14 +2639,30 @@ fn spawn_terminal_output_pump(
             match fault {
                 PumpFault::OutboundClosed
                 | PumpFault::TombstoneNotQueued
-                | PumpFault::ReplayAbandoned => {}
+                | PumpFault::ReplayAbandoned
+                | PumpFault::PaneGone => {}
                 PumpFault::GenerationLost => {
-                    pump_state.with_mut(|s| {
-                        let _ = super::client::reap_pane_journaling_close(s, core_terminal_id);
+                    let reaped = pump_state.with_mut(|s| {
+                        super::client::reap_pane_journaling_close(s, core_terminal_id)
                     });
+                    // A pane that already closed ended with RESOURCE_CLOSED:
+                    // its fenced pump losing the generation on the way out
+                    // is no reason to drop the client.
+                    if reaped {
+                        warn!(
+                            ?core_terminal_id,
+                            "spawn pump lost its generation; reaped the pane, closing the client"
+                        );
+                        pump_connection_token.cancel();
+                    }
+                }
+                PumpFault::PublicationNotActivated => {
+                    warn!(
+                        ?core_terminal_id,
+                        "spawn pump publication not activated; closing the client"
+                    );
                     pump_connection_token.cancel();
                 }
-                PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
             }
         },
     );
@@ -3392,15 +3415,28 @@ impl PaneCaptureContext<'_> {
                     return;
                 };
                 match fault {
-                    PumpFault::OutboundClosed | PumpFault::ReplayAbandoned => {}
+                    PumpFault::OutboundClosed
+                    | PumpFault::ReplayAbandoned
+                    | PumpFault::PaneGone => {}
                     PumpFault::TombstoneNotQueued | PumpFault::GenerationLost => {
+                        warn!(
+                            ?terminal_id,
+                            ?fault,
+                            "attach pump failed; closing the client"
+                        );
                         crate::runtime::client::detach_and_release_consumer_state(
                             &pump_state,
                             client_id,
                         );
                         pump_connection_token.cancel();
                     }
-                    PumpFault::PublicationNotActivated => pump_connection_token.cancel(),
+                    PumpFault::PublicationNotActivated => {
+                        warn!(
+                            ?terminal_id,
+                            "attach pump publication not activated; closing the client"
+                        );
+                        pump_connection_token.cancel();
+                    }
                 }
             },
         );

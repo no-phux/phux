@@ -148,9 +148,9 @@ pub enum InboundDelivery {
     Queued,
 }
 
-/// The inbound queue's ceiling, mirroring the bounds a socket-owning
-/// embedder had to enforce for itself. A consumer that stops draining
-/// fails its connection rather than growing without limit.
+/// The inbound queue's ceiling. At it the driver stops reading, so a
+/// consumer that falls behind backs the socket up to the server instead
+/// of growing the queue or failing the connection.
 pub const MAX_QUEUED_INBOUND_FRAMES: usize = 128;
 /// The inbound queue's byte ceiling; see [`MAX_QUEUED_INBOUND_FRAMES`].
 pub const MAX_QUEUED_INBOUND_BYTES: usize = 32 * 1024 * 1024;
