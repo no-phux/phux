@@ -439,9 +439,8 @@ pub unsafe extern "C" fn phux_client_projection_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c::client::Limits;
-    use phux_protocol::PROTOCOL_VERSION;
-    use phux_protocol::caps::{BootstrapLimits, ServerCapabilities};
+    use crate::c::test_support::{feed, negotiate_with, new_client};
+    use phux_protocol::caps::ServerCapabilities;
     use phux_protocol::wire::frame::ErrorCode;
 
     fn span(bytes: &[u8]) -> PhuxBytes {
@@ -451,27 +450,23 @@ mod tests {
         }
     }
 
-    fn negotiated() -> *mut PhuxClient {
-        let mut inner = Client::new(Limits {
-            bootstrap_chunk: 1024,
-            history_page: 1024,
-            history_page_rows: 128,
-            history_cache_bytes: 4096,
-            history_materialized_rows: 1024,
-            history_prefetch_rows: 64,
-        });
-        inner.protocol_ready = true;
-        inner.l3_metadata = true;
-        Box::into_raw(Box::new(PhuxClient {
-            inner,
-            _not_send_sync: std::marker::PhantomData,
-        }))
+    fn l3_caps(layers: phux_protocol::LayerSet) -> ServerCapabilities {
+        ServerCapabilities::new().with_layers(layers)
     }
 
-    fn feed(client: *mut PhuxClient, frame: &FrameKind) -> PhuxClientResult {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        unsafe { crate::c::phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
+    /// An unattached client negotiated with `layers`.
+    fn negotiated_with_layers(layers: phux_protocol::LayerSet) -> *mut PhuxClient {
+        let client = new_client();
+        negotiate_with(
+            client,
+            l3_caps(layers),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        client
+    }
+
+    fn negotiated() -> *mut PhuxClient {
+        negotiated_with_layers(phux_protocol::LayerSet::with(&[phux_protocol::Layer::L3]))
     }
 
     fn info(client: *mut PhuxClient) -> PhuxProjectionInfo {
@@ -779,35 +774,6 @@ mod tests {
     }
 
     #[test]
-    fn needs_negotiated_l3_and_does_not_require_attach() {
-        let client = negotiated();
-        assert!(
-            !unsafe { (*client).inner.attached },
-            "negotiated() is unattached"
-        );
-        assert_eq!(get(client, 1, b"myapp.layout/v1/1"), PhuxClientResult::Ok);
-        unsafe { crate::c::phux_client_free(client) };
-
-        let client = negotiated();
-        unsafe {
-            (*client).inner.l3_metadata = false;
-        }
-        assert_eq!(
-            get(client, 1, b"myapp.layout/v1/1"),
-            PhuxClientResult::InvalidState
-        );
-        assert!(
-            unsafe { (*client).inner.outgoing.is_empty() },
-            "missing L3 must not queue or consume the request id"
-        );
-        unsafe {
-            (*client).inner.l3_metadata = true;
-        }
-        assert_eq!(get(client, 1, b"myapp.layout/v1/1"), PhuxClientResult::Ok);
-        unsafe { crate::c::phux_client_free(client) };
-    }
-
-    #[test]
     fn hello_ok_gates_l3_from_advertised_layers() {
         for (layers, expected) in [
             (phux_protocol::LayerSet::new(), false),
@@ -816,29 +782,7 @@ mod tests {
                 true,
             ),
         ] {
-            let mut inner = Client::new(Limits {
-                bootstrap_chunk: 1024,
-                history_page: 1024,
-                history_page_rows: 128,
-                history_cache_bytes: 4096,
-                history_materialized_rows: 1024,
-                history_prefetch_rows: 64,
-            });
-            inner.hello_queued = true;
-            let client = Box::into_raw(Box::new(PhuxClient {
-                inner,
-                _not_send_sync: std::marker::PhantomData,
-            }));
-            let hello = FrameKind::HelloOk {
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new().with_layers(layers),
-                server_id: b"server".to_vec(),
-                selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-                bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("limits"),
-            };
-            assert_eq!(feed(client, &hello), PhuxClientResult::Ok);
+            let client = negotiated_with_layers(layers);
             let mut supported = !expected;
             assert_eq!(
                 unsafe { phux_client_projection_supported(client, &raw mut supported) },
@@ -850,7 +794,13 @@ mod tests {
             } else {
                 PhuxClientResult::InvalidState
             };
+            assert!(!unsafe { (*client).inner.attached }, "no attach is needed");
             assert_eq!(get(client, 1, b"myapp.layout/v1/1"), queued);
+            assert_eq!(
+                unsafe { (*client).inner.outgoing.is_empty() },
+                !expected,
+                "missing L3 must not queue"
+            );
             unsafe { crate::c::phux_client_free(client) };
         }
     }

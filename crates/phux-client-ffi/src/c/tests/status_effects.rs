@@ -43,46 +43,13 @@ fn ffi_client_subscribes_from_after_seq_when_armed_before_attach() {
     let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
     let agent = phux_protocol::ResourceId::local(MIXED_AGENT);
     let snapshot = mixed_kind_snapshot(&terminal, &agent);
-    let stream_id = phux_protocol::StreamId::new(1).expect("stream");
-    let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
-    let client = boxed_client();
+    let client = attaching(&[phux_protocol::ServerFeature::EventJournal], 7);
     let after_seq = 41u64;
-    unsafe {
-        (*client).inner.protocol_ready = true;
-        (*client).inner.event_journal = true;
-        (*client).inner.attach_queued = true;
-        (*client).inner.expected_attach_id = Some(7);
-        (*client).inner.selected_profile = Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
-        assert_eq!(
-            phux_client_subscribe_events(client, ptr::null(), &raw const after_seq),
-            PhuxClientResult::Ok
-        );
-    }
-    for frame in [
-        FrameKind::Attached {
-            attach_id: 7,
-            snapshot,
-            initial_client_id: phux_protocol::ClientId::new(9),
-        },
-        FrameKind::BootstrapBegin {
-            terminal_id: terminal.clone(),
-            stream_id,
-            bootstrap_id,
-            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-            cols: 80,
-            rows: 24,
-            base_seq: 0,
-        },
-        FrameKind::BootstrapReady {
-            terminal_id: terminal,
-            stream_id,
-            bootstrap_id,
-            history_cursor: None,
-        },
-        FrameKind::AttachReady { attach_id: 7 },
-    ] {
-        assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
-    }
+    assert_eq!(
+        unsafe { phux_client_subscribe_events(client, ptr::null(), &raw const after_seq) },
+        PhuxClientResult::Ok
+    );
+    complete_resource_attach(client, snapshot);
     let sent: Vec<FrameKind> = unsafe {
         (0..phux_client_outgoing_count(client))
             .map(|index| {
@@ -111,9 +78,11 @@ fn ffi_client_subscribes_from_after_seq_when_armed_before_attach() {
 /// An already-attached client can re-subscribe with a cursor without re-attaching.
 #[test]
 fn ffi_client_subscribe_events_queues_after_seq_while_attached() {
-    let client = attached_mixed_client();
+    let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
+    let agent = phux_protocol::ResourceId::local(MIXED_AGENT);
+    let client = attaching(&[phux_protocol::ServerFeature::EventJournal], 7);
+    complete_resource_attach(client, mixed_kind_snapshot(&terminal, &agent));
     unsafe {
-        (*client).inner.event_journal = true;
         (*client).inner.outgoing.clear();
         let after_seq = u64::MAX;
         assert_eq!(
@@ -160,7 +129,7 @@ fn feed_scoped_event(
     expected_count: usize,
 ) -> CapturedStatus {
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::Event {
                 terminal: Some(terminal.clone()),
@@ -231,7 +200,7 @@ fn untargeted_events_are_ignored_and_targeted_bells_surface() {
     let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
 
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::Event {
                 terminal: None,
@@ -244,7 +213,7 @@ fn untargeted_events_are_ignored_and_targeted_bells_surface() {
         PhuxClientResult::Ok
     );
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::Event {
                 terminal: Some(terminal),
@@ -269,7 +238,7 @@ fn resource_closed_becomes_an_exited_status_effect() {
     let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
 
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::ResourceClosed {
                 terminal_id: terminal,
@@ -298,7 +267,7 @@ fn resource_closed_with_a_signal_surfaces_it_on_the_exited_status_effect() {
     let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
 
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::ResourceClosed {
                 terminal_id: terminal,
@@ -329,7 +298,7 @@ fn engine_bell_status_carries_the_published_generation() {
     let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
 
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::ResourceOutput {
                 terminal_id: terminal,
@@ -366,7 +335,7 @@ fn retired_generation_output_is_invalid_state_and_keeps_the_session() {
     let replacement = phux_protocol::BootstrapId::new(2).expect("replacement");
 
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::BootstrapTombstone {
                 terminal_id: terminal.clone(),
@@ -395,11 +364,11 @@ fn retired_generation_output_is_invalid_state_and_keeps_the_session() {
             history_cursor: None,
         },
     ] {
-        assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+        assert_eq!(feed(client, &frame), PhuxClientResult::Ok);
     }
 
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::ResourceOutput {
                 terminal_id: terminal,

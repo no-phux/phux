@@ -1,4 +1,5 @@
 use super::*;
+use crate::c::test_support;
 use crate::c::*;
 use phux_client_core::layout::{self, LayoutNode, LayoutState, WindowState};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
@@ -58,29 +59,37 @@ fn workspace_catalog_discovers_terminals_without_admitting_agent_session_resourc
 
 fn harness() -> Box<PhuxClient> {
     let mut client = attached_harness();
-    initial_read(&mut client.inner);
+    release_attach(&mut client);
     finish(&mut client, registry(1, false), None);
     client.inner.outgoing.clear();
     client
 }
 
+/// A client whose ATTACH was answered with `registry(1, false)` but whose
+/// barrier has not released yet.
 fn attached_harness() -> Box<PhuxClient> {
-    let limits = crate::c::client::Limits {
-        bootstrap_chunk: 1024,
-        history_page: 1024,
-        history_page_rows: 128,
-        history_cache_bytes: 4096,
-        history_materialized_rows: 1024,
-        history_prefetch_rows: 64,
-    };
-    let mut client = Box::new(PhuxClient {
-        inner: Client::new(limits),
-        _not_send_sync: std::marker::PhantomData,
-    });
-    client.inner.attached = true;
-    client.inner.protocol_ready = true;
-    attached(&mut client.inner, registry(1, false));
-    client
+    let client = test_support::attaching(&[], 1);
+    assert_eq!(
+        test_support::feed(client, &test_support::attached_frame(1, registry(1, false))),
+        PhuxClientResult::Ok
+    );
+    // SAFETY: the fixture returns a uniquely owned heap client.
+    unsafe { Box::from_raw(client) }
+}
+
+/// Bootstraps the focused session's panes and releases the barrier, which
+/// issues the initial workspace read.
+fn release_attach(client: &mut PhuxClient) {
+    for id in [1, 2] {
+        test_support::feed_bootstrap(
+            client,
+            &ResourceId::local(id),
+            (id.into(), 1),
+            (80, 24),
+            b"",
+        );
+    }
+    feed(client, FrameKind::AttachReady { attach_id: 1 });
 }
 
 #[allow(
@@ -168,7 +177,7 @@ fn initial_attachment_waits_for_confirmed_metadata_before_publishing_topology() 
         assert_eq!(client.inner.sessions.len(), 2);
         assert_eq!(client.inner.workspace.state, 0);
         assert!(client.inner.workspace.topology.windows.is_empty());
-        initial_read(&mut client.inner);
+        release_attach(&mut client);
         let pending = client.inner.workspace.pending.as_ref().unwrap();
         let state_id = pending.state_id.unwrap();
         let metadata_id = pending.metadata_id;

@@ -225,32 +225,10 @@ pub unsafe extern "C" fn phux_client_keep_empty_supported(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c::client::Limits;
+    use crate::c::test_support::{attached_client, feed, negotiated_client, new_client};
     use phux_protocol::wire::frame::ErrorCode;
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
     use phux_protocol::{ResourceId, SessionId, WindowId};
-
-    fn negotiated() -> *mut PhuxClient {
-        let mut inner = Client::new(Limits {
-            bootstrap_chunk: 1024,
-            history_page: 1024,
-            history_page_rows: 128,
-            history_cache_bytes: 4096,
-            history_materialized_rows: 1024,
-            history_prefetch_rows: 64,
-        });
-        inner.protocol_ready = true;
-        Box::into_raw(Box::new(PhuxClient {
-            inner,
-            _not_send_sync: std::marker::PhantomData,
-        }))
-    }
-
-    fn feed(client: *mut PhuxClient, frame: &FrameKind) -> PhuxClientResult {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        unsafe { crate::c::phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
-    }
 
     fn status(client: *mut PhuxClient) -> (u32, u32) {
         let (mut id, mut status) = (0, u32::MAX);
@@ -276,7 +254,7 @@ mod tests {
 
     #[test]
     fn a_negotiated_client_lists_sessions_without_attaching() {
-        let client = negotiated();
+        let client = negotiated_client(&[]);
         assert_eq!(status(client), (0, STATUS_NONE));
         assert_eq!(
             unsafe { phux_client_query_sessions(client, 1) },
@@ -310,23 +288,21 @@ mod tests {
 
     #[test]
     fn a_query_is_refused_outside_its_lifecycle() {
-        let fresh = negotiated();
-        unsafe { (*fresh).inner.protocol_ready = false };
+        let fresh = new_client();
         assert_eq!(
             unsafe { phux_client_query_sessions(fresh, 1) },
             PhuxClientResult::InvalidState
         );
         unsafe { crate::c::phux_client_free(fresh) };
 
-        let attached = negotiated();
-        unsafe { (*attached).inner.attached = true };
+        let attached = attached_client(&[]);
         assert_eq!(
             unsafe { phux_client_query_sessions(attached, 1) },
             PhuxClientResult::InvalidState
         );
         unsafe { crate::c::phux_client_free(attached) };
 
-        let client = negotiated();
+        let client = negotiated_client(&[]);
         assert_eq!(
             unsafe { phux_client_query_sessions(client, 4) },
             PhuxClientResult::Ok
@@ -343,29 +319,6 @@ mod tests {
             "request IDs strictly increase"
         );
         unsafe { crate::c::phux_client_free(client) };
-    }
-
-    /// A client that negotiated through a real `HELLO_OK` with `features`.
-    fn hello_with(features: &[phux_protocol::ServerFeature]) -> *mut PhuxClient {
-        use phux_protocol::caps::ServerCapabilities;
-        let client = negotiated();
-        unsafe {
-            (*client).inner.protocol_ready = false;
-            (*client).inner.hello_queued = true;
-        }
-        let hello = FrameKind::HelloOk {
-            protocol_major: crate::c::PROTOCOL_VERSION.major,
-            protocol_minor: crate::c::PROTOCOL_VERSION.minor,
-            protocol_patch: crate::c::PROTOCOL_VERSION.patch,
-            server_caps: ServerCapabilities::new()
-                .with_features(phux_protocol::ServerFeatureSet::with(features)),
-            server_id: b"server".to_vec(),
-            selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-            bootstrap_limits: phux_protocol::caps::BootstrapLimits::new(1024, 1024)
-                .expect("limits"),
-        };
-        assert_eq!(feed(client, &hello), PhuxClientResult::Ok);
-        client
     }
 
     /// Three sessions: an ordinary one, a keep-empty one with no windows,
@@ -412,7 +365,7 @@ mod tests {
             // An older server never marks a session, whatever it sent.
             (vec![], [0, 0, 0]),
         ] {
-            let client = hello_with(&features);
+            let client = negotiated_client(&features);
             assert_eq!(supported(client), !features.is_empty());
             assert_eq!(
                 unsafe { phux_client_query_sessions(client, 1) },
@@ -434,7 +387,7 @@ mod tests {
 
     #[test]
     fn refusals_keep_the_list_and_a_disconnect_makes_the_outcome_unknown() {
-        let client = negotiated();
+        let client = negotiated_client(&[]);
         assert_eq!(
             unsafe { phux_client_query_sessions(client, 1) },
             PhuxClientResult::Ok

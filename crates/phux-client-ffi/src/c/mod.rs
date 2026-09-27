@@ -24,6 +24,8 @@ mod remote;
 mod session_create;
 mod session_query;
 mod session_rename;
+#[cfg(test)]
+mod test_support;
 mod types;
 mod workspace;
 
@@ -424,7 +426,6 @@ pub unsafe extern "C" fn phux_client_queue_hello(
         if !client.control().open_explicit(name.to_owned()) {
             return Err(BridgeError::state("HELLO was already queued or negotiated"));
         }
-        client.hello_queued = true;
         client.drain_outbound();
         Ok(())
     })
@@ -452,8 +453,6 @@ pub unsafe extern "C" fn phux_client_queue_attach(
             options.version,
         )?;
         validate_attach_options(options)?;
-        #[cfg(test)]
-        seed_legacy_test_lifecycle(client)?;
         ensure_attach_allowed(client)?;
         let name_bytes =
             unsafe { outbound_bytes_in(options.name.data, options.name.len, "attach name") }?;
@@ -612,8 +611,6 @@ fn apply_server_frame(client: &mut Client, frame: FrameKind) -> Result<bool, Bri
         return Ok(false);
     }
     let agent_generation = agent_generation(&frame);
-    #[cfg(test)]
-    seed_legacy_test_lifecycle(client)?;
     validate_runtime_frame(client, &frame)?;
     let runtime_result = client.control().feed(frame).map_err(control_error);
     record_agent_generation(client, runtime_result.is_ok(), agent_generation);
@@ -746,68 +743,6 @@ fn dispatch_extension_frame(client: &mut Client, frame: FrameKind) -> Result<(),
         return Ok(());
     };
     let _ = operations::dispatch(client, frame)?;
-    Ok(())
-}
-
-#[cfg(test)]
-fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
-    if client.protocol_ready && !client.control().handshake_ready() {
-        client.install_profile(
-            client
-                .selected_profile
-                .unwrap_or(phux_protocol::BootstrapProfile::SynthesizedVtRaw),
-            BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
-                .ok_or_else(|| BridgeError::state("invalid test bootstrap limits"))?,
-        );
-    }
-    if client.attach_queued
-        && let Some(attach_id) = client.expected_attach_id
-    {
-        let queued = client.control().attach_explicit(
-            attach_id,
-            AttachTarget::Last,
-            ViewportInfo::new(80, 24),
-            false,
-            u32::try_from(client.limits.history_materialized_rows).unwrap_or(u32::MAX),
-            None,
-        );
-        if queued {
-            let _ = client.control().take_outbound();
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn advertised_client_caps(client: &Client) -> phux_protocol::ClientCapabilities {
-    client
-        .offered_caps
-        .unwrap_or_else(|| client.control().options().client_caps())
-}
-
-#[cfg(test)]
-fn apply_engine_event(
-    client: &mut Client,
-    event: phux_client_runtime::engine::EngineEvent,
-) -> Result<(), BridgeError> {
-    if client.control().engine().is_none() {
-        client.install_profile(
-            client
-                .selected_profile
-                .unwrap_or(phux_protocol::BootstrapProfile::SynthesizedVtRaw),
-            BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
-                .ok_or_else(|| BridgeError::state("invalid test bootstrap limits"))?,
-        );
-    }
-    client
-        .control()
-        .apply_engine_event(event)
-        .map_err(control_error)?;
-    client.drain_outbound();
-    let events = client.control().take_events();
-    for event in events {
-        let _ = client.process_runtime_event(event)?;
-    }
     Ok(())
 }
 
@@ -1657,7 +1592,7 @@ mod tests {
     mod status_effects;
 
     use super::*;
-    use phux_client_runtime::engine::EngineEvent;
+    use crate::c::test_support::*;
     use phux_protocol::caps::ServerCapabilities;
     use phux_protocol::wire::frame::DetachReason;
     use std::ffi::c_void;
@@ -1696,20 +1631,6 @@ mod tests {
         panic!("callback panic");
     }
 
-    fn boxed_client() -> *mut PhuxClient {
-        Box::into_raw(Box::new(PhuxClient {
-            inner: Client::new(Limits {
-                bootstrap_chunk: 1024,
-                history_page: 1024,
-                history_page_rows: 128,
-                history_cache_bytes: 4096,
-                history_materialized_rows: 1024,
-                history_prefetch_rows: 64,
-            }),
-            _not_send_sync: std::marker::PhantomData,
-        }))
-    }
-
     #[test]
     fn local_projection_budget_may_be_smaller_than_authenticated_page_rows() {
         let options = PhuxClientOptions {
@@ -1728,7 +1649,7 @@ mod tests {
 
     #[test]
     fn search_result_release_consumes_the_borrowed_set_in_one_mutation() {
-        let client = boxed_client();
+        let client = new_client();
         unsafe {
             (*client).inner.search_results.push(PhuxSearchResult {
                 start: PhuxDocumentAnchor { opaque_id: 41 },
@@ -1750,7 +1671,7 @@ mod tests {
 
     #[test]
     fn attached_callback_runs_after_staging_once_and_rejects_reentry() {
-        let client = boxed_client();
+        let client = new_client();
         let mut context = CallbackContext {
             client,
             calls: 0,
@@ -1781,7 +1702,7 @@ mod tests {
 
     #[test]
     fn failure_callback_observes_stable_error_and_rejects_reentry() {
-        let client = boxed_client();
+        let client = new_client();
         let mut context = CallbackContext {
             client,
             calls: 0,
@@ -1824,7 +1745,7 @@ mod tests {
             return;
         }
 
-        let client = boxed_client();
+        let client = new_client();
         unsafe {
             (*client).inner.callbacks = PhuxClientCallbacks {
                 on_attached: Some(panic_callback),
@@ -1842,145 +1763,70 @@ mod tests {
 
     #[test]
     fn hello_ok_explicitly_gates_terminal_reply_frames() {
-        fn feed_hello(
-            client: *mut PhuxClient,
-            server_caps: ServerCapabilities,
-        ) -> PhuxClientResult {
-            unsafe { (*client).inner.hello_queued = true };
-            let mut encoded = bytes::BytesMut::new();
-            FrameKind::HelloOk {
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps,
-                server_id: b"server".to_vec(),
-                selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-                bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("valid test limits"),
-            }
-            .encode(&mut encoded);
-            unsafe { phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
-        }
-
-        let old = boxed_client();
-        assert_eq!(
-            feed_hello(old, ServerCapabilities::new()),
-            PhuxClientResult::Ok
-        );
-        assert!(!unsafe { (*old).inner.terminal_reply });
-        unsafe { phux_client_free(old) };
-
-        let new = boxed_client();
-        let features =
-            phux_protocol::ServerFeatureSet::with(&[phux_protocol::ServerFeature::TerminalReply]);
-        assert_eq!(
-            feed_hello(new, ServerCapabilities::new().with_features(features),),
-            PhuxClientResult::Ok
-        );
-        assert!(unsafe { (*new).inner.terminal_reply });
-        unsafe { phux_client_free(new) };
-    }
-
-    fn hello_ok(patch: u16, selected_profile: phux_protocol::BootstrapProfile) -> FrameKind {
-        FrameKind::HelloOk {
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: patch,
-            server_caps: ServerCapabilities::new(),
-            server_id: b"server".to_vec(),
-            selected_profile,
-            bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("valid test limits"),
+        for (features, expected) in [
+            (&[][..], false),
+            (&[phux_protocol::ServerFeature::TerminalReply][..], true),
+        ] {
+            let client = negotiated_client(features);
+            assert_eq!(unsafe { (*client).inner.terminal_reply }, expected);
+            unsafe { phux_client_free(client) };
         }
     }
 
-    fn native_hello_ok_profile() -> phux_protocol::BootstrapProfile {
-        phux_protocol::BootstrapProfile::NativeState {
-            codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
-            features: phux_protocol::EngineFeatureSet::required_native(),
+    fn hello_ok_patch(patch: u16, selected_profile: phux_protocol::BootstrapProfile) -> FrameKind {
+        let mut frame = hello_ok(ServerCapabilities::new(), selected_profile);
+        if let FrameKind::HelloOk { protocol_patch, .. } = &mut frame {
+            *protocol_patch = patch;
         }
+        frame
     }
 
     #[test]
     fn hello_ok_accepts_matching_patch_and_native_features() {
-        let client = boxed_client();
-        unsafe { (*client).inner.hello_queued = true };
-        let offered = advertised_client_caps(unsafe { &(*client).inner });
+        let client = new_client();
+        let offered = unsafe { (*client).inner.control().options().client_caps() };
         let profile = if offered
             .bootstrap
             .profiles
             .contains(phux_protocol::BootstrapProfileKind::NativeState)
         {
-            native_hello_ok_profile()
+            phux_protocol::BootstrapProfile::NativeState {
+                codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
+                features: phux_protocol::EngineFeatureSet::required_native(),
+            }
         } else {
             phux_protocol::BootstrapProfile::SynthesizedVtRaw
         };
-        assert_eq!(
-            feed_kind(client, &hello_ok(PROTOCOL_VERSION.patch, profile)),
-            PhuxClientResult::Ok
-        );
+        negotiate_with(client, ServerCapabilities::new(), profile);
         assert!(unsafe { (*client).inner.protocol_ready });
         unsafe { phux_client_free(client) };
     }
 
     #[test]
-    fn hello_ok_refuses_protocol_patch_mismatch() {
-        let client = boxed_client();
-        unsafe { (*client).inner.hello_queued = true };
-        assert_eq!(
-            feed_kind(
-                client,
-                &hello_ok(
-                    PROTOCOL_VERSION.patch.wrapping_add(1),
-                    phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-                ),
-            ),
-            PhuxClientResult::ProtocolError
-        );
-        assert!(!unsafe { (*client).inner.protocol_ready });
-        unsafe { phux_client_free(client) };
-    }
-
-    #[test]
-    fn hello_ok_refuses_native_profile_when_required_features_are_missing() {
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.hello_queued = true;
-            (*client).inner.offered_caps = Some(
-                phux_protocol::ClientCapabilities::new().with_bootstrap(
-                    phux_protocol::BootstrapCapabilities::new()
-                        .with_profiles(phux_protocol::BootstrapProfileSet::with(&[
-                            phux_protocol::BootstrapProfileKind::NativeState,
-                        ]))
-                        .with_native_codecs(phux_protocol::EngineCodecSet::with(&[
-                            phux_protocol::EngineCodec::LibghosttySnapshotV1,
-                        ]))
-                        .with_native_features(phux_protocol::EngineFeatureSet::with(&[
-                            phux_protocol::EngineFeature::Continuation,
-                        ])),
-                ),
-            );
-        }
+    fn hello_ok_refuses_mismatched_patch_and_incomplete_native_profiles() {
         let incomplete = phux_protocol::BootstrapProfile::NativeState {
             codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
             features: phux_protocol::EngineFeatureSet::with(&[
                 phux_protocol::EngineFeature::Continuation,
             ]),
         };
-        assert_eq!(
-            feed_kind(client, &hello_ok(PROTOCOL_VERSION.patch, incomplete)),
-            PhuxClientResult::ProtocolError
-        );
-        assert!(!unsafe { (*client).inner.protocol_ready });
-        unsafe { phux_client_free(client) };
+        for frame in [
+            hello_ok_patch(
+                PROTOCOL_VERSION.patch.wrapping_add(1),
+                phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+            ),
+            hello_ok_patch(PROTOCOL_VERSION.patch, incomplete),
+        ] {
+            let client = new_client();
+            assert_eq!(feed(client, &frame), PhuxClientResult::ProtocolError);
+            assert!(!unsafe { (*client).inner.protocol_ready });
+            unsafe { phux_client_free(client) };
+        }
     }
 
     #[test]
     fn attach_ready_must_match_the_queued_attach_id() {
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.attach_queued = true;
-            (*client).inner.expected_attach_id = Some(7);
-        }
+        let client = attaching(&[], 7);
         let mut encoded = bytes::BytesMut::new();
         FrameKind::AttachReady { attach_id: 8 }.encode(&mut encoded);
         assert_eq!(
@@ -1994,7 +1840,7 @@ mod tests {
 
     #[test]
     fn borrowed_getter_clears_output_before_no_value() {
-        let client = boxed_client();
+        let client = new_client();
         let mut frame = PhuxBytes {
             data: ptr::dangling(),
             len: usize::MAX,
@@ -2039,16 +1885,9 @@ mod tests {
             80,
             24,
         )]);
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.attach_queued = true;
-            (*client).inner.expected_attach_id = Some(7);
-            (*client).inner.selected_profile =
-                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
-        }
+        let client = attaching(&[], 7);
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::Attached {
                     attach_id: 7,
@@ -2083,15 +1922,15 @@ mod tests {
                     history_cursor: None,
                 },
             ] {
-                assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+                assert_eq!(feed(client, &frame), PhuxClientResult::Ok);
             }
         }
         assert_eq!(
-            feed_kind(client, &FrameKind::AttachReady { attach_id: 7 }),
+            feed(client, &FrameKind::AttachReady { attach_id: 7 }),
             PhuxClientResult::Ok
         );
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::BootstrapTombstone {
                     terminal_id,
@@ -2146,12 +1985,7 @@ mod tests {
 
     #[test]
     fn attached_snapshot_scopes_participants_to_the_focused_session() {
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.attach_queued = true;
-            (*client).inner.expected_attach_id = Some(7);
-        }
+        let client = attaching(&[], 7);
         let focused_session = SessionId::new(2);
         let other_session = SessionId::new(1);
         let focused_window = phux_protocol::WindowId::new(20);
@@ -2195,7 +2029,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::Attached {
                     attach_id: 7,
@@ -2270,78 +2104,24 @@ mod tests {
 
     fn feed_complete_bootstrap(
         client: *mut PhuxClient,
-        terminal_id: phux_protocol::ResourceId,
-        payload: &'static [u8],
+        terminal_id: &phux_protocol::ResourceId,
+        payload: &[u8],
     ) {
-        let stream_id = phux_protocol::StreamId::new(7).expect("stream");
-        let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
-        for frame in [
-            FrameKind::BootstrapBegin {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-                cols: 40,
-                rows: 12,
-                base_seq: 0,
-            },
-            FrameKind::BootstrapChunk {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: bytes::Bytes::copy_from_slice(payload),
-            },
-            FrameKind::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-        ] {
-            assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
-        }
+        feed_bootstrap(client, terminal_id, (7, 1), (40, 12), payload);
     }
 
     fn client_with_searchable_scrollback() -> *mut PhuxClient {
-        let client = boxed_client();
-        // SAFETY: the fixture exclusively owns this live client on this thread.
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.attach_queued = true;
-            (*client).inner.expected_attach_id = Some(7);
-            (*client).inner.selected_profile =
-                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
-        }
+        let client = attaching(&[], 7);
         let terminal = phux_protocol::ResourceId::local(1);
-        let session = SessionId::new(1);
-        let window = phux_protocol::WindowId::new(1);
-        let snapshot =
-            phux_protocol::wire::info::SessionSnapshot::new(session, window, terminal.clone())
-                .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
-                    window, session, "search",
-                )])
-                .with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
-                    terminal.clone(),
-                    window,
-                    40,
-                    12,
-                )]);
+        let snapshot = single_terminal_snapshot(terminal.clone(), 40, 12);
         assert_eq!(
-            feed_kind(
-                client,
-                &FrameKind::Attached {
-                    attach_id: 7,
-                    snapshot,
-                    initial_client_id: phux_protocol::ClientId::new(9),
-                }
-            ),
+            feed(client, &attached_frame(7, snapshot)),
             PhuxClientResult::Ok,
         );
-        feed_complete_bootstrap(client, terminal,
+        feed_complete_bootstrap(client, &terminal,
             b"older\r\nOFFSCREEN MATCH\r\n02\r\n03\r\n04\r\n05\r\n06\r\n07\r\n08\r\n09\r\n10\r\n11\r\n12\r\n13\r\n14\r\n15\r\n16\r\n17\r\n18\r\nLIVE TAIL");
         assert_eq!(
-            feed_kind(client, &FrameKind::AttachReady { attach_id: 7 }),
+            feed(client, &FrameKind::AttachReady { attach_id: 7 }),
             PhuxClientResult::Ok,
         );
         client
@@ -2437,20 +2217,13 @@ mod tests {
 
     #[test]
     fn three_pane_attach_resolves_unbootstrapped_seed_by_closure() {
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.attach_queued = true;
-            (*client).inner.expected_attach_id = Some(7);
-            (*client).inner.selected_profile =
-                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
-        }
+        let client = attaching(&[], 7);
         let seed = phux_protocol::ResourceId::local(2);
         let horizontal = phux_protocol::ResourceId::local(3);
         let vertical = phux_protocol::ResourceId::local(4);
         let snapshot = three_pane_snapshot(&seed, &horizontal, &vertical);
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::Attached {
                     attach_id: 7,
@@ -2460,10 +2233,10 @@ mod tests {
             ),
             PhuxClientResult::Ok,
         );
-        feed_complete_bootstrap(client, horizontal.clone(), b"horizontal");
-        feed_complete_bootstrap(client, vertical.clone(), b"vertical");
+        feed_complete_bootstrap(client, &horizontal, b"horizontal");
+        feed_complete_bootstrap(client, &vertical, b"vertical");
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceClosed {
                     terminal_id: seed.clone(),
@@ -2475,7 +2248,7 @@ mod tests {
             PhuxClientResult::Ok,
         );
         assert_eq!(
-            feed_kind(client, &FrameKind::AttachReady { attach_id: 7 }),
+            feed(client, &FrameKind::AttachReady { attach_id: 7 }),
             PhuxClientResult::Ok,
         );
         assert!(unsafe { (*client).inner.attached });
@@ -2488,12 +2261,7 @@ mod tests {
 
     #[test]
     fn attached_snapshot_exposes_the_server_session_catalog() {
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.attach_queued = true;
-            (*client).inner.expected_attach_id = Some(7);
-        }
+        let client = attaching(&[], 7);
         let snapshot = phux_protocol::wire::info::SessionSnapshot::new(
             SessionId::new(2),
             phux_protocol::WindowId::new(20),
@@ -2509,7 +2277,7 @@ mod tests {
                 .with_attached_client_count(4),
         ]);
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::Attached {
                     attach_id: 7,
@@ -2544,20 +2312,13 @@ mod tests {
         unsafe { phux_client_free(client) };
     }
 
-    fn feed_kind(client: *mut PhuxClient, frame: &FrameKind) -> PhuxClientResult {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        unsafe { phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
-    }
-
     #[test]
     fn queued_effects_are_projected_only_when_read() {
-        let client = boxed_client();
-        unsafe { (*client).inner.protocol_ready = true };
+        let client = negotiated_client(&[]);
         client::EFFECT_VIEW_BUILDS.set(0);
         for index in 0..64 {
             assert_eq!(
-                feed_kind(
+                feed(
                     client,
                     &FrameKind::Error {
                         code: phux_protocol::wire::frame::ErrorCode::InvalidCommand,
@@ -2641,8 +2402,7 @@ mod tests {
 
     #[test]
     fn attach_id_zero_is_rejected_without_output() {
-        let client = boxed_client();
-        unsafe { (*client).inner.protocol_ready = true };
+        let client = negotiated_client(&[]);
         let options = PhuxAttachOptions {
             size: mem::size_of::<PhuxAttachOptions>(),
             version: ABI_VERSION,
@@ -2669,8 +2429,7 @@ mod tests {
 
     #[test]
     fn last_attach_queues_one_server_resolved_request_without_create_fallback() {
-        let client = boxed_client();
-        unsafe { (*client).inner.protocol_ready = true };
+        let client = negotiated_client(&[]);
         let options = PhuxAttachOptions {
             size: mem::size_of::<PhuxAttachOptions>(),
             version: ABI_VERSION,
@@ -2715,7 +2474,7 @@ mod tests {
     #[test]
     fn outbound_text_limit_rejects_overflow_and_accepts_boundary() {
         let too_large = vec![b'a'; crate::c::error::MAX_OUTBOUND_BYTES + 1];
-        let rejected = boxed_client();
+        let rejected = new_client();
         assert_eq!(
             unsafe { phux_client_queue_hello(rejected, bytes_out(&too_large)) },
             PhuxClientResult::InvalidArgument
@@ -2725,7 +2484,7 @@ mod tests {
         unsafe { phux_client_free(rejected) };
 
         let boundary = vec![b'a'; crate::c::error::MAX_OUTBOUND_BYTES];
-        let accepted = boxed_client();
+        let accepted = new_client();
         assert_eq!(
             unsafe { phux_client_queue_hello(accepted, bytes_out(&boundary)) },
             PhuxClientResult::Ok
@@ -2742,7 +2501,7 @@ mod tests {
 
     #[test]
     fn native_workspace_negotiates_metadata_before_issuing_layout_reads() {
-        let client = boxed_client();
+        let client = new_client();
         assert_eq!(
             unsafe { phux_client_queue_hello(client, bytes_out(b"workspace")) },
             PhuxClientResult::Ok
@@ -2760,10 +2519,10 @@ mod tests {
 
     #[test]
     fn feed_rejects_payload_above_current_limit_before_lifecycle_dispatch() {
-        let client = boxed_client();
+        let client = new_client();
         let payload = vec![0_u8; 2 * 1024];
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::BootstrapChunk {
                     terminal_id: phux_protocol::ResourceId::local(7),
@@ -2786,12 +2545,7 @@ mod tests {
     #[test]
     fn terminal_state_frames_require_an_active_attach_participant() {
         let terminal_id = phux_protocol::ResourceId::local(7);
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.selected_profile =
-                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
-        }
+        let client = attaching(&[], 7);
         let begin = FrameKind::BootstrapBegin {
             terminal_id: terminal_id.clone(),
             stream_id: phux_protocol::StreamId::new(1).expect("stream"),
@@ -2801,9 +2555,9 @@ mod tests {
             rows: 24,
             base_seq: 0,
         };
-        assert_eq!(feed_kind(client, &begin), PhuxClientResult::ProtocolError);
+        assert_eq!(feed(client, &begin), PhuxClientResult::ProtocolError);
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceClosed {
                     terminal_id: terminal_id.clone(),
@@ -2815,21 +2569,14 @@ mod tests {
             PhuxClientResult::ProtocolError
         );
         assert!(!unsafe { (*client).inner.active_attach_contains(&terminal_id) });
-        unsafe {
-            (*client).inner.attach_queued = true;
-        }
-        let authorized = [terminal_id.clone()];
-        apply_engine_event(
-            unsafe { &mut (*client).inner },
-            EngineEvent::AttachStarted {
-                attach_id: 7,
-                terminals: authorized.to_vec(),
-            },
-        )
-        .expect("seed active ATTACH inventory");
+        let snapshot = single_terminal_snapshot(terminal_id.clone(), 80, 24);
+        assert_eq!(
+            feed(client, &attached_frame(7, snapshot)),
+            PhuxClientResult::Ok
+        );
         assert!(unsafe { (*client).inner.active_attach_contains(&terminal_id) });
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::BootstrapBegin {
                     terminal_id: phux_protocol::ResourceId::local(8),
@@ -2848,13 +2595,9 @@ mod tests {
 
     #[test]
     fn detached_before_attach_cleanly_ends_prehello_and_negotiated_connections() {
-        for protocol_ready in [false, true] {
-            let client = boxed_client();
-            unsafe {
-                (*client).inner.protocol_ready = protocol_ready;
-            }
+        for client in [new_client(), negotiated_client(&[])] {
             assert_eq!(
-                feed_kind(
+                feed(
                     client,
                     &FrameKind::Detached {
                         reason: Some(DetachReason::ProtocolError),
@@ -2865,7 +2608,7 @@ mod tests {
             );
             assert!(unsafe { (*client).inner.detached });
             assert_eq!(
-                feed_kind(client, &FrameKind::Ping { nonce: 7 }),
+                feed(client, &FrameKind::Ping { nonce: 7 }),
                 PhuxClientResult::ProtocolError,
                 "nothing follows DETACHED"
             );
@@ -2876,22 +2619,14 @@ mod tests {
     #[test]
     fn detached_releases_attach_and_rejects_subsequent_output_transactionally() {
         let terminal_id = phux_protocol::ResourceId::local(7);
-        let authorized = [terminal_id.clone()];
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.attach_queued = true;
-        }
-        apply_engine_event(
-            unsafe { &mut (*client).inner },
-            EngineEvent::AttachStarted {
-                attach_id: 7,
-                terminals: authorized.to_vec(),
-            },
-        )
-        .expect("seed active ATTACH inventory");
+        let client = attaching(&[], 7);
+        let snapshot = single_terminal_snapshot(terminal_id.clone(), 80, 24);
         assert_eq!(
-            feed_kind(
+            feed(client, &attached_frame(7, snapshot)),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            feed(
                 client,
                 &FrameKind::Detached {
                     reason: None,
@@ -2904,7 +2639,7 @@ mod tests {
         assert!(!client_ref.inner.active_attach_contains(&terminal_id));
         let effects_before = client_ref.inner.owned_effects.len();
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceOutput {
                     terminal_id,
@@ -2921,10 +2656,9 @@ mod tests {
         unsafe { phux_client_free(client) };
     }
 
-    /// phux-l83x: the DETACHED status effect carries the reason as a stable
-    /// wire value and the message verbatim, and an unstated reason is
-    /// reported as UNSTATED rather than as `REQUESTED` (which is `0`, the
-    /// value a zero-default would have produced).
+    /// The DETACHED status effect carries the reason as a stable wire value
+    /// and the message verbatim; an unstated reason is UNSTATED, never the
+    /// zero-default `REQUESTED`.
     #[test]
     fn detached_status_effect_carries_the_reason_and_message() {
         for (reason, expected_code) in [
@@ -2936,13 +2670,9 @@ mod tests {
             (Some(DetachReason::AuthorizationExpired), 7),
             (Some(DetachReason::InternalError), 255),
         ] {
-            let client = boxed_client();
-            unsafe {
-                (*client).inner.protocol_ready = true;
-                (*client).inner.attach_queued = true;
-            }
+            let client = attaching(&[], 7);
             assert_eq!(
-                feed_kind(
+                feed(
                     client,
                     &FrameKind::Detached {
                         reason,
@@ -2974,59 +2704,19 @@ mod tests {
             id: 7,
             host: PhuxBytes::default(),
         };
-        let stream_id = phux_protocol::StreamId::new(1).expect("stream");
-        let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
-        let authorized = [terminal_id.clone()];
-        let client = boxed_client();
+        let client = attaching(&[], 7);
+        let snapshot = single_terminal_snapshot(terminal_id.clone(), 80, 24);
+        assert_eq!(
+            feed(client, &attached_frame(7, snapshot)),
+            PhuxClientResult::Ok
+        );
+        feed_bootstrap(client, &terminal_id, (1, 1), (80, 24), b"\x1b[?1000h");
+        assert_eq!(
+            feed(client, &FrameKind::AttachReady { attach_id: 7 }),
+            PhuxClientResult::Ok
+        );
         let inner = unsafe { &mut (*client).inner };
-        inner.protocol_ready = true;
-        inner.attach_queued = true;
-        apply_engine_event(
-            inner,
-            EngineEvent::AttachStarted {
-                attach_id: 7,
-                terminals: authorized.to_vec(),
-            },
-        )
-        .expect("start attach");
-        apply_engine_event(
-            inner,
-            EngineEvent::BootstrapBegin {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-                cols: 80,
-                rows: 24,
-                base_seq: 0,
-            },
-        )
-        .expect("begin bootstrap");
-        apply_engine_event(
-            inner,
-            EngineEvent::BootstrapChunk {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                chunk_seq: 0,
-                payload: b"\x1b[?1000h".to_vec(),
-            },
-        )
-        .expect("set DEC mouse mode");
-        apply_engine_event(
-            inner,
-            EngineEvent::BootstrapReady {
-                terminal_id: terminal_id.clone(),
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-        )
-        .expect("publish terminal");
-        apply_engine_event(inner, EngineEvent::AttachReady { attach_id: 7 })
-            .expect("release attach barrier");
-        inner.attach_queued = false;
-        inner.attached = true;
+        assert!(inner.attached);
         inner.selection_buf.extend_from_slice(b"borrowed");
         let borrowed = inner.selection_buf.as_ptr();
 
@@ -3044,17 +2734,19 @@ mod tests {
         assert!(enabled);
         assert_eq!(unsafe { &*client }.inner.selection_buf.as_ptr(), borrowed);
 
-        apply_engine_event(
-            unsafe { &mut (*client).inner },
-            EngineEvent::Output {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq: 1,
-                bytes: b"\x1b[?1000l".to_vec(),
-            },
-        )
-        .expect("reset DEC mouse mode");
+        assert_eq!(
+            feed(
+                client,
+                &FrameKind::ResourceOutput {
+                    terminal_id,
+                    stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+                    bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
+                    seq: 1,
+                    bytes: bytes::Bytes::from_static(b"\x1b[?1000l"),
+                },
+            ),
+            PhuxClientResult::Ok
+        );
         assert_eq!(
             unsafe {
                 phux_client_terminal_mouse_tracking(
@@ -3115,7 +2807,16 @@ mod tests {
         );
         assert!(enabled);
         unsafe { &mut *client }.inner.in_callback = false;
-        unsafe { &mut *client }.inner.detached = true;
+        assert_eq!(
+            feed(
+                client,
+                &FrameKind::Detached {
+                    reason: None,
+                    message: String::new(),
+                },
+            ),
+            PhuxClientResult::Ok
+        );
         assert_eq!(
             unsafe {
                 phux_client_terminal_mouse_tracking(
@@ -3207,47 +2908,31 @@ mod tests {
     fn attached_resource_client(
         snapshot: phux_protocol::wire::info::SessionSnapshot,
     ) -> *mut PhuxClient {
+        let client = attaching(&[], 7);
+        complete_resource_attach(client, snapshot);
+        client
+    }
+
+    /// Answers ATTACH 7 with `snapshot`, bootstraps its focused terminal,
+    /// releases the barrier, and clears the resulting effects.
+    fn complete_resource_attach(
+        client: *mut PhuxClient,
+        snapshot: phux_protocol::wire::info::SessionSnapshot,
+    ) {
         let terminal = snapshot.focused_resource.clone();
-        let stream_id = phux_protocol::StreamId::new(1).expect("stream");
-        let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
-        let client = boxed_client();
-        unsafe {
-            (*client).inner.protocol_ready = true;
-            (*client).inner.attach_queued = true;
-            (*client).inner.expected_attach_id = Some(7);
-            (*client).inner.selected_profile =
-                Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
-        }
-        for frame in [
-            FrameKind::Attached {
-                attach_id: 7,
-                snapshot,
-                initial_client_id: phux_protocol::ClientId::new(9),
-            },
-            FrameKind::BootstrapBegin {
-                terminal_id: terminal.clone(),
-                stream_id,
-                bootstrap_id,
-                profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-                cols: 80,
-                rows: 24,
-                base_seq: 0,
-            },
-            FrameKind::BootstrapReady {
-                terminal_id: terminal,
-                stream_id,
-                bootstrap_id,
-                history_cursor: None,
-            },
-            FrameKind::AttachReady { attach_id: 7 },
-        ] {
-            assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
-        }
+        assert_eq!(
+            feed(client, &attached_frame(7, snapshot)),
+            PhuxClientResult::Ok
+        );
+        feed_bootstrap(client, &terminal, (1, 1), (80, 24), b"");
+        assert_eq!(
+            feed(client, &FrameKind::AttachReady { attach_id: 7 }),
+            PhuxClientResult::Ok
+        );
         assert_eq!(
             unsafe { phux_client_effect_clear(client) },
             PhuxClientResult::Ok
         );
-        client
     }
 
     #[test]
@@ -3308,7 +2993,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                feed_kind(
+                feed(
                     client,
                     &FrameKind::BootstrapBegin {
                         terminal_id,
@@ -3372,7 +3057,7 @@ mod tests {
                 bytes: bytes::Bytes::from(record(3, "ask", "{}")),
             },
         ] {
-            assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+            assert_eq!(feed(client, &frame), PhuxClientResult::Ok);
         }
         assert!(
             unsafe { (*client).inner.projection(&agent) }.is_none(),
@@ -3430,7 +3115,7 @@ mod tests {
 
         // History is a terminal facet: the kernel refuses it for an agent stream.
         assert_ne!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::HistoryRejected {
                     terminal_id: agent.clone(),
@@ -3448,7 +3133,7 @@ mod tests {
         // A malformed payload retires the generation with a RESYNC_REQUIRED
         // status instead of handing the host a log with a hole in it.
         assert_ne!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceOutput {
                     terminal_id: agent.clone(),
@@ -3475,7 +3160,7 @@ mod tests {
 
         // A close retires the resource with a CLOSED effect.
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceClosed {
                     terminal_id: agent.clone(),
@@ -3496,7 +3181,7 @@ mod tests {
         assert_eq!((effect.stream_id, effect.bootstrap_id), (4, 5));
         assert!(!unsafe { (*client).inner.is_agent_stream(&agent) });
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceOutput {
                     terminal_id: agent,
