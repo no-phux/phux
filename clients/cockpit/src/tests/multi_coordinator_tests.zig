@@ -17,7 +17,6 @@ const interaction = @import("../cockpit/terminal_interaction.zig");
 const picker = @import("../cockpit/native/directory_picker.zig");
 const remote_commands = @import("../cockpit/native/remote_presentation_commands.zig");
 const shipping_pointer = @import("../cockpit/native/shipping_pointer.zig");
-const update_module = @import("../cockpit/update.zig");
 const protocol = @import("../cockpit/native/ts_protocol.zig");
 const scene = @import("../cockpit/native/scene.zig");
 const projection = @import("../cockpit/native/workspace_projection.zig");
@@ -630,16 +629,16 @@ test "keys, text, focus, pointer, selection, search and bells on a peer's pane r
     // Keyboard selection and Select All take anchors on mini, and clearing
     // releases them there.
     const state = model.remoteUi(mini7).?;
-    update_module.remote_selection.begin(model, mini7, state);
+    interaction.remote_selection.begin(model, state);
     try testing.expect(state.selecting);
     try testing.expect(state.start_anchor != 0);
-    update_module.remote_selection.move(model, mini7, state, 1, 0);
+    interaction.remote_selection.move(model, state, 1, 0);
     try testing.expect(state.end_anchor != 0);
-    update_module.remote_selection.clear(model, state);
+    interaction.remote_selection.clear(model, state);
     try testing.expectEqual(@as(u64, 0), state.start_anchor);
     try testing.expect(remote_commands.command(model, mini7, .select_all));
     try testing.expect(state.start_anchor != 0);
-    update_module.remote_selection.clear(model, state);
+    interaction.remote_selection.clear(model, state);
 
     // Search runs on mini's replica; this Mac's holds no search.
     try testing.expect(remote_commands.command(model, mini7, .find));

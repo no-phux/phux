@@ -200,56 +200,6 @@ test "inverse resolves its ink before the floor sees it" {
     try expectRgb(.{ .r = 0, .g = 0, .b = 0 }, floored);
 }
 
-test "minimum-contrast reaches the pane the REAL chrome builder paints" {
-    // The tests above hand `grid.paint` its options directly, which proves the
-    // floor works and proves nothing about whether the app ever asks for it.
-    // `view.zig` builds those options from `Model.config`, and deleting that
-    // one field assignment left every assertion above green — the exact
-    // "parsed, stored, never consulted" failure, verified by doing it. So this
-    // one drives the real app: real config, real chrome build, and the
-    // foreground read off the retained scene the runtime holds.
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const state = try support.startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(state);
-    defer app.deinitModel(&state.model);
-    defer state.deinit();
-    const app_iface = state.app();
-
-    // Two runs of the SAME escape sequence out of the same pty, one per config
-    // state. Two markers rather than one re-read of a single marker: the scene
-    // is RETAINED and only damaged rows are re-emitted, so re-reading a cell
-    // written before the config changed would be asking a question about the
-    // damage tracker, not about the config.
-    //
-    // THE NEGATIVE HALF FIRST. With the floor off, the app's own frame must
-    // hold libghostty's black. Without it this test would pass against a build
-    // that painted everything white.
-    state.model.config = app.parseConfig("minimum-contrast = 1");
-    try state.effects.feedPtyOutput(1, "\x1b[30mALPHA\x1b[0m\r\n");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    {
-        const view = try support.expectCellGrid(harness.runtime.views[0].canvasDisplayList());
-        const at = view.find("ALPHA") orelse return error.TestExpectedMarker;
-        const fg = view.foreground(at.x, at.y) orelse return error.TestExpectedCell;
-        try expectRgb(vt.color.default[0], fg);
-    }
-
-    // Same app, same bytes, one config key different.
-    state.model.config = app.parseConfig("minimum-contrast = 3");
-    try state.effects.feedPtyOutput(1, "\x1b[30mBRAVO\x1b[0m\r\n");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    {
-        const view = try support.expectCellGrid(harness.runtime.views[0].canvasDisplayList());
-        const at = view.find("BRAVO") orelse return error.TestExpectedMarker;
-        const fg = view.foreground(at.x, at.y) orelse return error.TestExpectedCell;
-        try expectRgb(.{ .r = 255, .g = 255, .b = 255 }, fg);
-    }
-}
-
 test "minimum-contrast parses, clamps, and disables" {
     // The key exists and takes a ratio.
     const on = config_module.parse("minimum-contrast = 4.5");

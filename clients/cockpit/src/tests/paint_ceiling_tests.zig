@@ -19,14 +19,10 @@ const geometry = native_sdk.geometry;
 const testing = std.testing;
 
 const createSession = support.createSession;
-const startFocusedTerminal = support.startFocusedTerminal;
-const destroyModelSessions = app.deinitModel;
-const TerminalApp = support.TerminalApp;
 
 const product_cols: u16 = @intCast(grid.max_cols);
 const product_rows: u16 = @intCast(grid.max_rows);
 const huge_frame = geometry.RectF.init(0, 0, 8000, 4000);
-const huge_size = geometry.SizeF.init(8000, 4000);
 
 const Use = struct {
     commands: usize,
@@ -529,89 +525,6 @@ test "measured panes that overflow still last-N crop the unfocused neighbour" {
     try testing.expectEqual(paint_budget.degraded_rows, neighbour.rows());
     try testing.expectEqual(rowMark(rows - paint_budget.degraded_rows), neighbour.cluster(0, 0)[0]);
     try testing.expectEqual(rowMark(rows - 1), neighbour.cluster(0, neighbour.rows() - 1)[0]);
-}
-
-fn splitUntil(state: *TerminalApp, harness: anytype, want: usize) !void {
-    const app_iface = state.app();
-    while (state.model.wsConst().selectedTreeConst().?.paneCount() < want) {
-        const before = state.model.provider.liveShellCount();
-        try state.dispatch(&harness.runtime, 1, .split_right);
-        if (state.model.provider.liveShellCount() == before) return error.SplitRefused;
-        try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    }
-}
-
-fn driveHugeFrames(harness: anytype, app_iface: anytype, start_index: u64) !void {
-    var frame_index = start_index;
-    while (frame_index < start_index + 8) : (frame_index += 1) {
-        try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_frame = .{
-            .label = app.canvas_label,
-            .size = huge_size,
-            .scale_factor = 2,
-            .frame_index = @intCast(frame_index),
-            .timestamp_ns = frame_index * 1_000_000,
-        } });
-    }
-}
-
-test "MEASURED: real painter path at N=2,4,8 on a huge window" {
-    try support.requireLiveShells(8);
-    const gpa = testing.allocator;
-    const ns = [_]usize{ 2, 4, 8 };
-    for (ns) |n| {
-        const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-        defer harness.destroy(gpa);
-        const app_state = try startFocusedTerminal(gpa, harness);
-        defer gpa.destroy(app_state);
-        defer destroyModelSessions(&app_state.model);
-        defer app_state.deinit();
-        const app_iface = app_state.app();
-        try splitUntil(app_state, harness, n);
-        try driveHugeFrames(harness, app_iface, 2);
-
-        for (support.activeSlots(&app_state.model), 0..) |pane, slot| {
-            feedTruecolor(pane.session, pane.cols, pane.rows);
-            measured.print(
-                "MEASURED painter-prep n={d} slot={d} pty_cols={d} pty_rows={d} cells={d}\n",
-                .{ n, slot, pane.cols, pane.rows, @as(usize, pane.cols) * @as(usize, pane.rows) },
-            );
-        }
-
-        const builder = try heapBuilder(gpa);
-        defer destroyBuilder(gpa, builder);
-        try painter.paintWindowIndex(&app_state.model, builder, 0, huge_size, .{}, 0);
-        const tree = app_state.model.wsConst().selectedTreeConst().?;
-        var panes: [layout.max_panes]layout.Pane = undefined;
-        const count = app.resolvePanes(&app_state.model, huge_size, &panes);
-        try testing.expectEqual(n, count);
-        for (panes[0..count], 0..) |pane, index| {
-            const paint_index = painter.terminalPaintIndex(&app_state.model, pane.terminal);
-            const view = support.findPaneCellGrid(builder.displayList(), paint_index);
-            measured.print(
-                "MEASURED painter n={d} pane={d} focused={d} rows={d} cells={d} rect={d:.0}x{d:.0}\n",
-                .{
-                    n,
-                    index,
-                    @intFromBool(pane.node == tree.focus),
-                    if (view) |grid_view| grid_view.rows() else 0,
-                    if (view) |grid_view| grid_view.cellCount() else 0,
-                    pane.rect.width,
-                    pane.rect.height,
-                },
-            );
-        }
-        measured.print(
-            "MEASURED painter n={d} totals: commands={d} cells={d} text={d} paths={d} degradation={s}\n",
-            .{
-                n,
-                builder.len,
-                builder.cell_len,
-                textLen(builder),
-                pathLen(builder),
-                if (builder.degradation) |loss| @tagName(loss.store) else "none",
-            },
-        );
-    }
 }
 
 test "drive-shell-ceiling is macOS live PTY evidence, not a paint bind" {

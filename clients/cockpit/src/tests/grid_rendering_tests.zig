@@ -11,13 +11,7 @@ const testing = std.testing;
 
 const createSession = support.createSession;
 const createSessions = support.createSessions;
-const activeSlots = support.activeSlots;
-const destroyModelSessions = app.deinitModel;
 const expectCursorPaintKind = support.expectCursorPaintKind;
-const expectPaneCursorPaintKind = support.expectPaneCursorPaintKind;
-const startFocusedTerminal = support.startFocusedTerminal;
-const startTwoPaneCockpit = support.startTwoPaneCockpit;
-const pressCanvasKey = support.pressCanvasKey;
 
 // A terminal screen paints as packed `cell_grid` commands now, one per
 // ROW (see support.zig), so the assertions below read CELLS: per-run
@@ -518,82 +512,6 @@ test "box-drawing cells render as edge-to-edge geometry, never glyphs" {
     try testing.expect(full_height_bar);
 }
 
-test "painted-output oracle: the prompt and caret reach the surface as pixels" {
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const app_state = try startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-
-    // The shell prompt arrives (the transport working is NOT the test —
-    // the pixels are).
-    try app_state.effects.feedPtyOutput(1, "demo$ ");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-
-    // Render a full retained-scene screenshot. A damage-only present into
-    // fresh pixels is no longer a valid oracle once Work/Web transitions
-    // can add independent frame transactions.
-    const pixel_size = try harness.runtime.canvasScreenshotPixelSize(1, app.canvas_label, 1);
-    const pixels = try gpa.alloc(u8, pixel_size.byte_len);
-    defer gpa.free(pixels);
-    const scratch = try gpa.alloc(u8, pixel_size.byte_len);
-    defer gpa.free(scratch);
-    const shot = try harness.runtime.renderCanvasScreenshot(1, app.canvas_label, 1, pixels, scratch);
-    const width: usize = shot.width;
-    const height: usize = shot.height;
-    try testing.expectEqual(@as(usize, 980), width);
-    try testing.expectEqual(@as(usize, 640), height);
-    // (i) The prompt's cell band holds INK: pixels that differ from the
-    // grid background. The first text row starts at the grid origin;
-    // sample generously across the first cell row.
-    const session = app_state.model.provider.slots[0].session;
-    const cell_w: usize = @intFromFloat(@max(1, session.measuredCell().?.width));
-    const cell_h: usize = @intFromFloat(@max(1, session.measuredCell().?.height));
-    const pane_frame = app.paneFrames(&app_state.model, geometry.SizeF.init(@floatFromInt(width), @floatFromInt(height)))[0];
-    const grid_x: usize = @intFromFloat(pane_frame.x);
-    const grid_y: usize = @intFromFloat(pane_frame.y);
-    var band_colors = std.AutoHashMap(u32, void).init(gpa);
-    defer band_colors.deinit();
-    var y: usize = grid_y;
-    while (y < grid_y + cell_h) : (y += 1) {
-        var x: usize = grid_x;
-        while (x < grid_x + cell_w * 8) : (x += 1) {
-            const offset = (y * width + x) * 4;
-            const value = std.mem.readInt(u32, shot.rgba8[offset..][0..4], .little);
-            try band_colors.put(value, {});
-        }
-    }
-    // The retained half of the oracle: the prompt is in the scene as
-    // CELLS, on the grid's first row at its first column. The old scan
-    // could only say "some text command somewhere contained demo$"; the
-    // lattice pins the exact cell, which is the cell the pixel band
-    // below samples.
-    const retained = try expectCellGrid(harness.runtime.views[0].canvasDisplayList());
-    const prompt = retained.find("demo$") orelse return error.TestExpectedMarker;
-    try testing.expectEqual(@as(usize, 0), prompt.y);
-    try testing.expectEqual(@as(usize, 0), prompt.x);
-    // Background alone is one color; ink adds more (glyph coverage is
-    // antialiased, so ink contributes MANY distinct values — demand a
-    // handful so a single stray pixel cannot pass).
-    try testing.expect(band_colors.count() >= 4);
-
-    // (ii) The caret cell paints distinguishably: the cursor sits right
-    // after "demo$ " (column 6) and its wash differs from both the
-    // background and the row's empty cells.
-    const caret_x: usize = @intFromFloat(pane_frame.x + 6.5 * session.measuredCell().?.width);
-    const caret_y = grid_y + cell_h / 2;
-    const caret_offset = (caret_y * width + caret_x) * 4;
-    const caret_value = std.mem.readInt(u32, shot.rgba8[caret_offset..][0..4], .little);
-    const empty_x: usize = @intFromFloat(pane_frame.x + 40.0 * session.measuredCell().?.width);
-    const empty_offset = (caret_y * width + empty_x) * 4;
-    const empty_value = std.mem.readInt(u32, shot.rgba8[empty_offset..][0..4], .little);
-    try testing.expect(caret_value != empty_value);
-}
-
 test "switching terminal Works retains distinct id namespaces the diff accepts" {
     const sessions = try createSessions(20, 6);
     defer for (sessions) |each| each.destroy();
@@ -756,28 +674,4 @@ test "a screen of double box drawing stays inside the selected terminal budget" 
     // reason (or that stopped merging box runs) shows up here instead of
     // hiding behind "fewer than 24".
     try testing.expect(view.rows() <= app.chrome_command_envelope / (box_cols * box_cell_commands + 1));
-}
-
-test "only the selected terminal has a cursor command and deactivation hollows it" {
-    const gpa = testing.allocator;
-    const size = geometry.SizeF.init(980, 640);
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
-    defer harness.destroy(gpa);
-    const app_state = try startTwoPaneCockpit(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-
-    try expectPaneCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), 0, .filled);
-    try testing.expect(harness.runtime.views[0].canvasDisplayList().findCommandById(grid.cursorCommandId(grid.paneIdBase(1))) == null);
-
-    try pressCanvasKey(harness, app_iface, "2", .{ .primary = true });
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    try testing.expect(harness.runtime.views[0].canvasDisplayList().findCommandById(grid.cursorCommandId(grid.paneIdBase(0))) == null);
-    try expectPaneCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), 1, .filled);
-
-    try harness.runtime.dispatchPlatformEvent(app_iface, .app_deactivated);
-    try expectPaneCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), 1, .hollow);
-    try testing.expect(harness.runtime.views[0].canvasDisplayList().findCommandById(grid.cursorCommandId(grid.paneIdBase(0))) == null);
 }

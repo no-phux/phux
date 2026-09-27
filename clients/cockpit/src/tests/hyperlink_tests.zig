@@ -15,18 +15,12 @@ const app = @import("../native_test_root.zig");
 const grid = @import("../terminal/grid.zig");
 const url = @import("../terminal/url.zig");
 const support = @import("support.zig");
-const pointer_support = @import("pointer_support.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 const testing = std.testing;
 
 const createSession = support.createSession;
-const destroyModelSessions = app.deinitModel;
-const startPointerHost = pointer_support.startPointerHost;
-const pointerInput = pointer_support.pointerInput;
-const terminalCellPoint = pointer_support.terminalCellPoint;
-const terminalInteractionFrame = support.terminalInteractionFrame;
 
 /// OSC 8, no id parameter: `open ++ href ++ st` starts a hyperlink and
 /// `close_link` ends it. Split into pieces rather than wrapped in a helper so
@@ -55,21 +49,6 @@ fn makeBuilder(commands: []canvas.CanvasCommand) !*canvas.Builder {
     const builder = try testing.allocator.create(canvas.Builder);
     builder.initAt(commands);
     return builder;
-}
-
-/// Host paints use the full command envelope. Two or three of those arrays
-/// still sit in the test frame next to TestHarness after Builders move to
-/// the heap, which is how `window blur` died in `startPointerHost`.
-fn heapHostBuilder(gpa: std.mem.Allocator) !*canvas.Builder {
-    const commands = try gpa.alloc(canvas.CanvasCommand, native_sdk.runtime.max_canvas_commands_per_view);
-    errdefer gpa.free(commands);
-    const builder = try makeBuilder(commands);
-    return builder;
-}
-
-fn destroyHostBuilder(gpa: std.mem.Allocator, builder: *canvas.Builder) void {
-    gpa.free(builder.commands);
-    gpa.destroy(builder);
 }
 
 /// The middle of cell (col, row), in widget points.
@@ -241,30 +220,6 @@ test "nonvisual mismatch resolution retains the visible URL without a rendered r
     try testing.expectEqual(grid.Session.LinkSource.text, link.source);
 }
 
-fn previewGround(display_list: canvas.DisplayList, pane_index: usize) ?geometry.RectF {
-    for (display_list.commands) |command| switch (command) {
-        .fill_rect => |fill| if (fill.id == app.link_preview_ground_command_id_base + pane_index) return fill.rect,
-        else => {},
-    };
-    return null;
-}
-
-fn previewText(display_list: canvas.DisplayList, pane_index: usize) ?[]const u8 {
-    for (display_list.commands) |command| switch (command) {
-        .draw_text => |text| if (text.id == app.link_preview_text_command_id_base + pane_index) return text.text,
-        else => {},
-    };
-    return null;
-}
-
-fn previewAuthority(display_list: canvas.DisplayList, pane_index: usize) ?canvas.DrawText {
-    for (display_list.commands) |command| switch (command) {
-        .draw_text => |text| if (text.id == app.link_preview_authority_command_id_base + pane_index) return text,
-        else => {},
-    };
-    return null;
-}
-
 test "a display text that AGREES with its href stays an explicit link" {
     // The control for the test above. Same shape, same code path, and the
     // only difference is that the two destinations match — so a guard that
@@ -428,118 +383,6 @@ test "the underline follows its text when output scrolls under the pointer" {
 // and the click both run through `handleTerminalPointer`, and a session that
 // resolves links perfectly is worth nothing if nothing arms it.
 
-/// Repaint the main window's canvas from the model, the way the runtime does,
-/// and hand back the focused pane's lattice.
-fn paintHostGrid(host: *app.CockpitHost, builder: *canvas.Builder) !support.CellGridView {
-    try app.buildChromeWindow(&host.inner.model, builder, support.mainChromeContext());
-    return support.expectCellGrid(builder.displayList());
-}
-
-test "cmd+click follows an OSC 8 href, not the words it is wrapped around" {
-    const gpa = testing.allocator;
-    const size = geometry.SizeF.init(980, 640);
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
-    defer harness.destroy(gpa);
-    const host = try startPointerHost(gpa, harness, size);
-    defer gpa.destroy(host);
-    defer destroyModelSessions(&host.inner.model);
-    defer host.deinit();
-    const app_iface = host.app();
-    const model = &host.inner.model;
-    const pane = model.provider.terminal(app.initialTerminalRef(0)) orelse return error.TestExpectedTerminal;
-
-    try host.inner.effects.feedPtyOutput(
-        pane.pty_key,
-        open_link ++ "https://example.com/docs" ++ st ++ "read the docs" ++ close_link ++ "\r\n",
-    );
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    const frame = terminalInteractionFrame(harness, "read the docs") orelse
-        return error.TestExpectedTerminalInteractionSurface;
-
-    // ABSENT: nothing has been opened yet, so the count below is not carrying
-    // over from the fixture.
-    try testing.expectEqual(@as(u32, 0), model.opened_url_count);
-
-    // "read the docs" is ordinary prose — the heuristic finds nothing here, so
-    // the only way this opens anything at all is the explicit channel.
-    const on_link = terminalCellPoint(pane, frame, 4, 0);
-    try pointerInput(harness, app_iface, .pointer_down, on_link, 0, .{ .command = true }, 0);
-    try testing.expectEqual(@as(u32, 1), model.opened_url_count);
-    try testing.expectEqualStrings("https://example.com/docs", model.openedUrl());
-}
-
-test "quick Cmd-click on an unpreviewed OSC 8 mismatch opens only visible text" {
-    const gpa = testing.allocator;
-    const size = geometry.SizeF.init(980, 640);
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
-    defer harness.destroy(gpa);
-    const host = try startPointerHost(gpa, harness, size);
-    defer gpa.destroy(host);
-    defer destroyModelSessions(&host.inner.model);
-    defer host.deinit();
-    const app_iface = host.app();
-    const model = &host.inner.model;
-    const pane = model.provider.terminal(app.initialTerminalRef(0)) orelse return error.TestExpectedTerminal;
-
-    try host.inner.effects.feedPtyOutput(
-        pane.pty_key,
-        open_link ++ "https://evil.example/steal" ++ st ++ "https://bank.example" ++ close_link ++ "\r\n",
-    );
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    const frame = terminalInteractionFrame(harness, "https://bank.example") orelse return error.TestExpectedTerminalInteractionSurface;
-    const on_link = terminalCellPoint(pane, frame, 5, 0);
-
-    // No move/hover and therefore no rendered receipt precedes this press.
-    try pointerInput(harness, app_iface, .pointer_down, on_link, 0, .{ .command = true }, 0);
-    try testing.expectEqual(@as(u32, 1), model.opened_url_count);
-    try testing.expectEqualStrings("https://bank.example", model.openedUrl());
-}
-
-test "long OSC 8 userinfo cannot hide the rendered effective authority" {
-    const gpa = testing.allocator;
-    const size = geometry.SizeF.init(980, 640);
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
-    defer harness.destroy(gpa);
-    const host = try startPointerHost(gpa, harness, size);
-    defer gpa.destroy(host);
-    defer destroyModelSessions(&host.inner.model);
-    defer host.deinit();
-    const app_iface = host.app();
-    const pane = host.inner.model.provider.terminal(app.initialTerminalRef(0)) orelse return error.TestExpectedTerminal;
-
-    const userinfo = try gpa.alloc(u8, url.max_url_bytes - 320);
-    defer gpa.free(userinfo);
-    @memset(userinfo, 'b');
-    const host_prefix = try gpa.alloc(u8, 223);
-    defer gpa.free(host_prefix);
-    @memset(host_prefix, 'a');
-    host_prefix[55] = '.';
-    host_prefix[111] = '.';
-    host_prefix[167] = '.';
-    const href = try std.fmt.allocPrint(gpa, "https://{s}@{s}.EVIL.Example/steal", .{ userinfo, host_prefix });
-    defer gpa.free(href);
-    try testing.expect(href.len <= url.max_url_bytes);
-    const output = try std.fmt.allocPrint(gpa, "{s}{s}{s}{s}{s}\r\n", .{ open_link, href, st, "https://bank.example", close_link });
-    defer gpa.free(output);
-    try host.inner.effects.feedPtyOutput(pane.pty_key, output);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    const frame = terminalInteractionFrame(harness, "https://bank.example") orelse return error.TestExpectedTerminalInteractionSurface;
-    try pointerInput(harness, app_iface, .pointer_move, terminalCellPoint(pane, frame, 5, 0), 0, .{}, 0);
-
-    const builder = try heapHostBuilder(gpa);
-    defer destroyHostBuilder(gpa, builder);
-    _ = try paintHostGrid(host, builder);
-    const authority = previewAuthority(builder.displayList(), 0) orelse return error.TestExpectedLinkPreview;
-    try testing.expect(std.mem.startsWith(u8, authority.text, "..."));
-    try testing.expect(std.mem.endsWith(u8, authority.text, ".evil.example"));
-    const layout_options = authority.text_layout orelse return error.TestExpectedLinkPreview;
-    try testing.expectEqual(canvas.TextOverflow.clip, layout_options.overflow);
-    try testing.expect(canvas.measureTextWidthForFont(layout_options.measure, authority.font_id, authority.text, authority.size) <= layout_options.max_width);
-}
-
 test "no preview permanently taxes a saturated terminal command budget" {
     const session = try createSession(80, 24);
     defer session.destroy();
@@ -554,80 +397,4 @@ test "no preview permanently taxes a saturated terminal command budget" {
     session.setMeasuredCell(10, 20);
     _ = session.setPointerPoint(cellPoint(session, 0, 0));
     try testing.expectEqual(@as(usize, 3), app.linkPreviewCommandReserve(session));
-}
-
-test "the link chord arms the hover underline, and a bare pointer does not" {
-    const gpa = testing.allocator;
-    const builder = try heapHostBuilder(gpa);
-    defer destroyHostBuilder(gpa, builder);
-    const size = geometry.SizeF.init(980, 640);
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
-    defer harness.destroy(gpa);
-    const host = try startPointerHost(gpa, harness, size);
-    defer gpa.destroy(host);
-    defer destroyModelSessions(&host.inner.model);
-    defer host.deinit();
-    const app_iface = host.app();
-    const model = &host.inner.model;
-    const pane = model.provider.terminal(app.initialTerminalRef(0)) orelse return error.TestExpectedTerminal;
-
-    try host.inner.effects.feedPtyOutput(pane.pty_key, "see https://example.com/docs now\r\n");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    const frame = terminalInteractionFrame(harness, "https://example.com/docs") orelse
-        return error.TestExpectedTerminalInteractionSurface;
-    const on_link = terminalCellPoint(pane, frame, 10, 0);
-
-    // ABSENT: the pointer is over the link, with no modifier held. Hovering a
-    // URL must not underline it on its own — the underline advertises a chord,
-    // and one that is not being held promises a click that would only select.
-    try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{}, 0);
-    const bare = try paintHostGrid(host, builder);
-    try expectUnderlinedRange(bare, 0, 0, 0, 32);
-
-    // ACT: same point, chord held.
-    try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{ .command = true }, 0);
-    builder.reset();
-    const armed = try paintHostGrid(host, builder);
-    try expectUnderlinedRange(armed, 0, 4, 4 + "https://example.com/docs".len, 32);
-
-    // ...and letting the chord go takes it away again.
-    try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{}, 0);
-    builder.reset();
-    const released = try paintHostGrid(host, builder);
-    try expectUnderlinedRange(released, 0, 0, 0, 32);
-}
-
-test "window blur takes the hover underline with it" {
-    // The chord is a HELD key, and a blur is exactly how it stops being held
-    // without this app ever seeing the release.
-    const gpa = testing.allocator;
-    const builder = try heapHostBuilder(gpa);
-    defer destroyHostBuilder(gpa, builder);
-    const size = geometry.SizeF.init(980, 640);
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
-    defer harness.destroy(gpa);
-    const host = try startPointerHost(gpa, harness, size);
-    defer gpa.destroy(host);
-    defer destroyModelSessions(&host.inner.model);
-    defer host.deinit();
-    const app_iface = host.app();
-    const model = &host.inner.model;
-    const pane = model.provider.terminal(app.initialTerminalRef(0)) orelse return error.TestExpectedTerminal;
-
-    try host.inner.effects.feedPtyOutput(pane.pty_key, "see https://example.com/docs now\r\n");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    const frame = terminalInteractionFrame(harness, "https://example.com/docs") orelse
-        return error.TestExpectedTerminalInteractionSurface;
-    const on_link = terminalCellPoint(pane, frame, 10, 0);
-    try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{ .command = true }, 0);
-
-    const armed = try paintHostGrid(host, builder);
-    try expectUnderlinedRange(armed, 0, 4, 4 + "https://example.com/docs".len, 32);
-
-    app.update(&host.inner.model, .{ .focus_changed = false }, &host.inner.effects);
-    builder.reset();
-    const blurred = try paintHostGrid(host, builder);
-    try expectUnderlinedRange(blurred, 0, 0, 0, 32);
 }

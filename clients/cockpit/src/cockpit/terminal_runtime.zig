@@ -5,12 +5,10 @@ const vt = @import("ghostty-vt");
 const grid = @import("../terminal/grid.zig");
 const local = @import("../providers/local/provider.zig");
 const model_module = @import("model.zig");
-const app_types = @import("app_types.zig");
 
 const canvas = native_sdk.canvas;
 const Model = model_module.Model;
 pub const Pane = local.Pane;
-pub const Fx = app_types.Fx;
 /// `fx` is any effects instance with the pty verbs (`ptySpawn`, `ptyWrite`,
 /// `ptyResize`, `ptyKill`), not only this app's own: the TypeScript-core
 /// graph drives the same runtime from its adapter's effects, whose Msg type

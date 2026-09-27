@@ -1,4 +1,13 @@
 const std = @import("std");
+
+/// Effect key for the layout snapshot write; clear of pty (1..) and clipboard
+/// (100, 101) keys, which share the file-key space.
+pub const topology_state_file_key: u64 = 200;
+/// Timer key for the save debounce (timer keys are their own namespace).
+pub const topology_persist_timer_key: u64 = 200;
+/// A divider drag or a burst of new tabs costs one write once the layout
+/// holds still this long; shutdown flushes synchronously.
+pub const topology_persist_debounce_ms: u64 = 750;
 const local = @import("../providers/local/provider.zig");
 const layout = @import("layout.zig");
 const support = @import("phux_support.zig");

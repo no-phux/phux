@@ -18,6 +18,7 @@ const native_sdk = @import("native_sdk");
 const model_module = @import("../model.zig");
 const support = @import("../phux_support.zig");
 const layout = @import("../layout.zig");
+const topology = @import("../topology.zig");
 const grid = @import("../../terminal/grid.zig");
 const vt = @import("ghostty-vt");
 const terminal_runtime = @import("../terminal_runtime.zig");
@@ -61,7 +62,6 @@ test "projection refusal publishes newly retained completion independently from 
     try std.testing.expect(!engine.projectionRefused());
 }
 const pointer_input = @import("../pointer_input.zig");
-const update_module = @import("../update.zig");
 const provider_contract = @import("provider_contract");
 const local = @import("../../providers/local/provider.zig");
 const scene = @import("scene.zig");
@@ -915,8 +915,8 @@ pub const Engine = struct {
 
     fn armTopologyPersist(_: *Engine, fx: anytype, on_fire: anytype) void {
         fx.startTimer(.{
-            .key = update_module.topology_persist_timer_key,
-            .interval_ms = update_module.topology_persist_debounce_ms,
+            .key = topology.topology_persist_timer_key,
+            .interval_ms = topology.topology_persist_debounce_ms,
             .mode = .one_shot,
             .on_fire = on_fire,
         });
@@ -935,7 +935,7 @@ pub const Engine = struct {
         state.inflight_fingerprint = state.fingerprint;
         state.pending = false;
         fx.writeFile(.{
-            .key = update_module.topology_state_file_key,
+            .key = topology.topology_state_file_key,
             .path = state.path(),
             .bytes = encoded,
             .on_result = on_result,
@@ -3158,7 +3158,7 @@ pub const Engine = struct {
     fn remoteModeShortcut(self: *Engine, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
         if (event.modifiers.shift and keyIs(event.key, "space")) {
             const state = self.model.remoteUi(ref) orelse return true;
-            if (state.selecting) update_module.remote_selection.clear(self.model, state) else update_module.remote_selection.begin(self.model, ref, state);
+            if (state.selecting) interaction.remote_selection.clear(self.model, state) else interaction.remote_selection.begin(self.model, state);
             return true;
         }
         return self.remoteScrollKey(ref, event);
@@ -3195,11 +3195,11 @@ pub const Engine = struct {
 
     fn remoteSelectionKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
         const state = self.model.remoteUi(ref) orelse return;
-        if (keyIs(event.key, "escape")) return update_module.remote_selection.clear(self.model, state);
+        if (keyIs(event.key, "escape")) return interaction.remote_selection.clear(self.model, state);
         if (keyIs(event.key, "enter")) return interaction.copy(self.model, fx, ref);
         if (keyIs(event.key, "b")) {
             state.rectangle = !state.rectangle;
-            update_module.remote_selection.apply(self.model, state);
+            interaction.remote_selection.apply(self.model, state);
             return;
         }
         const movements = .{
@@ -3207,7 +3207,7 @@ pub const Engine = struct {
             .{ "arrowup", 0, -1 },   .{ "arrowdown", 0, 1 },
         };
         inline for (movements) |move| {
-            if (keyIs(event.key, move[0])) return update_module.remote_selection.move(self.model, ref, state, move[1], move[2]);
+            if (keyIs(event.key, move[0])) return interaction.remote_selection.move(self.model, state, move[1], move[2]);
         }
     }
 
@@ -3702,7 +3702,7 @@ pub const Engine = struct {
         const pane = model.provider.terminal(terminal) orelse return false;
         if (!pane.acceptsInput()) return false;
         if (model.selectedTree()) |tree| _ = tree.focusTerminal(terminal);
-        update_module.pasteClipboardText(model, pane, fx, text);
+        interaction.pasteClipboardText(model, pane, fx, text);
         return true;
     }
 
@@ -3796,7 +3796,7 @@ pub const Engine = struct {
     }
 
     fn currentRemoteFocusOwner(self: *Engine) ?support.ReplicaOwner {
-        const ref = if (self.input_suspended) null else update_module.remoteFocusTarget(self.model);
+        const ref = if (self.input_suspended) null else interaction.remoteFocusTarget(self.model);
         if (comptime support.phux_enabled) {
             if (ref) |value| self.acknowledgeAttended(value);
         }
