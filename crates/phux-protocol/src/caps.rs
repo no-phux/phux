@@ -1,57 +1,28 @@
 //! Capability advertisements (SPEC §6.2).
 //!
 //! Capabilities live in HELLO and apply for the life of the connection. The
-//! types here are wire-level: they appear in [`ClientCapabilities`] /
-//! `ServerCapabilities` envelopes and drive the server-side VT byte-stream
-//! rewriter per [ADR-0013].
-//!
-//! Under ADR-0013 the cell-level `StyleColor`
-//! downsampling helper is gone; the server rewrites SGR sequences in the
-//! outbound byte stream instead (see `phux_server::downsample`). What
-//! survives on the protocol side is the *advertised tier itself* —
-//! [`ColorSupport`] — which the rewriter consults to decide what to emit.
-//!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
+//! server rewrites outbound SGR bytes to the advertised [`ColorSupport`]
+//! (ADR-0013).
 
-/// A client's color tier (SPEC §6.2).
-///
-/// Advertised once at HELLO time; the server rewrites outbound VT bytes to
-/// fit. `TrueColor` is the most-permissive tier — clients that have not yet
-/// advertised caps default here so we never silently downgrade.
-///
-/// Variants are ordered from most-permissive to least-permissive, but the
-/// enum is `#[non_exhaustive]`: protocol additions (e.g. a future palette
-/// negotiation tier) must not break downstream consumers.
+/// A client's color tier (SPEC §6.2), most to least permissive. The server
+/// rewrites outbound VT bytes to fit; `TrueColor` is the default so an
+/// unadvertised client is never silently downgraded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum ColorSupport {
-    /// 24-bit direct RGB. The server forwards SGR truecolor sequences
-    /// (`CSI 38;2;R;G;B m` / `CSI 48;2;R;G;B m`) verbatim.
+    /// 24-bit direct RGB; SGR truecolor is forwarded verbatim.
     #[default]
     TrueColor,
-    /// xterm 256-color palette: 16 system colors, a 6x6x6 RGB cube
-    /// (indices 16..=231), and 24-step grayscale (232..=255).
+    /// xterm 256-color palette.
     Indexed256,
-    /// 16 system colors only (the ANSI base set + 8 bright variants).
+    /// 16 system colors only.
     Indexed16,
-    /// Monochrome — the renderer cannot distinguish color at all. SGR color
-    /// sequences MUST be stripped from the outbound byte stream.
-    ///
-    /// Currently unused by [`detect_color_support`] (which never returns
-    /// `Mono`); reserved for future explicit opt-in via configuration or
-    /// for accessibility profiles. Added here so the wire codec has a
-    /// stable tag for it.
+    /// Monochrome: SGR color sequences MUST be stripped.
     Mono,
 }
 
 impl ColorSupport {
-    /// Wire tag for the [`ColorSupport`] variant.
-    ///
-    /// Discriminants are stable within the v0.x protocol; new variants
-    /// append. Decoders that see an unknown tag MUST fall back to
-    /// [`ColorSupport::TrueColor`] (the safe most-permissive default)
-    /// rather than reject the frame — `#[non_exhaustive]` is the
-    /// load-bearing contract.
+    /// Wire tag. Stable within v0.x; new variants append.
     #[must_use]
     pub const fn as_wire(self) -> u8 {
         match self {
@@ -62,10 +33,7 @@ impl ColorSupport {
         }
     }
 
-    /// Inverse of [`Self::as_wire`]. Unknown tags map to `None`; the
-    /// decoder applies a default at the call site (typically
-    /// [`ColorSupport::TrueColor`]) so a forward-compat HELLO from a
-    /// future client never fails to decode.
+    /// Inverse of [`Self::as_wire`]; `None` for an unknown tag.
     #[must_use]
     pub const fn from_wire(tag: u8) -> Option<Self> {
         Some(match tag {
@@ -78,38 +46,23 @@ impl ColorSupport {
     }
 }
 
-/// How the server should emit terminal content to this consumer (SPEC §6.2).
+/// How the server emits terminal content to this consumer (SPEC §6.2).
 ///
-/// The server has two emitters for a pane's content (see
-/// `phux-server::terminal_actor`): the **raw PTY broadcast** — byte-faithful,
-/// low-latency, the path interactive shells/TUIs rely on for exact styling —
-/// and the **per-consumer synthesized state-sync tick**, which diffs the live
-/// grid against a per-consumer reference and ships only the delta. The tick is
-/// the right emitter for an agent or remote state-sync consumer that wants a
-/// coherent grid model rather than a raw byte stream, but as the human path it
-/// adds a visible typing-latency floor and can lose byte-exact styling
-/// (phux-yeca). A consumer advertises its preference here at HELLO time; the
-/// server honors it per connection.
-///
-/// `#[non_exhaustive]` and decoded leniently: an unknown wire tag falls back
-/// to [`OutputMode::Raw`] (the safe interactive default), so a future mode
-/// never fails an older server's decode (phux-fseo).
+/// Either the byte-faithful raw PTY broadcast, or a per-consumer synthesized
+/// state-sync tick for agent / remote consumers that want a coherent grid
+/// model. An unknown wire tag decodes as [`OutputMode::Raw`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum OutputMode {
-    /// Raw PTY byte broadcast. Byte-faithful and low-latency — the default
-    /// and the human-TUI path.
+    /// Raw PTY byte broadcast: the default, human-TUI path.
     #[default]
     Raw,
-    /// Per-consumer synthesized state-sync tick: the server emits grid
-    /// deltas with a per-consumer monotonic `seq`. For agent / remote
-    /// state-sync consumers (ADR-0018).
+    /// Per-consumer synthesized grid deltas with a monotonic `seq` (ADR-0018).
     StateSync,
 }
 
 impl OutputMode {
-    /// Wire tag for the [`OutputMode`] variant. Stable within v0.x; new
-    /// variants append.
+    /// Wire tag. Stable within v0.x; new variants append.
     #[must_use]
     pub const fn as_wire(self) -> u8 {
         match self {
@@ -118,14 +71,11 @@ impl OutputMode {
         }
     }
 
-    /// Inverse of [`Self::as_wire`]. An unknown tag maps to [`OutputMode::Raw`]
-    /// (the safe interactive default) so a forward-compat HELLO from a future
-    /// client never fails to decode.
+    /// Inverse of [`Self::as_wire`]; an unknown tag is [`OutputMode::Raw`].
     #[must_use]
     pub const fn from_wire(tag: u8) -> Self {
         match tag {
             1 => Self::StateSync,
-            // 0 and any unknown future tag both fall back to Raw.
             _ => Self::Raw,
         }
     }
@@ -134,10 +84,8 @@ impl OutputMode {
 // Native bootstrap negotiation — ADR-0070 / protocol 0.7.
 // -----------------------------------------------------------------------------
 
-/// Hard upper bound for one `BOOTSTRAP_CHUNK.payload`.
-///
-/// The 8 MiB ceiling leaves deterministic envelope headroom below the 16 MiB
-/// frame cap while permitting efficient checkpoint streaming.
+/// Hard upper bound for one `BOOTSTRAP_CHUNK.payload`; leaves envelope
+/// headroom below the 16 MiB frame cap.
 pub const MAX_BOOTSTRAP_CHUNK_BYTES: u32 = 8 * 1024 * 1024;
 /// Hard upper bound for one `HISTORY_PAGE.payload`.
 pub const MAX_HISTORY_PAGE_BYTES: u32 = 8 * 1024 * 1024;
@@ -148,13 +96,8 @@ pub const DEFAULT_HISTORY_PAGE_BYTES: u32 = 1024 * 1024;
 
 /// A frame-payload compression algorithm (`docs/spec/proto.md` §6.4).
 ///
-/// Compression is a **transport-visible, decode-invisible** transform: the
-/// server wraps an already-encoded frame in `FRAME_COMPRESSED` and the
-/// receiver's decoder inflates it back to the exact same bytes before
-/// dispatching, so every inner frame — a `BOOTSTRAP_CHUNK` payload above all —
-/// reaches its consumer byte-identical. That is what keeps it compatible with
-/// the §6.2 rule that native records "MUST remain byte-identical across
-/// server, transport, recorder, and federation relay".
+/// Decode-invisible: `FRAME_COMPRESSED` inflates back to the exact inner
+/// frame bytes, so native records stay byte-identical end to end (§6.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum Compression {
@@ -172,13 +115,9 @@ impl Compression {
         self as u8
     }
 
-    /// Decode a wire tag, treating an unknown algorithm as [`Self::None`].
-    ///
-    /// Lenient by design: a server may only *select* an algorithm the client
-    /// offered, so an unrecognized selection means the peer is out of contract
-    /// and the safe reading is "nothing is compressed" — which then surfaces
-    /// as an ordinary decode error on the first wrapped frame rather than as a
-    /// silent misinterpretation of payload bytes.
+    /// Decode a wire tag; an unknown algorithm is [`Self::None`], so an
+    /// out-of-contract peer fails on its first wrapped frame instead of being
+    /// misread.
     #[must_use]
     pub const fn from_u8(tag: u8) -> Self {
         match tag {
@@ -236,10 +175,6 @@ impl CompressionSet {
     }
 
     /// The algorithm a server picks for a client offering this set.
-    ///
-    /// One entry today, so "select" is "take DEFLATE if offered". When a
-    /// second algorithm is added this becomes the preference order, and the
-    /// selection stays server-side exactly as profile selection is (§6.2).
     #[must_use]
     pub const fn select(self) -> Compression {
         if self.contains(Compression::Deflate) {
@@ -250,12 +185,9 @@ impl CompressionSet {
     }
 }
 
-/// Negotiated per-frame byte bounds for bootstrap and history payloads.
-///
-/// Construction rejects zero and values above the protocol hard caps. The
-/// negotiated result is the per-axis minimum of the two peers' advertised
-/// values; runtime implementations MUST additionally reject a payload above
-/// that connection's negotiated value.
+/// Negotiated per-frame byte bounds for bootstrap and history payloads: the
+/// per-axis minimum of both peers' values, each in `1..=` the hard cap. A
+/// payload above the negotiated value MUST be rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BootstrapLimits {
     max_chunk_bytes: u32,
@@ -323,11 +255,8 @@ impl Default for BootstrapLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BootstrapProfileKind {
-    /// Exact libghostty checkpoint state followed by byte-identical raw PTY output.
-    ///
-    /// Wire bit `0x01` is permanently retired: pre-bounded-history 0.7 peers
-    /// used it for an incomplete native contract. The versioned `0x08` offer
-    /// makes mixed peers select synthesized VT or fail before attach.
+    /// Exact libghostty checkpoint state, then byte-identical raw PTY output.
+    /// Bit `0x01` is permanently retired (an incomplete early native contract).
     NativeState = 1 << 3,
     /// Server-synthesized VT bootstrap followed by raw compatibility output.
     SynthesizedVtRaw = 1 << 1,
@@ -393,10 +322,8 @@ impl Default for BootstrapProfileSet {
     }
 }
 
-/// An immutable libghostty checkpoint codec version.
-///
-/// Versions are exact capabilities, not a min/max range: a future codec gets a
-/// distinct enum value and set bit so negotiation cannot infer compatibility.
+/// An immutable libghostty checkpoint codec version: an exact capability,
+/// never a range, so negotiation cannot infer compatibility.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
@@ -404,10 +331,7 @@ pub enum EngineCodec {
     /// libghostty terminal checkpoint format version 2.
     LibghosttyCheckpointV2 = 2,
     /// Official `GHOSTSNPv1` feed snapshot with a progressive READY boundary.
-    ///
-    /// The capability id is `3`, not the snapshot envelope's internal version:
-    /// capability `2` names the older checkpoint-v2 contract whose decoder
-    /// requires FINISH before publication. The contracts are not compatible.
+    /// Id `3` is the capability, not the envelope's internal version.
     LibghosttySnapshotV1 = 3,
 }
 
@@ -428,11 +352,8 @@ impl EngineCodec {
         }
     }
 }
-/// Concrete encoding carried by one bootstrap stream.
-///
-/// This is distinct from [`BootstrapProfile`]: compatibility uses its named VT
-/// grammar, while native mode names the exact immutable engine codec selected
-/// during negotiation.
+/// Concrete encoding carried by one bootstrap stream (distinct from the
+/// negotiated [`BootstrapProfile`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BootstrapCodec {
@@ -440,12 +361,9 @@ pub enum BootstrapCodec {
     SynthesizedVtV1,
     /// Exact libghostty checkpoint grammar.
     Native(EngineCodec),
-    /// Newline-delimited JSON agent-event records, grammar version 1: the
-    /// bootstrap and live output codec of an `AgentSession` resource.
-    /// `BOOTSTRAP_CHUNK`s carry the retained records, live
-    /// `RESOURCE_OUTPUT.bytes` carry one or more complete records, and the
-    /// stream is always raw (`FRAME_ACK` is forbidden). Gated on
-    /// `ServerFeature::ResourceKinds`.
+    /// Newline-delimited JSON agent-event records v1: the `AgentSession`
+    /// codec. Live output carries whole records and is always raw
+    /// (`FRAME_ACK` forbidden). Gated on `ServerFeature::ResourceKinds`.
     AgentEventsJsonlV1,
 }
 
@@ -618,10 +536,8 @@ pub struct BootstrapCapabilities {
 }
 
 impl BootstrapCapabilities {
-    /// Protocol-0.7 synthesized VT compatibility profiles.
-    ///
-    /// Native engine state is never assumed from a protocol build. A native
-    /// host must probe its linked engine and opt in through [`Self::with_native`].
+    /// Synthesized VT compatibility profiles only; a native host opts in
+    /// through [`Self::with_native`] after probing its engine.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -638,11 +554,8 @@ impl BootstrapCapabilities {
         }
     }
 
-    /// Advertise one exact native codec after a successful engine probe.
-    ///
-    /// Native support is indivisible: callers must provide every feature
-    /// required by protocol 0.7. A partial feature set removes any existing
-    /// native advertisement rather than publishing a misleading subset.
+    /// Advertise one exact native codec. Native support is indivisible: a
+    /// partial feature set removes any native advertisement instead.
     #[must_use]
     pub const fn with_native(mut self, codec: EngineCodec, features: EngineFeatureSet) -> Self {
         if !features.supports_native() {
@@ -697,11 +610,8 @@ impl Default for BootstrapCapabilities {
     }
 }
 
-/// The exact synchronization profile selected in `HELLO_OK`.
-///
-/// The three variants are the entire legal mode matrix. Native has no output
-/// mode field and therefore always means raw, byte-identical PTY continuation;
-/// `NativeState + StateSync` is unrepresentable.
+/// The exact synchronization profile selected in `HELLO_OK`. The variants
+/// are the whole legal matrix; `NativeState + StateSync` is unrepresentable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BootstrapProfile {
@@ -719,10 +629,8 @@ pub enum BootstrapProfile {
 }
 
 impl BootstrapProfile {
-    /// Wire tag for bounded-history `NativeState`.
-    ///
-    /// Tag `0` is permanently retired with the incomplete legacy native
-    /// profile; a current peer never decodes it as native.
+    /// Wire tag for bounded-history `NativeState`. Tag `0` is permanently
+    /// retired with the legacy native profile.
     pub const NATIVE_STATE_TAG: u8 = 3;
     /// Wire tag for `SynthesizedVtRaw`.
     pub const SYNTHESIZED_VT_RAW_TAG: u8 = 1;
@@ -734,13 +642,9 @@ impl BootstrapProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodecUnavailable;
 
-/// Per-stream profile repeated in `BOOTSTRAP_BEGIN`.
-///
-/// This is the stream-local projection of the connection's selected
-/// [`BootstrapProfile`] for a Terminal stream, or the kind-fixed codec of a
-/// non-Terminal resource stream. The variants are the legal
-/// codec/output-mode matrix, so a native `StateSync` stream cannot be
-/// constructed.
+/// Per-stream profile repeated in `BOOTSTRAP_BEGIN`: the connection's
+/// [`BootstrapProfile`] for a Terminal stream, or the kind-fixed codec of
+/// another resource kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BootstrapStreamProfile {
@@ -753,17 +657,15 @@ pub enum BootstrapStreamProfile {
     SynthesizedVtRaw,
     /// Synthesized VT bootstrap followed by `StateSync` bytes.
     SynthesizedVtStateSync,
-    /// Retained agent-event JSONL records followed by raw live records: the
-    /// only profile an `AgentSession` stream ever selects, regardless of the
-    /// connection's negotiated Terminal profile.
+    /// Agent-event JSONL records, raw live: every `AgentSession` stream.
     AgentEventsJsonlV1,
 }
 
 /// Select one explicit profile and the negotiated payload bounds.
 ///
-/// Native v2 is preferred whenever both peers advertise it and all required
-/// engine features intersect. Otherwise synthesized VT is selected only when
-/// both peers advertised that profile. There is no implicit fallback.
+/// Native is preferred when both peers advertise it with a common codec and
+/// every required feature. Otherwise the client's output mode's synthesized
+/// profile, then the other one, each only when both peers advertise it.
 pub fn select_bootstrap_profile(
     client: &ClientCapabilities,
     server: &BootstrapCapabilities,
@@ -788,57 +690,36 @@ pub fn select_bootstrap_profile(
         }
     }
 
-    let preferred_compatibility = match client.output_mode {
-        OutputMode::Raw => BootstrapProfileKind::SynthesizedVtRaw,
-        OutputMode::StateSync => BootstrapProfileKind::SynthesizedVtStateSync,
+    let raw = (
+        BootstrapProfileKind::SynthesizedVtRaw,
+        BootstrapProfile::SynthesizedVtRaw,
+    );
+    let state_sync = (
+        BootstrapProfileKind::SynthesizedVtStateSync,
+        BootstrapProfile::SynthesizedVtStateSync,
+    );
+    let order = match client.output_mode {
+        OutputMode::Raw => [raw, state_sync],
+        OutputMode::StateSync => [state_sync, raw],
     };
-    if client.bootstrap.profiles.contains(preferred_compatibility)
-        && server.profiles.contains(preferred_compatibility)
-    {
-        let profile = match preferred_compatibility {
-            BootstrapProfileKind::SynthesizedVtRaw => BootstrapProfile::SynthesizedVtRaw,
-            BootstrapProfileKind::SynthesizedVtStateSync => {
-                BootstrapProfile::SynthesizedVtStateSync
-            }
-            BootstrapProfileKind::NativeState => unreachable!(),
-        };
-        return Ok((profile, limits));
-    }
-
-    let fallback_compatibility = match preferred_compatibility {
-        BootstrapProfileKind::SynthesizedVtRaw => BootstrapProfileKind::SynthesizedVtStateSync,
-        BootstrapProfileKind::SynthesizedVtStateSync => BootstrapProfileKind::SynthesizedVtRaw,
-        BootstrapProfileKind::NativeState => unreachable!(),
-    };
-    if client.bootstrap.profiles.contains(fallback_compatibility)
-        && server.profiles.contains(fallback_compatibility)
-    {
-        let profile = match fallback_compatibility {
-            BootstrapProfileKind::SynthesizedVtRaw => BootstrapProfile::SynthesizedVtRaw,
-            BootstrapProfileKind::SynthesizedVtStateSync => {
-                BootstrapProfile::SynthesizedVtStateSync
-            }
-            BootstrapProfileKind::NativeState => unreachable!(),
-        };
-        return Ok((profile, limits));
-    }
-
-    Err(CodecUnavailable)
+    order
+        .into_iter()
+        .find(|(kind, _)| {
+            client.bootstrap.profiles.contains(*kind) && server.profiles.contains(*kind)
+        })
+        .map(|(_, profile)| (profile, limits))
+        .ok_or(CodecUnavailable)
 }
 
 // -----------------------------------------------------------------------------
 // Layer / LayerSet — SPEC §6.2 conformance-tier bitset (ADR-0015).
 // -----------------------------------------------------------------------------
 
-/// A single conformance tier from SPEC §6.2 / §16.
+/// A single conformance tier (SPEC §6.2 / §16).
 ///
-/// L1 (Terminal substrate) is always implied and always implemented; L2
-/// (Collection lifecycle) and L3 (Metadata storage) are optional services
-/// negotiated via [`LayerSet`] in HELLO / `HELLO_OK`.
-///
-/// Per ADR-0015 the **negotiated tier set** is the intersection of the
-/// client's and server's advertised layers. Out-of-tier messages MUST
-/// surface as protocol errors (SPEC §16.4).
+/// L1 is always implied; the negotiated set is the intersection of both peers'
+/// [`LayerSet`]s, and out-of-tier messages MUST surface as protocol errors
+/// (§16.4, ADR-0015).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -851,21 +732,12 @@ pub enum Layer {
     L3 = 0x04,
 }
 
-/// A bit-field of [`Layer`]s. Wire encoding: a single `u8` carrying the
-/// OR of the variants' raw discriminants.
-///
-/// Construction goes through [`Self::new`] / [`Self::with`] / [`Self::insert`]
-/// so the L1-always-on invariant is preserved. Direct field-literal
-/// construction is intentionally NOT supported — `Layer` may grow with
-/// future tiers and the bitset must remain forward-compat.
+/// A bit-field of [`Layer`]s, one `u8` on the wire. L1 is always set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LayerSet(u8);
 
 impl LayerSet {
-    /// The L1-only set. Equivalent to `LayerSet::default()`.
-    ///
-    /// L1 is always implied per SPEC §6.2; the bit is always present in
-    /// the wire encoding regardless of construction path.
+    /// The L1-only set.
     #[must_use]
     pub const fn new() -> Self {
         Self(Layer::L1 as u8)
@@ -883,8 +755,7 @@ impl LayerSet {
         Self(bits)
     }
 
-    /// The full set: L1 + L2 + L3. Used by the reference TUI which
-    /// advertises every tier it speaks (SPEC §16.3).
+    /// The full set: L1 + L2 + L3.
     #[must_use]
     pub const fn all() -> Self {
         Self((Layer::L1 as u8) | (Layer::L2 as u8) | (Layer::L3 as u8))
@@ -901,17 +772,13 @@ impl LayerSet {
         self.0 & (layer as u8) != 0
     }
 
-    /// Raw wire byte. The encoder writes this directly; the decoder
-    /// passes the byte to [`Self::from_wire`]. L1 is always forced on
-    /// so peers can rely on the invariant.
+    /// Raw wire byte, L1 forced on.
     #[must_use]
     pub const fn as_wire(self) -> u8 {
         self.0 | (Layer::L1 as u8)
     }
 
-    /// Inverse of [`Self::as_wire`]. Unknown bits beyond L1/L2/L3 are
-    /// silently dropped (forward-compat per Appendix A) but L1 is
-    /// always forced on.
+    /// Inverse of [`Self::as_wire`]: unknown bits dropped, L1 forced on.
     #[must_use]
     pub const fn from_wire(byte: u8) -> Self {
         let known = (Layer::L1 as u8) | (Layer::L2 as u8) | (Layer::L3 as u8);
@@ -925,15 +792,10 @@ impl Default for LayerSet {
     }
 }
 
-// -----------------------------------------------------------------------------
-// ServerFeature — one declarative list. The consts, enum, known-bits mask,
-// and names are generated from it so a new bit cannot land in only one copy.
-//
-// Word 0 is closed (ADR-0137). Do not add a variant at `0x8000_0000` or in
-// the never-assigned low gaps (`0x1`, `0x2`, `0x4`, `0x8`). `0x1000` stays
-// retired-unshipped. The next feature is a trailing `features_ext` u32 in
-// `HELLO_OK` server caps; that word is not on the wire yet.
-// -----------------------------------------------------------------------------
+// ServerFeature: one declarative list generates the consts, enum, mask, and
+// names. Word 0 is closed (ADR-0137): no new bit at `0x8000_0000`, in the low
+// gaps `0x1`..`0x8`, or at retired `0x1000`; the next feature goes in a
+// trailing `features_ext` u32.
 
 macro_rules! define_server_features {
     ($(
@@ -957,10 +819,7 @@ macro_rules! define_server_features {
         }
 
         impl ServerFeature {
-            /// Every known feature, in declaration (bit) order.
-            ///
-            /// The known-bits mask and the wire / snake-case names are derived
-            /// from this same list.
+            /// Every known feature, in bit order.
             pub const ALL: &'static [Self] = &[$(Self::$variant),*];
 
             /// The `docs/spec/proto.md` §6.2 constant, e.g. `"ACKNOWLEDGED_INPUT"`.
@@ -971,10 +830,8 @@ macro_rules! define_server_features {
                 }
             }
 
-            /// [`Self::wire_name`] lower-cased, e.g. `"acknowledged_input"`.
-            ///
-            /// This is the name `phux status --json` lists under `features` and
-            /// `phux --capabilities --json` uses for kind-catalog gates.
+            /// [`Self::wire_name`] lower-cased, as `phux status --json` and
+            /// `phux --capabilities --json` print it.
             #[must_use]
             pub const fn snake_name(self) -> &'static str {
                 match self {
@@ -1007,171 +864,93 @@ define_server_features! {
     AcknowledgedInput = ACKNOWLEDGED_INPUT = 0x0000_0010,
     /// The server accepts sandboxed, chunked `Command::PutFile` uploads.
     FileUpload = FILE_UPLOAD = 0x0000_0020,
-    /// The server accepts `MOVE_RESOURCE` cross-window re-parents
-    /// (ADR-0056). A client MUST see this bit before sending the frame;
-    /// an older server would silently drop the unknown discriminant.
+    /// The server accepts `MOVE_RESOURCE` (ADR-0056). A client MUST see the
+    /// bit first: an older server drops the unknown frame silently.
     MoveResource = MOVE_RESOURCE = 0x0000_0040,
     /// The server accepts opaque terminal-emulator replies for attached PTYs.
     TerminalReply = TERMINAL_REPLY = 0x0000_0080,
-    /// The server accepts `SHUTDOWN`, a local-only request to stop the
-    /// server process itself (phux-pimp). A client MUST see this bit before
-    /// sending the command; an older server would silently drop the unknown
-    /// tag, which is indistinguishable from a stop that did not happen.
+    /// The server accepts the local-only `SHUTDOWN`. A client MUST see the
+    /// bit first: an older server drops the tag, indistinguishable from a
+    /// stop that did not happen.
     Shutdown = SHUTDOWN = 0x0000_0100,
-    /// The server honors `SPAWN_RESOURCE.initial_size` (phux-a5xj) — it
-    /// creates the pane's grid and PTY at the requested size instead of at
-    /// its own default. Unlike the frame-gating bits above, sending the
-    /// field unadvertised is safe: an older server skips the unknown field
-    /// id by length and spawns at its default, which is what happened
-    /// before the field existed. The bit exists so a layout-owning client
-    /// can tell whether the geometry it just asked for was honored, and
-    /// therefore whether its follow-up `RESIZE_TERMINAL` is redundant.
+    /// The server honors `SPAWN_RESOURCE.initial_size`. Sending it
+    /// unadvertised is safe (skipped by length); the bit tells a
+    /// layout-owning client whether a follow-up `RESIZE_TERMINAL` is needed.
     SpawnInitialSize = SPAWN_INITIAL_SIZE = 0x0000_0200,
     /// The server accepts `REPORT_AGENT_STATE` hook evidence.
     ReportAgentState = REPORT_AGENT_STATE = 0x0000_0400,
-    /// The server answers `GET_PERF` with its in-process performance
-    /// telemetry as a JSON `COMMAND_RESULT`.
+    /// The server answers `GET_PERF` with JSON performance telemetry.
     GetPerf = GET_PERF = 0x0000_0800,
-    /// The server answers `TRANSCRIBE` by running its configured
-    /// transcriber on a finished upload and pasting the text.
-    ///
-    /// `0x1000` is retired-unshipped (the phux-workload/v1 `WORKLOAD_AUTH`
-    /// bit was specified but never implemented, ADR-0116) and skipped: it
-    /// is not advertised and MUST NOT be reused without a version bump.
+    /// The server answers `TRANSCRIBE` by transcribing a finished upload and
+    /// pasting the text. `0x1000` below it is retired-unshipped (ADR-0116)
+    /// and MUST NOT be reused without a version bump.
     Transcribe = TRANSCRIBE = 0x0000_2000,
-    /// The server serves more than one `ResourceKind`: it accepts
-    /// `SPAWN_RESOURCE` with `kind = AgentSession` plus its `parent` /
-    /// `provider` / `native_id` fields, feeds such a resource through
-    /// `APPEND_RESOURCE_OUTPUT`, bootstraps it under the
-    /// `AgentEventsJsonlV1` codec, reports `RESOURCE_CLOSED.reason`, and
-    /// carries kind / parent / agent facets in the `ATTACHED` and
-    /// `GET_STATE` snapshots. Every one of those shapes is skip-by-length
-    /// additive, so sending them unadvertised degrades rather than breaks
-    /// (an older server spawns a Terminal and ignores the facets); the bit
-    /// is what tells a client the kind it asked for is the kind it got.
+    /// The server serves `AgentSession` resources as well as Terminals
+    /// (spawn fields, `APPEND_RESOURCE_OUTPUT`, the JSONL codec, close
+    /// reasons, snapshot facets). All shapes are skip-by-length additive; the
+    /// bit tells a client the kind it asked for is the kind it got.
     ResourceKinds = RESOURCE_KINDS = 0x0000_4000,
-    /// The server answers `LIST_DIRECTORY` with the child directories of a
-    /// path on its own host (`docs/spec/L3.md` §4). A client MUST see this
-    /// bit before sending the frame; an older server drops the unknown
-    /// discriminant and the request would wait forever.
+    /// The server answers `LIST_DIRECTORY` for its own host
+    /// (`docs/spec/L3.md` §4). A client MUST see the bit first, or the
+    /// request waits forever on an older server.
     ListDirectory = LIST_DIRECTORY = 0x0000_8000,
-    /// The server's `GET_STATE { scope: SERVER }` snapshot carries the
-    /// trailing host-session inventory (`SessionSnapshot.hosts`): on a
-    /// federation hub, one row per configured satellite with that host's
-    /// sessions under their satellite-local ids, or the reason it could not
-    /// be reached. A non-hub server advertises the bit and sends an empty
-    /// list, which is the complete answer. The list is trailing-additive,
-    /// so a server may send it unasked; the bit is what lets a client read
-    /// an empty list as "no satellites" rather than "an older hub".
+    /// `GET_STATE { SERVER }` carries the trailing host-session inventory:
+    /// one row per federation satellite, empty on a non-hub. The bit lets a
+    /// client read an empty list as "no satellites", not "an older hub".
     HostSessions = HOST_SESSIONS = 0x0001_0000,
-    /// The server keeps sessions that are marked keep-empty (ADR-0105): it
-    /// honors `keep_empty` and `empty` in `phux.session.create/v1`, applies
-    /// `phux.session.keep_empty/v1`, reports the mark in the snapshot's
-    /// session facets, and accepts an attach to a session with no windows.
-    /// A client MUST see this bit before sending `empty: true`: an older
-    /// server ignores the unknown JSON field and seeds a shell.
+    /// The server honors keep-empty sessions (ADR-0105). A client MUST see
+    /// the bit before sending `empty: true`: an older server seeds a shell.
     KeepEmptySessions = KEEP_EMPTY_SESSIONS = 0x0002_0000,
-    /// The server answers `GET_METADATA { Global, "phux.whoami/v1" }` with
-    /// the identity of the asking connection: its principal, auth route,
-    /// peer uid, and the serving OS user and host (`docs/spec/L3.md` §3.9,
-    /// ADR-0106). An older server holds no such key and answers an absent
-    /// value, which a client cannot tell from "no identity"; the bit is what
-    /// makes the absence meaningful.
+    /// The server answers `GET_METADATA { Global, "phux.whoami/v1" }` with the
+    /// asking connection's identity (`docs/spec/L3.md` §3.9, ADR-0106); the
+    /// bit makes an absent value meaningful.
     Whoami = WHOAMI = 0x0004_0000,
-    /// The server understands `LIST_DIRECTORY.host` (`docs/spec/L3.md`
-    /// §4.1). A federation hub relays a request naming one of its
-    /// satellites over that satellite's link and answers with the
-    /// satellite's own listing; an unknown or unreachable host, and any
-    /// `host` sent to a server that is not a hub, is refused with a typed
-    /// `DIRECTORY_LISTING` naming the host. Without the bit an older server
-    /// skips the unknown field by length and lists its own host, so a
-    /// client MUST see the bit before trusting that a listing came from the
-    /// host it named.
+    /// The server understands `LIST_DIRECTORY.host` (`docs/spec/L3.md` §4.1):
+    /// a hub relays to the named satellite, anything else is refused by name.
+    /// A client MUST see the bit before trusting a listing came from the host
+    /// it named; an older server lists its own host.
     ListDirectoryHost = LIST_DIRECTORY_HOST = 0x0008_0000,
-    /// The server honors the HELLO `ssh_origin` field (field 9) that
-    /// `phux stdio-bridge` stamps on the HELLO it relays. It accepts the field
-    /// only from a Unix-socket peer running as the serving uid, and it only
-    /// relabels that connection's whoami route from `uds` to `ssh-stdio` with
-    /// the ssh client endpoint alongside. Authentication and authorization are
-    /// unchanged. Sending the field unadvertised is safe: an older server
-    /// skips the unknown id by length. The bit is what lets a whoami reader
-    /// trust that `uds` from this server means no bridge announced ssh
-    /// (`docs/spec/L3.md` §3.9).
+    /// The server honors HELLO field 9 `ssh_origin`, only from a same-uid
+    /// Unix-socket peer, and only to relabel the whoami route `ssh-stdio`;
+    /// auth is unchanged. The bit lets a whoami reader trust that `uds`
+    /// means no bridge announced ssh (`docs/spec/L3.md` §3.9).
     SshOrigin = SSH_ORIGIN = 0x0010_0000,
-    /// The server evaluates `KILL_RESOURCE_IF` (ADR-0109): it kills a
-    /// resource only when the caller's instance token still names its id
-    /// space and, if asked, no connection but the spawning one has attached
-    /// the resource, and it refuses with `PRECONDITION_FAILED` otherwise. It
-    /// also answers a `SPAWN_RESOURCE` that sets `bind_instance` with the
-    /// token in `RESOURCE_SPAWNED.instance`. A client MUST see this bit
-    /// before sending the command: an older server cannot decode the tag.
+    /// The server evaluates `KILL_RESOURCE_IF` (ADR-0109) and answers
+    /// `bind_instance` spawns with the instance token. A client MUST see the
+    /// bit before sending the command.
     ConditionalKill = CONDITIONAL_KILL = 0x0020_0000,
     /// The connection may use QUIC multi-stream (ADR-0115): one control
-    /// stream plus one client-opened bidi stream per attached Terminal,
-    /// each Terminal stream carrying that Terminal's output, bootstrap,
-    /// history, and input. A client MUST NOT open a second QUIC stream
-    /// without this bit; without it the single-stream shape is the whole
-    /// contract. QUIC-only.
+    /// stream plus one client-opened bidi stream per attached Terminal. A
+    /// client MUST NOT open a second QUIC stream without it. QUIC-only.
     QuicStreams = QUIC_STREAMS = 0x0040_0000,
-    /// The server accepts `OPEN_LISTENER` on its Unix socket (ADR-0120): it
-    /// binds a QUIC listener on demand that admits only a token minted for
-    /// it, and closes it once nobody has used it for the requested linger.
-    /// A client MUST see this bit before sending the command: an older
-    /// server cannot decode the tag.
+    /// The server accepts `OPEN_LISTENER` on its Unix socket (ADR-0120). A
+    /// client MUST see the bit before sending the command.
     OpenListener = OPEN_LISTENER = 0x0080_0000,
-    /// The server stamps every journaled `EVENT` with a server-wide `seq`,
-    /// `ts_ms`, `actor`, and (for a keyed operation) `operation_id`; keeps a
-    /// bounded journal a `SUBSCRIBE_EVENTS { after_seq }` replays from; and
-    /// never drops an event silently, sending `journal_gap` / `source_gap`
-    /// instead (ADR-0123). Every shape is skip-by-length additive, so an
-    /// older client sees the events it always saw; the bit is what makes a
-    /// cursor and the absence of a gap meaningful.
+    /// Events carry journal stamps, `SUBSCRIBE_EVENTS { after_seq }` replays,
+    /// and losses surface as `journal_gap` / `source_gap` (ADR-0123). The bit
+    /// is what makes a cursor, and the absence of a gap, meaningful.
     EventJournal = EVENT_JOURNAL = 0x0100_0000,
-    /// The server honors `SPAWN_RESOURCE.retain_secs` (field 16): a retained
-    /// Terminal that exits stays in the inventory as `Exited` with an exit
-    /// facet until it expires or is killed (ADR-0124). A server without the
-    /// bit skips the field and closes the resource at exit, so a client MUST
-    /// see the bit before relying on a retained exit.
+    /// The server honors `SPAWN_RESOURCE.retain_secs` (ADR-0124). A client
+    /// MUST see the bit before relying on a retained exit.
     RetainOnExit = RETAIN_ON_EXIT = 0x0200_0000,
-    /// The server honors `SPAWN_RESOURCE.idempotency_key` (field 17): a
-    /// repeat with the same key and payload answers the original id with
-    /// `replayed`, and a different payload answers `IDEMPOTENCY_CONFLICT`
-    /// (ADR-0126). A server without the bit skips the field and spawns
-    /// again, so a client MUST see the bit before retrying a spawn blind.
+    /// The server honors `SPAWN_RESOURCE.idempotency_key` (ADR-0126). A
+    /// client MUST see the bit before retrying a spawn blind.
     SpawnIdempotency = SPAWN_IDEMPOTENCY = 0x0400_0000,
-    /// The server honors a declared attach role (ADR-0127): a `VIEWER`
-    /// subscription's input is refused, and `{ PRIMARY, DELIBERATE }`
-    /// attaches and seizes the input lease in one step. A server without
-    /// the bit ignores the byte and grants an ordinary attach, so a client
-    /// MUST see the bit before relying on either.
+    /// The server honors declared attach roles (ADR-0127). A client MUST see
+    /// the bit before relying on `VIEWER` or a deliberate takeover.
     AttachRoles = ATTACH_ROLES = 0x0800_0000,
-    /// The server accepts `CLOSE_TAB_RESOURCES`: the same atomic local
-    /// close as `KILL_RESOURCES`, but a batch that names every pane of a
-    /// keep-empty session leaves that session empty instead of releasing
-    /// the mark (ADR-0105, ADR-0114). A client MUST see this bit before
-    /// sending the command: an older server cannot decode the tag.
+    /// The server accepts `CLOSE_TAB_RESOURCES`, which leaves a keep-empty
+    /// session empty (ADR-0105, ADR-0114). A client MUST see the bit before
+    /// sending the command.
     CloseTabResources = CLOSE_TAB_RESOURCES = 0x1000_0000,
-    /// The server honors the trailing `operation_id` of `KILL_RESOURCE`,
-    /// `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and `SIGNAL_TERMINAL`: a repeat
-    /// with the same key and command answers the first result and runs
-    /// nothing, a different command under the key is refused, and the events
-    /// the operation causes carry the key. As a federation hub it forwards
-    /// keyed operations and `APPLY_INPUT` to a satellite that evaluates them,
-    /// and answers `INCARNATION_CHANGED` instead of forwarding a retry across
-    /// a satellite restart. A server without the bit ignores the trailing
-    /// bytes and runs the command again, so a client MUST see the bit before
-    /// it retries a keyed command blind.
+    /// The server dedupes kills and signals by their trailing
+    /// `operation_id`, and a hub forwards keyed operations and `APPLY_INPUT`
+    /// with `INCARNATION_CHANGED` fencing. A client MUST see the bit before
+    /// retrying a keyed command blind.
     KeyedSignal = KEYED_SIGNAL = 0x2000_0000,
-    /// The server holds a `SIGNAL` command from a `?signal` grant for a
-    /// decision instead of running it (ADR-0128): it writes a
-    /// `phux.approval/v1/<id>` record, defers the requester's
-    /// `COMMAND_RESULT`, and runs the command once, under the requester's
-    /// grant, when a connection holding un-held `SIGNAL` on the subject
-    /// approves it. The bit also covers the intercepted
-    /// `phux.approval.decide/v1/<id>` key and the `approval_requested` /
-    /// `approval_decided` events. A client MUST see the bit before writing a
-    /// decision, because an older server stores the decide key as an
-    /// ordinary value.
+    /// The server holds `?signal` commands for approval (ADR-0128). A client
+    /// MUST see the bit before writing a decision: an older server stores the
+    /// decide key as an ordinary value.
     Approvals = APPROVALS = 0x4000_0000,
 }
 
@@ -1196,11 +975,8 @@ impl ServerFeatureSet {
         Self(0)
     }
 
-    /// Every known feature.
-    ///
-    /// Transport-gated bits (today [`ServerFeature::QuicStreams`]) belong
-    /// here so the decoder can name them; a server that must not advertise
-    /// them on a given connection clears them with [`Self::without`].
+    /// Every known feature, transport-gated ones included; a server clears
+    /// those per connection with [`Self::without`].
     #[must_use]
     pub const fn all() -> Self {
         Self(Self::KNOWN)
@@ -1401,65 +1177,37 @@ impl Default for KeyboardProtocolSet {
     }
 }
 
-/// The client's advertised capability set, per SPEC §6.2.
-///
-/// SPEC §6.2 enumerates `kbd_protocols`, `mouse_protocols`, `color`,
-/// `images`, `hyperlinks`, `unicode_version`, the deprecated `rendering`
-/// mode, and the `layers` bitset. This struct carries the fields currently
-/// wired into HELLO; sibling tickets add the remaining fields behind their
-/// own wire bumps. The struct is `#[non_exhaustive]` so additive fields don't
-/// break downstream literal construction.
-///
-/// Construct via [`Self::new`] (defaults across the board) plus the
-/// builder setters; that's the path that survives field-set growth.
+/// The client's advertised capability set (SPEC §6.2). Construct with
+/// [`Self::new`] and the `with_*` setters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct ClientCapabilities {
-    /// The client's color tier (SPEC §6.2). See [`ColorSupport`].
+    /// The client's color tier.
     pub color_support: ColorSupport,
-    /// The set of conformance tiers (SPEC §6.2 / §16) the client speaks.
-    /// L1 is always implied; clients add L2 / L3 to opt in to the
-    /// respective optional services. The reference TUI advertises
-    /// [`LayerSet::all`]; an agent / recorder advertises [`LayerSet::new`]
-    /// (L1-only).
+    /// The conformance tiers the client speaks (SPEC §6.2 / §16).
     pub layers: LayerSet,
-    /// Image protocols the client can render (SPEC §6.2).
+    /// Image protocols the client can render.
     pub image_protocols: ImageProtocolSet,
-    /// Keyboard extension protocols the client understands (SPEC §6.2).
+    /// Keyboard extension protocols the client understands.
     pub kbd_protocols: KeyboardProtocolSet,
     /// Whether OSC 8 hyperlink framing may be forwarded to the client.
     pub hyperlinks: bool,
-    /// Requested compatibility live emitter. It selects between
-    /// [`BootstrapProfile::SynthesizedVtRaw`] and
-    /// [`BootstrapProfile::SynthesizedVtStateSync`] when native is unavailable;
-    /// [`BootstrapProfile::NativeState`] always carries byte-identical raw PTY output.
+    /// Preferred compatibility emitter when native is not selected.
     pub output_mode: OutputMode,
-    /// The outer terminal's effective default foreground/background colors.
-    ///
-    /// Interactive clients probe OSC 10/11 before entering raw mode and
-    /// advertise the result here. The server installs these defaults on its
-    /// terminal emulator so programs inside phux receive the same OSC query
-    /// replies they receive when run directly in the host terminal. `None`
-    /// is the compatibility value for non-TTY and older clients.
+    /// The outer terminal's default colors (OSC 10/11), installed on the
+    /// server's emulator so OSC queries inside phux answer as they would
+    /// outside. `None` for non-TTY and older clients.
     pub default_colors: Option<TerminalDefaultColors>,
     /// Explicit bootstrap profiles, exact native codecs/features, and receive bounds.
     pub bootstrap: BootstrapCapabilities,
-    /// Frame compressions this client can inflate (`docs/spec/proto.md` §6.4).
-    ///
-    /// Empty is the compatibility value and the value every local consumer
-    /// wants: over a Unix socket the bytes never leave the machine, so
-    /// deflating them spends CPU on both ends to save nothing.
+    /// Frame compressions this client can inflate (`docs/spec/proto.md`
+    /// §6.4). Empty is right for a Unix socket.
     pub compression: CompressionSet,
-    /// The ssh endpoints `phux stdio-bridge` stamped on this HELLO (HELLO
-    /// field 9, `docs/spec/L3.md` §3.9). Ordinary clients leave it unset; the
-    /// bridge adds it on the HELLO it relays. It is a top-level HELLO field on
-    /// the wire, folded in here the same way `compression` is.
+    /// The ssh endpoints `phux stdio-bridge` stamps on the HELLO it relays
+    /// (HELLO field 9, `docs/spec/L3.md` §3.9).
     pub ssh_origin: Option<crate::wire::ssh_origin::SshOrigin>,
-    /// Whether this client can open and demultiplex per-Terminal QUIC streams.
-    ///
-    /// This is an explicit offer, not a transport inference. It defaults to
-    /// false so old clients and byte-copy QUIC adapters retain the complete
-    /// single-stream contract.
+    /// Whether this client can demultiplex per-Terminal QUIC streams. An
+    /// explicit offer, never inferred from the transport.
     pub quic_streams: bool,
 }
 
@@ -1484,9 +1232,7 @@ pub struct TerminalColor {
 }
 
 impl ClientCapabilities {
-    /// Build a default capability set: `ColorSupport::TrueColor` plus the
-    /// L1-only layer set. Call sites that want to override one field call
-    /// the matching `.with_*` setter.
+    /// The default capability set: truecolor, L1 only, raw output.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -1511,8 +1257,7 @@ impl ClientCapabilities {
         self
     }
 
-    /// Builder setter for [`Self::ssh_origin`]. Only the bridge's own HELLO
-    /// rewrite and tests call it; an ordinary client never announces ssh.
+    /// Builder setter for [`Self::ssh_origin`].
     #[must_use]
     pub const fn with_ssh_origin(mut self, origin: crate::wire::ssh_origin::SshOrigin) -> Self {
         self.ssh_origin = Some(origin);
@@ -1588,27 +1333,12 @@ impl Default for ClientCapabilities {
     }
 }
 
-/// What the server advertises back in `HELLO_OK` (SPEC §6.1).
-///
-/// The client declares what it *wants* via [`ClientCapabilities`]; the
-/// server declares what it *implements* here. The negotiated conformance
-/// tier set is the intersection of the two `layers` bit-fields
-/// ([ADR-0015](../../../docs/adr/0015-protocol-layering.md) §"Conformance tiers").
-/// L1 is always implemented and always present on the wire.
-///
-/// This is deliberately narrow today — `layers` is the only negotiated
-/// axis the server owns. Color / image / keyboard tiers are client-render
-/// concerns carried by [`ClientCapabilities`], so they have no server-side
-/// counterpart. Future server-owned capabilities append as additive
-/// trailing fields (the encoding grows monotonically, same discipline as
-/// [`ClientCapabilities`]). The next field is a second feature word; the
-/// `u32` in `features` is closed
-/// ([ADR-0137](../../../docs/adr/0137-server-feature-word-extends.md)).
+/// What the server implements, advertised in `HELLO_OK` (SPEC §6.1). New
+/// server-owned capabilities append as trailing fields; the next is a second
+/// feature word (ADR-0137).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerCapabilities {
-    /// The conformance tiers (SPEC §6.2 / §16) the server mounts. L1 is
-    /// always implemented; the server adds L2 / L3 when those services
-    /// are wired. See [`LayerSet`].
+    /// The conformance tiers the server mounts (SPEC §6.2 / §16).
     pub layers: LayerSet,
     /// Additive server-owned protocol features.
     pub features: ServerFeatureSet,
@@ -1618,8 +1348,7 @@ pub struct ServerCapabilities {
 }
 
 impl ServerCapabilities {
-    /// Build a default server capability set: L1 only. Call [`Self::with_layers`]
-    /// to advertise the higher tiers the server actually mounts.
+    /// The default server capability set: L1 only, no features.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -1659,35 +1388,19 @@ impl Default for ServerCapabilities {
 
 /// Detect the client terminal's color tier from environment hints.
 ///
-/// The heuristic mirrors what well-known TUIs (tmux, neovim, htop) use:
-///
-/// 1. **`$COLORTERM`** is the canonical signal — values `truecolor` and
-///    `24bit` mean direct RGB is safe.
-/// 2. **`$TERM`** suffixes (`*-256color`, `*-direct`, `*-truecolor`) carry
-///    the next-most-reliable signal.
-/// 3. **`$TERM_PROGRAM`** covers macOS Terminal.app / iTerm.app where
-///    `$COLORTERM` is often unset.
-/// 4. Fallback: [`ColorSupport::TrueColor`] (most-permissive). The server
-///    downsamples on the way out; an over-claim is recoverable. An
-///    under-claim would silently degrade output even on capable terminals,
-///    so we err generous.
-///
-/// This intentionally never returns [`ColorSupport::Mono`] — that tier is
-/// reserved for explicit opt-in (config flag, accessibility profile) and
-/// is not a signal any environment variable carries reliably.
+/// `$COLORTERM`, then `$TERM` (suffixes; `dumb` is mono), then
+/// `$TERM_PROGRAM`, falling back to truecolor: an over-claim is recoverable,
+/// an under-claim silently degrades.
 #[must_use]
 pub fn detect_color_support() -> ColorSupport {
     detect_from_env(|key| std::env::var(key).ok())
 }
 
-/// Pure (testable) form of [`detect_color_support`]: takes a lookup
-/// closure so tests can simulate arbitrary environments without
-/// `unsafe { std::env::set_var }`.
+/// [`detect_color_support`] over an injected environment lookup.
 fn detect_from_env<F>(env: F) -> ColorSupport
 where
     F: Fn(&str) -> Option<String>,
 {
-    // 1. $COLORTERM — the most authoritative signal.
     if let Some(ct) = env("COLORTERM") {
         let ct_lc = ct.to_ascii_lowercase();
         if ct_lc == "truecolor" || ct_lc == "24bit" {
@@ -1695,7 +1408,6 @@ where
         }
     }
 
-    // 2. $TERM suffix.
     let term = env("TERM").unwrap_or_default();
     let term_lc = term.to_ascii_lowercase();
     if term_lc.ends_with("-direct") || term_lc.ends_with("-truecolor") {
@@ -1705,22 +1417,15 @@ where
         return ColorSupport::Indexed256;
     }
     if !term_lc.is_empty() && !term_lc.contains("color") {
-        // `xterm`, `linux`, `vt100`, etc. — assume 16-color baseline.
-        // Anything richer would have advertised a `-256color` or
-        // `-direct` suffix.
-        // Common exception: macOS Terminal.app sets `TERM=xterm-256color`
-        // so this branch only catches the genuine vt100/linux/etc cases.
+        // `xterm`, `linux`, `vt100`: anything richer carries a suffix.
         if term_lc == "dumb" {
             return ColorSupport::Mono;
         }
         return ColorSupport::Indexed16;
     }
 
-    // 3. $TERM_PROGRAM — macOS native terminals.
     if let Some(tp) = env("TERM_PROGRAM") {
         let tp_lc = tp.to_ascii_lowercase();
-        // iTerm.app and WezTerm advertise truecolor; Apple_Terminal
-        // (macOS Terminal.app) is 256-color only.
         if tp_lc == "iterm.app" || tp_lc == "wezterm" {
             return ColorSupport::TrueColor;
         }
@@ -1729,9 +1434,6 @@ where
         }
     }
 
-    // 4. Fallback: assume the user is on a modern truecolor terminal that
-    // forgot to advertise. Over-claiming is recoverable (server downsamples
-    // anyway if a later signal arrives); under-claiming silently degrades.
     ColorSupport::TrueColor
 }
 
@@ -1764,20 +1466,14 @@ mod tests {
     }
 
     #[test]
-    fn image_protocol_set_ignores_unknown_bits() {
-        let set = ImageProtocolSet::from_wire(0xFF);
-        assert!(set.contains(ImageProtocol::Sixel));
-        assert!(set.contains(ImageProtocol::KittyGraphics));
-        assert!(set.contains(ImageProtocol::Iterm2));
-        assert_eq!(set.as_wire(), ImageProtocolSet::all().as_wire());
-    }
-
-    #[test]
-    fn keyboard_protocol_set_ignores_unknown_bits() {
-        let set = KeyboardProtocolSet::from_wire(0xFF);
-        assert!(set.contains(KeyboardProtocol::Kitty));
-        assert!(set.contains(KeyboardProtocol::ModifyOtherKeys));
-        assert_eq!(set.as_wire(), KeyboardProtocolSet::all().as_wire());
+    fn protocol_sets_ignore_unknown_bits() {
+        assert_eq!(ImageProtocolSet::from_wire(0xFF), ImageProtocolSet::all());
+        assert_eq!(ImageProtocolSet::all().as_wire(), 0x07);
+        assert_eq!(
+            KeyboardProtocolSet::from_wire(0xFF),
+            KeyboardProtocolSet::all()
+        );
+        assert_eq!(KeyboardProtocolSet::all().as_wire(), 0x03);
     }
 
     #[test]
@@ -1808,67 +1504,37 @@ mod tests {
     }
 
     #[test]
-    fn client_capabilities_default_is_truecolor() {
-        let caps = ClientCapabilities::default();
-        assert_eq!(caps.color_support, ColorSupport::TrueColor);
-        assert!(caps.image_protocols.contains(ImageProtocol::Sixel));
-        assert!(caps.kbd_protocols.contains(KeyboardProtocol::Kitty));
-        assert!(caps.hyperlinks);
-    }
+    fn native_advertisement_is_opt_in_and_indivisible() {
+        let synth = BootstrapProfileSet::with(&[
+            BootstrapProfileKind::SynthesizedVtRaw,
+            BootstrapProfileKind::SynthesizedVtStateSync,
+        ]);
+        let base = BootstrapCapabilities::new();
+        assert_eq!(base.profiles, synth);
+        assert_eq!(base.native_codecs.as_wire(), 0);
+        assert_eq!(base.native_features.as_wire(), 0);
 
-    #[test]
-    fn bootstrap_capabilities_default_to_synthesis_only() {
-        let caps = BootstrapCapabilities::new();
-        assert!(
-            caps.profiles
-                .contains(BootstrapProfileKind::SynthesizedVtRaw)
-        );
-        assert!(
-            caps.profiles
-                .contains(BootstrapProfileKind::SynthesizedVtStateSync)
-        );
-        assert!(!caps.profiles.contains(BootstrapProfileKind::NativeState));
-        assert_eq!(caps.native_codecs.as_wire(), 0);
-        assert_eq!(caps.native_features.as_wire(), 0);
-    }
-
-    #[test]
-    fn native_builder_advertises_the_exact_indivisible_profile() {
-        let caps = BootstrapCapabilities::new().with_native(
+        let native = base.with_native(
             EngineCodec::LibghosttyCheckpointV2,
             EngineFeatureSet::required_native(),
         );
+        assert!(native.profiles.contains(BootstrapProfileKind::NativeState));
         assert!(
-            caps.profiles
+            native
+                .profiles
                 .contains(BootstrapProfileKind::SynthesizedVtRaw)
         );
         assert!(
-            caps.profiles
-                .contains(BootstrapProfileKind::SynthesizedVtStateSync)
-        );
-        assert!(caps.profiles.contains(BootstrapProfileKind::NativeState));
-        assert!(
-            caps.native_codecs
+            native
+                .native_codecs
                 .contains(EngineCodec::LibghosttyCheckpointV2)
         );
-        assert_eq!(caps.native_features, EngineFeatureSet::required_native());
-        assert_eq!(EngineFeature::BoundedHistoryControl as u32, 0x0000_0008);
-        assert_eq!(caps.native_features.as_wire(), 0x0000_000f);
-    }
+        assert_eq!(native.native_features.as_wire(), 0x0000_000f);
 
-    #[test]
-    fn native_builder_rejects_partial_features() {
         let partial =
             EngineFeatureSet::with(&[EngineFeature::Continuation, EngineFeature::ReadyBoundary]);
-        let caps = BootstrapCapabilities::new()
-            .with_native(
-                EngineCodec::LibghosttyCheckpointV2,
-                EngineFeatureSet::required_native(),
-            )
-            .with_native(EngineCodec::LibghosttyCheckpointV2, partial);
-        assert!(!caps.profiles.contains(BootstrapProfileKind::NativeState));
-        assert_eq!(caps.native_codecs.as_wire(), 0);
-        assert_eq!(caps.native_features.as_wire(), 0);
+        let withdrawn = native.with_native(EngineCodec::LibghosttyCheckpointV2, partial);
+        assert_eq!(withdrawn, base);
     }
 
     /// Every variant has exactly one name, each bit is unique, the known

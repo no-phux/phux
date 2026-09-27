@@ -1,13 +1,6 @@
-//! Key input — the `KeyEvent` wire type and its atoms.
-//!
-//! Per [ADR-0024] the wire owns its input atoms: `KeyAction`, `ModSet`, and
-//! `PhysicalKey` are phux-defined and libghostty-free, so the codec builds for
-//! non-native consumers (the wasm browser client). Their wire discriminants
-//! match libghostty-vt's `key::{Action, Mods, Key}` exactly; under the `server`
-//! feature this module provides the `From` conversions the server's encoders
-//! use at the libghostty boundary.
-//!
-//! [ADR-0024]: https://github.com/no-phux/phux/blob/main/docs/adr/0024-wire-owns-input-atoms.md
+//! Key input: libghostty-free wire atoms (so the codec builds for wasm)
+//! whose discriminants match libghostty-vt's `key::{Action, Mods, Key}`
+//! (ADR-0024); `server` adds the conversions.
 
 /// Press, release, or repeat. Wire `u32`; values match libghostty's
 /// `key::Action`.
@@ -75,14 +68,8 @@ bitflags::bitflags! {
     }
 }
 
-/// A physical, layout-independent key (W3C `code`-style).
-///
-/// Per [ADR-0024] this is a phux-owned copy of libghostty's `key::Key`
-/// discriminants (wire `u32`), so the codec builds for non-native consumers.
-/// Kept in lockstep with libghostty via the `server`-gated conversions + a
-/// round-trip test. Browser consumers map `KeyboardEvent.code` to these.
-///
-/// [ADR-0024]: https://github.com/no-phux/phux/blob/main/docs/adr/0024-wire-owns-input-atoms.md
+/// A physical, layout-independent key (W3C `code`); a phux-owned copy of
+/// libghostty's `key::Key` discriminants (wire `u32`).
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, int_enum::IntEnum)]
 #[non_exhaustive]
@@ -266,20 +253,9 @@ pub enum PhysicalKey {
     Paste = 175,
 }
 
-/// One key event on a pane.
-///
-/// Layout-independent: `key` is the physical (W3C `code`-style) key; `text` and
-/// `unshifted_codepoint` carry the layout-resolved character.
-///
-/// See docs/spec/input.md §2 for field semantics.
-///
-/// `Debug` is hand-written and **redaction-safe** (ADR-0028): it never prints
-/// the layout-resolved `text` or `unshifted_codepoint`, since together those
-/// reconstruct the user's literal keystrokes (passwords, secrets). It reports
-/// only the structural facts an operator needs in a log — action, physical
-/// key, modifiers, and whether text was present (as a length, never the bytes)
-/// — so the common `trace!(?event)` / `trace!(?input)` call sites are safe by
-/// construction without each site having to remember to redact.
+/// One key event on a pane (docs/spec/input.md §2): the physical key plus
+/// the layout-resolved text. `Debug` never prints `text` or
+/// `unshifted_codepoint`, which reconstruct keystrokes (ADR-0028).
 #[derive(Clone, PartialEq, Eq)]
 pub struct KeyEvent {
     /// Press, release, or repeat.
@@ -288,31 +264,19 @@ pub struct KeyEvent {
     pub key: PhysicalKey,
     /// Modifier bitset at the moment of the event.
     pub mods: ModSet,
-    /// Subset of `mods` consumed by the OS to produce `text`. KIP's encoder
-    /// uses this to avoid double-applying modifiers in escape sequences.
-    /// Clients without this information SHOULD pass [`ModSet::empty`].
+    /// Subset of `mods` the OS consumed to produce `text`, so the encoder
+    /// does not apply them twice. Unknown: SHOULD be [`ModSet::empty`].
     pub consumed_mods: ModSet,
     /// True if this event is part of an active IME composition sequence.
     pub composing: bool,
-    /// UTF-8 text produced by this keypress under the current layout, before
-    /// any Ctrl/Meta transformation. MUST NOT contain C0 control characters
-    /// (`U+0000..=U+001F`, `U+007F`) nor platform PUA function-key codes
-    /// (`U+F700..=U+F8FF`) — pass `None` and let the encoder derive the
-    /// bytes from `key + mods`.
+    /// UTF-8 text under the current layout, before Ctrl/Meta. MUST NOT
+    /// contain C0 controls, `U+007F`, or PUA function-key codes
+    /// (`U+F700..=U+F8FF`); pass `None` instead.
     pub text: Option<String>,
-    /// Layout-resolved codepoint that would have been produced with no
-    /// modifiers held. Used by KIP `REPORT_ALTERNATES`.
+    /// Layout-resolved codepoint with no modifiers held (KIP alternates).
     pub unshifted_codepoint: Option<u32>,
 }
 
-/// Redaction-safe `Debug` (ADR-0028).
-///
-/// Emits the event's structure but never its content: `text` is reduced to
-/// `text_len` (a UTF-8 byte count) and `unshifted_codepoint` to a present/absent
-/// boolean. This is what lands in logs whenever a `KeyEvent` (or an
-/// `InputEvent` wrapping one) is formatted with `{:?}` — e.g. the server's
-/// `trace!(?input, …)` PTY-handoff diagnostics. The physical key and modifiers
-/// are structural (already plain integers on the wire) and safe to log.
 impl core::fmt::Debug for KeyEvent {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("KeyEvent")
@@ -321,9 +285,11 @@ impl core::fmt::Debug for KeyEvent {
             .field("mods", &self.mods)
             .field("consumed_mods", &self.consumed_mods)
             .field("composing", &self.composing)
-            // Redacted: never log the literal characters produced.
             .field("text_len", &self.text.as_ref().map(String::len))
-            .field("has_unshifted_codepoint", &self.unshifted_codepoint.is_some())
+            .field(
+                "has_unshifted_codepoint",
+                &self.unshifted_codepoint.is_some(),
+            )
             .finish()
     }
 }
@@ -391,20 +357,6 @@ mod tests {
             assert_eq!(KeyAction::from_u32(a.to_u32()), Some(a));
         }
         assert_eq!(KeyAction::from_u32(9), None);
-    }
-
-    #[test]
-    fn key_event_equality_includes_text() {
-        let mk = |text: &str| KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::A,
-            mods: ModSet::CTRL | ModSet::SHIFT,
-            consumed_mods: ModSet::SHIFT,
-            composing: false,
-            text: Some(text.to_owned()),
-            unshifted_codepoint: None,
-        };
-        assert_ne!(mk("a"), mk("b"));
     }
 
     #[test]

@@ -1,11 +1,5 @@
-//! Wire-level input event types.
-//!
-//! These mirror libghostty-vt's `key::Event`, `mouse::Event`, `focus::Event`,
-//! and paste utilities one-to-one — see ADR-0006. Numeric discriminants are
-//! chosen to match libghostty's enums verbatim so the server-side
-//! `From<&phux_protocol::input::*>` conversions are field-for-field copies.
-//!
-//! Wire encoding for these types lives in [`crate::wire`].
+//! Wire-level input event types, mirroring libghostty-vt's input events with
+//! matching discriminants (ADR-0006); encoding lives in [`crate::wire`].
 
 pub mod focus;
 pub mod key;
@@ -17,16 +11,8 @@ use key::KeyEvent;
 use mouse::MouseEvent;
 use paste::PasteEvent;
 
-/// The tagged union of client-to-server input events.
-///
-/// These atoms are carried by the `INPUT_KEY` / `INPUT_MOUSE` / `INPUT_FOCUS`
-/// / `INPUT_PASTE` frames (`docs/spec/input.md`).
-/// Bundling them lets a single command carry an already-built input event
-/// without one frame variant per atom — used by `ROUTE_INPUT` (L1.md §5.1),
-/// the side-effect-free input route that feeds a pane without an attach.
-///
-/// `#[non_exhaustive]` so a future minor protocol version can add an atom
-/// without breaking downstream matches.
+/// Any client-to-server input atom, so one command (`ROUTE_INPUT`,
+/// `APPLY_INPUT`) can carry one without a variant per atom.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum InputEvent {
@@ -41,14 +27,8 @@ pub enum InputEvent {
 }
 
 impl InputEvent {
-    /// A short, redaction-safe one-line narration of this event for logs and
-    /// observability (ADR-0028).
-    ///
-    /// Self-narrating input atoms: the string describes the event's *structure*
-    /// — the atom kind plus its structural facts — and NEVER its secret payload
-    /// (typed key text, pasted clipboard bytes). It is the human-friendly
-    /// companion to the types' redaction-safe `Debug`; prefer it where a flat
-    /// log line reads better than a `{:?}` struct dump.
+    /// A one-line log narration of the event's structure, never its secret
+    /// payload (key text, pasted bytes) (ADR-0028).
     #[must_use]
     pub fn narrate(&self) -> String {
         match self {
@@ -96,9 +76,7 @@ mod tests {
         })
     }
 
-    /// The wrapping `InputEvent` `{:?}` (what the server's `trace!(?input, …)`
-    /// PTY-handoff diagnostics print) must not leak the typed key text or the
-    /// pasted bytes.
+    /// `{:?}` (what server traces print) must not leak key text or pastes.
     #[test]
     fn input_event_debug_never_leaks_secret_payload() {
         let key_dbg = format!("{:?}", secret_key_event());
@@ -117,7 +95,6 @@ mod tests {
         assert!(paste_dbg.contains("data_len"), "{paste_dbg}");
     }
 
-    /// `narrate()` is the redaction-safe one-liner — same guarantee.
     #[test]
     fn narrate_is_structural_and_redaction_safe() {
         let key_n = secret_key_event().narrate();
@@ -135,7 +112,6 @@ mod tests {
             "narrate leaked paste: {paste_n}"
         );
 
-        // Non-secret atoms narrate without panicking and carry their kind.
         let focus_n = InputEvent::Focus(focus::FocusEvent::Gained).narrate();
         assert!(focus_n.starts_with("focus "), "{focus_n}");
     }

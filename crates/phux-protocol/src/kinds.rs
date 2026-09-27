@@ -1,22 +1,14 @@
 //! The resource-kind catalog and the closed verb classification
 //! ([ADR-0125], `docs/spec/workload-auth.md` §5-§6, `docs/spec/L1.md` §1.1).
 //!
-//! One table serves two readers. Discovery (`phux --capabilities --json` and
-//! the generated `docs/reference/kinds.md`) reads [`SERVER_METHODS`],
-//! [`SUBSTRATE_METHODS`], and [`KINDS`] to say what each resource kind
-//! answers. Authorization reads [`classify_frame`] and [`classify_command`],
-//! which return rows of [`FRAME_RULES`] and [`COMMAND_RULES`]: the same rows
-//! the method entries point at, so the two readers cannot disagree about the
-//! verbs a method needs.
+//! One table serves discovery ([`SERVER_METHODS`], [`SUBSTRATE_METHODS`],
+//! [`KINDS`]) and authorization ([`classify_frame`], [`classify_command`]):
+//! method entries point at the same [`FRAME_RULES`] / [`COMMAND_RULES`] rows
+//! the classifiers return, so the two cannot disagree. Compiled metadata,
+//! never wire; reading it grants nothing.
 //!
-//! The catalog is compiled metadata, never wire. Invocation stays the typed
-//! [`Command`] and [`FrameKind`] enums; nothing here is negotiated, and a
-//! method name is not an invocation handle. Discovery is not authorization:
-//! reading this table grants nothing.
-//!
-//! Both classifiers match their enum exhaustively, so a new frame or command
-//! variant does not compile until it is classified. Whatever the tables do not
-//! name (an unknown, retired, unallocated, or wrong-direction frame or tag) is
+//! Both classifiers match exhaustively, so a new variant does not compile
+//! until classified; anything the tables do not name is
 //! [`Classification::Deny`].
 //!
 //! [ADR-0125]: https://github.com/no-phux/phux/blob/main/docs/adr/0125-kind-catalog-is-generated-metadata.md
@@ -778,12 +770,8 @@ pub fn classify_command(command: &Command) -> Classification {
     command_rule(command).classification()
 }
 
-/// The workload-auth §6 row that classifies `frame`.
-///
-/// The match is exhaustive: a new [`FrameKind`] variant does not compile
-/// until it is placed here. A `COMMAND` frame returns its nested command's
-/// row from [`command_rule`]; a server-to-client frame returns the default-deny
-/// row.
+/// The workload-auth §6 row that classifies `frame`: a `COMMAND` frame's
+/// nested command row, default-deny for a server-to-client frame.
 #[must_use]
 pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
     match frame {
@@ -852,11 +840,8 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
     }
 }
 
-/// The workload-auth §6 row that classifies the nested `command`.
-///
-/// The match is exhaustive: a new [`Command`] variant does not compile until
-/// it is placed here, and a command the spec's table does not list is placed
-/// on the default-deny row until the spec classifies it.
+/// The workload-auth §6 row that classifies the nested `command`; a command
+/// the spec does not list is default-deny.
 #[must_use]
 pub fn command_rule(command: &Command) -> &'static Rule {
     match command {
@@ -1061,11 +1046,8 @@ pub enum Carrier {
     Frame(u8),
     /// A command inside the `COMMAND` envelope, by nested tag.
     Command(u8),
-    /// A conventional Global L3 metadata key whose writes or reads have a
-    /// catalog entry of their own, carried by the metadata frames: a key the
-    /// server intercepts (session create, rename, keep-empty) or answers
-    /// (whoami), or a consumer doorbell the server stores like any value
-    /// (config reload).
+    /// A Global L3 metadata key with its own entry: one the server
+    /// intercepts or answers, or a consumer doorbell (config reload).
     Metadata(&'static str),
 }
 
@@ -1088,10 +1070,8 @@ pub struct MethodSpec {
     pub shipped: bool,
     /// Whether an instance can end a process, eject a client, stop or
     /// re-exec the server, open a door into it, or release a held action
-    /// (ADR-0128). A consumer confirms before sending one: the MCP
-    /// `destructiveHint` and `confirm` argument and the CLI `--yes` flag all
-    /// derive from this. Payload-level exceptions are
-    /// [`command_is_dangerous`] and [`frame_is_dangerous`].
+    /// (ADR-0128). MCP `destructiveHint`/`confirm` and CLI `--yes` derive
+    /// from this; see [`command_is_dangerous`] and [`frame_is_dangerous`].
     pub dangerous: bool,
 }
 
@@ -1105,12 +1085,8 @@ impl MethodSpec {
     }
 
     /// Whether some instance of the method can change server state.
-    ///
-    /// Conservative: a method no row admits by verb (the `COMMAND`
-    /// envelope, or a method every row denies) is reported as mutating, so
-    /// a read-only hint derived from this can never cover a denied write.
-    /// Only a method whose rows are all exemptions, or whose admitted verbs
-    /// are `INVENTORY` and `OBSERVE` alone, is read-only.
+    /// Conservative: a method no row admits by verb counts as mutating, so a
+    /// read-only hint never covers a denied write.
     #[must_use]
     pub fn mutating(&self) -> bool {
         let verbs = self.verbs();

@@ -1,17 +1,8 @@
 //! Stable identifiers used across the protocol.
 //!
-//! Most IDs are opaque `u32` values, monotonically allocated by the server.
-//! IDs are stable for the server's lifetime and are not reused after the
-//! entity is destroyed.
-//!
-//! [`ResourceId`] is the exception: per [ADR-0016] it is a tagged union that
-//! also records the host that owns the terminal. Non-hub servers only ever
-//! construct [`ResourceId::Local`]; the [`ResourceId::Satellite`] variant is
-//! how a federation hub addresses (and re-tags) satellite-owned terminals
-//! per [ADR-0007].
-//!
-//! [ADR-0007]: https://github.com/no-phux/phux/blob/main/docs/adr/0007-mosh-class-transport-and-satellites.md
-//! [ADR-0016]: https://github.com/no-phux/phux/blob/main/docs/adr/0016-terminal-id-as-wire-primary.md
+//! Most IDs are opaque server-allocated `u32`s, never reused within a server's
+//! lifetime. [`ResourceId`] is a tagged union that also names the owning
+//! federation host (ADR-0016, ADR-0007).
 
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
@@ -54,32 +45,14 @@ id_type!(
     ClientId
 );
 id_type!(
-    /// Opaque grouping key, formerly the L2 "Collection" lifecycle tier.
-    ///
-    /// The "Option B" re-tier (v0.3.0, ADR-0019 / ADR-0027) **dissolved the
-    /// L2 collection tier**: there is no collection lifecycle anymore.
-    /// Grouping (membership + names) is now L3 metadata plus client logic,
-    /// and the lifecycle verbs that needed a collection id
-    /// (`CREATE_SESSION` / `KILL_COLLECTION` / `RENAME_SESSION`) were
-    /// removed. `GroupId` survives only as a documented **opaque
-    /// grouping key** because it is still threaded through three surviving
-    /// surfaces that would balloon the re-tier if removed in the same pass:
-    /// the `Scope::Group` L3-metadata scope (`docs/spec/L3.md` §1),
-    /// the `SpawnResource.group` field, and the `CommandValue::GroupId`
-    /// reply variant. Removing it entirely is a follow-up bead.
-    ///
-    /// It is **not** a lifecycle tier: v0.3 servers expose a single static
-    /// default `GroupId(1)` and treat it as an opaque scope label, not
-    /// a thing with create/kill/rename semantics. The wire encoding is the
-    /// inner `u32`.
+    /// Opaque grouping key: the `Scope::Group` metadata scope, the spawn
+    /// `group` field, and `CommandValue::GroupId`. Not a lifecycle tier
+    /// (ADR-0019, ADR-0027); servers expose a single static `GroupId(1)`.
     GroupId
 );
-/// Non-zero identifier for one logical terminal subscription.
-///
-/// A `StreamId` is allocated by the endpoint that originates the stream and is
-/// scoped to that connection. Federation relays maintain an explicit
-/// downstream-to-upstream bijection rather than reusing either side's value.
-/// Zero is reserved so an absent/uninitialized stream cannot be serialized.
+/// Non-zero, connection-scoped identifier for one logical terminal
+/// subscription, allocated by the originating endpoint. Relays map it rather
+/// than reuse it.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -108,11 +81,8 @@ impl core::fmt::Display for StreamId {
     }
 }
 
-/// Non-zero identifier for one replaceable terminal replica generation.
-///
-/// A new bootstrap for an existing [`StreamId`] always receives a new
-/// `BootstrapId`. Once that generation is tombstoned, no frame carrying its id
-/// is legal. Zero is reserved so stale/default state cannot name a generation.
+/// Non-zero identifier for one terminal replica generation. Every bootstrap
+/// gets a new one; no frame may carry a tombstoned generation's id.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -141,11 +111,20 @@ impl core::fmt::Display for BootstrapId {
     }
 }
 
-/// Opaque client-generated identifier for one acknowledged input operation.
-///
-/// The all-zero value is reserved and cannot be constructed. Debug output is
-/// deliberately redacted because operation identifiers may be correlated with
-/// sensitive input activity.
+/// Whether a 16-byte id is not the reserved all-zero value.
+const fn is_nonzero(bytes: &[u8; 16]) -> bool {
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0 {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Opaque, non-zero, client-generated id for one acknowledged input
+/// operation. Debug is redacted: ids correlate with sensitive input.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InputOperationId([u8; 16]);
 
@@ -153,14 +132,11 @@ impl InputOperationId {
     /// Construct a non-zero operation identifier.
     #[must_use]
     pub const fn new(bytes: [u8; 16]) -> Option<Self> {
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] != 0 {
-                return Some(Self(bytes));
-            }
-            index += 1;
+        if is_nonzero(&bytes) {
+            Some(Self(bytes))
+        } else {
+            None
         }
-        None
     }
 
     /// Borrow the 16-byte wire representation.
@@ -176,15 +152,9 @@ impl core::fmt::Debug for InputOperationId {
     }
 }
 
-/// Opaque client-generated key that makes one create operation idempotent.
-///
-/// Carried as `SPAWN_RESOURCE` field 17 (ADR-0126), and as the
-/// `operation_id` of an `EVENT` that operation caused (`docs/spec/L1.md`
-/// §7.3).
-///
-/// The all-zero value is reserved and cannot be constructed; a client draws
-/// the 16 bytes from a CSPRNG. Debug output is redacted for the same reason
-/// as [`InputOperationId`]: a key correlates the operations that reused it.
+/// Opaque, non-zero, CSPRNG-drawn key that makes one create idempotent
+/// (`SPAWN_RESOURCE` field 17, ADR-0126; `EVENT.operation_id`). Debug is
+/// redacted.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IdempotencyKey([u8; 16]);
 
@@ -192,9 +162,10 @@ impl IdempotencyKey {
     /// Construct a non-zero key.
     #[must_use]
     pub const fn new(bytes: [u8; 16]) -> Option<Self> {
-        match InputOperationId::new(bytes) {
-            Some(_) => Some(Self(bytes)),
-            None => None,
+        if is_nonzero(&bytes) {
+            Some(Self(bytes))
+        } else {
+            None
         }
     }
 
@@ -211,12 +182,9 @@ impl core::fmt::Debug for IdempotencyKey {
     }
 }
 
-/// Opaque client-generated identifier for one chunked file upload.
-///
-/// The all-zero value is reserved and cannot be constructed. The identifier
-/// names the server-side partial file across reconnects, so retrying a chunk
-/// with the same id and offset is idempotent. Debug output is redacted because
-/// identifiers can be correlated with user files.
+/// Opaque, non-zero, client-generated id for one chunked upload. It names
+/// the partial file across reconnects, so a retried chunk is idempotent.
+/// Debug is redacted.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileUploadId([u8; 16]);
 
@@ -224,14 +192,11 @@ impl FileUploadId {
     /// Construct a non-zero upload identifier.
     #[must_use]
     pub const fn new(bytes: [u8; 16]) -> Option<Self> {
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] != 0 {
-                return Some(Self(bytes));
-            }
-            index += 1;
+        if is_nonzero(&bytes) {
+            Some(Self(bytes))
+        } else {
+            None
         }
-        None
     }
 
     /// Borrow the 16-byte wire representation.
@@ -247,15 +212,9 @@ impl core::fmt::Debug for FileUploadId {
     }
 }
 
-/// Server-minted identifier of one held action awaiting approval (ADR-0128).
-///
-/// It is the `<id>` of `phux.approval/v1/<id>` and
-/// `phux.approval.decide/v1/<id>`, and the body of the `approval_requested`
-/// and `approval_decided` events.
-///
-/// The all-zero value is reserved and cannot be constructed. Its text form
-/// is 32 lowercase hex digits. It names a request, not an authority: the
-/// decision is authorized by the decider's grant, never by knowing the id.
+/// Server-minted, non-zero id of one held action awaiting approval
+/// (ADR-0128); text form is 32 lowercase hex digits. It names a request, not
+/// an authority: a decision is authorized by the decider's grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ApprovalId([u8; 16]);
 
@@ -263,9 +222,10 @@ impl ApprovalId {
     /// Construct a non-zero approval id.
     #[must_use]
     pub const fn new(bytes: [u8; 16]) -> Option<Self> {
-        match InputOperationId::new(bytes) {
-            Some(_) => Some(Self(bytes)),
-            None => None,
+        if is_nonzero(&bytes) {
+            Some(Self(bytes))
+        } else {
+            None
         }
     }
 
@@ -275,24 +235,20 @@ impl ApprovalId {
         &self.0
     }
 
-    /// The approval a decision key names: the text after
-    /// [`APPROVAL_DECIDE_KEY_PREFIX`](crate::wire::frame::APPROVAL_DECIDE_KEY_PREFIX),
-    /// when it is a canonical id.
+    /// The approval a canonical `phux.approval.decide/v1/<id>` key names.
     #[must_use]
     pub fn from_decide_key(key: &str) -> Option<Self> {
         key.strip_prefix(crate::wire::frame::APPROVAL_DECIDE_KEY_PREFIX)
             .and_then(Self::parse)
     }
 
-    /// The server-owned record key of this approval,
-    /// `phux.approval/v1/<id>`.
+    /// The server-owned record key, `phux.approval/v1/<id>`.
     #[must_use]
     pub fn record_key(&self) -> String {
         format!("{}{self}", crate::wire::frame::APPROVAL_KEY_PREFIX)
     }
 
-    /// The key a decision on this approval is written to,
-    /// `phux.approval.decide/v1/<id>`.
+    /// The decision key, `phux.approval.decide/v1/<id>`.
     #[must_use]
     pub fn decide_key(&self) -> String {
         format!("{}{self}", crate::wire::frame::APPROVAL_DECIDE_KEY_PREFIX)
@@ -331,19 +287,12 @@ impl core::fmt::Display for ApprovalId {
     }
 }
 
-/// The server's resource id space, named by 16 random bytes
-/// (`docs/spec/L1.md` §3.1, ADR-0109).
+/// The server's resource id space, 16 random bytes (`docs/spec/L1.md` §3.1,
+/// ADR-0109).
 ///
-/// A server mints a fresh token whenever its `ResourceId` allocator starts
-/// over, which is exactly when an id it handed out can name a different
-/// resource. A graceful upgrade keeps the allocator and so keeps the token;
-/// a cold restart replaces both. A client binds a spawned resource to the
-/// token in `RESOURCE_SPAWNED` and hands it back in `KILL_RESOURCE_IF`, so a
-/// late kill cannot land on a pane that merely reuses the id.
-///
-/// Opaque: compare bytes only. The value names an id space, not a process,
-/// and it is distinct from `HELLO_OK.server_id`, which changes on every
-/// re-exec.
+/// Re-minted whenever the `ResourceId` allocator restarts, so
+/// `KILL_RESOURCE_IF` cannot land on a pane that merely reuses an id. Opaque;
+/// distinct from `HELLO_OK.server_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ServerInstance([u8; 16]);
 
@@ -361,26 +310,15 @@ impl ServerInstance {
     }
 }
 
-/// Federation-routing host identifier for a [`ResourceId::Satellite`].
-///
-/// Per [ADR-0007] the satellite link is an opaque host token negotiated at
-/// federation-handshake time. v0 keeps the shape minimal: a length-prefixed
-/// UTF-8 string. Concrete host syntax (hostnames, ULIDs, mosh-keys) is the
-/// federation layer's concern; the wire treats it as bytes.
-///
-/// [ADR-0007]: https://github.com/no-phux/phux/blob/main/docs/adr/0007-mosh-class-transport-and-satellites.md
-///
-/// Stored as a `Box<str>` rather than a `String`: the token is immutable
-/// once built, and the two-word representation keeps [`ResourceId`] at 24
-/// bytes, which every frame that carries one or two ids inherits.
+/// Opaque federation host token for a [`ResourceId::Satellite`] (ADR-0007).
+/// A `Box<str>` keeps [`ResourceId`] at 24 bytes.
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct SatelliteHost(Box<str>);
 
 impl SatelliteHost {
-    /// Wrap a host token. The string is taken verbatim; no validation is
-    /// performed here — the federation handshake validates upstream.
+    /// Wrap a host token verbatim; the federation handshake validates it.
     #[must_use]
     pub fn new(host: impl Into<String>) -> Self {
         Self(host.into().into_boxed_str())
@@ -422,19 +360,10 @@ pub const RESOURCE_ID_TAG_LOCAL: u8 = 0;
 /// Wire tag byte for [`ResourceId::Satellite`].
 pub const RESOURCE_ID_TAG_SATELLITE: u8 = 1;
 
-/// Wire identifier for a managed terminal, per [ADR-0016].
+/// Wire identifier for a served resource (ADR-0016): owned by this server,
+/// or by a federation peer. A non-hub decoder MUST accept `Satellite` and
+/// answer [`UnsupportedSatelliteRoute`] (SPEC §14).
 ///
-/// `ResourceId` is a tagged union: [`Local`](Self::Local) names a terminal
-/// owned by this server; [`Satellite`](Self::Satellite) names a terminal
-/// reachable through a federation peer. v0.1 servers only ever construct
-/// `Local`; v0.1 decoders MUST accept the `Satellite` tag and respond with
-/// [`UnsupportedSatelliteRoute`] (per SPEC §14) if not configured as a
-/// federation hub.
-///
-/// The numeric `id` inside each variant is stable for the life of the
-/// owning server and is not reused after the terminal closes.
-///
-/// [ADR-0016]: https://github.com/no-phux/phux/blob/main/docs/adr/0016-terminal-id-as-wire-primary.md
 /// [`UnsupportedSatelliteRoute`]: crate::wire::frame::ErrorCode::UnsupportedSatelliteRoute
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -445,17 +374,8 @@ pub enum ResourceId {
         /// Monotonic per-server identifier.
         id: u32,
     },
-    /// A terminal owned by a federation peer (wire tag = 1).
-    ///
-    /// A federation hub (ADR-0007) relays frames carrying this tag over
-    /// its outbound satellite links, rewriting to the peer's `Local`
-    /// space outbound and re-tagging responses/streams on the way back
-    /// (SPEC L1 §9.1). Decoders on non-hub servers MUST still accept the
-    /// shape and respond with [`UnsupportedSatelliteRoute`]; a hub whose
-    /// link to `host` is down responds with [`SatelliteUnreachable`].
-    ///
-    /// [`UnsupportedSatelliteRoute`]: crate::wire::frame::ErrorCode::UnsupportedSatelliteRoute
-    /// [`SatelliteUnreachable`]: crate::wire::frame::ErrorCode::SatelliteUnreachable
+    /// A terminal owned by a federation peer (wire tag = 1). A hub rewrites
+    /// it to the peer's `Local` space and re-tags replies (SPEC L1 §9.1).
     Satellite {
         /// Federation peer that owns the terminal.
         host: SatelliteHost,
@@ -465,21 +385,13 @@ pub enum ResourceId {
 }
 
 impl ResourceId {
-    /// Construct a `Local` terminal id from a raw `u32`.
-    ///
-    /// This is the v0.1 hot path — every terminal allocated by a v0.1
-    /// server flows through this constructor.
+    /// Construct a `Local` terminal id.
     #[must_use]
     pub const fn local(id: u32) -> Self {
         Self::Local { id }
     }
 
-    /// Construct a `Satellite` terminal id.
-    ///
-    /// Constructed by federation hubs when re-tagging satellite-owned
-    /// terminals for their consumers (ADR-0007), and by consumers
-    /// addressing those terminals. Non-hub servers MUST NOT emit
-    /// `Satellite` ids.
+    /// Construct a `Satellite` terminal id. Non-hub servers MUST NOT emit one.
     #[must_use]
     pub fn satellite(host: impl Into<SatelliteHost>, id: u32) -> Self {
         Self::Satellite {
@@ -488,24 +400,13 @@ impl ResourceId {
         }
     }
 
-    /// Construct from a raw `u32`, defaulting to the `Local` variant.
-    ///
-    /// Compatibility shim for call sites that historically held a bare
-    /// `u32` from the wire — equivalent to `ResourceId::local(raw)`.
+    /// Same as [`Self::local`].
     #[must_use]
     pub const fn new(raw: u32) -> Self {
         Self::local(raw)
     }
 
-    /// Returns `Some(id)` for [`Local`](Self::Local) terminals, `None` for
-    /// [`Satellite`](Self::Satellite).
-    ///
-    /// Use this at boundaries that have no satellite story yet (server
-    /// dispatch tables keyed by `u32`, logging, etc.). A `None` is a
-    /// signal to respond with [`UnsupportedSatelliteRoute`] or drop the
-    /// frame with a warn, per SPEC §10.1.
-    ///
-    /// [`UnsupportedSatelliteRoute`]: crate::wire::frame::ErrorCode::UnsupportedSatelliteRoute
+    /// `Some(id)` for a [`Local`](Self::Local) id, `None` for a satellite.
     #[must_use]
     pub const fn local_id(&self) -> Option<u32> {
         match self {
@@ -553,31 +454,21 @@ pub const RESOURCE_KIND_TAG_AGENT_SESSION: u8 = 1;
 
 /// What backs a served resource.
 ///
-/// An open `u8` enum on the wire: a decoder never fails on a tag it does not
-/// recognise but surfaces it as [`ResourceKind::Unknown`], so a newer peer
-/// can introduce a kind and an older one still parses the frame and refuses
-/// the operation (`SpawnError::UnsupportedKind`, `ErrorCode::WrongResourceKind`)
-/// rather than dropping the connection. Tags are allocated sequentially and
-/// never reused.
-///
-/// - [`Terminal`](Self::Terminal): a PTY plus a libghostty terminal; the
-///   only kind that accepts input atoms, resize, screen reads, history, input
-///   leases, signals, uploads, and transcription.
-/// - [`AgentSession`](Self::AgentSession): an agent harness's structured
-///   event stream, fed by a producer through `APPEND_RESOURCE_OUTPUT` and
-///   always bound to a Terminal parent.
+/// An open `u8` enum: an unrecognised tag decodes as [`ResourceKind::Unknown`]
+/// so an older peer refuses the operation instead of dropping the connection.
+/// Tags are never reused.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[non_exhaustive]
 pub enum ResourceKind {
-    /// A PTY-backed terminal (wire tag = 0).
+    /// A PTY plus libghostty terminal (wire tag = 0); the only kind that
+    /// takes input, resize, screen reads, history, and signals.
     #[default]
     Terminal,
-    /// A producer-fed agent session stream (wire tag = 1).
+    /// A producer-fed agent event stream bound to a Terminal (wire tag = 1).
     AgentSession,
-    /// A kind this protocol build does not recognise; the tag is preserved
-    /// verbatim so a relay re-encodes it unchanged.
+    /// A kind this build does not recognise, preserved for relays.
     Unknown {
         /// The unrecognised wire tag.
         tag: u8,
@@ -595,8 +486,7 @@ impl ResourceKind {
         }
     }
 
-    /// Decode a wire tag. Never fails: an unrecognised tag becomes
-    /// [`ResourceKind::Unknown`].
+    /// Decode a wire tag; never fails.
     #[must_use]
     pub const fn from_wire(tag: u8) -> Self {
         match tag {
@@ -612,8 +502,7 @@ impl ResourceKind {
         matches!(self, Self::Terminal)
     }
 
-    /// Lower-case stable name (`terminal`, `agent_session`), or `unknown`
-    /// for a tag this build does not recognise.
+    /// Lower-case stable name (`terminal`, `agent_session`, `unknown`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -633,8 +522,7 @@ impl core::fmt::Display for ResourceKind {
     }
 }
 
-/// Identifier for a terminal frame. Monotonically increasing per terminal; `0`
-/// is the empty initial frame.
+/// Monotonic per-terminal frame id; `0` is the empty initial frame.
 #[derive(
     Debug,
     Clone,
