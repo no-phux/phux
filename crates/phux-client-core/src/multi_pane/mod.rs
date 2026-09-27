@@ -1,7 +1,8 @@
-//! Multi-pane composition: layout tree to per-pane rectangles plus the
-//! light box-drawing divider cells between them (ADR-0019). Each
-//! `Horizontal` split consumes one column and each `Vertical` split one row;
-//! focus emphasis is the chrome layer's job, not this pure compute step.
+//! Multi-pane composition: per-pane rectangles and the divider cells between.
+//!
+//! Dividers use the light box-drawing set (ADR-0019). Each `Horizontal`
+//! split consumes one column and each `Vertical` split one row; focus
+//! emphasis is the chrome layer's job, not this pure compute step.
 
 /// Pane-rect geometry: tile a layout tree into per-pane rectangles.
 pub mod layout;

@@ -858,157 +858,54 @@ mod tests {
         ev
     }
 
+    /// Type `prior` from `start`, then assert `key` is skipped and leaves the
+    /// queue and cursor untouched. `glyph` is what the grid reports.
+    fn assert_skipped(
+        name: &str,
+        (cols, start): (u16, (u16, u16)),
+        prior: &[KeyEvent],
+        key: &KeyEvent,
+        glyph: Option<char>,
+    ) {
+        let mut s = PredictionState::new(PredictiveConfig::enabled(), cols, 24);
+        s.set_cursor(start.0, start.1);
+        for ev in prior {
+            assert_eq!(s.predict_key(ev), PredictionOutcome::Predicted, "{name}");
+        }
+        let (pending, cursor) = (s.pending_len(), s.cursor());
+        let outcome = s.predict_key_with_grid(key, |_, _| glyph);
+        assert_eq!(outcome, PredictionOutcome::Skipped, "{name}");
+        assert_eq!((s.pending_len(), s.cursor()), (pending, cursor), "{name}");
+    }
+
     #[test]
+    #[rustfmt::skip]
     fn unsafe_keys_are_skipped_without_touching_state() {
         let named = |k| key_named(k, ModSet::empty());
-        let bs = || named(PhysicalKey::Backspace);
-        // (name, cols, start cursor, prior typed keys, key, grid glyph)
-        let cases: Vec<(&str, u16, (u16, u16), Vec<KeyEvent>, KeyEvent, Option<char>)> = vec![
-            (
-                "ctrl",
-                80,
-                (0, 0),
-                vec![],
-                with(key_text("a"), |e| e.mods = ModSet::CTRL),
-                None,
-            ),
-            (
-                "alt",
-                80,
-                (0, 0),
-                vec![],
-                with(key_text("a"), |e| e.mods = ModSet::ALT),
-                None,
-            ),
-            (
-                "release",
-                80,
-                (0, 0),
-                vec![],
-                with(key_text("a"), |e| e.action = KeyAction::Release),
-                None,
-            ),
-            (
-                "no text",
-                80,
-                (0, 0),
-                vec![],
-                with(key_text("a"), |e| e.text = None),
-                None,
-            ),
-            ("DEL byte", 80, (0, 0), vec![], key_text("\x7f"), None),
-            ("tab", 80, (0, 0), vec![], named(PhysicalKey::Tab), None),
-            (
-                "enter at col 0",
-                80,
-                (0, 0),
-                vec![],
-                named(PhysicalKey::Enter),
-                None,
-            ),
-            (
-                "enter on last row",
-                80,
-                (23, 5),
-                vec![],
-                named(PhysicalKey::Enter),
-                None,
-            ),
-            ("backspace at col 0", 80, (0, 0), vec![], bs(), None),
-            (
-                "ctrl-u, boundary unknown",
-                80,
-                (0, 8),
-                vec![],
-                key_ctrl_u(),
-                None,
-            ),
-            (
-                "ctrl-u, nothing typed",
-                80,
-                (0, 5),
-                vec![key_text("a"), bs()],
-                key_ctrl_u(),
-                None,
-            ),
-            (
-                "ctrl-alt-u",
-                80,
-                (0, 4),
-                vec![key_text("h")],
-                with(key_ctrl_u(), |e| e.mods = ModSet::CTRL | ModSet::ALT),
-                None,
-            ),
-            (
-                "insert at last column",
-                5,
-                (0, 4),
-                vec![],
-                key_text("x"),
-                None,
-            ),
-            ("wide at edge-1", 10, (0, 8), vec![], key_text("中"), None),
-            (
-                "lone combining mark",
-                80,
-                (0, 0),
-                vec![],
-                key_text("\u{0301}"),
-                None,
-            ),
-            ("two clusters", 80, (0, 0), vec![], key_text("ab"), None),
-            (
-                "left over blank",
-                80,
-                (0, 5),
-                vec![],
-                named(PhysicalKey::ArrowLeft),
-                None,
-            ),
-            (
-                "left at col 0",
-                80,
-                (0, 0),
-                vec![],
-                named(PhysicalKey::ArrowLeft),
-                Some('a'),
-            ),
-            (
-                "right over blank",
-                80,
-                (0, 3),
-                vec![],
-                named(PhysicalKey::ArrowRight),
-                None,
-            ),
-            (
-                "right at edge",
-                10,
-                (0, 9),
-                vec![],
-                named(PhysicalKey::ArrowRight),
-                Some('x'),
-            ),
-            (
-                "right over wide at edge-1",
-                10,
-                (0, 8),
-                vec![],
-                named(PhysicalKey::ArrowRight),
-                Some('中'),
-            ),
-        ];
-        for (name, cols, (row, col), prior, key, glyph) in cases {
-            let mut s = PredictionState::new(PredictiveConfig::enabled(), cols, 24);
-            s.set_cursor(row, col);
-            for ev in &prior {
-                assert_eq!(s.predict_key(ev), PredictionOutcome::Predicted, "{name}");
-            }
-            let (pending, cursor) = (s.pending_len(), s.cursor());
-            let outcome = s.predict_key_with_grid(&key, |_, _| glyph);
-            assert_eq!(outcome, PredictionOutcome::Skipped, "{name}");
-            assert_eq!((s.pending_len(), s.cursor()), (pending, cursor), "{name}");
-        }
+        let (a, bs) = (key_text("a"), named(PhysicalKey::Backspace));
+        let at = |row, col| (80, (row, col));
+        assert_skipped("ctrl", at(0, 0), &[], &with(a.clone(), |e| e.mods = ModSet::CTRL), None);
+        assert_skipped("alt", at(0, 0), &[], &with(a.clone(), |e| e.mods = ModSet::ALT), None);
+        assert_skipped("release", at(0, 0), &[], &with(a.clone(), |e| e.action = KeyAction::Release), None);
+        assert_skipped("no text", at(0, 0), &[], &with(a.clone(), |e| e.text = None), None);
+        assert_skipped("DEL byte", at(0, 0), &[], &key_text("\x7f"), None);
+        assert_skipped("tab", at(0, 0), &[], &named(PhysicalKey::Tab), None);
+        assert_skipped("enter at col 0", at(0, 0), &[], &named(PhysicalKey::Enter), None);
+        assert_skipped("enter on last row", at(23, 5), &[], &named(PhysicalKey::Enter), None);
+        assert_skipped("backspace at col 0", at(0, 0), &[], &bs, None);
+        assert_skipped("ctrl-u, boundary unknown", at(0, 8), &[], &key_ctrl_u(), None);
+        assert_skipped("ctrl-u, nothing typed", at(0, 5), &[a, bs], &key_ctrl_u(), None);
+        let ctrl_alt_u = with(key_ctrl_u(), |e| e.mods = ModSet::CTRL | ModSet::ALT);
+        assert_skipped("ctrl-alt-u", at(0, 4), &[key_text("h")], &ctrl_alt_u, None);
+        assert_skipped("insert at last column", (5, (0, 4)), &[], &key_text("x"), None);
+        assert_skipped("wide at edge-1", (10, (0, 8)), &[], &key_text("中"), None);
+        assert_skipped("lone combining mark", at(0, 0), &[], &key_text("\u{0301}"), None);
+        assert_skipped("two clusters", at(0, 0), &[], &key_text("ab"), None);
+        assert_skipped("left over blank", at(0, 5), &[], &named(PhysicalKey::ArrowLeft), None);
+        assert_skipped("left at col 0", at(0, 0), &[], &named(PhysicalKey::ArrowLeft), Some('a'));
+        assert_skipped("right over blank", at(0, 3), &[], &named(PhysicalKey::ArrowRight), None);
+        assert_skipped("right at edge", (10, (0, 9)), &[], &named(PhysicalKey::ArrowRight), Some('x'));
+        assert_skipped("right over wide at edge-1", (10, (0, 8)), &[], &named(PhysicalKey::ArrowRight), Some('中'));
     }
 
     #[test]
@@ -1116,14 +1013,15 @@ mod tests {
 
     #[test]
     fn prompt_boundary_is_forgotten_on_context_changes() {
-        let enter = key_named(PhysicalKey::Enter, ModSet::empty());
-        let changes: [(&str, &dyn Fn(&mut PredictionState)); 4] = [
-            ("row change", &|s| s.set_cursor(2, 0)),
-            ("enter", &|s| {
+        type Change = fn(&mut PredictionState);
+        let changes: [(&str, Change); 4] = [
+            ("row change", |s| s.set_cursor(2, 0)),
+            ("enter", |s| {
+                let enter = key_named(PhysicalKey::Enter, ModSet::empty());
                 assert_eq!(s.predict_key(&enter), PredictionOutcome::Predicted);
             }),
-            ("resize", &|s| s.set_viewport(100, 30)),
-            ("clear", &|s| s.clear()),
+            ("resize", |s| s.set_viewport(100, 30)),
+            ("clear", PredictionState::clear),
         ];
         for (name, change) in changes {
             let mut s = PredictionState::new(PredictiveConfig::enabled(), 80, 24);

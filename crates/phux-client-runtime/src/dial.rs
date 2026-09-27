@@ -1,10 +1,11 @@
-//! From a resolved registry entry to a dial: the CLI's trust rules (a
-//! routable host needs a pin; a routable WebSocket also needs `wss://` and a
-//! token), the operator-facing wording of every failure, and the SPEC §5
-//! frame cutting the WebSocket lane needs. The token is read just before
-//! the dial and dropped after it; client TLS identity is always
-//! [`phux_dial::TlsClientIdentity::None`] so an embedder never inherits a
-//! launcher shell's workload certificate.
+//! From a resolved registry entry to a dial.
+//!
+//! The CLI's trust rules apply (a routable host needs a pin; a routable
+//! WebSocket also needs `wss://` and a token), with operator-facing wording
+//! for every failure and the SPEC §5 frame cutting the WebSocket lane needs.
+//! The token is read just before the dial and dropped after it; client TLS
+//! identity is always [`phux_dial::TlsClientIdentity::None`], so an embedder
+//! never inherits a launcher shell's workload certificate.
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;

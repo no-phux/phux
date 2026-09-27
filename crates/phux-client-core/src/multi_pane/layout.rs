@@ -85,9 +85,10 @@ pub fn compute_layout_in(
     }
 }
 
-/// Per-leaf rectangles for `tree` in a `viewport_dims` viewport: the same
-/// walk [`compute_layout`] paints with, so reflow sizes each PTY to exactly
-/// the rect it is painted into. Every leaf gets a rect (possibly empty).
+/// Per-leaf rectangles for `tree` in a `viewport_dims` viewport.
+///
+/// The same walk [`compute_layout`] paints with, so reflow sizes each PTY
+/// to exactly the rect it is painted into. Every leaf gets a rect.
 #[must_use]
 pub fn pane_rects(tree: &LayoutNode, viewport_dims: (u16, u16)) -> HashMap<ResourceId, Rect> {
     pane_rects_in(
@@ -101,10 +102,11 @@ pub fn pane_rects(tree: &LayoutNode, viewport_dims: (u16, u16)) -> HashMap<Resou
     )
 }
 
-/// The `(start, content_len)` span the split at `path` divides by its
-/// ratio, along its axis in viewport coordinates (ADR-0048); a drag maps
-/// pointer cell `p` to `(p - start) / content_len`. `None` when `path` is
-/// not a split or the budget is zero.
+/// The `(start, content_len)` span the split at `path` divides (ADR-0048).
+///
+/// Along the split's axis in viewport coordinates; a drag maps pointer cell
+/// `p` to `(p - start) / content_len`. `None` when `path` is not a split or
+/// the budget is zero.
 #[must_use]
 pub fn split_content_span_at(
     tree: &LayoutNode,

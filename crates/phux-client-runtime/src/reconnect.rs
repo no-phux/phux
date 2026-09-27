@@ -1,7 +1,8 @@
-//! Reconnect policy for every consumer (ADR-0133): the backoff ladder and
-//! the refusals no retry can satisfy. Lanes share one shape (double, hold at
-//! the ceiling, reset to the floor on progress) and differ only in their
-//! [`Ladder`] rungs.
+//! Reconnect policy for every consumer (ADR-0133).
+//!
+//! The backoff ladder and the refusals no retry can satisfy. Lanes share one
+//! shape (double, hold at the ceiling, reset to the floor on progress) and
+//! differ only in their [`Ladder`] rungs.
 
 use std::time::Duration;
 

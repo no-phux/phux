@@ -144,36 +144,58 @@ fn with_client_ref(
     }
 }
 
-fn invoke_failure(client: *mut PhuxClient, result: PhuxClientResult) -> PhuxClientResult {
-    let invocation = {
-        let client_ref = unsafe { &mut *client };
-        let Some(callback) = client_ref.inner.callbacks.on_failure else {
-            return result;
-        };
-        client_ref.inner.in_callback = true;
-        (
-            callback,
-            client_ref.inner.callbacks.userdata,
-            bytes_out(&client_ref.inner.last_error),
-        )
-    };
-    let callback_result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        invocation.0(invocation.1, result, invocation.2);
-    }));
-    let client_ref = unsafe { &mut *client };
-    client_ref.inner.in_callback = false;
-    if callback_result.is_err() {
-        client_ref
-            .inner
-            .set_error("panic contained in phux-client failure callback");
-        PhuxClientResult::Panic
-    } else {
-        result
+/// A borrowed collection's length; zero for a null client or inside a callback.
+fn borrowed_count(client: *const PhuxClient, len: impl FnOnce(&Client) -> usize) -> usize {
+    unsafe { client.as_ref() }
+        .filter(|client| !client.inner.in_callback)
+        .map_or(0, |client| len(&client.inner))
+}
+
+/// Write one borrowed item into `out`: `check` validates the caller's struct
+/// header, then `out` is reset (so a missing item reads as default) and filled.
+fn borrowed_get<T: Default>(
+    client: *const PhuxClient,
+    out: *mut T,
+    check: impl FnOnce(&T) -> Result<(), PhuxClientResult>,
+    item: impl FnOnce(&Client) -> Option<T>,
+) -> PhuxClientResult {
+    match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
+        let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
+        if client.inner.in_callback {
+            return Err(PhuxClientResult::InvalidState);
+        }
+        let out = unsafe { out.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
+        check(out)?;
+        *out = T::default();
+        *out = item(&client.inner).ok_or(PhuxClientResult::NoValue)?;
+        Ok(())
+    })) {
+        Ok(Ok(())) => PhuxClientResult::Ok,
+        Ok(Err(error)) => error,
+        Err(_) => PhuxClientResult::Panic,
     }
 }
 
+fn invoke_failure(client: *mut PhuxClient, result: PhuxClientResult) -> PhuxClientResult {
+    let (callback, userdata, message) = {
+        let client_ref = unsafe { &*client };
+        let Some(callback) = client_ref.inner.callbacks.on_failure else {
+            return result;
+        };
+        let message = bytes_out(&client_ref.inner.last_error);
+        (callback, client_ref.inner.callbacks.userdata, message)
+    };
+    let call = || unsafe { callback(userdata, result, message) };
+    guarded_callback(
+        client,
+        call,
+        "panic contained in phux-client failure callback",
+    )
+    .unwrap_or(result)
+}
+
 pub(crate) fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
-    let invocation = {
+    let (callback, userdata) = {
         let client_ref = unsafe { &mut *client };
         if client_ref.inner.attached_notified {
             return PhuxClientResult::Ok;
@@ -182,22 +204,32 @@ pub(crate) fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
         let Some(callback) = client_ref.inner.callbacks.on_attached else {
             return PhuxClientResult::Ok;
         };
-        client_ref.inner.in_callback = true;
         (callback, client_ref.inner.callbacks.userdata)
     };
-    let callback_result = catch_unwind(AssertUnwindSafe(|| unsafe {
-        invocation.0(invocation.1);
-    }));
+    let call = || unsafe { callback(userdata) };
+    guarded_callback(
+        client,
+        call,
+        "panic contained in phux-client attached callback",
+    )
+    .unwrap_or(PhuxClientResult::Ok)
+}
+
+/// Run an embedder callback with the reentry guard raised. A contained panic
+/// records `panic_message` and yields `Some(Panic)`; success yields `None`.
+fn guarded_callback(
+    client: *mut PhuxClient,
+    call: impl FnOnce(),
+    panic_message: &str,
+) -> Option<PhuxClientResult> {
+    unsafe { (*client).inner.in_callback = true };
+    let outcome = catch_unwind(AssertUnwindSafe(call));
     let client_ref = unsafe { &mut *client };
     client_ref.inner.in_callback = false;
-    if callback_result.is_err() {
-        client_ref
-            .inner
-            .set_error("panic contained in phux-client attached callback");
+    outcome.is_err().then(|| {
+        client_ref.inner.set_error(panic_message);
         PhuxClientResult::Panic
-    } else {
-        PhuxClientResult::Ok
-    }
+    })
 }
 
 fn apply_input(
@@ -964,13 +996,7 @@ fn control_error(error: phux_client_runtime::control::ControlError) -> BridgeErr
 /// must be accessed only from its owning thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_session_count(client: *const PhuxClient) -> usize {
-    unsafe { client.as_ref() }.map_or(0, |client| {
-        if client.inner.in_callback {
-            0
-        } else {
-            client.inner.sessions.len()
-        }
-    })
+    borrowed_count(client, |client| client.sessions.len())
 }
 
 /// Returns one borrowed server session summary from the latest ATTACHED.
@@ -985,32 +1011,22 @@ pub unsafe extern "C" fn phux_client_session_get(
     index: usize,
     out_session: *mut PhuxSessionInfo,
 ) -> PhuxClientResult {
-    match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
-        let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
-        if client.inner.in_callback {
-            return Err(PhuxClientResult::InvalidState);
-        }
-        let out = unsafe { out_session.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
-        *out = PhuxSessionInfo::default();
-        let session = client
-            .inner
-            .sessions
-            .get(index)
-            .ok_or(PhuxClientResult::NoValue)?;
-        *out = PhuxSessionInfo {
-            session_id: session.session_id,
-            name: bytes_out(&session.name),
-            created_at_unix_secs: session.created_at_unix_secs,
-            window_count: session.window_count,
-            attached_client_count: session.attached_client_count,
-            focused: session.focused,
-        };
-        Ok(())
-    })) {
-        Ok(Ok(())) => PhuxClientResult::Ok,
-        Ok(Err(error)) => error,
-        Err(_) => PhuxClientResult::Panic,
-    }
+    borrowed_get(
+        client,
+        out_session,
+        |_| Ok(()),
+        |client| {
+            let session = client.sessions.get(index)?;
+            Some(PhuxSessionInfo {
+                session_id: session.session_id,
+                name: bytes_out(&session.name),
+                created_at_unix_secs: session.created_at_unix_secs,
+                window_count: session.window_count,
+                attached_client_count: session.attached_client_count,
+                focused: session.focused,
+            })
+        },
+    )
 }
 
 /// Returns the number of resources in the latest accepted inventory.
@@ -1025,13 +1041,7 @@ pub unsafe extern "C" fn phux_client_session_get(
 /// must be accessed only from its owning thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_resource_count(client: *const PhuxClient) -> usize {
-    unsafe { client.as_ref() }.map_or(0, |client| {
-        if client.inner.in_callback {
-            0
-        } else {
-            client.inner.resources.len()
-        }
-    })
+    borrowed_count(client, |client| client.resources.len())
 }
 
 /// Returns one borrowed resource summary from the latest accepted inventory.
@@ -1047,21 +1057,13 @@ pub unsafe extern "C" fn phux_client_resource_get(
     index: usize,
     out_resource: *mut PhuxResourceInfo,
 ) -> PhuxClientResult {
-    match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
-        let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
-        if client.inner.in_callback {
-            return Err(PhuxClientResult::InvalidState);
-        }
-        let out = unsafe { out_resource.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
+    let check = |out: &PhuxResourceInfo| {
         check_struct(out.size, mem::size_of::<PhuxResourceInfo>(), out.version)
-            .map_err(|error| error.result)?;
-        *out = PhuxResourceInfo::default();
-        let resource = client
-            .inner
-            .resources
-            .get(index)
-            .ok_or(PhuxClientResult::NoValue)?;
-        *out = PhuxResourceInfo {
+            .map_err(|error| error.result)
+    };
+    borrowed_get(client, out_resource, check, |client| {
+        let resource = client.resources.get(index)?;
+        Some(PhuxResourceInfo {
             terminal_id: terminal_id_out(&resource.id),
             kind: resource.kind,
             parent: resource.parent_ptr(),
@@ -1069,13 +1071,8 @@ pub unsafe extern "C" fn phux_client_resource_get(
             native_id: bytes_out(&resource.native_id),
             state: bytes_out(&resource.state),
             ..PhuxResourceInfo::default()
-        };
-        Ok(())
-    })) {
-        Ok(Ok(())) => PhuxClientResult::Ok,
-        Ok(Err(error)) => error,
-        Err(_) => PhuxClientResult::Panic,
-    }
+        })
+    })
 }
 
 /// Returns the number of queued outgoing frames.
@@ -1086,13 +1083,7 @@ pub unsafe extern "C" fn phux_client_resource_get(
 /// remain valid and unmodified for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_outgoing_count(client: *const PhuxClient) -> usize {
-    unsafe { client.as_ref() }.map_or(0, |client| {
-        if client.inner.in_callback {
-            0
-        } else {
-            client.inner.outgoing.len()
-        }
-    })
+    borrowed_count(client, |client| client.outgoing.len())
 }
 
 /// Returns a borrowed queued outgoing frame.
@@ -1109,25 +1100,12 @@ pub unsafe extern "C" fn phux_client_outgoing_get(
     index: usize,
     out_frame: *mut PhuxBytes,
 ) -> PhuxClientResult {
-    match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
-        let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
-        if client.inner.in_callback {
-            return Err(PhuxClientResult::InvalidState);
-        }
-        let out = unsafe { out_frame.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
-        *out = PhuxBytes::default();
-        let frame = client
-            .inner
-            .outgoing
-            .get(index)
-            .ok_or(PhuxClientResult::NoValue)?;
-        *out = bytes_out(frame);
-        Ok(())
-    })) {
-        Ok(Ok(())) => PhuxClientResult::Ok,
-        Ok(Err(error)) => error,
-        Err(_) => PhuxClientResult::Panic,
-    }
+    borrowed_get(
+        client,
+        out_frame,
+        |_| Ok(()),
+        |client| client.outgoing.get(index).map(|frame| bytes_out(frame)),
+    )
 }
 
 /// Clears all queued outgoing frames.
@@ -1152,13 +1130,7 @@ pub unsafe extern "C" fn phux_client_outgoing_clear(client: *mut PhuxClient) -> 
 /// remain valid and unmodified for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_effect_count(client: *const PhuxClient) -> usize {
-    unsafe { client.as_ref() }.map_or(0, |client| {
-        if client.inner.in_callback {
-            0
-        } else {
-            client.inner.effect_count
-        }
-    })
+    borrowed_count(client, |client| client.effect_count)
 }
 
 /// Returns a borrowed staged effect.
@@ -1175,23 +1147,12 @@ pub unsafe extern "C" fn phux_client_effect_get(
     index: usize,
     out_effect: *mut PhuxClientEffect,
 ) -> PhuxClientResult {
-    match catch_unwind(AssertUnwindSafe(|| -> Result<(), PhuxClientResult> {
-        let client = unsafe { client.as_ref() }.ok_or(PhuxClientResult::InvalidArgument)?;
-        if client.inner.in_callback {
-            return Err(PhuxClientResult::InvalidState);
-        }
-        let out = unsafe { out_effect.as_mut() }.ok_or(PhuxClientResult::InvalidArgument)?;
-        *out = PhuxClientEffect::default();
-        *out = client
-            .inner
-            .effect_view(index)
-            .ok_or(PhuxClientResult::NoValue)?;
-        Ok(())
-    })) {
-        Ok(Ok(())) => PhuxClientResult::Ok,
-        Ok(Err(error)) => error,
-        Err(_) => PhuxClientResult::Panic,
-    }
+    borrowed_get(
+        client,
+        out_effect,
+        |_| Ok(()),
+        |client| client.effect_view(index),
+    )
 }
 
 /// Clears all staged effects.
