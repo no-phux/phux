@@ -1,32 +1,10 @@
-//! Shared `config.toml` array-of-tables plumbing for the CLI's registries.
+//! Comment-preserving `[[remote]]` / `[[satellites]]` registry edits
+//! (ADR-0038, ADR-0055) for the CLI and native embedders.
 //!
-//! The satellite registry (ADR-0038) and the remote registry (ADR-0055),
-//! both reachable through `phux host --role satellite|remote` (ADR-0066),
-//! each maintain an array of tables in the user's `config.toml`, and both
-//! must do it without destroying the operator's comments and formatting —
-//! hence `toml_edit` rather than a serialize round-trip.
-//!
-//! The document-level discipline is identical for both and lives here once:
-//! follow a symlinked config to its target (a dotfiles checkout keeps
-//! pointing at the real file; the target's mode survives — the same policy
-//! as [`crate::settings::write_edit`], ADR-0101), and replace the config
-//! atomically via a temp file plus rename, so an interrupted write cannot
-//! leave a truncated config that fails to parse on the next start.
-//!
-//! `edit_document` holds a sibling advisory lock throughout read/modify/publish.
-//! Shared CLI remote/satellite writers and native Forget cooperate with it. A busy
-//! writer is refused immediately so a GUI request cannot wait behind a CLI.
-//! The empty sibling lock file persists; closing the handle releases the OS lock.
-//! Keeping its inode stable prevents two cooperating writers locking different
-//! files during unlink/recreate races.
-//! Arbitrary editors do not necessarily take this lock: byte comparisons detect
-//! their observed changes, but comparison plus rename is not an atomic filesystem
-//! CAS against noncooperating editors. No stronger guarantee is claimed.
-//!
-//! What stays with each registry is its schema: field names, validation, and
-//! the meaning of an entry.
-
-use std::io::Write as _;
+//! [`edit_document`] holds a sibling advisory lock across read, modify, and
+//! publish, refusing a busy writer immediately. Publication is atomic, follows
+//! symlinks, and refuses when the file changed since it was read; that check
+//! is not an atomic CAS against editors that do not take the lock.
 use std::path::{Path, PathBuf};
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
@@ -65,7 +43,18 @@ impl RegistryEdit {
     /// # Errors
     /// Refuses observed external changes and filesystem failures.
     pub fn commit(self) -> Result<(), String> {
-        publish_document(&self.path, &self.document, Some(&self.original))
+        let text = self.document.to_string();
+        crate::settings::replace_atomically(&self.path, &text, || {
+            if read_text(&self.path).map_err(std::io::Error::other)? != self.original {
+                return Err(std::io::Error::other(
+                    "machine registry changed; refresh Machines",
+                ));
+            }
+            #[cfg(test)]
+            before_publish_hook();
+            Ok(())
+        })
+        .map_err(|err| format!("could not write {}: {err}", self.path.display()))
     }
 
     /// Remove one exact root machine, never an inherited or ambiguous entry.
@@ -165,83 +154,6 @@ pub fn forget_machine(
     edit.commit()
 }
 
-/// Parse `config.toml`, treating a missing file as an empty document — a
-/// first `add` on a machine with no config must succeed.
-pub fn read_document(config_path: &Path) -> Result<DocumentMut, String> {
-    match std::fs::read_to_string(config_path) {
-        Ok(input) => input
-            .parse::<DocumentMut>()
-            .map_err(|err| format!("could not parse {}: {err}", config_path.display())),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(DocumentMut::new()),
-        Err(err) => Err(format!("could not read {}: {err}", config_path.display())),
-    }
-}
-
-/// Replace `config.toml` atomically: write a sibling temp file, fsync, then
-/// rename over the target. A crash mid-write leaves the old config intact.
-///
-/// A symlink is followed so the rename lands on the real file (preserving
-/// the link and the target's mode), matching [`crate::settings::write_edit`].
-///
-/// This is an unconditional replacement. Read/modify callers use [`edit_document`]
-/// to retain the lock from their read through publication.
-pub fn write_document(config_path: &Path, doc: &DocumentMut) -> Result<(), String> {
-    let _lock = lock_registry(config_path)?;
-    publish_document(config_path, doc, None)
-}
-
-fn publish_document(
-    config_path: &Path,
-    doc: &DocumentMut,
-    expected: Option<&str>,
-) -> Result<(), String> {
-    // Follow the symlink: renaming over the link itself would replace it
-    // with a regular file. Canonicalizing writes the target, keeps the
-    // link, and (via write_temp_file) copies the target's mode — the
-    // same policy as `settings::write_edit` (ADR-0101). Refusing here
-    // used to break dotfiles checkouts that the settings page already
-    // edited through.
-    let target = std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
-    let parent = target
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", config_path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
-    let file_name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("{} has no file name", config_path.display()))?;
-    let tmp_path = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
-        std::process::id(),
-        temp_nonce()
-    ));
-    let write_result = write_temp_file(&tmp_path, doc.to_string().as_bytes(), &target)
-        .and_then(|()| verify_expected(config_path, expected))
-        .and_then(|()| {
-            #[cfg(test)]
-            before_publish_hook();
-            std::fs::rename(&tmp_path, &target).map_err(|err| err.to_string())
-        });
-    if let Err(err) = write_result {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("could not write {}: {err}", config_path.display()));
-    }
-    Ok(())
-}
-
-// Check after the temp file is fsynced, immediately before publication; unrelated
-// external edits observed during parsing/writing preserve the source file.
-fn verify_expected(path: &Path, expected: Option<&str>) -> Result<(), String> {
-    let Some(expected) = expected else {
-        return Ok(());
-    };
-    if read_text(path)? != expected {
-        return Err("machine registry changed; refresh Machines".to_owned());
-    }
-    Ok(())
-}
-
 /// The array of tables under `key`, creating it when absent.
 pub fn tables_mut<'doc>(
     doc: &'doc mut DocumentMut,
@@ -266,13 +178,9 @@ pub fn table_mut<'doc>(
         .ok_or_else(|| format!("`{key}` registry index {index} disappeared"))
 }
 
-/// A SHA-256 certificate pin: exactly 64 hex digits once the `AB:CD:...`
-/// separators `phux pair` prints are dropped.
-///
-/// Validating at registration turns a truncated copy-paste into an error
-/// where the operator can still see what they pasted, instead of a baffling
-/// handshake failure later. Shared because both registries pin the same way
-/// (ADR-0038's fail-closed posture).
+/// Validate a SHA-256 certificate pin: 64 hex digits, optionally with the
+/// `AB:CD:...` separators `phux pair` prints. Catching a truncated paste at
+/// registration beats a baffling handshake failure later.
 pub fn validate_fingerprint(fingerprint: &str, what: &str) -> Result<String, String> {
     let trimmed = fingerprint.trim();
     let hex_digits = trimmed.chars().filter(char::is_ascii_hexdigit).count();
@@ -287,31 +195,6 @@ pub fn validate_fingerprint(fingerprint: &str, what: &str) -> Result<String, Str
              optionally colon-separated) as printed by `phux pair`"
         ))
     }
-}
-
-/// A monotonic-enough suffix to keep two concurrent writers from colliding on
-/// the same temp path.
-fn temp_nonce() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos())
-}
-
-/// Create the temp file exclusively, copy `target`'s mode when it exists,
-/// and fsync, so the rename that follows publishes bytes that are actually
-/// on disk without resetting the target's permissions.
-fn write_temp_file(path: &Path, bytes: &[u8], target: &Path) -> Result<(), String> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|err| err.to_string())?;
-    if let Ok(metadata) = std::fs::metadata(target) {
-        file.set_permissions(metadata.permissions())
-            .map_err(|err| err.to_string())?;
-    }
-    file.write_all(bytes).map_err(|err| err.to_string())?;
-    file.sync_all().map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
@@ -330,7 +213,7 @@ fn before_publish_hook() {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_document, tables_mut, validate_fingerprint, write_document};
+    use super::{tables_mut, validate_fingerprint};
 
     #[test]
     fn review_competing_registry_mutation_cannot_be_lost_during_publication() {
@@ -386,82 +269,46 @@ mod tests {
         );
     }
 
-    #[test]
-    fn round_trip_preserves_operator_comments() {
-        // The reason this uses toml_edit: an operator's config is theirs.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "# my notes\n[defaults]\nshell = \"fish\"\n").expect("seed");
-
-        let mut doc = read_document(&path).expect("parse");
-        tables_mut(&mut doc, "remote")
-            .expect("array")
-            .push(toml_edit::Table::new());
-        write_document(&path, &doc).expect("write");
-
-        let back = std::fs::read_to_string(&path).expect("read");
-        assert!(back.contains("# my notes"), "comment must survive");
-        assert!(back.contains("shell = \"fish\""));
-        assert!(back.contains("[[remote]]"));
-    }
-
-    #[test]
-    fn missing_config_reads_as_an_empty_document() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let doc = read_document(&dir.path().join("absent.toml")).expect("empty");
-        assert!(doc.as_table().is_empty());
-    }
-
+    /// An operator's comments survive, a symlinked config is written
+    /// through (link and mode intact), and no temp file is left behind.
     #[cfg(unix)]
     #[test]
-    fn write_follows_a_symlinked_config_and_keeps_its_mode() {
+    fn commit_preserves_comments_symlinks_and_mode() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let real = dir.path().join("dotfiles").join("phux.toml");
         std::fs::create_dir_all(real.parent().unwrap()).expect("dotfiles dir");
-        std::fs::write(&real, "# keep\n").expect("seed");
+        std::fs::write(&real, "# my notes\n[defaults]\nshell = \"fish\"\n").expect("seed");
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).expect("mode");
         let link = dir.path().join("config.toml");
         std::os::unix::fs::symlink(&real, &link).expect("symlink");
 
-        let mut doc = read_document(&link).expect("parse");
-        tables_mut(&mut doc, "remote")
+        let mut edit = super::edit_document(&link).expect("parse");
+        tables_mut(&mut edit, "remote")
             .expect("array")
             .push(toml_edit::Table::new());
-        write_document(&link, &doc).expect("write through symlink");
+        edit.commit().expect("write through symlink");
 
         assert!(
             std::fs::symlink_metadata(&link)
-                .expect("link meta")
+                .unwrap()
                 .file_type()
-                .is_symlink(),
-            "the config path must stay a symlink"
+                .is_symlink()
         );
         let back = std::fs::read_to_string(&real).expect("read target");
-        assert!(back.contains("# keep"), "comment must survive");
+        assert!(back.contains("# my notes") && back.contains("shell = \"fish\""));
         assert!(back.contains("[[remote]]"));
         assert_eq!(
-            std::fs::metadata(&real)
-                .expect("target meta")
-                .permissions()
-                .mode()
-                & 0o777,
+            std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
             0o600
         );
-    }
-
-    #[test]
-    fn write_leaves_no_temp_file_behind() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        write_document(&path, &read_document(&path).expect("parse")).expect("write");
-        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
-            .expect("read_dir")
-            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
-            .filter(|name| name.to_string_lossy().contains(".tmp-"))
-            .collect();
-        assert!(leftovers.is_empty(), "temp files leaked: {leftovers:?}");
+        let leftovers = std::fs::read_dir(real.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .count();
+        assert_eq!(leftovers, 0);
     }
 
     #[test]

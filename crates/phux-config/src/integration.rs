@@ -1,36 +1,16 @@
-//! Agent integration template parsing (phux-ark7, [ADR-0042]).
+//! Agent integration templates (`integrations/<id>.toml`, ADR-0042): the
+//! launchable agents a plugin ships.
 //!
-//! An *integration template* (`integrations/<id>.toml`) is a checked-in,
-//! documented package describing a terminal-native agent phux can launch,
-//! detect, and supervise. It is a **different** file format from the plugin
-//! manifest (`phux-plugin.toml`, see [`crate::plugin`]): a plugin *ships*
-//! templates under its `integrations/` directory, and the launch executor
-//! resolves a named template's `[launch]` command into a child-process argv
-//! it spawns as a pane's program.
-//!
-//! Only the fields the launcher needs are modeled here (`id`,
-//! `display_name`, `kind`, `[launch]`, the native-restore subset of
-//! `[session_identity]`, and `[agent_identity]` — the identity the launched
-//! agent declares, whose `kind` is the detection-manifest slug that lets
-//! `phux agent start --kind K` find the integration that launches K). Every
-//! other key a template carries — `[detect]`, `[link]`, `capabilities`, ...
-//! — is ignored, so this stays a thin, forward-compatible view over a
-//! richer package format (unknown keys are **not** rejected).
-//!
-//! [ADR-0042]: ../../docs/adr/0042-launch-executor.md
+//! Only what the launcher needs is modeled (`id`, `display_name`, `kind`,
+//! `[launch]`, `[session_identity]`, `[agent_identity]`); other keys are
+//! ignored, not rejected, so the package format can grow.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Placeholder for the owning plugin's root directory in a template's
-/// `[launch] command`.
-///
-/// The launch executor expands it to the absolute plugin root before
-/// spawning, so the argv (e.g. a wrapper-script path) resolves from any
-/// working directory. Expansion is a plain string substitution into the
-/// affected argv element — never a shell evaluation — so a value can carry
-/// the placeholder without opening a shell-injection surface.
+/// Placeholder for the owning plugin's root in a `[launch] command`,
+/// substituted per argv element (never shell-evaluated).
 pub const PLUGIN_ROOT_PLACEHOLDER: &str = "${PHUX_PLUGIN_ROOT}";
 
 /// Placeholder replaced with a provider-native session identity when an
@@ -56,8 +36,7 @@ pub struct IntegrationTemplate {
     pub display_name: Option<String>,
     /// Open-vocabulary kind slug (e.g. `terminal-agent`), when declared.
     pub kind: Option<String>,
-    /// The `[launch]` command, when the template declares one. A template
-    /// with no `[launch]` section is parseable but not launchable.
+    /// The `[launch]` command; without one the template is not launchable.
     pub launch: Option<IntegrationLaunch>,
     /// Canonical path the template was loaded from.
     pub template_path: PathBuf,
@@ -67,15 +46,12 @@ pub struct IntegrationTemplate {
     pub agent_identity: Option<IntegrationAgentIdentity>,
 }
 
-/// A template's `[agent_identity]` section: the identity the launched
-/// program declares on its pane (ADR-0040).
+/// A template's `[agent_identity]`: the identity the launched program
+/// declares (ADR-0040).
 ///
-/// Distinct from the template's top-level `kind`, which is a package
-/// *category* (`terminal-agent`): `kind` here is the detection-manifest
-/// slug (`claude`, `codex`, ...) — the client-side map from a detection
-/// kind to the integration that launches it, which is what lets
-/// `phux agent start --kind claude` default to the `claude-code`
-/// integration without a second flag.
+/// Its `kind` is the detection slug (`claude`), not the
+/// template's package category, so `phux agent start --kind` can find the
+/// integration that launches it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegrationAgentIdentity {
     /// Default agent name the launch wrapper declares, when present.
@@ -84,30 +60,22 @@ pub struct IntegrationAgentIdentity {
     pub kind: Option<String>,
 }
 
-/// The `[launch]` section of an integration template: the argv the launch
-/// executor spawns, plus where to run it.
+/// The `[launch]` section: the argv to spawn and where to run it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegrationLaunch {
-    /// Command argv; `command[0]` is the program. Non-empty by validation.
-    /// May contain [`PLUGIN_ROOT_PLACEHOLDER`] elements, expanded at
-    /// resolution time by [`expand_launch_argv`].
+    /// Command argv, non-empty; may contain [`PLUGIN_ROOT_PLACEHOLDER`].
     pub command: Vec<String>,
-    /// Executable names that must be discoverable on `PATH` for this launch
-    /// to be offered. Empty means the template has no availability gate.
+    /// Executables that must be on `PATH` for the launch to be offered.
     pub required_executables: Vec<String>,
     /// Directory the launched program runs in.
     pub working_directory: LaunchWorkingDirectory,
 }
 
-/// A template's `[session_identity]` policy.
-///
-/// `resume_args` is optional for compatibility with templates written before
-/// phux consumed this section. A policy is natively restorable only when it
-/// declares structured resume arguments.
+/// A template's `[session_identity]` policy; natively restorable only with
+/// structured `resume_args`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegrationSessionIdentity {
-    /// Whether the integration prefers a provider-native identity or only the
-    /// surrounding phux session.
+    /// Provider-native identity, or only the phux session.
     pub mode: SessionIdentityMode,
     /// Name of the environment variable carrying the opaque native identity.
     pub native_env: String,
@@ -115,9 +83,8 @@ pub struct IntegrationSessionIdentity {
     pub restore: SessionRestoreMode,
     /// Structured arguments appended to the launch command on native resume.
     pub resume_args: Option<Vec<String>>,
-    /// Structured arguments that establish a caller-supplied identity on a
-    /// fresh provider session. Absent for providers that assign identities
-    /// internally (for example interactive Codex).
+    /// Structured arguments that set a caller-supplied identity on a fresh
+    /// session, for providers that accept one.
     pub fresh_args: Option<Vec<String>>,
 }
 
@@ -125,8 +92,7 @@ pub struct IntegrationSessionIdentity {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SessionIdentityMode {
-    /// Prefer a provider-native identity when supplied; otherwise the pane has
-    /// only its ordinary phux session lifetime.
+    /// Prefer a provider-native identity when supplied.
     NativeOrPhux,
     /// The integration has no provider-native resume mechanism.
     Phux,
@@ -166,21 +132,19 @@ impl IntegrationSessionIdentity {
             && self.resume_args.is_some()
     }
 
-    /// Whether the provider accepts a caller-supplied identity for a fresh
-    /// session as well as an exact identity on resume.
+    /// Whether the provider also accepts a caller-supplied fresh identity.
     #[must_use]
     pub const fn supports_native_fresh(&self) -> bool {
         self.supports_native_restore() && self.fresh_args.is_some()
     }
 
-    /// Append this policy's resume arguments to `launch_argv`, replacing the
-    /// session placeholder inside each argument without shell evaluation.
+    /// Append this policy's resume arguments to `launch_argv`, substituting
+    /// the session placeholder without shell evaluation.
     ///
     /// # Errors
     ///
-    /// Returns an error when the policy is not natively restorable, the
-    /// identity is empty, padded, contains control characters, or exceeds
-    /// [`MAX_SESSION_ID_BYTES`], or the expanded argv exceeds its byte budget.
+    /// When the policy is not natively restorable, the identity fails
+    /// [`validate_native_session_id`], or the argv exceeds its byte budget.
     pub fn resume_argv(
         &self,
         launch_argv: &[String],
@@ -198,12 +162,11 @@ impl IntegrationSessionIdentity {
         )
     }
 
-    /// Append the provider's caller-supplied fresh-session identity arguments.
+    /// Append the provider's fresh-session identity arguments.
     ///
     /// # Errors
     ///
-    /// Returns an error when the provider has no documented fresh-identity
-    /// argv or the supplied identity violates the same bounds as resume.
+    /// As [`Self::resume_argv`], for `fresh_args`.
     pub fn fresh_argv(
         &self,
         launch_argv: &[String],
@@ -250,15 +213,10 @@ fn append_identity_args(
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum LaunchWorkingDirectory {
-    /// Run in the directory `phux launch` was invoked from — the user's
-    /// workspace. The default: an agent should run where the human is, so a
-    /// template that omits `working_directory` lands the agent in the
-    /// caller's project rather than the plugin's tree.
+    /// The directory `phux launch` was invoked from (default).
     #[default]
     Workspace,
-    /// Run in the owning plugin's root directory. Use this only when the
-    /// launched program genuinely belongs to the plugin tree; agents that
-    /// operate on the user's code want `workspace`.
+    /// The owning plugin's root directory.
     #[serde(rename = "plugin-root")]
     PluginRoot,
 }
@@ -332,16 +290,13 @@ struct RawSessionIdentity {
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be read, cannot be parsed as TOML,
-/// or violates the template schema (missing `id`, or a `[launch]` section
-/// whose `command` is empty or whose program is blank).
+/// When the file cannot be read or parsed, or violates the template schema.
 pub fn load_integration_template(path: &Path) -> Result<IntegrationTemplate, IntegrationError> {
     let text = std::fs::read_to_string(path)?;
     parse_integration_template(&text, path)
 }
 
-/// Parse and validate an integration template from in-memory `text`,
-/// attributing errors to `path`.
+/// Parse and validate a template from `text`, attributing errors to `path`.
 ///
 /// # Errors
 ///
@@ -394,22 +349,28 @@ pub fn parse_integration_template(
     })
 }
 
+fn invalid(path: &Path, id: &str, message: &str) -> IntegrationError {
+    IntegrationError::Invalid(format!("{}: integration {id:?} {message}", path.display()))
+}
+
 fn build_launch(
     id: &str,
     path: &Path,
     raw: RawLaunch,
 ) -> Result<IntegrationLaunch, IntegrationError> {
     if raw.command.is_empty() {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `[launch] command` must be a non-empty argv",
-            path.display()
-        )));
+        return Err(invalid(
+            path,
+            id,
+            "`[launch] command` must be a non-empty argv",
+        ));
     }
     if raw.command[0].trim().is_empty() {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `[launch] command[0]` (the program) must not be blank",
-            path.display()
-        )));
+        return Err(invalid(
+            path,
+            id,
+            "`[launch] command[0]` (the program) must not be blank",
+        ));
     }
     validate_required_executables(id, path, &raw.required_executables)?;
     Ok(IntegrationLaunch {
@@ -432,12 +393,15 @@ fn validate_required_executables(
             || name.contains(['/', '\\'])
     });
     if invalid_count || invalid_name {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `[launch] required_executables` must contain at most \
+        return Err(invalid(
+            path,
+            id,
+            &format!(
+                "`[launch] required_executables` must contain at most \
              {MAX_REQUIRED_EXECUTABLES} non-empty PATH executable names of at most \
-             {MAX_EXECUTABLE_NAME_BYTES} bytes",
-            path.display()
-        )));
+             {MAX_EXECUTABLE_NAME_BYTES} bytes"
+            ),
+        ));
     }
     Ok(())
 }
@@ -453,27 +417,26 @@ fn build_session_identity(
         || !native_env.starts_with("PHUX_")
         || !native_env.ends_with("_SESSION_ID")
     {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `[session_identity] native_env` must be a \
+        return Err(invalid(
+            path,
+            id,
+            "`[session_identity] native_env` must be a \
              dedicated PHUX_*_SESSION_ID name",
-            path.display()
-        )));
+        ));
     }
     if raw.resume_args.is_some()
         && (!matches!(raw.mode, SessionIdentityMode::NativeOrPhux)
             || !matches!(raw.restore, SessionRestoreMode::ExternalCli))
     {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `resume_args` requires mode \
+        return Err(invalid(
+            path,
+            id,
+            "`resume_args` requires mode \
              `native-or-phux` and restore `external-cli`",
-            path.display()
-        )));
+        ));
     }
     if raw.fresh_args.is_some() && raw.resume_args.is_none() {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `fresh_args` requires `resume_args`",
-            path.display()
-        )));
+        return Err(invalid(path, id, "`fresh_args` requires `resume_args`"));
     }
     if let Some(args) = &raw.resume_args {
         validate_identity_args(id, path, "resume_args", args)?;
@@ -497,20 +460,24 @@ fn validate_identity_args(
     args: &[String],
 ) -> Result<(), IntegrationError> {
     if args.is_empty() || args.len() > MAX_RESUME_ARGS {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `{field}` must contain 1..={MAX_RESUME_ARGS} elements",
-            path.display()
-        )));
+        return Err(invalid(
+            path,
+            id,
+            &format!("`{field}` must contain 1..={MAX_RESUME_ARGS} elements"),
+        ));
     }
     if args
         .iter()
         .any(|arg| arg.is_empty() || arg.len() > MAX_RESUME_ARG_BYTES)
     {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `{field}` elements must contain \
-             1..={MAX_RESUME_ARG_BYTES} bytes",
-            path.display()
-        )));
+        return Err(invalid(
+            path,
+            id,
+            &format!(
+                "`{field}` elements must contain \
+             1..={MAX_RESUME_ARG_BYTES} bytes"
+            ),
+        ));
     }
     if args
         .iter()
@@ -521,11 +488,14 @@ fn validate_identity_args(
             .iter()
             .any(|arg| arg != SESSION_ID_PLACEHOLDER && arg.contains(SESSION_ID_PLACEHOLDER))
     {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} `{field}` must contain exactly one \
-             standalone {SESSION_ID_PLACEHOLDER:?} argument",
-            path.display()
-        )));
+        return Err(invalid(
+            path,
+            id,
+            &format!(
+                "`{field}` must contain exactly one \
+             standalone {SESSION_ID_PLACEHOLDER:?} argument"
+            ),
+        ));
     }
     Ok(())
 }
@@ -582,11 +552,14 @@ fn validate_identity_execution(
             | "busybox"
     );
     if (shell && !fixed_shell_source) || unbounded_interpreter {
-        return Err(IntegrationError::Invalid(format!(
-            "{}: integration {id:?} native session identity must not be \
-             exposed to interpreter or evaluator source in {program:?}",
-            path.display()
-        )));
+        return Err(invalid(
+            path,
+            id,
+            &format!(
+                "native session identity must not be \
+             exposed to interpreter or evaluator source in {program:?}"
+            ),
+        ));
     }
     Ok(())
 }
@@ -721,166 +694,61 @@ working_directory = "workspace"
         assert_eq!(identity.kind.as_deref(), Some("claude"));
     }
 
-    /// The template's top-level `kind` is a package category
-    /// (`terminal-agent`); `[agent_identity] kind` is the detection slug.
-    /// They must stay distinct fields, because `phux agent start --kind`
-    /// resolves against the latter.
+    /// Optional sections default sensibly: no identity, a workspace
+    /// working directory, blank strings as `None`, no `[launch]` as
+    /// not-launchable.
     #[test]
-    fn agent_identity_kind_is_not_the_category_kind() {
-        let template = parse(CLAUDE).expect("valid template parses");
-        assert_eq!(template.kind.as_deref(), Some("terminal-agent"));
+    fn optional_sections_normalize() {
+        let bare = parse("id = \"bare\"\n[launch]\ncommand = [\"sh\", \"-c\", \"true\"]\n")
+            .expect("valid");
+        assert_eq!(bare.agent_identity, None);
         assert_eq!(
-            template
-                .agent_identity
-                .expect("agent identity")
-                .kind
-                .as_deref(),
-            Some("claude")
+            bare.launch.expect("launch").working_directory,
+            LaunchWorkingDirectory::Workspace
         );
-    }
 
-    #[test]
-    fn a_template_without_agent_identity_carries_none() {
-        let template = parse(
-            r#"
-id = "bare"
-[launch]
-command = ["sh", "-c", "true"]
-"#,
+        let rooted = parse(
+            "id = \"x\"\n[agent_identity]\nname = \"  \"\nkind = \"\"\n\
+             [launch]\ncommand = [\"sh\"]\nworking_directory = \"plugin-root\"\n",
         )
         .expect("valid");
-        assert_eq!(template.agent_identity, None);
+        let identity = rooted.agent_identity.expect("section present");
+        assert_eq!((identity.name, identity.kind), (None, None));
+        assert_eq!(
+            rooted.launch.expect("launch").working_directory,
+            LaunchWorkingDirectory::PluginRoot
+        );
+
+        let detect_only = parse("id = \"detect-only\"\n").expect("valid");
+        assert!(detect_only.launch.is_none());
     }
 
-    /// Blank or whitespace-only identity values normalize to `None` like
-    /// every other optional string field, so a matcher never compares
-    /// against `""`.
+    /// Schema violations are errors, including a malformed
+    /// `[agent_identity]` (a typo must not silently drop the `--kind`
+    /// default it provides).
     #[test]
-    fn blank_agent_identity_values_normalize_to_none() {
-        let template = parse(
-            r#"
-id = "blank-identity"
-[agent_identity]
-name = "  "
-kind = ""
-[launch]
-command = ["sh"]
-"#,
-        )
-        .expect("valid");
-        let identity = template.agent_identity.expect("section present");
-        assert_eq!(identity.name, None);
-        assert_eq!(identity.kind, None);
-    }
-
-    /// A malformed `[agent_identity]` (wrong value types) is a parse error,
-    /// not a silently dropped section: the block is consumed now, so a
-    /// template author learns about the typo instead of losing the
-    /// `--kind` default it exists to provide.
-    #[test]
-    fn malformed_agent_identity_is_a_parse_error() {
+    fn malformed_templates_are_rejected() {
+        for text in [
+            "display_name = \"No Id\"\n[launch]\ncommand = [\"sh\"]\n",
+            "id = \"empty\"\n[launch]\ncommand = []\n",
+            "id = \"blank\"\n[launch]\ncommand = [\"  \", \"arg\"]\n",
+        ] {
+            assert!(
+                matches!(parse(text), Err(IntegrationError::Invalid(_))),
+                "{text}"
+            );
+        }
         for body in [
             "[agent_identity]\nkind = 3",
             "[agent_identity]\nkind = [\"claude\"]",
             "agent_identity = \"claude\"",
         ] {
-            let text = format!(
-                r#"
-id = "bad-identity"
-{body}
-[launch]
-command = ["sh"]
-"#
-            );
+            let text = format!("id = \"bad\"\n{body}\n[launch]\ncommand = [\"sh\"]\n");
             assert!(
                 matches!(parse(&text), Err(IntegrationError::Parse { .. })),
                 "{text}"
             );
         }
-    }
-
-    #[test]
-    fn working_directory_defaults_to_workspace_when_absent() {
-        let template = parse(
-            r#"
-id = "bare"
-[launch]
-command = ["sh", "-c", "true"]
-"#,
-        )
-        .expect("valid");
-        assert_eq!(
-            template.launch.unwrap().working_directory,
-            LaunchWorkingDirectory::Workspace
-        );
-    }
-
-    #[test]
-    fn plugin_root_working_directory_parses() {
-        let template = parse(
-            r#"
-id = "bare"
-[launch]
-command = ["sh"]
-working_directory = "plugin-root"
-"#,
-        )
-        .expect("valid");
-        assert_eq!(
-            template.launch.unwrap().working_directory,
-            LaunchWorkingDirectory::PluginRoot
-        );
-    }
-
-    #[test]
-    fn template_without_launch_is_valid_but_not_launchable() {
-        let template = parse(
-            r#"
-id = "detect-only"
-display_name = "Detect Only"
-"#,
-        )
-        .expect("valid");
-        assert!(template.launch.is_none());
-    }
-
-    #[test]
-    fn missing_id_is_rejected() {
-        let err = parse(
-            r#"
-display_name = "No Id"
-[launch]
-command = ["sh"]
-"#,
-        )
-        .expect_err("missing id");
-        assert!(matches!(err, IntegrationError::Invalid(_)));
-    }
-
-    #[test]
-    fn empty_launch_command_is_rejected() {
-        let err = parse(
-            r#"
-id = "empty"
-[launch]
-command = []
-"#,
-        )
-        .expect_err("empty command");
-        assert!(matches!(err, IntegrationError::Invalid(_)));
-    }
-
-    #[test]
-    fn blank_program_is_rejected() {
-        let err = parse(
-            r#"
-id = "blank"
-[launch]
-command = ["  ", "arg"]
-"#,
-        )
-        .expect_err("blank program");
-        assert!(matches!(err, IntegrationError::Invalid(_)));
     }
 
     #[test]
@@ -926,43 +794,23 @@ required_executables = {requirements}
         }
     }
 
+    /// The identity is one argv element, never shell-split, with distinct
+    /// resume and fresh arguments.
     #[test]
-    fn native_resume_expands_once_without_splitting_identity() {
-        let template = parse(CLAUDE).expect("valid");
-        let session = template.session_identity.expect("session policy");
-        let argv = session
-            .resume_argv(
-                &["claude".to_owned()],
-                "team session; printf definitely-not-shell",
-            )
-            .expect("bounded identity");
+    fn native_identity_is_one_structured_argument() {
+        let session = parse(CLAUDE)
+            .expect("valid")
+            .session_identity
+            .expect("policy");
+        let claude = ["claude".to_owned()];
+        let hostile = "team session; printf definitely-not-shell";
         assert_eq!(
-            argv,
-            vec![
-                "claude",
-                "--resume",
-                "team session; printf definitely-not-shell"
-            ]
+            session.resume_argv(&claude, hostile).expect("bounded"),
+            ["claude", "--resume", hostile]
         );
-    }
-
-    #[test]
-    fn native_fresh_uses_distinct_structured_arguments() {
-        let template = parse(CLAUDE).expect("valid");
-        let session = template.session_identity.expect("session policy");
-        let argv = session
-            .fresh_argv(
-                &["claude".to_owned()],
-                "01234567-89ab-cdef-0123-456789abcdef",
-            )
-            .expect("fresh identity");
         assert_eq!(
-            argv,
-            vec![
-                "claude",
-                "--session-id",
-                "01234567-89ab-cdef-0123-456789abcdef"
-            ]
+            session.fresh_argv(&claude, "0123-abcd").expect("fresh"),
+            ["claude", "--session-id", "0123-abcd"]
         );
     }
 
@@ -1069,42 +917,15 @@ command = ["legacy-agent"]
         }
     }
 
+    /// Plugin-root expansion is per element, so shell metacharacters stay
+    /// inside one argument; extra args append verbatim.
     #[test]
-    fn expand_substitutes_plugin_root_and_appends_extra_args() {
-        let command = vec![
-            "sh".to_owned(),
-            "${PHUX_PLUGIN_ROOT}/scripts/wrap.sh".to_owned(),
-            "--".to_owned(),
-            "codex".to_owned(),
-        ];
-        let argv = expand_launch_argv(
-            &command,
-            Path::new("/opt/plugins/agent-tools"),
-            &["--resume".to_owned()],
-        );
-        assert_eq!(
-            argv,
-            vec![
-                "sh",
-                "/opt/plugins/agent-tools/scripts/wrap.sh",
-                "--",
-                "codex",
-                "--resume",
-            ]
-        );
-    }
-
-    /// The placeholder expansion is a per-element replace, so a value that
-    /// contains shell metacharacters (or the placeholder mid-string) stays
-    /// exactly one argv element — it can never split into extra arguments.
-    #[test]
-    fn expansion_is_injection_safe_per_element() {
+    fn expansion_substitutes_per_element_and_appends_extra_args() {
         let command = vec![
             "sh".to_owned(),
             "${PHUX_PLUGIN_ROOT}/a b; rm -rf ~".to_owned(),
         ];
-        let argv = expand_launch_argv(&command, Path::new("/root"), &[]);
-        assert_eq!(argv.len(), 2);
-        assert_eq!(argv[1], "/root/a b; rm -rf ~");
+        let argv = expand_launch_argv(&command, Path::new("/root"), &["--resume".to_owned()]);
+        assert_eq!(argv, ["sh", "/root/a b; rm -rf ~", "--resume"]);
     }
 }

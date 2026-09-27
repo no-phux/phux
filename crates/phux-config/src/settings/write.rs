@@ -111,7 +111,12 @@ pub fn write_edit(path: &Path, key: &str, edit: Edit) -> Result<EditOutcome, Con
     };
     let outcome = apply_edit(&current, key, edit, path)?;
     if outcome.text != current {
-        write_atomically(path, &outcome.text)?;
+        replace_atomically(path, &outcome.text, || Ok(())).map_err(|source| {
+            ConfigError::Write {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
     }
     Ok(outcome)
 }
@@ -305,52 +310,55 @@ fn validate(text: &str, key: &str, path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Replace `path` with `text` via a sibling temp file and a rename.
-fn write_atomically(path: &Path, text: &str) -> Result<(), ConfigError> {
-    let write_error = |source: std::io::Error| ConfigError::Write {
-        path: path.to_path_buf(),
-        source,
-    };
+/// Replace `path` with `text` via an exclusive, fsynced sibling temp file
+/// and a rename, so an interrupted write never truncates the config.
+///
+/// A symlink is followed (the link survives) and the target's permissions
+/// are copied. `before_rename` runs after the fsync and may veto the
+/// publication; the temp file is removed on any failure. Shared with the
+/// machine registries.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "private module helper; pub would trip unreachable_pub"
+)]
+pub(crate) fn replace_atomically(
+    path: &Path,
+    text: &str,
+    before_rename: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let parent = target
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .map_or_else(|| Path::new("."), Path::new);
-    std::fs::create_dir_all(parent).map_err(write_error)?;
+    std::fs::create_dir_all(parent)?;
     let file_name = target
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
-            write_error(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "path has no file name",
-            ))
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
         })?;
     let tmp = parent.join(format!(
         ".{file_name}.tmp-{}-{}",
         std::process::id(),
         temp_nonce()
     ));
-    if let Err(err) = write_temp_then_rename(&tmp, &target, text) {
+    let publish = || -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        if let Ok(metadata) = std::fs::metadata(&target) {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        before_rename()?;
+        std::fs::rename(&tmp, &target)
+    };
+    publish().inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
-        return Err(write_error(err));
-    }
-    Ok(())
-}
-
-/// Create `tmp` exclusively, copy `target`'s permissions onto it when the
-/// target exists, write and fsync, then rename over `target`.
-fn write_temp_then_rename(tmp: &Path, target: &Path, text: &str) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(tmp)?;
-    if let Ok(metadata) = std::fs::metadata(target) {
-        file.set_permissions(metadata.permissions())?;
-    }
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    std::fs::rename(tmp, target)
+    })
 }
 
 /// A temp-path suffix so concurrent writers do not collide.
