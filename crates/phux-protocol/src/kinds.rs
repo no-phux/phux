@@ -387,6 +387,13 @@ fn verbs_label(verbs: Verbs, subject: Subject) -> String {
 // The client-frame table (workload-auth §6, first table), in spec row order.
 // -----------------------------------------------------------------------------
 
+const GLOBAL: Subject = Subject::Global {
+    owner_uds_only: false,
+};
+const GLOBAL_OWNER_UDS: Subject = Subject::Global {
+    owner_uds_only: true,
+};
+
 static F_HELLO: Rule = Rule::exempt("`HELLO`", Exemption::Handshake, Subject::None);
 static F_PING: Rule = Rule::exempt("`PING`", Exemption::Liveness, Subject::None);
 static F_DETACH: Rule = Rule::exempt("`DETACH`", Exemption::Cleanup, Subject::CallingConnection);
@@ -482,16 +489,12 @@ static F_GET_METADATA: Rule = Rule::verbs(
 static F_SESSION_CREATE: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.session.create/v1" }`"#,
     &[Verb::Create, Verb::Bind],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
 static F_KEEP_EMPTY_MARK: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true`"#,
     &[Verb::Create, Verb::Bind],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
 static F_KEEP_EMPTY_CLEAR: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false`"#,
@@ -503,9 +506,7 @@ static F_KEEP_EMPTY_OTHER: Rule =
 static F_CONFIG_RELOAD: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.config.reload/v1" }`"#,
     &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
 static F_APPROVAL_DECIDE: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny`"#,
@@ -533,13 +534,7 @@ static F_LIST_METADATA: Rule = Rule::verbs(
     &[Verb::Inventory],
     Subject::MetadataScope,
 );
-static F_LIST_DIRECTORY: Rule = Rule::verbs(
-    "`LIST_DIRECTORY`",
-    &[Verb::Inventory],
-    Subject::Global {
-        owner_uds_only: false,
-    },
-);
+static F_LIST_DIRECTORY: Rule = Rule::verbs("`LIST_DIRECTORY`", &[Verb::Inventory], GLOBAL);
 static F_SUBSCRIBE_METADATA: Rule = Rule::verbs(
     "Other `SUBSCRIBE_METADATA`",
     &[Verb::Observe],
@@ -649,13 +644,7 @@ static C_SUBSCRIBE_RESOURCE_EVENTS: Rule = Rule::verbs(
     &[Verb::Observe],
     Subject::NamedTerminal,
 );
-static C_UPGRADE: Rule = Rule::verbs(
-    "`UPGRADE`",
-    &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: false,
-    },
-);
+static C_UPGRADE: Rule = Rule::verbs("`UPGRADE`", &[Verb::Signal], GLOBAL);
 static C_INPUT_LEASE: Rule = Rule::verbs(
     "`ACQUIRE_INPUT`, `RELEASE_INPUT`",
     &[Verb::Bind],
@@ -678,37 +667,15 @@ static C_DETACH_CLIENTS_SESSION: Rule = Rule::verbs(
 static C_DETACH_CLIENTS_ALL: Rule = Rule::verbs(
     "`DETACH_CLIENTS { session: None }`",
     &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
-static C_SHUTDOWN: Rule = Rule::verbs(
-    "`SHUTDOWN`",
-    &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: true,
-    },
-);
-static C_OPEN_LISTENER: Rule = Rule::verbs(
-    "`OPEN_LISTENER`",
-    &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: true,
-    },
-);
-static C_GET_PERF: Rule = Rule::verbs(
-    "`GET_PERF { reset: false }`",
-    &[Verb::Observe],
-    Subject::Global {
-        owner_uds_only: false,
-    },
-);
+static C_SHUTDOWN: Rule = Rule::verbs("`SHUTDOWN`", &[Verb::Signal], GLOBAL_OWNER_UDS);
+static C_OPEN_LISTENER: Rule = Rule::verbs("`OPEN_LISTENER`", &[Verb::Signal], GLOBAL_OWNER_UDS);
+static C_GET_PERF: Rule = Rule::verbs("`GET_PERF { reset: false }`", &[Verb::Observe], GLOBAL);
 static C_GET_PERF_RESET: Rule = Rule::verbs(
     "`GET_PERF { reset: true }`",
     &[Verb::Observe, Verb::Bind],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
 static C_APPEND_RESOURCE_OUTPUT: Rule = Rule::verbs(
     "`APPEND_RESOURCE_OUTPUT`",

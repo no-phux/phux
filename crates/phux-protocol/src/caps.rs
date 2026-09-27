@@ -250,6 +250,68 @@ impl Default for BootstrapLimits {
     }
 }
 
+/// A `u8` wire bit-set of `$item` flags whose `Default` is every known flag.
+/// Unknown bits are dropped on decode.
+macro_rules! u8_flag_set {
+    ($(#[$doc:meta])* $name:ident of $item:ident { $($variant:ident),+ $(,)? }) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub struct $name(u8);
+
+        impl $name {
+            const KNOWN: u8 = 0 $(| ($item::$variant as u8))+;
+
+            /// The empty set.
+            #[must_use]
+            pub const fn new() -> Self {
+                Self(0)
+            }
+
+            /// Every known flag.
+            #[must_use]
+            pub const fn all() -> Self {
+                Self(Self::KNOWN)
+            }
+
+            /// The set of `items`.
+            #[must_use]
+            pub const fn with(items: &[$item]) -> Self {
+                let mut bits = 0;
+                let mut i = 0;
+                while i < items.len() {
+                    bits |= items[i] as u8;
+                    i += 1;
+                }
+                Self(bits)
+            }
+
+            /// Whether `item` is in the set.
+            #[must_use]
+            pub const fn contains(self, item: $item) -> bool {
+                self.0 & (item as u8) != 0
+            }
+
+            /// Known wire bits.
+            #[must_use]
+            pub const fn as_wire(self) -> u8 {
+                self.0 & Self::KNOWN
+            }
+
+            /// Decode known bits, ignoring future ones.
+            #[must_use]
+            pub const fn from_wire(bits: u8) -> Self {
+                Self(bits & Self::KNOWN)
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::all()
+            }
+        }
+    };
+}
+
 /// One synchronization profile a peer can bootstrap.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -264,61 +326,12 @@ pub enum BootstrapProfileKind {
     SynthesizedVtStateSync = 1 << 2,
 }
 
-/// Additive bit-set of synchronization profiles supported by a peer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BootstrapProfileSet(u8);
-
-impl BootstrapProfileSet {
-    const KNOWN: u8 = (BootstrapProfileKind::NativeState as u8)
-        | (BootstrapProfileKind::SynthesizedVtRaw as u8)
-        | (BootstrapProfileKind::SynthesizedVtStateSync as u8);
-
-    /// Empty set.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(0)
-    }
-
-    /// Set containing all protocol-0.7 profiles.
-    #[must_use]
-    pub const fn all() -> Self {
-        Self(Self::KNOWN)
-    }
-
-    /// Build a set from profile kinds.
-    #[must_use]
-    pub const fn with(profiles: &[BootstrapProfileKind]) -> Self {
-        let mut bits = 0;
-        let mut index = 0;
-        while index < profiles.len() {
-            bits |= profiles[index] as u8;
-            index += 1;
-        }
-        Self(bits)
-    }
-
-    /// Whether the set contains `profile`.
-    #[must_use]
-    pub const fn contains(self, profile: BootstrapProfileKind) -> bool {
-        self.0 & (profile as u8) != 0
-    }
-
-    /// Known wire bits.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        self.0 & Self::KNOWN
-    }
-
-    /// Decode known bits and ignore future bits.
-    #[must_use]
-    pub const fn from_wire(bits: u8) -> Self {
-        Self(bits & Self::KNOWN)
-    }
-}
-
-impl Default for BootstrapProfileSet {
-    fn default() -> Self {
-        Self::all()
+u8_flag_set! {
+    /// Additive bit-set of synchronization profiles supported by a peer.
+    BootstrapProfileSet of BootstrapProfileKind {
+        NativeState,
+        SynthesizedVtRaw,
+        SynthesizedVtStateSync,
     }
 }
 
@@ -1046,62 +1059,9 @@ pub enum ImageProtocol {
     Iterm2 = 1 << 2,
 }
 
-/// A bit-field of [`ImageProtocol`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ImageProtocolSet(u8);
-
-impl ImageProtocolSet {
-    const KNOWN: u8 = (ImageProtocol::Sixel as u8)
-        | (ImageProtocol::KittyGraphics as u8)
-        | (ImageProtocol::Iterm2 as u8);
-
-    /// Empty set: no image protocols supported.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(0)
-    }
-
-    /// All currently-defined image protocols.
-    #[must_use]
-    pub const fn all() -> Self {
-        Self(Self::KNOWN)
-    }
-
-    /// Build a set containing all listed protocols.
-    #[must_use]
-    pub const fn with(protocols: &[ImageProtocol]) -> Self {
-        let mut bits = 0;
-        let mut i = 0;
-        while i < protocols.len() {
-            bits |= protocols[i] as u8;
-            i += 1;
-        }
-        Self(bits)
-    }
-
-    /// Test whether `protocol` is in the set.
-    #[must_use]
-    pub const fn contains(self, protocol: ImageProtocol) -> bool {
-        self.0 & (protocol as u8) != 0
-    }
-
-    /// Raw wire byte.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        self.0 & Self::KNOWN
-    }
-
-    /// Inverse of [`Self::as_wire`]. Unknown bits are ignored.
-    #[must_use]
-    pub const fn from_wire(byte: u8) -> Self {
-        Self(byte & Self::KNOWN)
-    }
-}
-
-impl Default for ImageProtocolSet {
-    fn default() -> Self {
-        Self::all()
-    }
+u8_flag_set! {
+    /// A bit-field of [`ImageProtocol`]s.
+    ImageProtocolSet of ImageProtocol { Sixel, KittyGraphics, Iterm2 }
 }
 
 /// One keyboard protocol the client may advertise (SPEC §6.2).
@@ -1115,65 +1075,16 @@ pub enum KeyboardProtocol {
     ModifyOtherKeys = 1 << 1,
 }
 
-/// A bit-field of [`KeyboardProtocol`]s.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyboardProtocolSet(u8);
+u8_flag_set! {
+    /// A bit-field of [`KeyboardProtocol`]s.
+    KeyboardProtocolSet of KeyboardProtocol { Kitty, ModifyOtherKeys }
+}
 
 impl KeyboardProtocolSet {
-    const KNOWN: u8 = (KeyboardProtocol::Kitty as u8) | (KeyboardProtocol::ModifyOtherKeys as u8);
-
-    /// Empty set: no keyboard extension protocols supported.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(0)
-    }
-
-    /// All currently-defined keyboard protocols.
-    #[must_use]
-    pub const fn all() -> Self {
-        Self(Self::KNOWN)
-    }
-
-    /// Build a set containing all listed protocols.
-    #[must_use]
-    pub const fn with(protocols: &[KeyboardProtocol]) -> Self {
-        let mut bits = 0;
-        let mut i = 0;
-        while i < protocols.len() {
-            bits |= protocols[i] as u8;
-            i += 1;
-        }
-        Self(bits)
-    }
-
-    /// Test whether `protocol` is in the set.
-    #[must_use]
-    pub const fn contains(self, protocol: KeyboardProtocol) -> bool {
-        self.0 & (protocol as u8) != 0
-    }
-
-    /// True when any keyboard protocol is advertised.
+    /// True when no keyboard protocol is advertised.
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.0 == 0
-    }
-
-    /// Raw wire byte.
-    #[must_use]
-    pub const fn as_wire(self) -> u8 {
-        self.0 & Self::KNOWN
-    }
-
-    /// Inverse of [`Self::as_wire`]. Unknown bits are ignored.
-    #[must_use]
-    pub const fn from_wire(byte: u8) -> Self {
-        Self(byte & Self::KNOWN)
-    }
-}
-
-impl Default for KeyboardProtocolSet {
-    fn default() -> Self {
-        Self::all()
     }
 }
 
