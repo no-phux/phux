@@ -8,13 +8,10 @@
 //!
 //! * **WebSocket** ([`run`]) — one binary message per encoded frame. The
 //!   historical path; works everywhere.
-//! * **WebTransport** ([`run_webtransport`]) — HTTP/3 over QUIC, the
-//!   browser's door to QUIC-class transport. One bidirectional stream
-//!   carries length-prefixed frames (reassembled by
-//!   [`FrameBuffer`](crate::framing::FrameBuffer), since stream chunks
-//!   arrive at arbitrary boundaries). [`run_with_fallback`] tries this
-//!   first and falls back to WebSocket when the API or the endpoint is
-//!   unavailable.
+//! * **WebTransport** ([`run_with_fallback`]) — HTTP/3 over QUIC. One
+//!   bidirectional stream carries length-prefixed frames (reassembled by
+//!   [`FrameBuffer`](crate::framing::FrameBuffer)); falls back to WebSocket
+//!   when the API or the endpoint is unavailable.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -319,23 +316,6 @@ pub async fn run_with_fallback(
     }
 }
 
-/// Connect over WebTransport only (no fallback): establish the session, open
-/// the single bidirectional wire stream, send the handshake, and start the
-/// read pump.
-///
-/// # Errors
-/// Fails if the engine can't load, the canvas has no 2D context, the
-/// `WebTransport` API is missing, or the session/stream can't be established.
-pub async fn run_webtransport(
-    wt_url: &str,
-    canvas: HtmlCanvasElement,
-    cols: u16,
-    rows: u16,
-) -> Result<Client, JsValue> {
-    let vt = load_vt().await?;
-    run_webtransport_loaded(wt_url, canvas, cols, rows, &vt).await
-}
-
 async fn run_webtransport_loaded(
     wt_url: &str,
     canvas: HtmlCanvasElement,
@@ -496,28 +476,6 @@ impl Client {
     #[must_use]
     pub fn failure_reason(&self) -> Option<String> {
         self.app.borrow().failure_reason.borrow().clone()
-    }
-
-    /// Establish a fresh transport and protocol session after this client has
-    /// failed, preserving the canvas and last negotiated viewport size.
-    ///
-    /// # Errors
-    /// Returns an error while the current client is still live, or when both
-    /// replacement transports fail to reach aggregate attach READY within the deadline.
-    pub async fn reconnect_with_fallback(
-        &self,
-        wt_url: &str,
-        ws_url: &str,
-    ) -> Result<Self, JsValue> {
-        let (canvas, cols, rows) = {
-            let app = self.app.borrow();
-            if !app.session.is_failed() {
-                return Err(JsValue::from_str("connection is still active"));
-            }
-            let grid = app.session.grid();
-            (app.canvas.clone(), grid.cols, grid.rows)
-        };
-        run_with_fallback(wt_url, ws_url, canvas, cols, rows).await
     }
 }
 
