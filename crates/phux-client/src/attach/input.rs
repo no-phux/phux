@@ -1,105 +1,19 @@
-//! Stdin VT-byte parsing for the attach loop.
+//! Stdin VT-byte parsing: turns the bytes a TTY puts on stdin into structured
+//! [`InputEvent`]s (SPEC §9). libghostty-vt only ships encoders, so this is a
+//! small hand-rolled xterm/VT input lexer.
 //!
-//! The parser turns the byte stream a TTY puts on stdin into structured
-//! [`InputEvent`]s aimed at SPEC §9 input frames. It is deliberately small
-//! and local — libghostty-vt ships *encoders* (event → bytes) but not a
-//! decoder for the reverse direction, so this module hand-rolls just
-//! enough of an xterm/VT100 input parser to cover what `phux attach` sees
-//! in practice.
+//! Handled: printable ASCII and UTF-8, C0 controls (CR = Enter, LF = Ctrl-J,
+//! Ctrl-letters), ESC+char as Alt, CSI/SS3 cursor, navigation and function
+//! keys with xterm modifiers, kitty `CSI u` (press/repeat/release and
+//! associated text; hyper folds into SUPER and meta into ALT), SGR / X10 /
+//! urxvt-1015 mouse reports (0-indexed cells as integer `f64`, re-quantised
+//! by the server's encoder), focus reports, and bracketed paste. DCS / OSC /
+//! SOS / PM / APC strings are absorbed and dropped.
 //!
-//! # Surface area
-//!
-//! Handled:
-//!
-//! - Printable ASCII and full UTF-8 multibyte sequences (Unicode keypresses)
-//! - C0 controls — CR/LF (Enter), HT (Tab), BS / DEL (Backspace), and the
-//!   Ctrl-A..Ctrl-Z encoding (`0x01..=0x1A` minus the dedicated mappings).
-//! - **Bare ESC** as the Escape key (see "Timing ambiguity" below).
-//! - **ESC + char** as an Alt-modified key (Alt-letter chords).
-//! - **CSI** sequences (`ESC [` …) for arrow keys, Home/End/Insert/Delete,
-//!   PageUp/PageDown, F-keys via the xterm `CSI 1;<mod>P..S` and VT220
-//!   `CSI <n>~` forms, and modifier-bearing variants
-//!   (`CSI 1;5A` for Ctrl-Up, `CSI 5;5~` for Ctrl-PageUp, etc.).
-//! - **SS3** sequences (`ESC O <P|Q|R|S>`) for the older F1..F4 + numeric
-//!   keypad encoding most BSD `termcap` entries still use.
-//!
-//! Also handled:
-//!
-//! - **SGR mouse reports** (`CSI < <btn> ; <col> ; <row> M/m`, DEC mode
-//!   1006). Emitted as [`InputEvent::Mouse`] with terminal-local cell
-//!   coordinates expressed as integer-valued `f64` pixels (per SPEC §9.2.1
-//!   the encoder downstream re-quantises for cell-format mouse protocols).
-//! - **Legacy X10 mouse** (`CSI M Cb Cx Cy`) — three raw bytes after the
-//!   `M` final encode button + position (`Cb = btn + 32`,
-//!   `Cx = col + 32`, `Cy = row + 32`). This form cannot be parameterised
-//!   as a normal CSI numeric sequence, so the parser drops into a
-//!   dedicated 3-byte consumer state (`State::X10Mouse`) when a bare
-//!   `CSI M` (empty params) is observed. X10 has no separate release
-//!   final byte; releases are signalled by `(Cb & 3) == 3`, which maps
-//!   to [`MouseAction::Release`] with [`MouseButton::Unknown`] (matching
-//!   the legacy protocol's inability to identify which button was
-//!   released).
-//! - **urxvt-1015 decimal mouse** (`CSI <btn> ; <col> ; <row> M`). Same
-//!   button bitfield as X10 (offset by 32) but with decimal parameters
-//!   instead of raw bytes, and always terminated by `M`. Distinguished
-//!   from SGR (DEC 1006) by the absence of the leading `<` private-marker.
-//! - **Focus reports** (`CSI I` / `CSI O`, DEC mode 1004). Emitted as
-//!   [`InputEvent::Focus`].
-//! - **Bracketed paste** (`CSI 200~` … `CSI 201~`, DEC mode 2004). The
-//!   parser buffers payload bytes between the begin / end markers and
-//!   emits a single [`InputEvent::Paste`] at the end-marker. Payload
-//!   bytes are passed through verbatim — no nested escape parsing.
-//!
-//! Not handled (yet):
-//!
-//! - **Kitty keyboard protocol `CSI u`** sequences — disambiguate-escape
-//!   (KIP level 1), event-types including repeat (KIP level 2), and partial
-//!   levels 3-5. Sequences of the form
-//!   `CSI keycode[:shifted_key:base_layout_key][;modifiers[:event_type[:text_codepoints]]] u`
-//!   decode into [`KeyEvent`]s. We surface press / release / repeat as
-//!   distinct [`KeyAction`] variants; we drop the level-3 `shifted_key` /
-//!   `base_layout_key` sub-parameters (no encoder integration yet); we
-//!   decode the level-5 text codepoints into `KeyEvent.text` whenever
-//!   they're present. Hyper / meta modifier bits are collapsed into
-//!   `SUPER` / `ALT` respectively — libghostty's `Mods` lacks distinct
-//!   hyper / meta bits and a phux-side wrapper is out of scope for v0.
-//!   See <https://sw.kovidgoyal.net/kitty/keyboard-protocol/>.
-//! - DCS / OSC / SOS / PM / APC sequences inbound — these come from the
-//!   inner program, not from a keyboard, and have no representation as a
-//!   `KeyEvent`. They are absorbed and dropped.
-//!
-//! # libghostty surface check
-//!
-//! libghostty-vt exposes input *encoders* (`key::Encoder`,
-//! `mouse::Encoder`, `focus::Event::encode`, `paste::encode`) but no
-//! parser in the reverse direction — there is no `Decoder`, no
-//! `parse_bytes`, no public state machine equivalent to xterm's VT input
-//! lexer. Confirmed by grepping the `libghostty-vt` crate at the pinned
-//! rev (`31d1f70`); only the `terminal::Terminal::vt_write` parser
-//! exists, and that is for output bytes from a child process, not input
-//! bytes from a host terminal. This module therefore hand-rolls the
-//! CSI / SS3 lexer required for inbound input parsing.
-//!
-//! # Timing ambiguity (bare ESC)
-//!
-//! Bare ESC and ESC-starting-a-sequence are not distinguishable from the
-//! byte stream alone. The classic xterm-style solution is a short idle
-//! timeout: if ESC is followed by another byte within ~50ms it starts a
-//! sequence, otherwise it stands alone as the Escape key.
-//!
-//! This module exposes that decision to the driver via [`StdinParser::flush`].
-//! The driver arms a [`tokio::time::Sleep`] whenever
-//! [`StdinParser::has_pending`] returns `true` and calls `flush()` if the
-//! sleep wins the next `select!` race. That keeps timing policy out of
-//! the parser (which is sync and timer-free) and inside the loop that
-//! already knows about wall time.
-//!
-//! # Partial sequences across read boundaries
-//!
-//! A single CSI sequence can straddle two `read()` calls; the parser
-//! holds its in-progress state (a private `State` enum + a small
-//! parameter buffer) in the [`StdinParser`] struct and resumes on the
-//! next [`StdinParser::feed`] call.
+//! A bare ESC is ambiguous with the start of a sequence, so the parser stays
+//! timer-free: the driver arms an idle timer while [`StdinParser::esc_pending`]
+//! and calls [`StdinParser::flush`] when it fires. Partial sequences resume
+//! across [`StdinParser::feed`] calls.
 
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
@@ -107,72 +21,41 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 
-// This module parses stdin VT bytes into the wire-level
-// [`phux_protocol::input::InputEvent`] directly — the parser yields
-// `Key` from real input bytes plus the `Mouse` / `Focus` / `Paste`
-// variants populated by the mouse / focus / paste parsing paths.
-
 /// Internal parser state machine.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum State {
-    /// Default; consuming plain bytes.
     #[default]
     Ground,
-    /// Just saw an ESC; the next byte decides whether this is bare ESC,
-    /// Alt+char, CSI, SS3, DCS, or something we drop.
+    /// Saw ESC; the next byte picks bare ESC, Alt+char, CSI, SS3, or a string.
     Escape,
-    /// Inside a CSI sequence (`ESC [` …), accumulating parameter / intermediate
-    /// bytes until a final byte in `0x40..=0x7E` arrives.
+    /// Inside `ESC [`, accumulating parameter bytes until a final byte.
     Csi,
-    /// Inside an SS3 sequence (`ESC O` …); next byte is the final.
+    /// Inside `ESC O`; the next byte is the final.
     Ss3,
-    /// Inside a string-like control (DCS, OSC, SOS, PM, APC). We absorb
-    /// until ST (`ESC \`) or BEL.
-    StringTerm,
-    /// In a UTF-8 multibyte continuation; `expected` more continuation
-    /// bytes remain.
+    /// Inside DCS/OSC/SOS/PM/APC, absorbed until BEL or ST (`ESC \`); `esc`
+    /// is set after the ESC of a possible ST.
+    StringTerm { esc: bool },
+    /// In a UTF-8 sequence with `expected` continuation bytes still to come.
     Utf8 { expected: u8 },
-    /// Inside a bracketed-paste payload; bytes accumulate in `paste_buf`
-    /// until the closing `ESC [ 201 ~` marker is seen.
+    /// Inside a bracketed-paste payload.
     Paste,
-    /// Inside a paste payload, just saw an ESC. The next bytes might be
-    /// the closing `[ 201 ~` marker, or they might be part of the paste
-    /// payload (e.g. a nested ANSI sequence the user pasted). We parse
-    /// minimally enough to spot the end marker.
+    /// Inside a paste payload, just saw ESC (maybe the close marker).
     PasteEscape,
-    /// Inside a paste payload, saw `ESC [`. Accumulating the (numeric)
-    /// parameter bytes in `buf` until either a final byte arrives that
-    /// completes the `CSI 201~` close marker, or anything else, in which
-    /// case the accumulated bytes are flushed back into the paste payload.
+    /// Inside a paste payload, saw `ESC [`; parameters accumulate in `buf`
+    /// until `201~` closes the paste or anything else returns them to it.
     PasteCsi,
-    /// Consuming the 3 trailing bytes (`Cb`, `Cx`, `Cy`) of a legacy X10
-    /// mouse report (`CSI M Cb Cx Cy`). The X10 mouse format is *not* a
-    /// numeric-parameterised CSI sequence — the three bytes after the
-    /// `M` final are raw single-byte values, including bytes that would
-    /// otherwise be invalid CSI parameter bytes. We therefore enter a
-    /// dedicated consumer state when bare `CSI M` (empty params) is
-    /// observed.
-    ///
-    /// `bytes_seen` counts how many of the three payload bytes have been
-    /// stored in [`StdinParser::buf`]. The report completes — and emits
-    /// an event — when the third byte arrives.
+    /// Consuming the three raw bytes of a legacy X10 mouse report
+    /// (`CSI M Cb Cx Cy`); they are not valid CSI parameter bytes.
     X10Mouse { bytes_seen: u8 },
 }
 
-/// Stateful parser for stdin bytes.
-///
-/// The parser is timer-free; the driver arms a `tokio::time::Sleep` and
-/// calls [`StdinParser::flush`] when stdin has been idle for the bare-ESC
-/// timeout. See the module doc.
+/// Stateful, timer-free parser for stdin bytes. See the module doc.
 #[derive(Debug)]
 pub struct StdinParser {
     state: State,
-    /// In-progress CSI / SS3 / UTF-8 / string-term bytes. Reused across
-    /// feeds so partial sequences resume cleanly.
+    /// In-progress CSI / UTF-8 / X10 bytes, kept across feeds.
     buf: Vec<u8>,
-    /// Pending UTF-8 lead byte (when `state == Utf8`).
-    utf8_lead: u8,
-    /// Accumulated bytes of an in-progress bracketed-paste payload.
+    /// Accumulated bracketed-paste payload.
     paste_buf: Vec<u8>,
 }
 
@@ -189,50 +72,20 @@ impl StdinParser {
         Self {
             state: State::Ground,
             buf: Vec::new(),
-            utf8_lead: 0,
             paste_buf: Vec::new(),
         }
     }
 
-    /// Returns `true` if the parser is currently inside an in-progress
-    /// sequence, i.e. mid-decode of *something*.
-    ///
-    /// Note this is broader than "a flush would emit": see
-    /// [`esc_pending`](Self::esc_pending) for the predicate the idle timer
-    /// actually wants.
-    #[must_use]
-    pub const fn has_pending(&self) -> bool {
-        !matches!(self.state, State::Ground)
-    }
-
-    /// Returns `true` only when a [`flush`](Self::flush) would emit an event —
-    /// that is, when a lone ESC is waiting to be disambiguated.
-    ///
-    /// This is the predicate the driver arms the bare-ESC idle timer from.
-    /// [`has_pending`](Self::has_pending) is true for every in-progress
-    /// sequence, and for all of them but `State::Escape` the flush is
-    /// documented to *keep* the state and emit nothing — so arming on it
-    /// bought a guaranteed-useless 10ms wake-up (plus a whole empty dispatch
-    /// batch) in the middle of every multi-byte key that happened to land
-    /// split across a read boundary. A complete `CSI`/`SS3` sequence already
-    /// emits the instant its final byte arrives and never waited; narrowing
-    /// the arming to the one state that *can* produce an event changes no
-    /// output, only how often the loop wakes up for nothing (phux-l96p.4).
+    /// Whether a [`flush`](Self::flush) would emit, i.e. a lone ESC is waiting
+    /// to be disambiguated. Other partial sequences never flush, so arming the
+    /// idle timer for them would only wake the loop for nothing.
     #[must_use]
     pub const fn esc_pending(&self) -> bool {
         matches!(self.state, State::Escape)
     }
 
-    /// Flush pending parser state on a timing boundary.
-    ///
-    /// Called by the driver when stdin has been idle long enough that a
-    /// bare ESC can no longer be the prefix of a sequence. Effects:
-    ///
-    /// - `State::Escape`: emit a single Escape key and return to ground.
-    /// - All other in-progress states are *kept* — a CSI half-sent over
-    ///   the network is not "abandoned" just because of an idle gap; the
-    ///   next read is still expected to complete it. (Real terminals
-    ///   never split CSI sequences across long idle windows.)
+    /// Emit a pending lone ESC as the Escape key once stdin has gone idle.
+    /// Every other in-progress sequence is kept for the next read.
     pub fn flush(&mut self) -> Vec<InputEvent> {
         let mut out = Vec::new();
         self.flush_into(&mut out);
@@ -240,9 +93,6 @@ impl StdinParser {
     }
 
     /// [`flush`](Self::flush), appending into a caller-owned buffer.
-    ///
-    /// The attach loop keeps one buffer for the life of the attach so the
-    /// keystroke path allocates nothing per event batch.
     pub fn flush_into(&mut self, out: &mut Vec<InputEvent>) {
         if matches!(self.state, State::Escape) {
             self.state = State::Ground;
@@ -254,22 +104,14 @@ impl StdinParser {
     }
 
     /// Feed `bytes` and return any complete events.
-    ///
-    /// The parser does not allocate when no events come out beyond the
-    /// returned `Vec` itself. Hot callers should prefer
-    /// [`feed_into`](Self::feed_into), which reuses the caller's buffer.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<InputEvent> {
         let mut out = Vec::new();
         self.feed_into(bytes, &mut out);
         out
     }
 
-    /// [`feed`](Self::feed), appending into a caller-owned buffer.
-    ///
-    /// `feed` allocated a fresh `Vec` per stdin read; on the attach loop that
-    /// is one allocation per keystroke for a container that is emptied again
-    /// microseconds later. Feeding into a retained buffer makes the steady
-    /// state allocation-free (phux-l96p.4).
+    /// [`feed`](Self::feed), appending into a caller-owned buffer so the
+    /// attach loop allocates nothing per keystroke.
     pub fn feed_into(&mut self, bytes: &[u8], out: &mut Vec<InputEvent>) {
         for &b in bytes {
             self.feed_byte(b, out);
@@ -282,7 +124,7 @@ impl StdinParser {
             State::Escape => self.feed_escape(b, out),
             State::Csi => self.feed_csi(b, out),
             State::Ss3 => self.feed_ss3(b, out),
-            State::StringTerm => self.feed_string_term(b),
+            State::StringTerm { esc } => self.feed_string_term(b, esc),
             State::Utf8 { expected } => self.feed_utf8(b, expected, out),
             State::Paste => self.feed_paste(b),
             State::PasteEscape => self.feed_paste_escape(b),
@@ -304,7 +146,6 @@ impl StdinParser {
         if let Some(more) = utf8_continuation_count(b) {
             self.buf.clear();
             self.buf.push(b);
-            self.utf8_lead = b;
             self.state = State::Utf8 { expected: more };
             return;
         }
@@ -323,7 +164,7 @@ impl StdinParser {
             }
             // DCS / OSC / SOS / PM / APC — absorb until ST or BEL.
             b'P' | b']' | b'X' | b'^' | b'_' => {
-                self.state = State::StringTerm;
+                self.state = State::StringTerm { esc: false };
             }
             0x1B => {
                 // ESC ESC — treat the first ESC as a complete Escape key
@@ -372,24 +213,15 @@ impl StdinParser {
         }
         if (0x40..=0x7E).contains(&b) {
             let final_byte = b;
-            // Move buf out so dispatch_csi can borrow self immutably.
             let params = std::mem::take(&mut self.buf);
             self.state = State::Ground;
-            // Bracketed-paste begin (`CSI 200~`) puts us into Paste state
-            // instead of emitting an event; everything else goes through
-            // the normal CSI dispatch.
             if final_byte == b'~' && params == b"200" {
                 self.paste_buf.clear();
                 self.state = State::Paste;
                 return;
             }
-            // Legacy X10 mouse (`CSI M Cb Cx Cy`): bare `CSI M` with no
-            // parameter bytes. The next 3 bytes are raw button + position
-            // and must be consumed in a dedicated state — they are not
-            // valid CSI parameter bytes (they can be anything in `0x20..`).
-            // urxvt-1015 also terminates with `M`, but always carries
-            // semicolon-separated numeric params, so it falls through to
-            // `dispatch_csi` below.
+            // Bare `CSI M` is legacy X10 mouse: three raw bytes follow.
+            // urxvt-1015 also ends in `M` but carries numeric params.
             if final_byte == b'M' && params.is_empty() {
                 self.buf.clear();
                 self.state = State::X10Mouse { bytes_seen: 0 };
@@ -426,34 +258,14 @@ impl StdinParser {
         out.push(InputEvent::Key(make_named_key(key, ModSet::empty())));
     }
 
-    fn feed_string_term(&mut self, b: u8) {
-        // We track ST (`ESC \`) by re-entering State::Escape so the next
-        // `\` finishes the string. BEL (0x07) also terminates an OSC.
-        if b == 0x07 {
-            self.state = State::Ground;
-        } else if b == 0x1B {
-            // Could be ST. We re-use State::Escape to find the next byte;
-            // the only "exit" path from a string-terminator ESC is `\`,
-            // anything else is a malformed sequence which we also drop.
-            // For simplicity, just return to ground unconditionally on the
-            // next byte by treating any byte after this ESC as "consumed
-            // and we're done". Use a dedicated marker by stashing a
-            // sentinel — but to keep state minimal, just consume the next
-            // byte in StringTerm-end mode via Escape and bounce out.
-            //
-            // Simplest robust thing: leave State::StringTerm, the next
-            // byte will be processed as the string-terminator final.
-            // Track via a one-shot using buf[0].
-            self.buf.clear();
-            self.buf.push(1);
-            // Note: we stay in StringTerm; the next byte branches via the
-            // sentinel.
-        } else if !self.buf.is_empty() && self.buf[0] == 1 {
-            // Previous byte was ESC; this is the ST final. End the string
-            // regardless of what `b` is — malformed sequences end here too.
-            self.buf.clear();
-            self.state = State::Ground;
-        }
+    /// BEL ends the string; so does the byte after an ESC (ST is `ESC \`,
+    /// and a malformed terminator ends it just the same).
+    const fn feed_string_term(&mut self, b: u8, esc: bool) {
+        self.state = if esc || b == 0x07 {
+            State::Ground
+        } else {
+            State::StringTerm { esc: b == 0x1B }
+        };
     }
 
     fn feed_utf8(&mut self, b: u8, expected: u8, out: &mut Vec<InputEvent>) {
@@ -545,12 +357,9 @@ impl StdinParser {
             if b == b'~' && self.buf == b"201" {
                 self.buf.clear();
                 let data = std::mem::take(&mut self.paste_buf);
-                // A DEC 2004 frame is emitted by the user's outer terminal
-                // for its local clipboard action. An attached, authenticated
-                // local terminal is the same user-intent boundary as `phux
-                // paste`, which is trusted by default; classifying it as
-                // untrusted makes the server reject normal multiline pastes
-                // before delivering any bytes.
+                // A DEC 2004 paste is the user's own clipboard action, the
+                // same intent boundary as `phux paste`; untrusted would make
+                // the server reject ordinary multiline pastes.
                 out.push(InputEvent::Paste(PasteEvent {
                     trust: PasteTrust::Trusted,
                     data,
@@ -582,11 +391,8 @@ impl StdinParser {
         self.state = State::Paste;
     }
 
-    /// Consume one of the three payload bytes of a legacy X10 mouse
-    /// report. The three bytes are `Cb`, `Cx`, `Cy` — each is a raw
-    /// single byte (NOT a numeric param), where the encoded value is
-    /// `byte - 32` (clamped at zero for the rare under-32 byte). When
-    /// the third byte arrives, decode and emit a [`MouseEvent`].
+    /// Consume one of the three raw payload bytes (`Cb`, `Cx`, `Cy`) of an X10
+    /// mouse report, emitting on the third.
     fn feed_x10_mouse(&mut self, b: u8, bytes_seen: u8, out: &mut Vec<InputEvent>) {
         self.buf.push(b);
         let next = bytes_seen + 1;
@@ -594,16 +400,11 @@ impl StdinParser {
             self.state = State::X10Mouse { bytes_seen: next };
             return;
         }
-        // We have all three bytes. Decode + emit, then return to ground.
-        // Clone the three bytes out before clearing buf; the caller of
-        // `feed_byte` holds a mutable borrow of `self.state`, but `buf`
-        // is fine to move from.
-        let cb = self.buf[0];
-        let cx = self.buf[1];
-        let cy = self.buf[2];
+        let [cb, cx, cy] = [self.buf[0], self.buf[1], self.buf[2]].map(u32::from);
         self.buf.clear();
         self.state = State::Ground;
-        dispatch_x10_mouse(cb, cx, cy, out);
+        // X10 offsets all three values by 32; urxvt-1015 only the button.
+        dispatch_legacy_mouse(cb, cx.saturating_sub(0x20), cy.saturating_sub(0x20), out);
     }
 }
 
@@ -635,9 +436,9 @@ fn c0_or_ascii_to_key(b: u8) -> Option<KeyEvent> {
         // (0x0A) lands here as Ctrl+J → letter 'J'.
         0x01..=0x1A if b != 0x08 && b != 0x09 && b != 0x0D => {
             let letter = b'A' + (b - 1);
-            ascii_letter_to_key(letter).map(|key| KeyEvent {
+            Some(KeyEvent {
                 action: KeyAction::Press,
-                key,
+                key: letter_key(letter),
                 mods: ModSet::CTRL,
                 consumed_mods: ModSet::CTRL,
                 composing: false,
@@ -663,15 +464,9 @@ pub const fn make_named_key(key: PhysicalKey, mods: ModSet) -> KeyEvent {
     }
 }
 
-/// Map a printable ASCII byte to a [`PhysicalKey`].
-///
-/// Punctuation routes through [`phux_config::keybind::punct_to_key`] so
-/// the runtime `KeyEvent` matches the same physical key the chord parser
-/// emits for the same glyph in `default.toml` (phux-gxy). Without that
-/// alignment, a chord like `"|"` → `{ key: Backslash, mods: SHIFT }` in
-/// the resolver never matched the runtime `{ key: Unidentified, mods:
-/// SHIFT }`, so every punctuation keybind silently forwarded to the
-/// shell.
+/// Map a printable ASCII byte to a [`PhysicalKey`]. Punctuation goes through
+/// [`phux_config::keybind::punct_to_key`] so it matches the key the chord
+/// parser builds for the same glyph, or punctuation keybinds never fire.
 const fn ascii_to_physical(b: u8) -> PhysicalKey {
     match b {
         b' ' => PhysicalKey::Space,
@@ -687,11 +482,7 @@ const fn ascii_to_physical(b: u8) -> PhysicalKey {
             b'8' => PhysicalKey::Digit8,
             _ => PhysicalKey::Digit9,
         },
-        b'A'..=b'Z' | b'a'..=b'z' => {
-            // Lowercase first to look up the table.
-            let upper = if b.is_ascii_lowercase() { b - 32 } else { b };
-            ascii_letter_to_key_const(upper)
-        }
+        b'A'..=b'Z' | b'a'..=b'z' => letter_key(b.to_ascii_uppercase()),
         _ => match phux_config::keybind::punct_to_key(b as char) {
             Some((key, _shift)) => key,
             None => PhysicalKey::Unidentified,
@@ -699,47 +490,18 @@ const fn ascii_to_physical(b: u8) -> PhysicalKey {
     }
 }
 
-/// Modifier set implied by a printable ASCII byte. Uppercase letters and
-/// shifted punctuation (`!@#…`) come with `SHIFT` in `consumed_mods` per
-/// SPEC §9.1.3 so the encoder doesn't double-apply.
+/// `SHIFT` for uppercase letters and shifted punctuation, which also goes in
+/// `consumed_mods` (SPEC §9.1.3) so the encoder does not apply it twice.
 const fn ascii_shift_mods(b: u8) -> ModSet {
-    if b.is_ascii_uppercase() || is_shifted_punct(b) {
-        ModSet::SHIFT
-    } else {
+    if ascii_unshifted(b) == b {
         ModSet::empty()
+    } else {
+        ModSet::SHIFT
     }
 }
 
-const fn is_shifted_punct(b: u8) -> bool {
-    matches!(
-        b,
-        b'!' | b'@'
-            | b'#'
-            | b'$'
-            | b'%'
-            | b'^'
-            | b'&'
-            | b'*'
-            | b'('
-            | b')'
-            | b'_'
-            | b'+'
-            | b'{'
-            | b'}'
-            | b'|'
-            | b':'
-            | b'"'
-            | b'<'
-            | b'>'
-            | b'?'
-            | b'~'
-    )
-}
-
-/// What this key would produce with no modifiers held — used to fill
-/// `unshifted_codepoint`. `A` → `a`, `@` → `2`, etc. Best-effort, US
-/// QWERTY mapping; clients on other layouts can override at a higher
-/// layer (not in scope here).
+/// The unmodified glyph for `unshifted_codepoint` (`A` -> `a`, `@` -> `2`),
+/// assuming US QWERTY.
 const fn ascii_unshifted(b: u8) -> u8 {
     match b {
         b'A'..=b'Z' => b + 32,
@@ -785,24 +547,13 @@ const fn utf8_continuation_count(b: u8) -> Option<u8> {
 /// `ESC [` and the final byte); `final_byte` is the final byte
 /// (`0x40..=0x7E`).
 fn dispatch_csi(params: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
-    // SGR mouse reports (DEC mode 1006) carry a leading `<` private-
-    // marker byte and end in `M` (press / motion) or `m` (release).
-    // Form: `CSI < <btn> ; <col> ; <row> M|m`. We dispatch them before
-    // stripping the marker because the marker is what distinguishes
-    // them from a bare `CSI M` (legacy X10 mouse, not supported).
+    // SGR mouse (DEC 1006): `CSI < btn ; col ; row M|m`.
     if matches!(params.first(), Some(&b'<')) && (final_byte == b'M' || final_byte == b'm') {
         dispatch_sgr_mouse(&params[1..], final_byte, out);
         return;
     }
 
-    // urxvt-1015 decimal mouse: `CSI <btn> ; <col> ; <row> M`. Same
-    // button bitfield as X10 (offset by 32) but transmitted as decimal
-    // CSI parameters. Distinguished from SGR by the absence of the
-    // leading `<` private-marker, and from `CSI 1;<mod>P..S` modifier-
-    // bearing arrow / F-key forms (which have a letter final, not `M`).
-    // Only triggers when there are no private-marker / intermediate
-    // bytes — anything with a leading `?` / `=` / `>` is some other
-    // private CSI we don't recognise.
+    // urxvt-1015 mouse: `CSI btn ; col ; row M`, plain decimal params only.
     if final_byte == b'M'
         && !matches!(params.first(), Some(&b'?' | &b'<' | &b'=' | &b'>'))
         && params
@@ -811,22 +562,17 @@ fn dispatch_csi(params: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
     {
         let parsed = parse_csi_params(params);
         if parsed.len() == 3 {
-            dispatch_urxvt1015_mouse(parsed[0], parsed[1], parsed[2], out);
+            dispatch_legacy_mouse(parsed[0], parsed[1], parsed[2], out);
             return;
         }
     }
 
-    // Kitty keyboard protocol (KIP) `CSI u`. We target progressive-enhancement
-    // levels 1 (disambiguate) + 2 (event types); sub-parameter groups for
-    // higher levels (alternates, base-layout key, text codepoints) are parsed
-    // out of the way and dropped.
     if final_byte == b'u' {
         dispatch_kitty_csi_u(params, out);
         return;
     }
 
-    // Strip a leading private-marker `?`, `<`, `=`, `>` for now — we
-    // don't differentiate, the modifier-bearing variant alone matters.
+    // Private markers are not differentiated.
     let body = if let Some(first) = params.first()
         && matches!(*first, b'?' | b'<' | b'=' | b'>')
     {
@@ -835,14 +581,9 @@ fn dispatch_csi(params: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
         params
     };
 
-    // Parse out semicolon-separated numeric params. Missing/empty params
-    // are treated as 0 (xterm convention; the final byte's interpretation
-    // tells us what "missing" means in context).
     let parsed = parse_csi_params(body);
 
-    // Focus reports (DEC mode 1004): `CSI I` = gained, `CSI O` = lost.
-    // Recognised only when the parameter buffer is empty (bare CSI).
-    // With parameters the same final bytes have other meanings.
+    // Focus reports (DEC 1004) are bare `CSI I` / `CSI O`.
     if body.is_empty() {
         if final_byte == b'I' {
             out.push(InputEvent::Focus(FocusEvent::Gained));
@@ -854,10 +595,7 @@ fn dispatch_csi(params: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
         }
     }
 
-    // The `CSI <n> ~` form encodes function keys and the navigation keys
-    // (Insert, Delete, Home, End, PgUp/PgDn, F5..F12). The optional second
-    // parameter is the xterm modifier code (1=none, 2=Shift, 3=Alt,
-    // 5=Ctrl, etc.).
+    // `CSI n ; mod ~`: navigation and function keys.
     if final_byte == b'~' {
         let n = parsed.first().copied().unwrap_or(1);
         let mods = parsed
@@ -872,9 +610,7 @@ fn dispatch_csi(params: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
         return;
     }
 
-    // The xterm modifier-bearing form is `CSI 1 ; <mod> <letter>` for the
-    // arrow / Home / End / F1..F4 keys. When no modifier is present the
-    // bare form `CSI <letter>` is used.
+    // `CSI 1 ; mod letter` or bare `CSI letter`: arrows, Home/End, F1-F4.
     let mods = if parsed.len() >= 2 && parsed[0] == 1 {
         xterm_modifier_code(parsed[1])
     } else {
@@ -889,90 +625,42 @@ fn dispatch_csi(params: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
     tracing::trace!(final_byte, ?parsed, "unknown CSI sequence");
 }
 
-/// Decode an SGR-format mouse report's parameter region (the part after
-/// the leading `<` and before the `M`/`m` final byte) and push a
-/// [`MouseEvent`] into `out`. Silently drops malformed reports.
-///
-/// Format: `<btn> ; <col> ; <row>` where `<btn>` is a bitfield
-/// (xterm SGR encoding, DEC mode 1006):
-///
-/// * bits 0-1: low button bits (0=L, 1=M, 2=R, 3=none/release-for-X10).
-/// * bit 2:    Shift modifier.
-/// * bit 3:    Alt (Meta) modifier.
-/// * bit 4:    Ctrl modifier.
-/// * bit 5:    motion (the report describes a drag / hover).
-/// * bit 6:    wheel — buttons 4 (up) / 5 (down). High bit is the wheel
-///   axis indicator in some terminals; we treat 64/65/66/67 as
-///   the four wheel directions and pass them through as
-///   libghostty `Button::Four` / `Five` / `Six` / `Seven`.
-/// * bit 7:    extra buttons — 128..=131 → `Button::Eight..Eleven`.
-///
-/// `<col>` and `<row>` are 1-indexed cell coordinates. We convert to
-/// 0-indexed `f64` pixels (treating "1 cell = 1 pixel" since the client
-/// does not know cell-size here; per SPEC §9.2.1 the server's encoder
-/// re-quantises for cell-format protocols).
+/// Decode an SGR mouse report body (`btn ; col ; row`, after the `<`).
+/// `btn` uses the xterm bitfield: low bits select the button, 4/8/16 are
+/// Shift/Alt/Ctrl, 32 is motion, 64 wheel, 128 extra buttons. The final
+/// byte `m` marks a release.
 fn dispatch_sgr_mouse(body: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
     let parsed = parse_csi_params(body);
-    if parsed.len() < 3 {
+    let [raw_btn, col, row, ..] = parsed[..] else {
         tracing::trace!(?parsed, "malformed SGR mouse report (too few params)");
         return;
-    }
-    let raw_btn = parsed[0];
-    let col = parsed[1];
-    let row = parsed[2];
-
-    let mods = sgr_mouse_mods(raw_btn);
-    let button = sgr_mouse_button(raw_btn);
-    let motion = (raw_btn & 0x20) != 0;
-    let action = if motion {
+    };
+    let action = if (raw_btn & 0x20) != 0 {
         MouseAction::Motion
     } else if final_byte == b'm' {
         MouseAction::Release
     } else {
         MouseAction::Press
     };
+    push_mouse(action, raw_btn, col, row, out);
+}
 
-    // 1-indexed → 0-indexed; coordinates are pane-local pixels per
-    // SPEC §9.2.1 (integer-valued f64 from a cell-quantising client).
-    #[allow(clippy::cast_lossless, reason = "u32 → f64 is exact for our range")]
-    let x = (col.saturating_sub(1)) as f64;
-    #[allow(clippy::cast_lossless, reason = "u32 → f64 is exact for our range")]
-    let y = (row.saturating_sub(1)) as f64;
-
+/// Push a mouse event from an xterm button code and 1-indexed cell position,
+/// as 0-indexed integer-valued `f64` coordinates (SPEC §9.2.1).
+fn push_mouse(action: MouseAction, raw_btn: u32, col: u32, row: u32, out: &mut Vec<InputEvent>) {
     out.push(InputEvent::Mouse(MouseEvent {
         action,
-        button,
-        mods,
-        x,
-        y,
+        button: sgr_mouse_button(raw_btn),
+        mods: sgr_mouse_mods(raw_btn),
+        x: f64::from(col.saturating_sub(1)),
+        y: f64::from(row.saturating_sub(1)),
     }));
 }
 
-/// Decode a kitty-protocol `CSI u` sequence.
-///
-/// Wire form (per <https://sw.kovidgoyal.net/kitty/keyboard-protocol/>):
-///
-/// ```text
-/// CSI keycode[:shifted_key:base_layout_key][;modifiers[:event_type[:text_codepoints]]] u
-/// ```
-///
-/// `;` separates top-level parameter groups; `:` separates sub-parameters
-/// within a group. We extract:
-///
-/// * group 0, sub 0 → keycode (Unicode codepoint of the unshifted key, or a
-///   functional keycode in the PUA range — see `kitty_keycode_to_physical`).
-/// * group 0, sub 1.. → `shifted_key`, `base_layout_key` (level 3,
-///   `REPORT_ALTERNATES`). Parsed off the wire and **dropped** — no encoder
-///   integration exists. Filed as a follow-up.
-/// * group 1, sub 0 → modifier bitfield (`1 + shift|alt|ctrl|super|hyper|meta|caps_lock|num_lock`).
-/// * group 1, sub 1 → event type (1=press, 2=repeat, 3=release; KIP level 2).
-/// * group 1, sub 2.. → text codepoints (level 5, `REPORT_ASSOCIATED_TEXT`).
-///   Decoded into [`KeyEvent::text`] whenever present, regardless of the
-///   keycode mapping. Empty / zero sub-params are skipped.
-///
-/// Hyper / meta modifier bits are collapsed into [`ModSet::SUPER`] /
-/// [`ModSet::ALT`] respectively — libghostty's `Mods` lacks distinct bits.
-/// See [`kitty_modifier_code`].
+/// Decode a kitty keyboard-protocol sequence,
+/// `CSI keycode[:shifted:base][;mods[:event_type[:text...]]] u`.
+/// The level-3 alternate keys are dropped; nonzero text codepoints become
+/// [`KeyEvent::text`].
 fn dispatch_kitty_csi_u(params: &[u8], out: &mut Vec<InputEvent>) {
     let groups = parse_csi_param_groups(params);
     let keycode_group = groups.first();
@@ -980,20 +668,6 @@ fn dispatch_kitty_csi_u(params: &[u8], out: &mut Vec<InputEvent>) {
     if keycode == 0 {
         tracing::trace!("kitty CSI u with empty keycode, dropping");
         return;
-    }
-
-    // Level 3 (REPORT_ALTERNATES): shifted_key, base_layout_key sub-params.
-    // Parsed for completeness; dropped pending encoder integration. Tracing
-    // surfaces them so a future change can wire them through.
-    if let Some(g) = keycode_group
-        && g.len() > 1
-    {
-        tracing::trace!(
-            keycode,
-            shifted_key = ?g.get(1).copied(),
-            base_layout_key = ?g.get(2).copied(),
-            "kitty CSI u: dropping level-3 alternate sub-params",
-        );
     }
 
     let mod_group = groups.get(1);
@@ -1012,11 +686,6 @@ fn dispatch_kitty_csi_u(params: &[u8], out: &mut Vec<InputEvent>) {
         return;
     };
 
-    // Level 5 (REPORT_ASSOCIATED_TEXT): text codepoints in group-1 sub-params
-    // from index 2 onwards. Decode them into the `text` payload whenever
-    // present. Empty / zero entries are skipped — they're "no associated text"
-    // markers (KIP allows the terminal to emit modifier-only keys with an
-    // empty text sub-param when the encoder has nothing to attribute).
     let text = mod_group.and_then(|g| {
         if g.len() <= 2 {
             return None;
@@ -1029,8 +698,7 @@ fn dispatch_kitty_csi_u(params: &[u8], out: &mut Vec<InputEvent>) {
             if let Some(c) = char::from_u32(cp) {
                 s.push(c);
             } else {
-                // Redaction-safe (ADR-0028): the codepoint is part of typed
-                // text, so log only that one was malformed, never its value.
+                // Typed text: never log the value (ADR-0028).
                 tracing::trace!("kitty CSI u: invalid text codepoint, skipping");
             }
         }
@@ -1048,145 +716,73 @@ fn dispatch_kitty_csi_u(params: &[u8], out: &mut Vec<InputEvent>) {
     }));
 }
 
-/// Parse CSI parameter bytes into nested groups: `;` opens a new top-level
-/// group, `:` adds a sub-parameter to the current group. Empty slots become
-/// `0`, matching xterm convention.
+/// Parse CSI parameter bytes into groups: `:` separates sub-parameters within
+/// a group, `;` (or any other non-digit) starts a new group. Empty slots are 0.
 fn parse_csi_param_groups(body: &[u8]) -> Vec<Vec<u32>> {
-    let mut groups: Vec<Vec<u32>> = Vec::new();
-    let mut current: Vec<u32> = Vec::new();
+    let mut groups = vec![Vec::new()];
     let mut acc: u32 = 0;
-    let mut started = false;
     for &b in body {
-        match b {
-            b'0'..=b'9' => {
-                acc = acc.saturating_mul(10).saturating_add(u32::from(b - b'0'));
-                started = true;
-            }
-            b':' => {
-                current.push(if started { acc } else { 0 });
-                acc = 0;
-                started = false;
-            }
-            b';' => {
-                current.push(if started { acc } else { 0 });
-                acc = 0;
-                started = false;
-                groups.push(std::mem::take(&mut current));
-            }
-            _ => {
-                // Private-marker / intermediate / unrecognised — treat as
-                // group separator for robustness.
-                current.push(if started { acc } else { 0 });
-                acc = 0;
-                started = false;
-                groups.push(std::mem::take(&mut current));
-            }
+        if b.is_ascii_digit() {
+            acc = acc.saturating_mul(10).saturating_add(u32::from(b - b'0'));
+            continue;
+        }
+        if let Some(group) = groups.last_mut() {
+            group.push(acc);
+        }
+        acc = 0;
+        if b != b':' {
+            groups.push(Vec::new());
         }
     }
-    current.push(if started { acc } else { 0 });
-    groups.push(current);
+    if let Some(group) = groups.last_mut() {
+        group.push(acc);
+    }
     groups
 }
 
-/// Kitty modifier bitfield → [`ModSet`].
-///
-/// KIP encodes modifiers as `1 + bitfield` (so an unmodified key reports `1`).
-/// The bitfield is `shift=1, alt=2, ctrl=4, super=8, hyper=16, meta=32,
-/// caps_lock=64, num_lock=128`. libghostty's [`ModSet`] does not expose
-/// hyper / meta as distinct bits. For v0 we collapse them into their nearest
-/// neighbours rather than drop:
-///
-/// * **hyper → `SUPER`.** Hyper is a less-common modifier that few
-///   keyboards expose physically; binding it distinctly is rare and the
-///   conventional X11 mapping treats Hyper and Super interchangeably.
-/// * **meta → `ALT`.** KIP's "meta" mirrors the historical X11 Meta key,
-///   which most modern keymaps fold into Alt/Option.
-///
-/// Caps lock and num lock pass through since libghostty's `Mods` carries them.
-/// If a real use case for distinct hyper / meta bits materialises, we'll
-/// either extend libghostty's `Mods` upstream or add a phux-side
-/// `extra_mods` field; tracked as a follow-up.
-fn kitty_modifier_code(code: u32) -> ModSet {
-    if code == 0 {
-        return ModSet::empty();
-    }
-    let bits = code.saturating_sub(1);
-    let mut mods = ModSet::empty();
-    if bits & 0b0000_0001 != 0 {
-        mods |= ModSet::SHIFT;
-    }
-    if bits & 0b0000_0010 != 0 {
-        mods |= ModSet::ALT;
-    }
-    if bits & 0b0000_0100 != 0 {
-        mods |= ModSet::CTRL;
-    }
-    if bits & 0b0000_1000 != 0 {
-        mods |= ModSet::SUPER;
-    }
-    // Hyper → SUPER (v0 collapse; libghostty's Mods has no distinct bit).
-    if bits & 0b0001_0000 != 0 {
-        mods |= ModSet::SUPER;
-    }
-    // Meta → ALT (v0 collapse; KIP "meta" mirrors the historical Meta key
-    // which most modern keymaps fold into Alt/Option).
-    if bits & 0b0010_0000 != 0 {
-        mods |= ModSet::ALT;
-    }
-    if bits & 0b0100_0000 != 0 {
-        mods |= ModSet::CAPS_LOCK;
-    }
-    if bits & 0b1000_0000 != 0 {
-        mods |= ModSet::NUM_LOCK;
-    }
-    mods
+/// Parse CSI parameters as a flat list, treating every separator alike.
+fn parse_csi_params(body: &[u8]) -> Vec<u32> {
+    parse_csi_param_groups(body).concat()
 }
 
-/// Map a kitty keycode to a [`PhysicalKey`].
-///
-/// For printable Unicode codepoints (`U+0020..=U+007E` and beyond) we map the
-/// ASCII range to its physical key, and otherwise emit `Unidentified` — the
-/// codepoint travels in `unshifted_codepoint` so downstream consumers can
-/// still recover the intent.
-///
-/// Functional keys use the kitty-defined PUA codepoints listed in the
-/// protocol spec. Only the keys libghostty has a matching variant for are
-/// mapped; everything else returns `None`.
+/// Kitty modifier code (`1 + bitfield`) to [`ModSet`]. Bits are shift, alt,
+/// ctrl, super, hyper, meta, caps lock, num lock; `ModSet` has no hyper or
+/// meta, so they fold into SUPER and ALT.
+fn kitty_modifier_code(code: u32) -> ModSet {
+    const BITS: [ModSet; 8] = [
+        ModSet::SHIFT,
+        ModSet::ALT,
+        ModSet::CTRL,
+        ModSet::SUPER,
+        ModSet::SUPER,
+        ModSet::ALT,
+        ModSet::CAPS_LOCK,
+        ModSet::NUM_LOCK,
+    ];
+    let bits = code.saturating_sub(1);
+    BITS.iter()
+        .enumerate()
+        .filter(|(bit, _)| bits & (1 << bit) != 0)
+        .fold(ModSet::empty(), |mods, (_, m)| mods | *m)
+}
+
+/// Map a kitty keycode to a [`PhysicalKey`]: ASCII letters, digits and a few
+/// controls by value, functional keys by their kitty PUA codepoints, other
+/// printable codepoints as `Unidentified` (the codepoint still travels in
+/// `unshifted_codepoint`).
 #[allow(
     clippy::too_many_lines,
     reason = "flat keycode table — the size IS the spec"
 )]
 const fn kitty_keycode_to_physical(cp: u32) -> Option<PhysicalKey> {
     Some(match cp {
-        // Legacy / ASCII region — these are explicitly defined by the
-        // protocol for the keys that have a natural ASCII codepoint.
         27 => PhysicalKey::Escape,
         13 => PhysicalKey::Enter,
         9 => PhysicalKey::Tab,
         127 => PhysicalKey::Backspace,
-        // Printable ASCII letters / digits / space.
-        0x20 => PhysicalKey::Space,
-        c @ 0x61..=0x7A => {
-            // 'a'..='z'
-            #[allow(clippy::cast_possible_truncation, reason = "range-checked u32 → u8")]
-            let upper = (c as u8).to_ascii_uppercase();
-            ascii_letter_to_key_const(upper)
-        }
-        c @ 0x41..=0x5A => {
-            // 'A'..='Z'
-            #[allow(clippy::cast_possible_truncation, reason = "range-checked u32 → u8")]
-            let b = c as u8;
-            ascii_letter_to_key_const(b)
-        }
-        c @ 0x30..=0x39 => {
-            // '0'..='9'
-            #[allow(clippy::cast_possible_truncation, reason = "range-checked u32 → u8")]
-            let b = c as u8;
-            ascii_to_physical(b)
-        }
-        // Functional keys (kitty PUA range). Codepoint constants are taken
-        // verbatim from the kitty keyboard protocol "Functional key
-        // definitions" table.
+        #[allow(clippy::cast_possible_truncation, reason = "range-checked u32 -> u8")]
+        c @ (0x20 | 0x30..=0x39 | 0x41..=0x5A | 0x61..=0x7A) => ascii_to_physical(c as u8),
+        // Functional keys (kitty PUA range).
         57348 => PhysicalKey::Insert,
         57349 => PhysicalKey::Delete,
         57350 => PhysicalKey::ArrowLeft,
@@ -1267,33 +863,18 @@ const fn kitty_keycode_to_physical(cp: u32) -> Option<PhysicalKey> {
         57448 => PhysicalKey::ControlRight,
         57449 => PhysicalKey::AltRight,
         57450 => PhysicalKey::MetaRight,
-        // Other printable Unicode — no specific PhysicalKey, but the
-        // codepoint survives in `unshifted_codepoint`.
         _ if cp >= 0x20 => PhysicalKey::Unidentified,
         _ => return None,
     })
 }
 
-/// Modifier bits in an SGR mouse button code.
+/// Shift/Alt/Ctrl bits (4/8/16) of an xterm mouse button code.
 fn sgr_mouse_mods(raw: u32) -> ModSet {
-    let mut mods = ModSet::empty();
-    if raw & 0x04 != 0 {
-        mods |= ModSet::SHIFT;
-    }
-    if raw & 0x08 != 0 {
-        mods |= ModSet::ALT;
-    }
-    if raw & 0x10 != 0 {
-        mods |= ModSet::CTRL;
-    }
-    mods
+    kitty_modifier_code(1 + ((raw >> 2) & 0b111))
 }
 
-/// Map the low / high button bits of an SGR mouse code to a
-/// [`MouseButton`]. Returns `Button::Unknown` for the "no button"
-/// motion case (`raw & 3 == 3`, motion bit set without a button).
+/// The button an xterm mouse code names; low bits `3` mean no button.
 const fn sgr_mouse_button(raw: u32) -> MouseButton {
-    // Wheel reports: bit 6 set, low bits select axis/direction.
     if raw & 0x40 != 0 {
         return match raw & 0x03 {
             0 => MouseButton::Four,  // wheel up
@@ -1302,7 +883,6 @@ const fn sgr_mouse_button(raw: u32) -> MouseButton {
             _ => MouseButton::Seven, // wheel right
         };
     }
-    // Extra buttons: bit 7 set. xterm's "additional buttons" 8..=11.
     if raw & 0x80 != 0 {
         return match raw & 0x03 {
             0 => MouseButton::Eight,
@@ -1315,166 +895,33 @@ const fn sgr_mouse_button(raw: u32) -> MouseButton {
         0 => MouseButton::Left,
         1 => MouseButton::Middle,
         2 => MouseButton::Right,
-        // Low 2 bits = 3 means "no button" (motion-without-button, or
-        // explicit release in the legacy X10 form). SGR mode disambiguates
-        // press vs. release via the `M`/`m` final byte; in either case
-        // we report Unknown so the server-side encoder reconstructs the
-        // correct PTY bytes from the action + position.
         _ => MouseButton::Unknown,
     }
 }
 
-/// Decode an X10 legacy mouse report (`CSI M Cb Cx Cy`) and push a
-/// [`MouseEvent`].
-///
-/// X10 encodes:
-///
-/// * `Cb = (button | mods | motion) + 0x20` — so `Cb - 32` is the same
-///   bitfield used by SGR mode (see [`sgr_mouse_button`] /
-///   [`sgr_mouse_mods`]).
-/// * `Cx = col + 0x20` — 1-indexed column, +32. `Cx = 0x21` is column 1.
-/// * `Cy = row + 0x20` — 1-indexed row, +32.
-///
-/// Unlike SGR, X10 has no separate release final byte: a release is
-/// reported with the low 2 button bits set to `3` (no button). We map
-/// that to [`MouseAction::Release`] + [`MouseButton::Unknown`], matching
-/// the legacy protocol's lack of per-button release tracking.
-///
-/// Coordinates are converted to 0-indexed `f64` pixels per SPEC §9.2.1
-/// (the server's encoder re-quantises for cell-format protocols). A
-/// `Cx` or `Cy` byte below `0x20` (illegal per the protocol but
-/// observed in malformed streams) saturates at column / row 0.
-fn dispatch_x10_mouse(cb: u8, cx: u8, cy: u8, out: &mut Vec<InputEvent>) {
-    let raw_btn = u32::from(cb.saturating_sub(0x20));
-    let col = u32::from(cx.saturating_sub(0x20));
-    let row = u32::from(cy.saturating_sub(0x20));
-
-    let mods = sgr_mouse_mods(raw_btn);
-    let motion = (raw_btn & 0x20) != 0;
-    // Bit 6 set = wheel report (treated as a press; releases for the
-    // wheel aren't a thing in X10). Bit 7 set = extra buttons (also
-    // press). Low 2 bits = 3 with no wheel / extra bit = release.
-    let is_wheel_or_extra = (raw_btn & 0x40) != 0 || (raw_btn & 0x80) != 0;
-    let action = if motion {
-        MouseAction::Motion
-    } else if !is_wheel_or_extra && (raw_btn & 0x03) == 0x03 {
-        MouseAction::Release
-    } else {
-        MouseAction::Press
-    };
-    let button = sgr_mouse_button(raw_btn);
-
-    // 1-indexed → 0-indexed; saturating to keep "col 1 → 0.0".
-    #[allow(clippy::cast_lossless, reason = "u32 → f64 is exact for our range")]
-    let x = (col.saturating_sub(1)) as f64;
-    #[allow(clippy::cast_lossless, reason = "u32 → f64 is exact for our range")]
-    let y = (row.saturating_sub(1)) as f64;
-
-    out.push(InputEvent::Mouse(MouseEvent {
-        action,
-        button,
-        mods,
-        x,
-        y,
-    }));
-}
-
-/// Decode a urxvt-1015 decimal mouse report (`CSI <btn> ; <col> ; <row> M`)
-/// and push a [`MouseEvent`].
-///
-/// urxvt-1015 uses the same button bitfield as X10 (offset by `0x20`)
-/// but transmits all three values as decimal CSI parameters and always
-/// terminates with `M`. Release is encoded the same way as X10: low 2
-/// button bits = `3`, mapped to [`MouseAction::Release`] +
-/// [`MouseButton::Unknown`].
-///
-/// We accept `btn` values in the X10 wire range (i.e. already offset by
-/// 32). Values below 32 saturate at button code 0 — this matches the
-/// behaviour of [`dispatch_x10_mouse`] for under-`0x20` `Cb` bytes.
-fn dispatch_urxvt1015_mouse(btn: u32, col: u32, row: u32, out: &mut Vec<InputEvent>) {
+/// Decode an X10 / urxvt-1015 mouse report: button code offset by 32, 1-indexed
+/// cell position. Neither has a release final byte; a release is low bits `3`
+/// (no button), except on wheel / extra-button codes, which are presses.
+fn dispatch_legacy_mouse(btn: u32, col: u32, row: u32, out: &mut Vec<InputEvent>) {
     let raw_btn = btn.saturating_sub(0x20);
-
-    let mods = sgr_mouse_mods(raw_btn);
-    let motion = (raw_btn & 0x20) != 0;
-    let is_wheel_or_extra = (raw_btn & 0x40) != 0 || (raw_btn & 0x80) != 0;
-    let action = if motion {
+    let is_wheel_or_extra = (raw_btn & 0xC0) != 0;
+    let action = if (raw_btn & 0x20) != 0 {
         MouseAction::Motion
     } else if !is_wheel_or_extra && (raw_btn & 0x03) == 0x03 {
         MouseAction::Release
     } else {
         MouseAction::Press
     };
-    let button = sgr_mouse_button(raw_btn);
-
-    #[allow(clippy::cast_lossless, reason = "u32 → f64 is exact for our range")]
-    let x = (col.saturating_sub(1)) as f64;
-    #[allow(clippy::cast_lossless, reason = "u32 → f64 is exact for our range")]
-    let y = (row.saturating_sub(1)) as f64;
-
-    out.push(InputEvent::Mouse(MouseEvent {
-        action,
-        button,
-        mods,
-        x,
-        y,
-    }));
+    push_mouse(action, raw_btn, col, row, out);
 }
 
-/// Parse semicolon-separated unsigned integers out of CSI parameter bytes.
-/// Empty / non-digit slots become 0.
-fn parse_csi_params(body: &[u8]) -> Vec<u32> {
-    let mut out = Vec::new();
-    let mut acc: u32 = 0;
-    let mut started = false;
-    for &b in body {
-        match b {
-            b'0'..=b'9' => {
-                acc = acc.saturating_mul(10).saturating_add(u32::from(b - b'0'));
-                started = true;
-            }
-            b';' | b':' => {
-                out.push(if started { acc } else { 0 });
-                acc = 0;
-                started = false;
-            }
-            _ => {
-                // Intermediate / unrecognised byte; treat as separator.
-                out.push(if started { acc } else { 0 });
-                acc = 0;
-                started = false;
-            }
-        }
-    }
-    out.push(if started { acc } else { 0 });
-    out
-}
-
-/// xterm's `modifyCursorKeys` / `modifyFunctionKeys` modifier code →
-/// [`ModSet`]. The code is (1 + sum of bit-weights) where Shift=1, Alt=2,
-/// Ctrl=4, Super=8. Code 1 means no modifier.
+/// xterm modifier code (`1 + shift|alt|ctrl|super`): the kitty encoding's low
+/// four bits.
 fn xterm_modifier_code(code: u32) -> ModSet {
-    if code == 0 {
-        return ModSet::empty();
-    }
-    let bits = code.saturating_sub(1);
-    let mut mods = ModSet::empty();
-    if bits & 0b0001 != 0 {
-        mods |= ModSet::SHIFT;
-    }
-    if bits & 0b0010 != 0 {
-        mods |= ModSet::ALT;
-    }
-    if bits & 0b0100 != 0 {
-        mods |= ModSet::CTRL;
-    }
-    if bits & 0b1000 != 0 {
-        mods |= ModSet::SUPER;
-    }
-    mods
+    kitty_modifier_code(1 + (code.saturating_sub(1) & 0b1111))
 }
 
-/// `CSI <letter>` keycodes. Returns `None` for letters we don't recognise
-/// (e.g. `CSI M` mouse reports, which we skip pending follow-up).
+/// `CSI <letter>` keycodes.
 const fn csi_letter_keycode(final_byte: u8) -> Option<PhysicalKey> {
     Some(match final_byte {
         b'A' => PhysicalKey::ArrowUp,
@@ -1523,15 +970,8 @@ const fn csi_tilde_keycode(n: u32) -> Option<PhysicalKey> {
     })
 }
 
-/// Map ASCII uppercase letter bytes to libghostty's `PhysicalKey` variants.
-const fn ascii_letter_to_key(b: u8) -> Option<PhysicalKey> {
-    if !b.is_ascii_uppercase() {
-        return None;
-    }
-    Some(ascii_letter_to_key_const(b))
-}
-
-const fn ascii_letter_to_key_const(b: u8) -> PhysicalKey {
+/// The [`PhysicalKey`] for an uppercase ASCII letter.
+const fn letter_key(b: u8) -> PhysicalKey {
     match b {
         b'A' => PhysicalKey::A,
         b'B' => PhysicalKey::B,
@@ -1566,91 +1006,127 @@ const fn ascii_letter_to_key_const(b: u8) -> PhysicalKey {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use phux_protocol::ids::ResourceId;
-    use phux_protocol::wire::frame::FrameKind;
-
     use super::*;
 
-    fn key_only(evs: &[InputEvent]) -> Vec<&KeyEvent> {
-        evs.iter()
-            .filter_map(|e| {
-                if let InputEvent::Key(k) = e {
-                    Some(k)
-                } else {
-                    None
-                }
-            })
-            .collect()
+    fn is_ground(p: &StdinParser) -> bool {
+        p.state == State::Ground
     }
 
-    // ---- Plain bytes -----------------------------------------------------
-
-    #[test]
-    fn printable_byte_becomes_key_event_with_text() {
+    /// Feed `bytes` to a fresh parser, which must yield exactly one event and
+    /// end back in the ground state.
+    fn one_event(bytes: &[u8]) -> InputEvent {
         let mut p = StdinParser::new();
-        let evs = p.feed(b"a");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].text.as_deref(), Some("a"));
-        assert_eq!(keys[0].action, KeyAction::Press);
-        assert_eq!(keys[0].key, PhysicalKey::A);
+        let mut evs = p.feed(bytes);
+        assert_eq!(evs.len(), 1, "input {bytes:?} produced {evs:?}");
+        assert!(
+            is_ground(&p),
+            "input {bytes:?} left the parser mid-sequence"
+        );
+        evs.remove(0)
+    }
+
+    fn one_key(bytes: &[u8]) -> KeyEvent {
+        match one_event(bytes) {
+            InputEvent::Key(key) => key,
+            other => panic!("input {bytes:?}: expected a key, got {other:?}"),
+        }
+    }
+
+    fn one_mouse(bytes: &[u8]) -> MouseEvent {
+        match one_event(bytes) {
+            InputEvent::Mouse(mouse) => mouse,
+            other => panic!("input {bytes:?}: expected a mouse event, got {other:?}"),
+        }
+    }
+
+    fn one_paste(bytes: &[u8]) -> PasteEvent {
+        match one_event(bytes) {
+            InputEvent::Paste(paste) => paste,
+            other => panic!("input {bytes:?}: expected a paste, got {other:?}"),
+        }
     }
 
     #[test]
-    fn uppercase_carries_shift_mod() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"A");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert!(keys[0].mods.contains(ModSet::SHIFT));
-        assert!(keys[0].consumed_mods.contains(ModSet::SHIFT));
-        assert_eq!(keys[0].unshifted_codepoint, Some(u32::from('a')));
+    fn key_sequences_decode_to_key_and_mods() {
+        let shift_alt_ctrl = ModSet::SHIFT | ModSet::ALT | ModSet::CTRL;
+        let cases: &[(&[u8], PhysicalKey, ModSet)] = &[
+            (b"a", PhysicalKey::A, ModSet::empty()),
+            (b"A", PhysicalKey::A, ModSet::SHIFT),
+            (b"-", PhysicalKey::Minus, ModSet::empty()),
+            (b"|", PhysicalKey::Backslash, ModSet::SHIFT),
+            (b"\r", PhysicalKey::Enter, ModSet::empty()),
+            (b"\t", PhysicalKey::Tab, ModSet::empty()),
+            (b"\x7f", PhysicalKey::Backspace, ModSet::empty()),
+            (b"\x03", PhysicalKey::C, ModSet::CTRL),
+            (b"\x02", PhysicalKey::B, ModSet::CTRL),
+            // LF is Ctrl-J, not Enter: the encoder would otherwise send CR.
+            (b"\n", PhysicalKey::J, ModSet::CTRL),
+            (b"\x1ba", PhysicalKey::A, ModSet::ALT),
+            (b"\x1b[A", PhysicalKey::ArrowUp, ModSet::empty()),
+            (b"\x1b[1;5A", PhysicalKey::ArrowUp, ModSet::CTRL),
+            (b"\x1b[1;8C", PhysicalKey::ArrowRight, shift_alt_ctrl),
+            (b"\x1b[1;9D", PhysicalKey::ArrowLeft, ModSet::SUPER),
+            (b"\x1b[H", PhysicalKey::Home, ModSet::empty()),
+            (b"\x1b[1~", PhysicalKey::Home, ModSet::empty()),
+            (b"\x1b[5~", PhysicalKey::PageUp, ModSet::empty()),
+            (b"\x1b[5;5~", PhysicalKey::PageUp, ModSet::CTRL),
+            (b"\x1b[15~", PhysicalKey::F5, ModSet::empty()),
+            (b"\x1b[17~", PhysicalKey::F6, ModSet::empty()),
+            (b"\x1b[18~", PhysicalKey::F7, ModSet::empty()),
+            (b"\x1b[19~", PhysicalKey::F8, ModSet::empty()),
+            (b"\x1b[20~", PhysicalKey::F9, ModSet::empty()),
+            (b"\x1b[21~", PhysicalKey::F10, ModSet::empty()),
+            (b"\x1b[23~", PhysicalKey::F11, ModSet::empty()),
+            (b"\x1b[24~", PhysicalKey::F12, ModSet::empty()),
+            // SS3, including `ESC O P`, which must not read as a focus report.
+            (b"\x1bOP", PhysicalKey::F1, ModSet::empty()),
+            (b"\x1bOQ", PhysicalKey::F2, ModSet::empty()),
+            (b"\x1bOR", PhysicalKey::F3, ModSet::empty()),
+            (b"\x1bOS", PhysicalKey::F4, ModSet::empty()),
+            (b"\x1bOA", PhysicalKey::ArrowUp, ModSet::empty()),
+            // Kitty `CSI u`.
+            (b"\x1b[97u", PhysicalKey::A, ModSet::empty()),
+            (b"\x1b[97;5u", PhysicalKey::A, ModSet::CTRL),
+            (b"\x1b[97;8u", PhysicalKey::A, shift_alt_ctrl),
+            (b"\x1b[97;9u", PhysicalKey::A, ModSet::SUPER),
+            (b"\x1b[97;17u", PhysicalKey::A, ModSet::SUPER),
+            (b"\x1b[97;33u", PhysicalKey::A, ModSet::ALT),
+            (b"\x1b[97;65u", PhysicalKey::A, ModSet::CAPS_LOCK),
+            (b"\x1b[97;129u", PhysicalKey::A, ModSet::NUM_LOCK),
+            (b"\x1b[97:65:97;2u", PhysicalKey::A, ModSet::SHIFT),
+            (b"\x1b[57368u", PhysicalKey::F5, ModSet::empty()),
+            (b"\x1b[57352u", PhysicalKey::ArrowUp, ModSet::empty()),
+            (b"\x1b[27u", PhysicalKey::Escape, ModSet::empty()),
+            (b"\x1b[13u", PhysicalKey::Enter, ModSet::empty()),
+        ];
+        for &(input, key, mods) in cases {
+            let ev = one_key(input);
+            assert_eq!((ev.key, ev.mods), (key, mods), "input {input:?}");
+        }
     }
 
-    // phux-gxy regression: punctuation glyphs must map to the same
-    // physical key the chord parser emits, or `default.toml` chords
-    // like `"|"` (split-pane) never match.
     #[test]
-    fn pipe_maps_to_backslash_with_shift() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"|");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::Backslash);
-        assert!(keys[0].mods.contains(ModSet::SHIFT));
+    fn printable_keys_carry_text_and_consumed_shift() {
+        let lower = one_key(b"a");
+        assert_eq!(lower.text.as_deref(), Some("a"));
+        assert_eq!(lower.action, KeyAction::Press);
+        let upper = one_key(b"A");
+        assert!(upper.consumed_mods.contains(ModSet::SHIFT));
+        assert_eq!(upper.unshifted_codepoint, Some(u32::from('a')));
+        assert_eq!(one_key(b"\x1ba").text, None, "Alt-letter carries no text");
     }
 
+    /// Punctuation must decode to the same (key, shift) the chord parser
+    /// builds for the glyph, or default binds like `"|"` never fire.
     #[test]
-    fn minus_maps_to_minus_unshifted() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"-");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::Minus);
-        assert!(!keys[0].mods.contains(ModSet::SHIFT));
-    }
-
-    #[test]
-    fn punctuation_matches_chord_parser_for_default_split_binds() {
-        // The default config uses `"|"` and `"-"` as split chords; the
-        // resolver builds these via parse_chord. The runtime parser
-        // must emit the same (key, mods) shape or the chord never fires.
+    fn punctuation_matches_chord_parser() {
         for &glyph in b"|-`=[]\\;',./~!@#$%^&*()_+{}:\"<>?" {
-            let mut p = StdinParser::new();
-            let evs = p.feed(&[glyph]);
-            let keys = key_only(&evs);
-            assert_eq!(keys.len(), 1, "no key for glyph {}", char::from(glyph));
-            let parser_key = (keys[0].key, keys[0].mods.contains(ModSet::SHIFT));
-            let chord_key = phux_config::keybind::parse_chord(&char::from(glyph).to_string())
-                .expect("chord parse")
-                .modifiers
-                .contains(ModSet::SHIFT);
-            let chord_pk = phux_config::keybind::parse_chord(&char::from(glyph).to_string())
-                .expect("chord parse")
-                .key;
+            let ev = one_key(&[glyph]);
+            let chord = phux_config::keybind::parse_chord(&char::from(glyph).to_string())
+                .expect("chord parse");
             assert_eq!(
-                parser_key,
-                (chord_pk, chord_key),
+                (ev.key, ev.mods.contains(ModSet::SHIFT)),
+                (chord.key, chord.modifiers.contains(ModSet::SHIFT)),
                 "mismatch on glyph {}",
                 char::from(glyph)
             );
@@ -1658,1019 +1134,202 @@ mod tests {
     }
 
     #[test]
-    fn enter_byte_becomes_enter_key() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\r");
-        let keys = key_only(&evs);
-        assert_eq!(keys[0].key, PhysicalKey::Enter);
+    fn utf8_decodes_and_recovers_from_a_bad_continuation() {
+        let e_acute = one_key(&[0xC3, 0xA9]);
+        assert_eq!(e_acute.text.as_deref(), Some("é"));
+        assert_eq!(e_acute.unshifted_codepoint, Some(0x00E9));
+        assert_eq!(one_key("😀".as_bytes()).text.as_deref(), Some("😀"));
+        // A lead byte followed by ASCII drops the lead and keeps the ASCII.
+        assert_eq!(one_key(&[0xC3, b'a']).text.as_deref(), Some("a"));
     }
 
     #[test]
-    fn ctrl_c_byte_becomes_ctrl_modified_c() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(&[0x03]);
-        let keys = key_only(&evs);
-        assert_eq!(keys[0].key, PhysicalKey::C);
-        assert!(keys[0].mods.contains(ModSet::CTRL));
-    }
-
-    #[test]
-    fn lf_byte_becomes_ctrl_j_not_enter() {
-        // 0x0A (Ctrl+J) must not be laundered into Enter; the server encoder
-        // re-derives bytes from the KeyEvent, so an Enter event would emit CR
-        // and swallow the line feed.
-        let mut p = StdinParser::new();
-        let evs = p.feed(&[0x0A]);
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::J);
-        assert_eq!(keys[0].mods, ModSet::CTRL);
-    }
-
-    // ---- UTF-8 ----------------------------------------------------------
-
-    #[test]
-    fn two_byte_utf8_becomes_one_key_event() {
-        let mut p = StdinParser::new();
-        // U+00E9 LATIN SMALL LETTER E WITH ACUTE → 0xC3 0xA9
-        let evs = p.feed(&[0xC3, 0xA9]);
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].text.as_deref(), Some("é"));
-        assert_eq!(keys[0].unshifted_codepoint, Some(0x00E9));
-    }
-
-    #[test]
-    fn three_byte_utf8_across_two_feeds() {
-        let mut p = StdinParser::new();
-        // U+1F600 GRINNING FACE → 0xF0 0x9F 0x98 0x80
-        let first = p.feed(&[0xF0, 0x9F]);
-        assert!(first.is_empty());
-        let second = p.feed(&[0x98, 0x80]);
-        let keys = key_only(&second);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].text.as_deref(), Some("😀"));
-    }
-
-    #[test]
-    fn invalid_utf8_continuation_recovers() {
-        let mut p = StdinParser::new();
-        // Lead 0xC3 expects one continuation; give it 'a' instead.
-        let evs = p.feed(&[0xC3, b'a']);
-        // We expect `a` to come through after the bad sequence is dropped.
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].text.as_deref(), Some("a"));
-    }
-
-    // ---- Configurable detach key input ---------------------------------
-
-    #[test]
-    fn ctrl_b_is_regular_key_event_for_keybinding_resolver() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(&[0x02, b'd']);
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0].key, PhysicalKey::B);
-        assert_eq!(keys[0].mods, ModSet::CTRL);
-        assert_eq!(keys[1].text.as_deref(), Some("d"));
-    }
-
-    // ---- Bare ESC / Alt-chord (timing) ----------------------------------
-
-    #[test]
-    fn esc_byte_alone_does_not_emit_immediately() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(&[0x1B]);
-        assert!(evs.is_empty(), "bare ESC must wait for flush");
-        assert!(p.has_pending());
-    }
-
-    #[test]
-    fn esc_byte_then_flush_emits_escape_key() {
-        let mut p = StdinParser::new();
-        let _ = p.feed(&[0x1B]);
-        let flushed = p.flush();
-        let keys = key_only(&flushed);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::Escape);
-        assert!(!p.has_pending());
-    }
-
-    #[test]
-    fn esc_then_char_in_same_feed_is_alt_chord() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(&[0x1B, b'a']);
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert!(keys[0].mods.contains(ModSet::ALT));
-    }
-
-    #[test]
-    fn esc_then_char_across_two_feeds_is_alt_chord() {
-        let mut p = StdinParser::new();
-        let first = p.feed(&[0x1B]);
-        assert!(first.is_empty());
-        let second = p.feed(b"x");
-        let keys = key_only(&second);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::X);
-        assert!(keys[0].mods.contains(ModSet::ALT));
-    }
-
-    #[test]
-    fn double_esc_emits_escape_then_pending() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(&[0x1B, 0x1B]);
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::Escape);
-        assert!(p.has_pending());
-    }
-
-    // ---- CSI arrow keys -------------------------------------------------
-
-    #[test]
-    fn csi_arrow_up_unmod() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1b[A");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::ArrowUp);
-        assert!(keys[0].mods.is_empty());
-    }
-
-    #[test]
-    fn csi_ctrl_arrow_up() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1b[1;5A");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::ArrowUp);
-        assert!(keys[0].mods.contains(ModSet::CTRL));
-        assert!(!keys[0].mods.contains(ModSet::SHIFT));
-    }
-
-    #[test]
-    fn csi_shift_alt_ctrl_arrow_right() {
-        let mut p = StdinParser::new();
-        // mod = 1 + (Shift=1 + Alt=2 + Ctrl=4) = 8
-        let evs = p.feed(b"\x1b[1;8C");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::ArrowRight);
-        assert!(keys[0].mods.contains(ModSet::SHIFT));
-        assert!(keys[0].mods.contains(ModSet::ALT));
-        assert!(keys[0].mods.contains(ModSet::CTRL));
-    }
-
-    // ---- CSI tilde-form keys --------------------------------------------
-
-    #[test]
-    fn csi_home_end_via_letter_and_tilde() {
-        let mut p = StdinParser::new();
-        let letter = p.feed(b"\x1b[H");
-        assert_eq!(key_only(&letter)[0].key, PhysicalKey::Home);
-        let tilde = p.feed(b"\x1b[1~");
-        assert_eq!(key_only(&tilde)[0].key, PhysicalKey::Home);
-    }
-
-    #[test]
-    fn csi_pageup_unmod_and_ctrl() {
-        let mut p = StdinParser::new();
-        let unmod = p.feed(b"\x1b[5~");
-        assert_eq!(key_only(&unmod)[0].key, PhysicalKey::PageUp);
-        let ctrl = p.feed(b"\x1b[5;5~");
-        let keys = key_only(&ctrl);
-        assert_eq!(keys[0].key, PhysicalKey::PageUp);
-        assert!(keys[0].mods.contains(ModSet::CTRL));
-    }
-
-    #[test]
-    fn csi_f5_through_f12() {
-        let cases = [
-            (b"\x1b[15~".as_slice(), PhysicalKey::F5),
-            (b"\x1b[17~", PhysicalKey::F6),
-            (b"\x1b[18~", PhysicalKey::F7),
-            (b"\x1b[19~", PhysicalKey::F8),
-            (b"\x1b[20~", PhysicalKey::F9),
-            (b"\x1b[21~", PhysicalKey::F10),
-            (b"\x1b[23~", PhysicalKey::F11),
-            (b"\x1b[24~", PhysicalKey::F12),
+    fn kitty_event_types_and_associated_text() {
+        let actions: &[(&[u8], KeyAction)] = &[
+            (b"\x1b[97;1:1u", KeyAction::Press),
+            (b"\x1b[97;1:2u", KeyAction::Repeat),
+            (b"\x1b[97;1:3u", KeyAction::Release),
         ];
-        for (input, expected) in cases {
-            let mut p = StdinParser::new();
-            let evs = p.feed(input);
-            let keys = key_only(&evs);
-            assert_eq!(keys.len(), 1, "input {input:?} produced {evs:?}");
-            assert_eq!(keys[0].key, expected, "input {input:?}");
+        for &(input, action) in actions {
+            assert_eq!(one_key(input).action, action, "input {input:?}");
         }
+        let texts: &[(&[u8], Option<&str>)] = &[
+            (b"\x1b[97;1:1:97u", Some("a")),
+            (b"\x1b[97;1:1:97:769u", Some("a\u{0301}")),
+            (b"\x1b[97;1:1:0u", None),
+            (b"\x1b[57364;1:1:120u", Some("x")),
+        ];
+        for &(input, text) in texts {
+            assert_eq!(one_key(input).text.as_deref(), text, "input {input:?}");
+        }
+        assert_eq!(one_key(b"\x1b[97u").unshifted_codepoint, Some(97));
     }
 
-    // ---- SS3 ------------------------------------------------------------
-
     #[test]
-    fn ss3_f1_through_f4() {
-        let cases = [
-            (b"\x1bOP".as_slice(), PhysicalKey::F1),
-            (b"\x1bOQ", PhysicalKey::F2),
-            (b"\x1bOR", PhysicalKey::F3),
-            (b"\x1bOS", PhysicalKey::F4),
+    fn mouse_reports_decode() {
+        use MouseAction::{Motion, Press, Release};
+        use MouseButton::{Five, Four, Left, Middle, Right, Unknown};
+        let shift_alt_ctrl = ModSet::SHIFT | ModSet::ALT | ModSet::CTRL;
+        #[allow(clippy::type_complexity, reason = "test table")]
+        let cases: &[(&[u8], MouseAction, MouseButton, ModSet, f64, f64)] = &[
+            // SGR: 1-indexed cells become 0-indexed coordinates.
+            (b"\x1b[<0;5;3M", Press, Left, ModSet::empty(), 4.0, 2.0),
+            (b"\x1b[<0;5;3m", Release, Left, ModSet::empty(), 4.0, 2.0),
+            (b"\x1b[<2;1;1M", Press, Right, ModSet::empty(), 0.0, 0.0),
+            (b"\x1b[<1;1;1M", Press, Middle, ModSet::empty(), 0.0, 0.0),
+            (b"\x1b[<32;10;5M", Motion, Left, ModSet::empty(), 9.0, 4.0),
+            (b"\x1b[<35;1;1M", Motion, Unknown, ModSet::empty(), 0.0, 0.0),
+            (b"\x1b[<64;1;1M", Press, Four, ModSet::empty(), 0.0, 0.0),
+            (b"\x1b[<65;1;1M", Press, Five, ModSet::empty(), 0.0, 0.0),
+            (b"\x1b[<28;1;1M", Press, Left, shift_alt_ctrl, 0.0, 0.0),
+            // X10 raw bytes: every value offset by 32; a release names no button.
+            (
+                b"\x1b[M\x20\x21\x21",
+                Press,
+                Left,
+                ModSet::empty(),
+                0.0,
+                0.0,
+            ),
+            (
+                b"\x1b[M\x23\x25\x23",
+                Release,
+                Unknown,
+                ModSet::empty(),
+                4.0,
+                2.0,
+            ),
+            (b"\x1b[M\x24\x21\x21", Press, Left, ModSet::SHIFT, 0.0, 0.0),
+            // A high payload byte is data, not a new sequence.
+            (
+                b"\x1b[M\x20\x21\xff",
+                Press,
+                Left,
+                ModSet::empty(),
+                0.0,
+                222.0,
+            ),
+            // urxvt-1015: decimal params, button offset by 32.
+            (b"\x1b[32;5;3M", Press, Left, ModSet::empty(), 4.0, 2.0),
+            (b"\x1b[35;5;3M", Release, Unknown, ModSet::empty(), 4.0, 2.0),
+            (b"\x1b[96;1;1M", Press, Four, ModSet::empty(), 0.0, 0.0),
         ];
-        for (input, expected) in cases {
-            let mut p = StdinParser::new();
-            let evs = p.feed(input);
-            let keys = key_only(&evs);
-            assert_eq!(keys.len(), 1, "input {input:?}");
-            assert_eq!(keys[0].key, expected, "input {input:?}");
+        for &(input, action, button, mods, x, y) in cases {
+            let ev = one_mouse(input);
+            assert_eq!(
+                (ev.action, ev.button, ev.mods),
+                (action, button, mods),
+                "{input:?}"
+            );
+            assert!((ev.x - x).abs() < f64::EPSILON && (ev.y - y).abs() < f64::EPSILON);
         }
     }
 
     #[test]
-    fn ss3_arrow_keys_in_application_mode() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1bOA");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::ArrowUp);
-    }
-
-    // ---- Partial CSI across reads ---------------------------------------
-
-    #[test]
-    fn csi_split_across_three_feeds() {
-        let mut p = StdinParser::new();
-        let a = p.feed(b"\x1b");
-        assert!(a.is_empty());
-        let b = p.feed(b"[1;");
-        assert!(b.is_empty());
-        let c = p.feed(b"5A");
-        let keys = key_only(&c);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::ArrowUp);
-        assert!(keys[0].mods.contains(ModSet::CTRL));
+    fn focus_reports_decode() {
+        for (input, expected) in [
+            (b"\x1b[I", FocusEvent::Gained),
+            (b"\x1b[O", FocusEvent::Lost),
+        ] {
+            assert!(matches!(one_event(input), InputEvent::Focus(f) if f == expected));
+        }
     }
 
     #[test]
-    fn partial_csi_keeps_pending_flag() {
-        let mut p = StdinParser::new();
-        let _ = p.feed(b"\x1b[1;");
-        assert!(p.has_pending());
-        // flush() must NOT consume a half-finished CSI.
-        let flushed = p.flush();
-        assert!(flushed.is_empty());
-        assert!(p.has_pending());
-        let final_evs = p.feed(b"5A");
-        assert_eq!(key_only(&final_evs).len(), 1);
+    fn bracketed_paste_keeps_its_payload_verbatim() {
+        for payload in [
+            b"hello world".as_slice(),
+            b"red\x1b[31mthing\x1b[0mend",
+            b"a\x1bb",
+        ] {
+            let mut framed = b"\x1b[200~".to_vec();
+            framed.extend_from_slice(payload);
+            framed.extend_from_slice(b"\x1b[201~");
+            let paste = one_paste(&framed);
+            assert_eq!(paste.data, payload);
+            assert_eq!(paste.trust, PasteTrust::Trusted);
+        }
     }
 
-    /// phux-l96p.4. The idle timer exists to disambiguate a lone ESC, and
-    /// `flush` only ever emits from that one state — so `esc_pending` must be
-    /// true for a bare ESC and false for every other in-progress sequence,
-    /// even the ones `has_pending` still reports. Arming on the broader
-    /// predicate cost a guaranteed-useless 10ms wake-up whenever a multi-byte
-    /// key landed split across a read boundary.
+    /// A read boundary can fall anywhere; splitting must not change the events.
     #[test]
-    fn only_a_lone_esc_arms_the_idle_flush() {
+    fn every_read_split_decodes_like_one_read() {
+        let inputs: &[&[u8]] = &[
+            b"\x1b[1;5A",
+            b"\x1b[<0;5;3M",
+            b"\x1b[M\x20\x21\x21",
+            b"\x1b[97;1:1:97:769u",
+            "😀".as_bytes(),
+            b"\x1b[200~if true; then\r\n\tprintf 'hi'\n\nfi\n\x1b[201~",
+        ];
+        for input in inputs {
+            let whole = StdinParser::new().feed(input);
+            for split in 1..input.len() {
+                let mut p = StdinParser::new();
+                let mut evs = p.feed(&input[..split]);
+                evs.extend(p.feed(&input[split..]));
+                assert_eq!(evs, whole, "input {input:?} split at {split}");
+                assert!(is_ground(&p));
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_or_unknown_sequences_drop_and_recover() {
+        // An over-long CSI is abandoned; the parser must not stay stuck in it.
+        let mut overlong = b"\x1b[".to_vec();
+        overlong.extend(std::iter::repeat_n(b'1', 300));
         let mut p = StdinParser::new();
-        assert!(!p.esc_pending(), "ground state waits for nothing");
+        p.feed(&overlong);
+        assert!(is_ground(&p));
 
-        let _ = p.feed(b"\x1b");
-        assert!(
-            p.esc_pending(),
-            "a bare ESC is exactly what the timer is for"
-        );
+        for input in [
+            b"\x1b[1;2z".as_slice(),
+            b"\x1b[u",
+            b"\x1b]0;title\x07",
+            b"\x1bPdata\x1b\\",
+        ] {
+            let mut p = StdinParser::new();
+            assert!(p.feed(input).is_empty(), "input {input:?}");
+            assert!(is_ground(&p), "input {input:?}");
+        }
+    }
 
-        let _ = p.feed(b"[1;");
-        assert!(p.has_pending(), "the CSI is still in progress");
-        assert!(
-            !p.esc_pending(),
-            "a partial CSI cannot flush, so it must not arm the timer",
-        );
-
-        let evs = p.feed(b"5A");
-        assert_eq!(key_only(&evs).len(), 1, "the CSI completes on its own");
+    #[test]
+    fn a_lone_esc_waits_for_flush_and_only_it_arms_the_timer() {
+        let mut p = StdinParser::new();
         assert!(!p.esc_pending());
+        assert!(p.feed(b"\x1b").is_empty(), "bare ESC must wait for flush");
+        assert!(p.esc_pending());
+        let flushed = p.flush();
+        assert!(matches!(&flushed[..], [InputEvent::Key(k)] if k.key == PhysicalKey::Escape));
+        assert!(is_ground(&p));
+
+        // ESC ESC: the first is a complete Escape, the second still waits.
+        let evs = p.feed(b"\x1b\x1b");
+        assert!(matches!(&evs[..], [InputEvent::Key(k)] if k.key == PhysicalKey::Escape));
+        assert!(p.esc_pending());
+        // ... and a following byte turns it into an Alt chord.
+        let evs = p.feed(b"x");
+        assert!(matches!(&evs[..], [InputEvent::Key(k)] if k.mods == ModSet::ALT));
+
+        // A partial CSI neither arms the timer nor yields to a flush.
+        assert!(p.feed(b"\x1b[1;").is_empty());
+        assert!(!p.esc_pending());
+        assert!(p.flush().is_empty());
+        assert_eq!(p.feed(b"5A").len(), 1);
     }
 
-    /// The attach loop feeds into one retained buffer. `feed_into` must append
-    /// to what is already there rather than replace it, or a batch would lose
-    /// every event decoded before the last read.
+    /// The attach loop feeds one retained buffer: `feed_into` and `flush_into`
+    /// must append, or a batch loses every event before the last read.
     #[test]
-    fn feed_into_appends_to_the_callers_buffer() {
+    fn feed_into_and_flush_into_append() {
         let mut p = StdinParser::new();
         let mut out = Vec::new();
         p.feed_into(b"ab", &mut out);
-        p.feed_into(b"c", &mut out);
-        assert_eq!(key_only(&out).len(), 3);
-
-        // ... and `flush_into` joins the same buffer.
-        p.feed_into(b"\x1b", &mut out);
-        assert!(p.esc_pending());
+        p.feed_into(b"c\x1b", &mut out);
         p.flush_into(&mut out);
-        let keys = key_only(&out);
-        assert_eq!(keys.len(), 4);
-        assert_eq!(keys[3].key, PhysicalKey::Escape);
-        assert!(!p.has_pending());
-    }
-
-    // ---- Misc -----------------------------------------------------------
-
-    #[test]
-    fn over_long_csi_aborts_cleanly() {
-        let mut p = StdinParser::new();
-        let mut s = Vec::from(b"\x1b[".as_slice());
-        s.extend(std::iter::repeat_n(b'1', 300));
-        s.push(b'A');
-        let _ = p.feed(&s);
-        assert!(!p.has_pending(), "parser must recover after overflow");
-    }
-
-    #[test]
-    fn unknown_csi_final_is_dropped_silently() {
-        let mut p = StdinParser::new();
-        // Pick a CSI sequence with a final byte we genuinely don't
-        // recognise (lowercase `z`) — the original `CSI M ...` form
-        // is now consumed by the X10 mouse parser. The contract here
-        // is just that the parser doesn't panic and returns to the
-        // ground state cleanly.
-        let _ = p.feed(b"\x1b[1;2z");
-        assert!(!p.has_pending());
-    }
-
-    #[test]
-    fn alt_letter_strips_text() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1ba");
-        let keys = key_only(&evs);
-        assert_eq!(keys[0].text, None);
-        assert!(keys[0].mods.contains(ModSet::ALT));
-    }
-
-    #[test]
-    fn into_frame_carries_terminal_id() {
-        let key = KeyEvent {
-            action: KeyAction::Press,
-            key: PhysicalKey::A,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: Some("a".to_owned()),
-            unshifted_codepoint: Some(u32::from('a')),
-        };
-        let frame = InputEvent::Key(key).into_frame(ResourceId::local(42));
-        match frame {
-            FrameKind::InputKey { terminal_id, .. } => {
-                assert_eq!(terminal_id, ResourceId::local(42));
-            }
-            other => panic!("expected InputKey, got {other:?}"),
-        }
-    }
-
-    // ---- Focus reports (DEC mode 1004) ---------------------------------
-
-    fn focus_only(evs: &[InputEvent]) -> Vec<FocusEvent> {
-        evs.iter()
-            .filter_map(|e| {
-                if let InputEvent::Focus(f) = e {
-                    Some(*f)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn csi_capital_i_is_focus_gained() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1b[I");
-        let f = focus_only(&evs);
-        assert_eq!(f, vec![FocusEvent::Gained]);
-    }
-
-    #[test]
-    fn csi_capital_o_is_focus_lost() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1b[O");
-        let f = focus_only(&evs);
-        assert_eq!(f, vec![FocusEvent::Lost]);
-    }
-
-    #[test]
-    fn focus_event_into_frame_carries_terminal_id() {
-        let frame = InputEvent::Focus(FocusEvent::Gained).into_frame(ResourceId::new(7));
-        match frame {
-            FrameKind::InputFocus { terminal_id, event } => {
-                assert_eq!(terminal_id, ResourceId::new(7));
-                assert_eq!(event, FocusEvent::Gained);
-            }
-            other => panic!("expected InputFocus, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ss3_capital_o_still_routes_via_ss3_not_focus() {
-        // ESC O P is SS3 F1, not focus. Ensures the new focus dispatch
-        // didn't accidentally consume the SS3 path.
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1bOP");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::F1);
-        assert!(focus_only(&evs).is_empty());
-    }
-
-    // ---- SGR mouse reports (DEC mode 1006) ------------------------------
-
-    fn mouse_only(evs: &[InputEvent]) -> Vec<MouseEvent> {
-        evs.iter()
-            .filter_map(|e| {
-                if let InputEvent::Mouse(m) = e {
-                    Some(*m)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn sgr_left_press_and_release() {
-        let mut p = StdinParser::new();
-        let press = p.feed(b"\x1b[<0;5;3M");
-        let m = mouse_only(&press);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Press);
-        assert_eq!(m[0].button, MouseButton::Left);
-        assert!(m[0].mods.is_empty());
-        // 1-indexed → 0-indexed: col 5 → 4.0, row 3 → 2.0.
-        assert!((m[0].x - 4.0).abs() < f64::EPSILON);
-        assert!((m[0].y - 2.0).abs() < f64::EPSILON);
-
-        let release = p.feed(b"\x1b[<0;5;3m");
-        let m2 = mouse_only(&release);
-        assert_eq!(m2.len(), 1);
-        assert_eq!(m2[0].action, MouseAction::Release);
-        assert_eq!(m2[0].button, MouseButton::Left);
-    }
-
-    #[test]
-    fn sgr_right_middle_buttons() {
-        let mut p = StdinParser::new();
-        let right = p.feed(b"\x1b[<2;1;1M");
-        assert_eq!(mouse_only(&right)[0].button, MouseButton::Right);
-        let middle = p.feed(b"\x1b[<1;1;1M");
-        assert_eq!(mouse_only(&middle)[0].button, MouseButton::Middle);
-    }
-
-    #[test]
-    fn sgr_motion_with_button() {
-        let mut p = StdinParser::new();
-        // bit 5 (0x20) is motion. 0x20 | 0 = 32 → Left button drag.
-        let evs = p.feed(b"\x1b[<32;10;5M");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Motion);
-        assert_eq!(m[0].button, MouseButton::Left);
-    }
-
-    #[test]
-    fn sgr_motion_no_button() {
-        let mut p = StdinParser::new();
-        // 0x20 (motion) | 0x03 (no-button) = 35.
-        let evs = p.feed(b"\x1b[<35;1;1M");
-        let m = mouse_only(&evs);
-        assert_eq!(m[0].action, MouseAction::Motion);
-        assert_eq!(m[0].button, MouseButton::Unknown);
-    }
-
-    #[test]
-    fn sgr_wheel_up_down() {
-        let mut p = StdinParser::new();
-        // 64 = wheel up, 65 = wheel down.
-        let up = p.feed(b"\x1b[<64;1;1M");
-        assert_eq!(mouse_only(&up)[0].button, MouseButton::Four);
-        let down = p.feed(b"\x1b[<65;1;1M");
-        assert_eq!(mouse_only(&down)[0].button, MouseButton::Five);
-    }
-
-    #[test]
-    fn sgr_with_modifiers() {
-        let mut p = StdinParser::new();
-        // 0 (Left) | 4 (Shift) | 8 (Alt) | 16 (Ctrl) = 28.
-        let evs = p.feed(b"\x1b[<28;1;1M");
-        let m = mouse_only(&evs);
-        assert_eq!(m[0].button, MouseButton::Left);
-        assert!(m[0].mods.contains(ModSet::SHIFT));
-        assert!(m[0].mods.contains(ModSet::ALT));
-        assert!(m[0].mods.contains(ModSet::CTRL));
-    }
-
-    #[test]
-    fn sgr_mouse_split_across_feeds() {
-        let mut parser = StdinParser::new();
-        let first = parser.feed(b"\x1b[<0");
-        assert!(mouse_only(&first).is_empty());
-        let middle = parser.feed(b";5;3");
-        assert!(mouse_only(&middle).is_empty());
-        let last = parser.feed(b"M");
-        let evs = mouse_only(&last);
-        assert_eq!(evs.len(), 1);
-        assert_eq!(evs[0].action, MouseAction::Press);
-    }
-
-    #[test]
-    fn sgr_mouse_into_frame_carries_terminal_id() {
-        let ev = MouseEvent {
-            action: MouseAction::Press,
-            button: MouseButton::Left,
-            mods: ModSet::empty(),
-            x: 1.0,
-            y: 2.0,
-        };
-        let frame = InputEvent::Mouse(ev).into_frame(ResourceId::new(99));
-        match frame {
-            FrameKind::InputMouse { terminal_id, .. } => {
-                assert_eq!(terminal_id, ResourceId::new(99));
-            }
-            other => panic!("expected InputMouse, got {other:?}"),
-        }
-    }
-
-    // ---- Legacy X10 mouse (CSI M Cb Cx Cy) -----------------------------
-
-    #[test]
-    fn x10_left_press() {
-        let mut p = StdinParser::new();
-        // Cb = 0 + 32 = 0x20 (Left press, no mods, no motion).
-        // Cx = 1 + 32 = 0x21 (column 1).
-        // Cy = 1 + 32 = 0x21 (row 1).
-        let evs = p.feed(b"\x1b[M\x20\x21\x21");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Press);
-        assert_eq!(m[0].button, MouseButton::Left);
-        assert!(m[0].mods.is_empty());
-        assert!((m[0].x - 0.0).abs() < f64::EPSILON);
-        assert!((m[0].y - 0.0).abs() < f64::EPSILON);
-        assert!(!p.has_pending());
-    }
-
-    #[test]
-    fn x10_release_maps_to_release_action() {
-        let mut p = StdinParser::new();
-        // Cb = 3 + 32 = 0x23 (no-button = release in X10).
-        // Cx, Cy = col 5, row 3 → bytes 0x25, 0x23.
-        let evs = p.feed(b"\x1b[M\x23\x25\x23");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Release);
-        // X10 release does not identify which button was released.
-        assert_eq!(m[0].button, MouseButton::Unknown);
-        // col 5 → 4.0, row 3 → 2.0.
-        assert!((m[0].x - 4.0).abs() < f64::EPSILON);
-        assert!((m[0].y - 2.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn x10_left_press_with_shift_modifier() {
-        let mut p = StdinParser::new();
-        // Cb = (0 | 4) + 32 = 0x24 (Left press, Shift held).
-        let evs = p.feed(b"\x1b[M\x24\x21\x21");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Press);
-        assert_eq!(m[0].button, MouseButton::Left);
-        assert!(m[0].mods.contains(ModSet::SHIFT));
-        assert!(!m[0].mods.contains(ModSet::ALT));
-        assert!(!m[0].mods.contains(ModSet::CTRL));
-    }
-
-    #[test]
-    fn x10_payload_bytes_with_high_bit_do_not_break_parser() {
-        // X10 payload bytes can be anything in `0x20..` — in particular
-        // they can exceed printable ASCII for large terminals. The
-        // dedicated consumer state must not interpret them as new
-        // sequences (e.g. as a stray ESC). Use a row byte of 0xFF and
-        // verify the parser returns cleanly to ground.
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1b[M\x20\x21\xff");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert!(!p.has_pending());
-    }
-
-    #[test]
-    fn x10_mouse_split_across_feeds() {
-        let mut parser = StdinParser::new();
-        // Feed the CSI M intro and the three payload bytes one at a time.
-        assert!(mouse_only(&parser.feed(b"\x1b[")).is_empty());
-        assert!(mouse_only(&parser.feed(b"M")).is_empty());
-        assert!(parser.has_pending());
-        assert!(mouse_only(&parser.feed(b"\x20")).is_empty());
-        assert!(mouse_only(&parser.feed(b"\x21")).is_empty());
-        let last = parser.feed(b"\x21");
-        let m = mouse_only(&last);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Press);
-        assert_eq!(m[0].button, MouseButton::Left);
-        assert!(!parser.has_pending());
-    }
-
-    // ---- urxvt-1015 decimal mouse (CSI <btn>;<col>;<row> M) ------------
-
-    #[test]
-    fn urxvt1015_left_press() {
-        let mut p = StdinParser::new();
-        // urxvt-1015 button is the X10 byte value: Left press = 0 + 32 = 32.
-        let evs = p.feed(b"\x1b[32;5;3M");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Press);
-        assert_eq!(m[0].button, MouseButton::Left);
-        assert!(m[0].mods.is_empty());
-        assert!((m[0].x - 4.0).abs() < f64::EPSILON);
-        assert!((m[0].y - 2.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn urxvt1015_release() {
-        let mut p = StdinParser::new();
-        // Release: low 2 bits = 3, so btn = 3 + 32 = 35.
-        let evs = p.feed(b"\x1b[35;5;3M");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Release);
-        assert_eq!(m[0].button, MouseButton::Unknown);
-    }
-
-    #[test]
-    fn urxvt1015_wheel_up_is_a_press() {
-        let mut p = StdinParser::new();
-        // Wheel up: bit 6 set, low bits 0. raw = 64, wire = 64 + 32 = 96.
-        let evs = p.feed(b"\x1b[96;1;1M");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Press);
-        assert_eq!(m[0].button, MouseButton::Four);
-    }
-
-    #[test]
-    fn urxvt1015_does_not_collide_with_sgr() {
-        // SGR carries a leading `<`. The urxvt-1015 branch must NOT
-        // dispatch when the marker is present.
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1b[<0;5;3M");
-        let m = mouse_only(&evs);
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].action, MouseAction::Press);
-        assert_eq!(m[0].button, MouseButton::Left);
-        // The body of this test is identical to sgr_left_press_and_release;
-        // its purpose is to assert the dispatch order — adding the
-        // urxvt-1015 branch must not steal SGR reports.
-    }
-
-    // ---- Bracketed paste (DEC mode 2004) -------------------------------
-
-    fn paste_only(evs: &[InputEvent]) -> Vec<PasteEvent> {
-        evs.iter()
-            .filter_map(|e| {
-                if let InputEvent::Paste(p) = e {
-                    Some(p.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn bracketed_paste_basic_round_trip() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1b[200~hello world\x1b[201~");
-        let pastes = paste_only(&evs);
-        assert_eq!(pastes.len(), 1);
-        assert_eq!(pastes[0].data, b"hello world");
-        assert_eq!(pastes[0].trust, PasteTrust::Trusted);
-        // No key events leaked from inside the brackets.
-        assert!(key_only(&evs).is_empty());
-        assert!(!p.has_pending());
-    }
-
-    #[test]
-    fn bracketed_paste_split_across_feeds() {
-        let mut p = StdinParser::new();
-        let a = p.feed(b"\x1b[200~");
-        assert!(a.is_empty());
-        assert!(p.has_pending());
-        let b = p.feed(b"abc");
-        assert!(b.is_empty());
-        let c = p.feed(b"\x1b[201~");
-        let pastes = paste_only(&c);
-        assert_eq!(pastes.len(), 1);
-        assert_eq!(pastes[0].data, b"abc");
-    }
-
-    #[test]
-    fn bracketed_paste_multiline_is_one_trusted_event_across_read_boundaries() {
-        let payload = b"if true; then\r\n\tprintf 'hello world'\n\nfi\n";
-        let mut framed = Vec::from(b"\x1b[200~".as_slice());
-        framed.extend_from_slice(payload);
-        framed.extend_from_slice(b"\x1b[201~");
-
-        // Terminal reads may split either delimiter or any part of the payload.
-        for split in 1..framed.len() {
-            let mut p = StdinParser::new();
-            assert!(p.feed(&framed[..split]).is_empty(), "split={split}");
-            assert!(p.has_pending(), "split={split}");
-
-            let events = p.feed(&framed[split..]);
-            assert_eq!(events.len(), 1, "split={split}: {events:?}");
-            let pastes = paste_only(&events);
-            assert_eq!(pastes.len(), 1, "split={split}");
-            assert_eq!(pastes[0].trust, PasteTrust::Trusted, "split={split}");
-            assert_eq!(pastes[0].data, payload, "split={split}");
-            assert!(!p.has_pending(), "split={split}");
-            assert!(p.feed(b"").is_empty(), "split={split}");
-        }
-    }
-
-    #[test]
-    fn bracketed_paste_payload_with_inner_csi() {
-        let mut p = StdinParser::new();
-        // User pastes a string that contains an ANSI color escape — the
-        // ESC + CSI inside the payload must be preserved, not consumed
-        // as a close marker.
-        let payload = b"red\x1b[31mthing\x1b[0mend";
-        let mut s = Vec::from(b"\x1b[200~".as_slice());
-        s.extend_from_slice(payload);
-        s.extend_from_slice(b"\x1b[201~");
-        let evs = p.feed(&s);
-        let pastes = paste_only(&evs);
-        assert_eq!(pastes.len(), 1);
-        assert_eq!(pastes[0].data, payload);
-        assert!(!p.has_pending());
-    }
-
-    #[test]
-    fn bracketed_paste_with_bare_esc_in_payload() {
-        // A bare ESC inside the paste should remain in the payload.
-        let mut p = StdinParser::new();
-        let mut s = Vec::from(b"\x1b[200~".as_slice());
-        s.extend_from_slice(b"a\x1bb");
-        s.extend_from_slice(b"\x1b[201~");
-        let evs = p.feed(&s);
-        let pastes = paste_only(&evs);
-        assert_eq!(pastes.len(), 1);
-        assert_eq!(pastes[0].data, b"a\x1bb");
-    }
-
-    #[test]
-    fn bracketed_paste_into_frame_carries_terminal_id() {
-        let frame = InputEvent::Paste(PasteEvent {
-            trust: PasteTrust::Trusted,
-            data: b"x".to_vec(),
-        })
-        .into_frame(ResourceId::new(11));
-        match frame {
-            FrameKind::InputPaste { terminal_id, event } => {
-                assert_eq!(terminal_id, ResourceId::new(11));
-                assert_eq!(event.data, b"x");
-            }
-            other => panic!("expected InputPaste, got {other:?}"),
-        }
-    }
-
-    // ---- Kitty CSI u (KIP level 1 + 2) ---------------------------------
-
-    #[test]
-    fn kitty_csi_u_plain_lowercase_letter() {
-        let mut p = StdinParser::new();
-        let evs = p.feed(b"\x1b[97u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert_eq!(keys[0].action, KeyAction::Press);
-        assert!(keys[0].mods.is_empty());
-        assert_eq!(keys[0].unshifted_codepoint, Some(97));
-    }
-
-    #[test]
-    fn kitty_csi_u_ctrl_a() {
-        let mut p = StdinParser::new();
-        // modifiers = 1 + ctrl(4) = 5
-        let evs = p.feed(b"\x1b[97;5u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert_eq!(keys[0].mods, ModSet::CTRL);
-        assert_eq!(keys[0].action, KeyAction::Press);
-    }
-
-    #[test]
-    fn kitty_csi_u_f_key_via_pua_codepoint() {
-        let mut p = StdinParser::new();
-        // F5 = 57368
-        let evs = p.feed(b"\x1b[57368u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::F5);
-        assert!(keys[0].mods.is_empty());
-    }
-
-    #[test]
-    fn kitty_csi_u_release_event_type() {
-        let mut p = StdinParser::new();
-        // CSI 97;1:3 u — press-modifier baseline (1 = no mods), release.
-        let evs = p.feed(b"\x1b[97;1:3u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert_eq!(keys[0].action, KeyAction::Release);
-    }
-
-    #[test]
-    fn kitty_csi_u_multiple_modifiers() {
-        let mut p = StdinParser::new();
-        // mods = 1 + shift(1) + alt(2) + ctrl(4) = 8
-        let evs = p.feed(b"\x1b[97;8u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert!(keys[0].mods.contains(ModSet::SHIFT));
-        assert!(keys[0].mods.contains(ModSet::ALT));
-        assert!(keys[0].mods.contains(ModSet::CTRL));
-    }
-
-    #[test]
-    fn kitty_csi_u_repeat_event_maps_to_repeat_action() {
-        let mut p = StdinParser::new();
-        // event_type = 2 = repeat.
-        let evs = p.feed(b"\x1b[97;1:2u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1, "repeat must emit a key event, not drop");
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert_eq!(keys[0].action, KeyAction::Repeat);
-    }
-
-    #[test]
-    fn kitty_csi_u_alternate_keys_subparams_ignored() {
-        let mut p = StdinParser::new();
-        // Level 3: keycode with shifted_key and base_layout_key sub-params.
-        // CSI 97:65:97 ; 2 u — 'a' shifted to 'A' (US layout). We absorb the
-        // shifted/base sub-params and treat the event as a plain Shift-A.
-        let evs = p.feed(b"\x1b[97:65:97;2u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert!(keys[0].mods.contains(ModSet::SHIFT));
-    }
-
-    #[test]
-    fn kitty_csi_u_text_codepoints_populate_text() {
-        let mut p = StdinParser::new();
-        // Level 5: CSI 97 ; 1 : 1 : 97 u — 'a' press with explicit text 'a'.
-        let evs = p.feed(b"\x1b[97;1:1:97u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert_eq!(keys[0].action, KeyAction::Press);
-        assert_eq!(keys[0].text.as_deref(), Some("a"));
-    }
-
-    #[test]
-    fn kitty_csi_u_text_codepoints_multi_char() {
-        let mut p = StdinParser::new();
-        // KIP allows multiple text codepoints (e.g. combining marks).
-        // CSI 97 ; 1 : 1 : 97 : 769 u — 'a' + U+0301 combining acute.
-        let evs = p.feed(b"\x1b[97;1:1:97:769u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].text.as_deref(), Some("a\u{0301}"));
-    }
-
-    #[test]
-    fn kitty_csi_u_text_codepoints_skip_zero_entries() {
-        let mut p = StdinParser::new();
-        // Zero sub-params are "no associated text" markers — skip them.
-        let evs = p.feed(b"\x1b[97;1:1:0u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].text, None);
-    }
-
-    #[test]
-    fn kitty_csi_u_text_codepoints_for_non_printable_keycode() {
-        let mut p = StdinParser::new();
-        // F1 (PUA 57364) with associated text payload "x" (codepoint 120).
-        // Confirms text codepoints surface even when the keycode itself
-        // maps to a functional (non-printable) PhysicalKey.
-        let evs = p.feed(b"\x1b[57364;1:1:120u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::F1);
-        assert_eq!(keys[0].text.as_deref(), Some("x"));
-    }
-
-    #[test]
-    fn kitty_csi_u_hyper_collapses_into_super() {
-        let mut p = StdinParser::new();
-        // mods = 1 + hyper(16) = 17
-        let evs = p.feed(b"\x1b[97;17u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert!(
-            keys[0].mods.contains(ModSet::SUPER),
-            "hyper must collapse into SUPER"
-        );
-    }
-
-    #[test]
-    fn kitty_csi_u_meta_collapses_into_alt() {
-        let mut p = StdinParser::new();
-        // mods = 1 + meta(32) = 33
-        let evs = p.feed(b"\x1b[97;33u");
-        let keys = key_only(&evs);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert!(
-            keys[0].mods.contains(ModSet::ALT),
-            "meta must collapse into ALT"
-        );
-    }
-
-    #[test]
-    fn kitty_csi_u_escape_and_enter() {
-        let mut p = StdinParser::new();
-        let esc = p.feed(b"\x1b[27u");
-        assert_eq!(key_only(&esc)[0].key, PhysicalKey::Escape);
-        let enter = p.feed(b"\x1b[13u");
-        assert_eq!(key_only(&enter)[0].key, PhysicalKey::Enter);
-    }
-
-    #[test]
-    fn kitty_csi_u_arrow_pua_codepoint() {
-        let mut p = StdinParser::new();
-        // ArrowUp = 57352
-        let evs = p.feed(b"\x1b[57352u");
-        let keys = key_only(&evs);
-        assert_eq!(keys[0].key, PhysicalKey::ArrowUp);
-    }
-
-    #[test]
-    fn kitty_csi_u_super_modifier() {
-        let mut p = StdinParser::new();
-        // mods = 1 + super(8) = 9
-        let evs = p.feed(b"\x1b[97;9u");
-        let keys = key_only(&evs);
-        assert_eq!(keys[0].key, PhysicalKey::A);
-        assert!(keys[0].mods.contains(ModSet::SUPER));
-    }
-
-    #[test]
-    fn kitty_csi_u_empty_keycode_dropped() {
-        let mut p = StdinParser::new();
-        // CSI u with no params — keycode would be 0, must drop silently.
-        let evs = p.feed(b"\x1b[u");
-        assert!(key_only(&evs).is_empty());
-        assert!(!p.has_pending());
-    }
-
-    #[test]
-    fn kitty_modifier_code_table() {
-        assert_eq!(kitty_modifier_code(1), ModSet::empty());
-        assert_eq!(kitty_modifier_code(2), ModSet::SHIFT);
-        assert_eq!(kitty_modifier_code(3), ModSet::ALT);
-        assert_eq!(kitty_modifier_code(5), ModSet::CTRL);
-        assert_eq!(kitty_modifier_code(9), ModSet::SUPER);
-        assert_eq!(
-            kitty_modifier_code(8),
-            ModSet::SHIFT | ModSet::ALT | ModSet::CTRL
-        );
-        // Hyper collapses into SUPER, Meta collapses into ALT (v0 fallback —
-        // see fn doc).
-        assert_eq!(kitty_modifier_code(1 + 16), ModSet::SUPER);
-        assert_eq!(kitty_modifier_code(1 + 32), ModSet::ALT);
-        // Caps lock + num lock pass through.
-        assert_eq!(kitty_modifier_code(1 + 64), ModSet::CAPS_LOCK);
-        assert_eq!(kitty_modifier_code(1 + 128), ModSet::NUM_LOCK);
-    }
-
-    // ---- Sanity: existing "unknown CSI" path still recovers -------------
-
-    #[test]
-    fn xterm_modifier_code_table() {
-        assert_eq!(xterm_modifier_code(1), ModSet::empty());
-        assert_eq!(xterm_modifier_code(2), ModSet::SHIFT);
-        assert_eq!(xterm_modifier_code(3), ModSet::ALT);
-        assert_eq!(xterm_modifier_code(5), ModSet::CTRL);
-        assert_eq!(xterm_modifier_code(9), ModSet::SUPER);
-        assert_eq!(
-            xterm_modifier_code(8),
-            ModSet::SHIFT | ModSet::ALT | ModSet::CTRL
-        );
+        assert_eq!(out.len(), 4);
+        assert!(matches!(&out[3], InputEvent::Key(k) if k.key == PhysicalKey::Escape));
     }
 }
