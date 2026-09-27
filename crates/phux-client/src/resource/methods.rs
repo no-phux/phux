@@ -1,11 +1,8 @@
-//! `phux resource methods` (PHA-406 D4, ADR-0125): which catalog methods a
-//! resource answers on this connection.
+//! `phux resource methods` (ADR-0125): the kind catalog
+//! ([`phux_protocol::kinds`]) intersected with a resource's kind and the
+//! negotiated features.
 //!
-//! The generated kind catalog ([`phux_protocol::kinds`]) intersected with the
-//! resource's kind and the features the server negotiated. This is a
-//! client-side read of a compiled constant plus one `GET_STATE`: discovery
-//! grants nothing, and a method name here is not an invocation handle.
-//! Authorization stays at dispatch.
+//! Discovery grants nothing; authorization stays at dispatch.
 
 use std::path::Path;
 
@@ -187,10 +184,7 @@ impl ResourceMethods {
     }
 }
 
-/// Judge the catalog for `resource` over a fresh connection to `socket`.
-///
-/// The connection is a Unix socket, so the owner-UDS transport predicate
-/// holds for it.
+/// Judge the catalog for `resource` over a fresh (owner-UDS) connection.
 ///
 /// # Errors
 ///
@@ -221,10 +215,9 @@ pub async fn methods(socket: &Path, resource: &ResourceId) -> Result<ResourceMet
 mod tests {
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
-    use tokio::net::UnixListener;
 
     use super::*;
-    use crate::testkit::{ScriptSpec, ScriptedServer};
+    use crate::testkit::{ScriptSpec, serve_one};
 
     fn entry<'a>(doc: &'a Value, name: &str) -> &'a Value {
         doc["methods"]
@@ -237,8 +230,6 @@ mod tests {
 
     async fn methods_against(features: ServerFeatureSet) -> Value {
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("methods.sock");
-        let listener = UnixListener::bind(&socket).expect("bind");
         let snapshot =
             SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(7))
                 .with_resources(vec![ResourceInfo::new(
@@ -248,7 +239,7 @@ mod tests {
                     24,
                 )]);
         let spec = ScriptSpec::new().server_features(features).state(snapshot);
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = serve_one(dir.path(), spec);
         let report = methods(&socket, &ResourceId::local(7))
             .await
             .expect("methods");

@@ -1,37 +1,16 @@
-//! `phux resource wait` (PHA-406 D2): wait for one resource's process to end.
+//! `phux resource wait`: wait for one resource's process to end, race-free
+//! and resumable, from the event journal plus a level read (ADR-0123,
+//! ADR-0124).
 //!
-//! Race-free and resumable, composed from the event journal and a level read
-//! rather than a server primitive (ADR-0123, ADR-0124).
-//!
-//! Each connection runs the same steps, in order, on that one connection:
-//!
-//! 1. `SUBSCRIBE_EVENTS { Some(id), after_seq }`: the cursor's `seq` when it
-//!    belongs to this server incarnation, else journal semantics with no
-//!    replay (`2^64 - 1`) on a server with the journal.
-//! 2. `GET_STATE`. Present with an exit facet: `exited`. Present and live:
-//!    wait for `terminal_control { Exited }` or `pane_closed` for that id.
-//!    Absent: `gone`, unless an event reported the close.
-//! 3. A cursor replay is pumped as the connection takes it, so the state
-//!    answer can overtake it. An absence is trusted only once the replay has
-//!    reached the snapshot's journal head (L1 §7.3), which is this
-//!    connection's: the newest `seq` its subscription admits, so a head at or
-//!    below the cursor is caught up at once. A gap during the replay covers
-//!    the range the journal no longer holds, and the answer says evidence
-//!    was lost.
-//! 4. After the replay, or past the head, a `journal_gap` is a live loss
-//!    whose events may still be in the ring, and a subscription never re-delivers what it reported
-//!    missing: the wait resumes on a fresh connection from the last `seq` it
-//!    accounted for. A `source_gap` or an exit notice re-reads the level.
-//! 5. The caller's [`Deadline`] bounds everything, connect included. The
-//!    cursor reached rides the answer and the error alike, so a wait cut
-//!    short resumes on another connection.
-//!
-//! Race-freedom: the subscription is registered before the snapshot is cut,
-//! so an exit after the cut arrives as an event, and an exit before it is in
-//! the snapshot (a retained exit facet), in the replay (a close the journal
-//! still holds), or in its absence (not retained, an honest `gone`).
-//! Re-running the wait is idempotent: its answer is a level read of retained
-//! state.
+//! Per connection: subscribe (from the cursor's `seq` when it belongs to this
+//! incarnation, else [`NO_REPLAY`]), then `GET_STATE`. An exit facet answers
+//! `exited`; a live pane waits for its exit or close event; an absence is
+//! `gone` once any replay has reached the snapshot's journal head (L1 §7.3),
+//! since the state answer can overtake the replay. A replay gap marks
+//! evidence lost; a live gap resumes on a fresh connection from the last
+//! `seq` accounted for. Subscribing before the cut means every exit is in the
+//! snapshot, the replay, or the stream. The caller's [`Deadline`] bounds it
+//! all, and the cursor reached rides both the answer and the error.
 
 use std::path::Path;
 use std::time::Duration;
@@ -184,10 +163,8 @@ pub enum WaitFailure {
         .0.join("; ")
     )]
     PartialView(Vec<String>),
-    /// The server refused the event subscription or the state read: a
-    /// scoped connection without `OBSERVE` on the resource (workload-auth
-    /// §7). No answer would ever arrive, so the wait ends here instead of at
-    /// its deadline.
+    /// The server refused the subscription or the state read (a scoped
+    /// connection without `OBSERVE`, workload-auth §7): no answer will come.
     #[error("the server refused the wait: {0}")]
     Denied(String),
 }
@@ -534,11 +511,7 @@ fn has_exited(info: &ResourceInfo) -> bool {
     info.exit.is_some() || info.lifecycle == ResourceLifecycle::Exited
 }
 
-/// The pause between reconnects that made no progress: the runtime's
-/// agent-verb ladder (ADR-0133), 50 ms doubling to 1 s. An agent is
-/// blocking on this verb over a local socket, so the interactive lane's
-/// 500 ms floor would be latency it sees for no radio saved; the lane is
-/// named here rather than forked so the arithmetic exists once.
+/// The pause between reconnects that made no progress (ADR-0133).
 const RECONNECT_LADDER: Ladder = Ladder::AGENT_VERB;
 
 /// Run connections until one answers; a live gap ends a connection and the
@@ -676,7 +649,7 @@ mod tests {
     use tokio::net::UnixListener;
 
     use super::*;
-    use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer};
+    use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer, serve_one};
 
     const SERVER_ID: [u8; 4] = [0xab, 0xcd, 0x01, 0x02];
 
@@ -755,9 +728,7 @@ mod tests {
         budget: Duration,
     ) -> (Result<ResourceWait, ResourceWaitError>, Vec<FrameKind>) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("wait.sock");
-        let listener = UnixListener::bind(&socket).expect("bind scripted server");
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = serve_one(dir.path(), spec);
         let result =
             wait_for_exit(&socket, pane(), after.as_ref(), Deadline::new(Some(budget))).await;
         let seen = server.await.expect("scripted server");
@@ -873,9 +844,8 @@ mod tests {
         assert!(!wait.cursor_void);
     }
 
-    /// The review's reproduction: more replayed events than the connection's
-    /// mailbox takes, so the state answer overtakes the replay and the close
-    /// arrives after it. The wait keeps reading through the head.
+    /// The state answer overtakes the replay and the close arrives after it:
+    /// the wait keeps reading through the head.
     #[tokio::test]
     async fn a_state_answer_that_overtakes_the_replay_waits_for_the_head() {
         let bells: Vec<FrameKind> = (41..=45).map(|seq| event(AgentEvent::Bell, seq)).collect();
@@ -974,9 +944,8 @@ mod tests {
         assert!(!wait.evidence_lost);
     }
 
-    /// A gap past the head that every connection repeats (the loop a
-    /// satellite cursor once caused behind a hub) ends at the deadline, and
-    /// the reconnects back off instead of spinning.
+    /// A gap past the head that every connection repeats ends at the
+    /// deadline, and the reconnects back off instead of spinning.
     #[tokio::test]
     async fn a_gap_past_the_head_on_every_connection_ends_at_the_deadline() {
         use std::sync::Arc;
@@ -1009,19 +978,6 @@ mod tests {
         assert_eq!(wait.cursor.expect("cursor").seq(), 10);
         let made = connections.load(Ordering::SeqCst);
         assert!((1..10).contains(&made), "backs off: {made} connections");
-    }
-
-    /// A scoped workload whose state read is refused is denied (exit 2 at
-    /// the CLI), not a missing server.
-    #[tokio::test]
-    async fn a_refused_state_read_is_denied() {
-        let spec = journal_spec().refuse_state(ErrorCode::PermissionDenied, "permission denied");
-        let (result, _seen) = run(spec, None, Duration::from_secs(20)).await;
-        let err = result.expect_err("denied");
-        assert!(
-            matches!(&err.cause, WaitFailure::Denied(message) if message == "permission denied"),
-            "{err:?}"
-        );
     }
 
     #[tokio::test]
@@ -1206,32 +1162,31 @@ mod tests {
         assert!(wait.to_json()["cursor"].is_null());
     }
 
-    /// A scoped server refuses an unobservable subscription with an
-    /// uncorrelated `PERMISSION_DENIED` and nothing else (workload-auth §7);
-    /// the wait ends on it at once instead of waiting out its deadline for
-    /// events that will never come.
+    /// A refused state read, or a subscription refused with an uncorrelated
+    /// `PERMISSION_DENIED` (workload-auth §7), ends the wait at once as
+    /// denied rather than at the deadline.
     #[tokio::test]
-    async fn a_refused_subscription_ends_the_wait_promptly() {
+    async fn a_refusal_ends_the_wait_promptly_as_denied() {
         let refusal = FrameKind::Error {
             request_id: None,
             code: ErrorCode::PermissionDenied,
             message: "permission denied".to_owned(),
         };
-        let started = std::time::Instant::now();
-        let (result, _seen) = run(
+        for spec in [
+            journal_spec().refuse_state(ErrorCode::PermissionDenied, "permission denied"),
             journal_spec().push(refusal).state(live()),
-            None,
-            Duration::from_secs(20),
-        )
-        .await;
-        let err = result.expect_err("denied");
-        assert!(
-            matches!(&err.cause, WaitFailure::Denied(message) if message == "permission denied"),
-            "{err:?}"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "no deadline wait"
-        );
+        ] {
+            let started = std::time::Instant::now();
+            let (result, _seen) = run(spec, None, Duration::from_secs(20)).await;
+            let err = result.expect_err("denied");
+            assert!(
+                matches!(&err.cause, WaitFailure::Denied(message) if message == "permission denied"),
+                "{err:?}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "no deadline wait"
+            );
+        }
     }
 }

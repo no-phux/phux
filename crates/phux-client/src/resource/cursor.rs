@@ -1,11 +1,9 @@
-//! Journal cursors (ADR-0123): the position a resumable observer reached.
+//! Journal cursors (ADR-0123): `server_id_hex:seq`, the position a resumable
+//! observer reached.
 //!
-//! A cursor is `(HELLO_OK.server_id, seq)`, spelled `server_id_hex:seq`. It
-//! is meaningful only to the server incarnation that issued it: a cursor
-//! from another `server_id` is void, and the observer falls back to a level
-//! read (`docs/spec/L1.md` §7.3). A cursor never replaces that level read; it
-//! only lets a reconnecting observer replay events the journal still holds,
-//! such as the close of a pane that was not retained.
+//! Only the issuing server incarnation honors one; a void
+//! cursor falls back to the level read (L1 §7.3), which a cursor never
+//! replaces.
 
 use std::fmt;
 use std::str::FromStr;
@@ -104,8 +102,7 @@ pub struct ResumePlan {
 }
 
 /// Plan a resume of `cursor` on `conn`.
-#[must_use]
-pub fn plan_resume(cursor: Option<&Cursor>, conn: &Connection) -> ResumePlan {
+fn plan_resume(cursor: Option<&Cursor>, conn: &Connection) -> ResumePlan {
     let journal = journal_advertised(conn);
     let live = ResumePlan {
         after_seq: journal.then_some(NO_REPLAY),
@@ -126,25 +123,18 @@ pub fn plan_resume(cursor: Option<&Cursor>, conn: &Connection) -> ResumePlan {
     }
 }
 
-/// The cursor an observer on `conn` holds after journal sequence `last_seq`.
-///
-/// A `last_seq` of `None` means nothing accounted for yet, so the cursor
-/// replays whatever the journal still holds. `None` when the server keeps no
-/// journal or names no incarnation.
-#[must_use]
-pub fn cursor_after(conn: &Connection, last_seq: Option<u64>) -> Option<Cursor> {
+/// The cursor on `conn` after journal sequence `last_seq` (`None`: nothing
+/// accounted for yet); `None` without a journal or incarnation.
+fn cursor_after(conn: &Connection, last_seq: Option<u64>) -> Option<Cursor> {
     if !journal_advertised(conn) {
         return None;
     }
     Cursor::new(conn.server_id()?.to_vec(), last_seq.unwrap_or(0))
 }
 
-/// A resumable observer's cursor bookkeeping: what it asked the journal for,
-/// what it has accounted for since, and the cursor that resumes it.
-///
-/// Held by the caller, outside the future that streams, so a run cut short
-/// (a deadline, Ctrl-C, an error) still reports the position it reached. A
-/// second [`Self::bind`] (a reconnect) resumes from that position.
+/// A resumable observer's cursor bookkeeping, held outside the streaming
+/// future so a run cut short still reports its position. A later
+/// [`Self::bind`] (a reconnect) resumes from there.
 #[derive(Debug, Clone, Default)]
 pub struct ResumeState {
     /// The caller's cursor, echoed back if the observer never connects.
