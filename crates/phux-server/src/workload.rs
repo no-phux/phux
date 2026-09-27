@@ -28,15 +28,13 @@ pub use phux_protocol::scope::ScopeGrammarError;
 use phux_protocol::scope::{EffectiveScopeSet, ScopeGrant, Selector, TerminalScopeSet};
 pub use reload::{BrokenRegistry, RegistryObservation, ReloadingWorkloadRegistry};
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike, Utc};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DnType,
-    ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData,
+    ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose,
 };
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, CertificateSigningRequestDer, UnixTime};
@@ -947,56 +945,6 @@ fn subject_public_key_info(certificate: &[u8]) -> Result<Vec<u8>, WorkloadError>
     let (_, parsed) = x509_parser::parse_x509_certificate(certificate)
         .map_err(|_| MaterialError::InvalidCertificate)?;
     Ok(parsed.tbs_certificate.subject_pki.raw.to_vec())
-}
-
-/// Enroll a client certificate signed by the persisted workload CA.
-///
-/// The client key is generated locally and written owner-only. The returned
-/// id is also inserted into `registry_path`; callers deliver the certificate
-/// and key through their pairing channel, never through the protocol stream.
-///
-/// # Errors
-///
-/// Any failure reading the CA, minting the client pair, or registering it.
-pub fn enroll_client(
-    ca_cert_path: &Path,
-    ca_key_path: &Path,
-    cert_path: &Path,
-    key_path: &Path,
-    registry_path: &Path,
-    scopes: Vec<String>,
-) -> Result<String, WorkloadError> {
-    let (ca_certificate, ca_pem) = load_authority_certificate(ca_cert_path)?;
-    let issuer = Issuer::from_ca_cert_der(&ca_certificate, load_authority_key(ca_key_path)?)?;
-    let client_key = KeyPair::generate()?;
-    let public_key = client_key.subject_public_key_info();
-    let mut params = CertificateParams::new(vec!["phux-workload-client".to_owned()])?;
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "phux workload client");
-    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-    let certificate = params.signed_by(&client_key, &issuer)?;
-    for parent in [cert_path.parent(), key_path.parent()]
-        .into_iter()
-        .flatten()
-    {
-        fs::create_dir_all(parent)?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    }
-    let mut key_file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(key_path)?;
-    let mut key_pem = client_key.serialize_pem().into_bytes();
-    let written = key_file.write_all(&key_pem);
-    scrub(&mut key_pem);
-    written?;
-    let id = WorkloadRegistry::register(registry_path, &public_key, scopes, None)?.id;
-    // Keep the CA in the client chain so a TLS peer can build the path even
-    // when its trust store contains only the client certificate bundle.
-    fs::write(cert_path, format!("{}{ca_pem}", certificate.pem()))?;
-    Ok(id)
 }
 
 /// Lowercase hex only: the registry has one spelling per key.

@@ -560,35 +560,3 @@ fn a_transient_read_failure_is_not_cached() {
     );
     assert!(reloading.lookup_certificate(second.as_ref()).is_some());
 }
-
-#[test]
-fn enrollment_writes_a_client_chain_and_registry_record() {
-    let fx = fixture();
-    let client_cert = fx.dir.path().join("client.pem");
-    let client_key = fx.dir.path().join("client.key");
-    let id = enroll_client(
-        &fx.paths.ca_cert,
-        &fx.paths.ca_key,
-        &client_cert,
-        &client_key,
-        &fx.paths.registry,
-        scopes(&["observe@global"]),
-    )
-    .unwrap();
-    assert!(is_canonical_credential_id(&id));
-    assert_eq!(
-        WorkloadRegistry::load(&fx.paths.registry)
-            .unwrap()
-            .lookup(&id)
-            .unwrap()
-            .scopes,
-        ["observe@global"]
-    );
-    assert!(
-        std::fs::read_to_string(&client_cert)
-            .unwrap()
-            .matches("BEGIN CERTIFICATE")
-            .count()
-            >= 2
-    );
-}
